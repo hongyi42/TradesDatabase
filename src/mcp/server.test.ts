@@ -2040,7 +2040,6 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('set_promise');
       expect(mgrTools).toContain('set_technician_horizon');
       expect(mgrTools).toContain('cancel_job'); // the terminal verb (2026-07-25)
-      expect(mgrTools).toContain('set_visit_locks'); // human-privilege pinning (plan 4b-3)
       expect(mgrTools).toContain('get_availability'); // the read half of set_availability (2026-08-04)
       expect(mgrTools).toContain('query_spine'); // ad-hoc read fallback (2026-08-06)
       expect(mgrTools).toContain('record_money_event'); // the money ledger (2026-08-15)
@@ -2048,7 +2047,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('inform_team_lead'); // the planner's inbox (build 5.5)
       expect(mgrTools).toContain('ask_team_lead'); // the Q&A desk (build 5.5 Phase 2)
       expect(mgrTools).toContain('inform_teammate'); // seat-to-seat informs (build 5.5 Phase 3)
-      expect(mgrTools).toHaveLength(43);
+      expect(mgrTools).toHaveLength(42);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -2451,7 +2450,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(43); // base minus get_schedule + 27 admin
+        expect(mgrTools).toHaveLength(42); // base minus get_schedule + 26 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -4149,7 +4148,6 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         customer: 'Sched Henderson',
         promiseLevel: 'day',
         promisedDay: '2026-12-01',
-        locked: false, // human-privilege pinning (plan 4b-3): no verb auto-locks
         // Wall-clock HH:MM slices only. The raw timestamptz must never reach
         // the agent: its '+00:00' marker lies under the naive-local convention
         // (live 2026-07-22: the agent fabricated a UTC→Pacific conversion for
@@ -5649,7 +5647,6 @@ describe('find_slots (Plan 3b)', () => {
       const displaced = impossible.data.noFit.displacementCandidates as Array<Record<string, unknown>>;
       expect(displaced.length).toBeGreaterThanOrEqual(2); // the two 03-08 visits
       expect(displaced[0]).toHaveProperty('promiseLevel');
-      expect(displaced[0]).toHaveProperty('locked');
     } finally {
       await mgrClient.close();
     }
@@ -6248,91 +6245,6 @@ describe('set_promise (the promise-record editor)', () => {
           '2020-01-01T00:00:00.000Z',
         ),
       ).rejects.toThrow(/changed while updating/);
-    } finally {
-      await mgrClient.close();
-    }
-  });
-});
-
-describe('set_visit_locks (plan 4b-3: human-privilege pinning)', () => {
-  test('ids + range selectors, selector exclusivity, technician gate', { timeout: 30_000 }, async () => {
-    const customer = await createCustomer({ tenantId, name: 'Lock Verb Cust' });
-    // Own probe tech — standalone-runnable (the update_job round-2 lesson).
-    const lvt = await insertTechnician({
-      tenantId,
-      ref: 'lock-verb-tech',
-      displayName: 'Lock Verb Tech',
-      seatExempt: true,
-    });
-    await setTechnicianState(lvt.id, 'active');
-    const { client: mgrClient, callWith } = await clientFor({
-      tenantId,
-      technicianRef: 'mgr-test',
-    });
-    try {
-      // The technician-tier default client hits the admin gate.
-      const gated = await call('set_visit_locks', { locked: true, from: '2027-08-02', to: '2027-08-03' });
-      expect(gated.isError).toBe(true);
-      expect(gated.text).toContain('admin tools require a manager badge');
-
-      const bookedA = await callWith('book_visit', {
-        customerId: customer.id, title: 'lock probe A', technicianRef: 'lock-verb-tech',
-        date: '2027-08-02', startTime: '09:00', endTime: '10:00',
-      });
-      expect(bookedA.data.status).toBe('booked');
-      const bookedTbd = await callWith('book_visit', {
-        customerId: customer.id, title: 'lock probe tbd', timeTbd: true,
-        earliestDate: '2027-08-03', latestDate: '2027-08-06',
-      });
-      expect(bookedTbd.data.status).toBe('booked');
-
-      // Both selectors at once is refused, never silently resolved.
-      const both = await callWith('set_visit_locks', {
-        locked: true, assignmentIds: [bookedA.data.assignmentId], from: '2027-08-02', to: '2027-08-03',
-      });
-      expect(both.isError).toBe(true);
-      expect(both.text).toContain('ONE selector');
-      const neither = await callWith('set_visit_locks', { locked: true });
-      expect(neither.isError).toBe(true);
-      expect(neither.text).toContain('BOTH from and to');
-
-      // ids selector: pin one visit; echo carries count + server-computed days.
-      const pinOne = await callWith('set_visit_locks', {
-        locked: true, assignmentIds: [bookedA.data.assignmentId],
-      });
-      expect(pinOne.data.status).toBe('ok');
-      expect(pinOne.data.count).toBe(1);
-      expect(pinOne.data.days).toEqual([{ date: '2027-08-02', weekday: 'Mon' }]);
-
-      // Range selector: catches the placed row AND the fence-overlapping
-      // time-TBD row (its range starts inside the window).
-      const pinWeek = await callWith('set_visit_locks', {
-        locked: true, from: '2027-08-02', to: '2027-08-04',
-      });
-      expect(pinWeek.data.count).toBeGreaterThanOrEqual(2);
-      const { rows } = await pg.query(
-        'select locked from assignments where id = any($1::uuid[])',
-        [[bookedA.data.assignmentId, bookedTbd.data.assignmentId]],
-      );
-      expect(rows.every((r: { locked: boolean }) => r.locked)).toBe(true);
-
-      // The pinned marker reaches get_team_schedule (the copy the agent reads).
-      const team = await callWith('get_team_schedule', { from: '2027-08-02', to: '2027-08-04' });
-      const stops = (team.data.days as Array<{ stops: Array<Record<string, unknown>> }>).flatMap(
-        (d) => d.stops,
-      );
-      expect(stops.find((s) => s.assignmentId === bookedA.data.assignmentId)?.locked).toBe(true);
-
-      // Unpin by range; empty re-resolution refuses loudly.
-      const unpin = await callWith('set_visit_locks', {
-        locked: false, from: '2027-08-02', to: '2027-08-06',
-      });
-      expect(unpin.data.status).toBe('ok');
-      const empty = await callWith('set_visit_locks', {
-        locked: true, from: '2027-09-06', to: '2027-09-07',
-      });
-      expect(empty.isError).toBe(true);
-      expect(empty.text).toContain('nothing matched');
     } finally {
       await mgrClient.close();
     }
@@ -7311,6 +7223,10 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     // the catalog — fourteen since v_roster_events (build 6.5 Phase 1); the
     // count and the list must move together or the description lies to the model
     expect(desc).toContain('fifteen views'); // +v_office_messages, build 7
+    // Rung 8: `locked` left v_schedule with pinning. The catalog is the column
+    // list the model is SHOWN, so a stale name here would have it write SQL
+    // against a column that no longer exists.
+    expect(desc).not.toContain('locked');
     expect(desc).toContain('v_observations');
     expect(desc).toContain('v_roster_events');
     // BOTH dismissed sets since build 6 Phase 3 — a question can be dismissed

@@ -347,7 +347,6 @@ describe('buildWorldSpec — isolation and density', () => {
       // that read them grade against an empty set.
       expect(main.visits.some((v) => v.promiseLevel === 'day')).toBe(true);
       expect(main.visits.some((v) => v.promiseLevel === 'time')).toBe(true);
-      expect(main.visits.some((v) => v.locked)).toBe(true);
       expect(main.visits.some((v) => !isPlacedSpec(v))).toBe(true);
       expect(main.visits.some((v) => v.technicianRef === null)).toBe(true);
     });

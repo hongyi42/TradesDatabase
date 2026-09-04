@@ -437,10 +437,9 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
 }
 
 // Displacement candidates for the no-fit block: what COULD move to make room.
-// Promise-free visits first (nothing was told to a customer), then UNPINNED
-// before pinned (4b-3: locked now means a manager said hands-off — a pin only
-// binds AUTOMATIC scheduling, so a pinned row may still be suggested, but
-// never ahead of an equally-free unpinned one), then by day.
+// Promise-free visits first (nothing was told to a customer), then by day.
+// (A pinned-last tiebreak sat in the middle until rung 8 — pinning bound only
+// AUTOMATIC scheduling, and there is none.)
 export interface DisplacementCandidate {
   assignmentId: string;
   customer: string | null;
@@ -449,7 +448,6 @@ export interface DisplacementCandidate {
   weekday: string; // server-computed — same no-agent-calendar-math rule
   span: string;
   promiseLevel: Assignment['promise_level'];
-  locked: boolean;
 }
 
 export async function findDisplacementCandidates(
@@ -476,9 +474,7 @@ export async function findDisplacementCandidates(
   const ordered = [...rows].sort((a, b) => {
     const ap = a.promise_level === 'none' ? 0 : 1;
     const bp = b.promise_level === 'none' ? 0 : 1;
-    const al = a.locked ? 1 : 0;
-    const bl = b.locked ? 1 : 0;
-    return ap - bp || al - bl || (a.starts_at < b.starts_at ? -1 : 1);
+    return ap - bp || (a.starts_at < b.starts_at ? -1 : 1);
   });
   for (const row of ordered.slice(0, limit)) {
     let ref: string | null = null;
@@ -497,7 +493,6 @@ export async function findDisplacementCandidates(
       weekday: weekdayLabel(row.starts_at.slice(0, 10)),
       span: `${row.starts_at.slice(11, 16)}–${row.ends_at.slice(11, 16)}`,
       promiseLevel: row.promise_level,
-      locked: row.locked,
     });
   }
   return out;

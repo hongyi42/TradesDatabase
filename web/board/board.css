@@ -285,13 +285,6 @@ body.dragging .stop.draggable { cursor: grabbing; }
   color: var(--accent-fg);
   white-space: nowrap;
 }
-/* Pinned (plan 4b-3): outline chip, visually distinct from the promise badge
-   — "a human said hands-off", not "a customer was promised". */
-.badge.pinned {
-  background: none;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-}
 
 /* ---- Quick-edit (plan 4a.5) ---- */
 .edit-btn {

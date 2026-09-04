@@ -42,7 +42,6 @@ export type Database = {
           id: string
           job_id: string
           latest_date: string | null
-          locked: boolean
           promise_level: Database["public"]["Enums"]["promise_level"]
           promised_day: string | null
           reason: string | null
@@ -60,7 +59,6 @@ export type Database = {
           id?: string
           job_id: string
           latest_date?: string | null
-          locked?: boolean
           promise_level?: Database["public"]["Enums"]["promise_level"]
           promised_day?: string | null
           reason?: string | null
@@ -78,7 +76,6 @@ export type Database = {
           id?: string
           job_id?: string
           latest_date?: string | null
-          locked?: boolean
           promise_level?: Database["public"]["Enums"]["promise_level"]
           promised_day?: string | null
           reason?: string | null
@@ -3100,7 +3097,6 @@ export type Database = {
           latest_date: string | null
           local_day: string | null
           local_weekday: string | null
-          locked: boolean | null
           postal_code: string | null
           promise_level: Database["public"]["Enums"]["promise_level"] | null
           promised_day: string | null

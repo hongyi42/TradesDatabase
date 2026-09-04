@@ -100,7 +100,6 @@ const READ_ONLY = gradeToolChoice({
     'add_technician_seat',
     'deactivate_technician_seat',
     'set_promise',
-    'set_visit_locks',
     'update_job',
   ],
 });

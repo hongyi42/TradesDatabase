@@ -42,8 +42,8 @@ function teamLeadToolNames(): string[] {
 describe('tool cases — the corpus covers the surface', () => {
   it('reads a plausible tool surface out of the server', () => {
     const names = spineToolNames();
-    // 17 technician + 27 admin. If this number moves, the surface moved.
-    expect(names.length).toBe(44); // build 5.5 tools in; the three solver verbs out (rung 8)
+    // 17 technician + 26 admin. If this number moves, the surface moved.
+    expect(names.length).toBe(43); // build 5.5 tools in; the solver verbs and set_visit_locks out (rung 8)
     expect(new Set(names).size).toBe(names.length);
   });
 

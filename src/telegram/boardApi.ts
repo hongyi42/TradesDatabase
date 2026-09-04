@@ -21,7 +21,6 @@ import {
   previewBookVisit,
   previewUnscheduleVisit,
   previewMoveVisit,
-  setVisitLocks,
   setVisitPromise,
   updateJobIdentity,
 } from '../schedule/booking.js';
@@ -312,7 +311,6 @@ export async function handleBoardRequest(
         pathname === '/board/api/cancel' ||
         pathname === '/board/api/book' ||
         pathname === '/board/api/promise' ||
-        pathname === '/board/api/lock' ||
         pathname === '/board/api/job') &&
       req.method === 'POST'
     ) {
@@ -550,26 +548,6 @@ export async function handleBoardRequest(
               promisedDay: { from: previous.promised_day, to: updated.promised_day },
             },
           });
-          return;
-        }
-        // One-shot pin toggle (plan 4b-3): pinning is reversible + internal —
-        // the doctrine's one-shot arm; the sheet re-render is the disclosure.
-        if (pathname === '/board/api/lock') {
-          if (preview) {
-            json(res, 400, { error: 'pin edits are one-shot — this verb has no preview' });
-            return;
-          }
-          if (typeof body.locked !== 'boolean') {
-            json(res, 400, { error: 'locked must be a boolean' });
-            return;
-          }
-          const result = await setVisitLocks(
-            auth.tenantId,
-            { assignmentIds: [assignmentId] },
-            body.locked,
-            auth.technician.ref,
-          );
-          json(res, 200, { status: 'ok', locked: result.updated[0].locked });
           return;
         }
         if (pathname === '/board/api/cancel') {

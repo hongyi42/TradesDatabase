@@ -442,8 +442,6 @@ async function seed(tenantId, janeId) {
       status: 'confirmed',
       promiseLevel: 'day',
       promisedDay: TODAY,
-      // NOT locked (plan 4b-3): pinning is a human privilege — seeded rows
-      // must not wear a pin nobody chose (the freeze would silently skip them).
       sourceCaptureId: bWeb.id,
     });
   }

@@ -168,11 +168,9 @@ import {
   previewBookVisit,
   previewUnscheduleVisit,
   previewMoveVisit,
-  setVisitLocks,
   setVisitPromise,
   spanMinutes,
   updateJobIdentity,
-  type VisitLockSelector,
 } from '../schedule/booking.js';
 import {
   servedDayPhrase, isRealDateISO, isWeekday, resolveDate } from '../schedule/dateResolve.js';
@@ -739,7 +737,7 @@ const TOOLS = [
 const SPINE_VIEW_CATALOG =
   'It CANNOT write, and it can only read these fifteen views (nothing else exists to it): ' +
   'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, promise_level, ' +
-  'promised_day, locked, earliest_date, latest_date, technician_ref, technician_name, job_id, ' +
+  'promised_day, earliest_date, latest_date, technician_ref, technician_name, job_id, ' +
   'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
   'schedule that STANDS: confirmed and completed visits only, so count(*) here is real ' +
   'bookings; cancelled visits are NOT in it — they live in ' +
@@ -974,9 +972,7 @@ const ADMIN_TOOLS = [
       "(YYYY-MM-DD; both optional — default today in the firm's timezone; capped at 14 days), " +
       "every technician's confirmed visits with customer, address, times, promiseLevel (what " +
       'the customer was ' +
-      'told: none/day/time/time_only), promisedDay, and locked (true = PINNED by a manager — ' +
-      'automatic scheduling never places, moves, or considers it; say "pinned", and ' +
-      'set_visit_locks flips it). Stops with ' +
+      'told: none/day/time/time_only) and promisedDay. Stops with ' +
       'unassigned:true have NOBODY attached yet and need a person (attach with move_visit). ' +
       'Pass unassignedOnly:true to list ALL upcoming visits with nobody attached, however far ' +
       'out (no 14-day cap) — use it when the manager asks what still needs assigning. Stops ' +
@@ -1034,8 +1030,6 @@ const ADMIN_TOOLS = [
       'records what the customer was ACTUALLY told and defaults to "none". Pass "day" ONLY ' +
       'when the manager says the customer was told the day, or "time" when told an exact ' +
       'time. NEVER assume a promise was made. When talking to customers, offer DAYS, not times. ' +
-      'A fresh booking is NOT pinned — if the manager wants automatic scheduling\'s hands off ' +
-      'it ("pin it", "don\'t let the freeze move this"), follow up with set_visit_locks. ' +
       'When the result carries dayPhrase, SAY IT VERBATIM whenever you name the day — never ' +
       'work out the weekday yourself; you are unreliable at calendar math. ' +
       'When the result carries boardNote, ALWAYS end your report with its exact ' +
@@ -1140,36 +1134,6 @@ const ADMIN_TOOLS = [
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
       required: [],
-    },
-  },
-  {
-    name: 'set_visit_locks',
-    description:
-      'Pin or unpin visits (manager only). PINNED = the manager\'s "hands off" mark: ' +
-      'automatic scheduling (the freeze) will never place, move, or consider a pinned ' +
-      'visit; unpinning hands it back. NOTHING is ever pinned automatically — pinning is a ' +
-      'deliberate human act, so set it only when the manager says so ("pin it", "lock next ' +
-      'week"). Works on placed AND time-TBD visits (pinning a time-TBD visit means "I will ' +
-      'place this myself"). Reversible and internal → done in ONE call — ALWAYS report the ' +
-      'count and days touched; never act silently. Call with locked + EITHER assignmentIds ' +
-      '(specific visits) OR from/to (every confirmed visit on those days, optionally ' +
-      'narrowed to one technicianRef) — "lock everything next week" is from/to for that ' +
-      'week. When the result carries boardNote, ALWAYS end your report with its exact ' +
-      '[See it on the board](…) line.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        locked: { type: 'boolean', description: 'true = pin, false = unpin.' },
-        assignmentIds: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Specific visit ids to pin/unpin. Mutually exclusive with from/to.',
-        },
-        from: { type: 'string', description: 'Range start YYYY-MM-DD — selects every confirmed visit on the days [from,to] (placed by day; time-TBD by range overlap). Requires to.' },
-        to: { type: 'string', description: 'Range end YYYY-MM-DD inclusive. Requires from.' },
-        technicianRef: { type: 'string', description: 'With from/to: only this person\'s visits.' },
-      },
-      required: ['locked'],
     },
   },
   {
@@ -1937,8 +1901,6 @@ const BOARD_LINK_TOOL_NAMES = new Set([
   // A promise correction changes what move/cancel will ask (and the board
   // pins promised visits) — its confirmation is a schedule answer too.
   'set_promise',
-  // A pin flip changes what the board shows (the Pinned chip) — same doctrine.
-  'set_visit_locks',
 ]);
 
 // Took a `param` for the freeze proposal view's deep link; that view died
@@ -4267,7 +4229,6 @@ async function dispatch(
             : {}),
           promiseLevel: row.promise_level,
           promisedDay: row.promised_day,
-          locked: row.locked,
           status: row.status,
           jobId: row.job_id,
         });
@@ -4514,8 +4475,7 @@ async function dispatch(
               'This visit is recorded as promise-free ' +
               '(promiseLevel "none"): if the manager\'s words actually said the customer was ' +
               'told a day or time, correct that NOW with set_promise — an unrecorded promise ' +
-              'lets the visit move later with no confirmation. The visit is NOT pinned — if ' +
-              "the manager wants the auto-scheduler's hands off it, pin it (set_visit_locks).",
+              'lets the visit move later with no confirmation.',
           };
         }
         const preview = await previewBookVisit(bookInput);
@@ -6418,56 +6378,6 @@ async function dispatch(
                   'the manager exactly what changed, old → new.',
       };
     }
-    case 'set_visit_locks': {
-      if (typeof args.locked !== 'boolean') {
-        throw new Error('locked (boolean) is required — true pins, false unpins');
-      }
-      const locked = args.locked;
-      // Rejected, never coerced-to-absent (the find_slots rule; final-review
-      // finding): a non-string technicianRef silently widening "pin Ben's
-      // week" into a ROSTER-WIDE pin is exactly the trap.
-      for (const k of ['from', 'to', 'technicianRef']) {
-        if (args[k] !== undefined && typeof args[k] !== 'string') {
-          throw new Error(`${k} must be a string`);
-        }
-      }
-      const from = str('from');
-      const to = str('to');
-      const technicianRefArg = str('technicianRef');
-      // Exactly ONE selector — a call carrying both is an agent bug, and
-      // silently preferring one would act on visits the manager didn't name.
-      if (args.assignmentIds !== undefined && (from || to || technicianRefArg)) {
-        throw new Error('pass ONE selector: assignmentIds, or from/to (+ optional technicianRef)');
-      }
-      let selector: VisitLockSelector;
-      if (args.assignmentIds !== undefined) {
-        const ids = args.assignmentIds;
-        if (!Array.isArray(ids) || ids.length === 0 || ids.some((v) => typeof v !== 'string' || !v)) {
-          throw new Error('assignmentIds must be a non-empty array of visit ids');
-        }
-        selector = { assignmentIds: ids as string[] };
-      } else {
-        if (!from || !to) {
-          throw new Error('pass assignmentIds, or BOTH from and to (YYYY-MM-DD)');
-        }
-        selector = { from, to, ...(technicianRefArg ? { technicianRef: technicianRefArg } : {}) };
-      }
-      const result = await setVisitLocks(tenantId, selector, locked, identity.technicianRef);
-      return {
-        status: 'ok',
-        locked,
-        count: result.updated.length,
-        // Server-computed days (the find_slots lesson) so the report never
-        // needs agent calendar math.
-        days: result.days.map((d) => ({ date: d, weekday: weekdayLabel(d) })),
-        note: locked
-          ? 'Pinned — automatic scheduling will never place, move, or consider these ' +
-            'visits; moving one by hand stays a normal move_visit. Tell the manager the ' +
-            'count and days; unpinning is set_visit_locks with locked:false.'
-          : 'Unpinned — automatic scheduling may consider these visits again. Tell the ' +
-            'manager the count and days.',
-      };
-    }
     case 'find_slots': {
       // Non-string args are REJECTED, never coerced-to-absent: str() maps
       // {technicianRef: 123} to undefined, which would silently UN-PIN the
@@ -6937,8 +6847,7 @@ async function dispatch(
                     hint:
                       'nothing fits even two weeks past the range — a shorter visit may ' +
                       'fit, or one of the displacement candidates below could move ' +
-                      '(move_visit). A candidate with locked:true was PINNED by a manager ' +
-                      '("hands off") — disclose the pin before suggesting it moves.',
+                      '(move_visit).',
                   }
               : {}),
             displacementCandidates: await findDisplacementCandidates(

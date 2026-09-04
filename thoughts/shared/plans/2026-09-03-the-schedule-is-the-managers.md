@@ -208,15 +208,24 @@ pinned` rules in `board.css` if present.
   `scripts/spine-eval/world.mjs:512`; `scripts/backfill-schedule.mjs:12-13, :208-213` (comments).
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `grep -rnE "\blocked\b|set_visit_locks|pinned" src web scripts --include='*.ts' --include='*.js' --include='*.mjs' | grep -vE "skip locked|pinned by a test|pinned to|pin openclaw"` returns nothing
-- [ ] `npx vitest run src/mcp/server.test.ts -t "spine_read schema carries the view catalog"` passes with the new `not.toContain('locked')`
-- [ ] Local stack: `\d v_schedule` and `\d assignments` show no `locked`; `no_confirmed_overlap` and `assignment_placed_or_windowed` unchanged (`\d assignments`)
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `grep -rnE "\blocked\b|set_visit_locks|pinned" src web scripts --include='*.ts' --include='*.js' --include='*.mjs'` shows **no live pinning code** — corrected from "returns nothing", unachievable for the same reason as Phase 1's: `find_slots` uses `pinnedRef` for its TECHNICIAN filter (`server.ts:6397,6662-6671,6786-6806`) and ~120 unrelated "pin/pinned" comments mean *anchored*. Neither may be renamed.
+- [x] `npx vitest run src/mcp/server.test.ts -t "spine_read schema carries the view catalog"` passes with the new `not.toContain('locked')`
+- [x] Local stack: `\d v_schedule` and `\d assignments` show no `locked`; `no_confirmed_overlap` and `assignment_placed_or_windowed` unchanged (`\d assignments`)
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack, migration applied.
-- [ ] Subagent books a visit as `mgr-test`, calls `get_team_schedule`, reports the stop has no `locked`
+- [x] Subagent books a visit as `mgr-test`, calls `get_team_schedule`, reports the stop has no `locked`
       key; `spine_read` over `v_schedule` as `spine:team-lead` returns rows with no `locked` column.
+      **Evidence (2026-09-04):** `set_visit_locks` through `dispatchForIdentity` as a manager throws
+      `unknown tool: set_visit_locks`; the CONTRAST case (an admin tool as a technician) throws
+      `admin tools require a manager badge` — different strings, so this is the switch default, not a
+      gate. Manager 42 / technician 17, absent from both. A real `book_visit` → `get_team_schedule`
+      stop came back with 12 keys and no `locked`. `spine_read` over `v_schedule` returned 20 columns,
+      no `locked`, and `select locked from v_schedule` throws `column "locked" does not exist`. psql
+      read-back confirms the column is gone from table and view, both constraints intact, and the
+      booked row real. The catalog string the model is shown (read off the compiled
+      `TEAM_LEAD_TOOL_SCHEMAS`) contains no `locked` and no `pin`.
 
 ### Manual verification
 - [ ] None.

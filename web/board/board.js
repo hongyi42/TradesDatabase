@@ -134,13 +134,6 @@
             : 'promised day';
       badges += '<span class="badge promise">' + lbl + '</span>';
     }
-    // Pinned (plan 4b-3): `locked` now means a MANAGER pinned this visit —
-    // automatic scheduling never places, moves, or considers it. The badge
-    // returns with its real meaning (it was removed in 4a.5 while every row
-    // was auto-locked and the flag meant nothing).
-    if (stop.locked) {
-      badges += '<span class="badge pinned">📌 Pinned</span>';
-    }
     return badges;
   }
 
@@ -200,7 +193,7 @@
       '<div class="tbd-card" data-id="' + esc(u.assignmentId) + '">' +
       '<div class="tbd-main">' + esc(u.customer || 'Unknown customer') +
       (u.jobTitle ? ' — ' + esc(u.jobTitle) : '') +
-      (u.locked ? ' <span class="badge pinned">📌 Pinned</span>' : '') + '</div>' +
+      '</div>' +
       '<div class="tbd-sub">' +
       esc(
         (u.technicianName || 'Unassigned') +
@@ -533,10 +526,6 @@
       '<div class="bucket-row bucket-visit" data-id="' + esc(v.assignmentId) + '">' +
       '<div class="bucket-row-txt"><div class="bucket-row-main">' +
       esc(whenTxt) +
-      // Pinned (plan 4b-3): a pinned parked visit is "I'll place this
-      // myself" — the tray must show it or the freeze's skip contradicts
-      // what the manager saw here.
-      (v.locked ? ' <span class="badge pinned">📌 Pinned</span>' : '') +
       '</div><div class="bucket-row-sub">' +
       esc(
         (v.overdue ? 'OVERDUE — the day passed with nobody assigned · ' : '') +
@@ -820,16 +809,6 @@
     // this row is the day/time commitment that gates moves/cancels; anything
     // else promised to the customer (a discount…) lives in the notes below.
     rows += detailRow('Scheduling promise', promiseText(d) + pencil('promise'));
-    // Pinned (plan 4b-3): the human-privilege lock. The toggle is a one-shot
-    // (reversible + internal — the doctrine), labelled by the action it takes.
-    rows += detailRow(
-      'Pinned',
-      esc(d.locked ? "Yes — auto-scheduling won't touch this visit" : 'No') +
-        (canEdit
-          ? ' <button type="button" class="edit-btn" data-edit="lock">' +
-            (d.locked ? 'Unpin' : 'Pin') + '</button>'
-          : ''),
-    );
     var flags = [];
     if (d.status !== 'confirmed') flags.push(d.status);
     if (flags.length) rows += detailRow('Flags', esc(flags.join(', ')));
@@ -1229,23 +1208,6 @@
     // Unplaced visits (plan 4b-2): the editors prefill from the range day and
     // EMPTY times — placing means typing real ones.
     var vDate = d.start ? d.start.slice(0, 10) : d.earliestDate;
-    if (kind === 'lock') {
-      // One-shot toggle — no sheet: the button already says what will happen.
-      apiPost('/board/api/lock', { assignmentId: d.assignmentId, locked: !d.locked })
-        .then(function (r) {
-          if (!r.ok) {
-            toast(r.body.error || 'Pin update failed (' + r.status + ')', true);
-            return;
-          }
-          toast(r.body.locked ? "Pinned — auto-scheduling won't touch it" : 'Unpinned');
-          openDetail(d.assignmentId); // same id — a pin flip never remints
-          refresh();
-        })
-        .catch(function () {
-          toast('Network error — nothing was changed.', true);
-        });
-      return;
-    }
     if (kind === 'tech') {
       openPicker({
         title: 'Assign technician',

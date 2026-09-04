@@ -85,7 +85,6 @@ export interface VisitSpec {
   latestDate?: string;
   status: 'proposed' | 'confirmed' | 'completed' | 'cancelled';
   promiseLevel: 'none' | 'day' | 'time';
-  locked: boolean;
 }
 
 export interface TechnicianSpec {
@@ -622,7 +621,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
         durationMinutes: w.minutes,
         status: 'completed',
         promiseLevel: 'none',
-        locked: false,
       });
     }
   });
@@ -714,11 +712,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
           durationMinutes: w.minutes,
           status: past ? 'completed' : 'confirmed',
           promiseLevel,
-          // A scattering of manager pins across the span (roughly every 17th
-          // future visit) for set_visit_locks to read. The solver tenants carry
-          // exactly one pin each instead, because there the pin is the subject of
-          // the test rather than background.
-          locked: !past && seq % 17 === 0,
         });
       }
     }
@@ -756,7 +749,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
       durationMinutes: 60,
       status: 'confirmed',
       promiseLevel: 'none',
-      locked: false,
     });
     edges[label] = day;
   }
@@ -795,7 +787,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
       latestDate: addDays(from, 2),
       status: 'confirmed',
       promiseLevel: 'none',
-      locked: false,
     });
   }
 
@@ -855,7 +846,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
           durationMinutes: 60,
           status: 'confirmed',
           promiseLevel: plant.promise,
-          locked: false,
         });
       }
       // Reschedule fixtures need something already on the calendar to move.
@@ -877,7 +867,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
           status: 'confirmed',
           // Half promised, half not: the move gate should fire on some and not others.
           promiseLevel: i % 2 === 0 ? 'day' : 'none',
-          locked: false,
         });
       }
       }
@@ -1016,7 +1005,6 @@ function buildOtherFirmTenant(anchor: string, edges: Record<EdgeKey, string>): T
         durationMinutes: 120,
         status: 'confirmed',
         promiseLevel: 'none',
-        locked: false,
       },
     ],
     timeOff: [],

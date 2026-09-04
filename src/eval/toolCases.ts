@@ -373,7 +373,7 @@ export function buildToolCases(): ToolCase[] {
         args: () => ({}),
         check: (out) => {
           const names = (out.json as string[]) ?? [];
-          if (names.length !== 43) return `manager sees ${names.length} tools, expected 43`;
+          if (names.length !== 42) return `manager sees ${names.length} tools, expected 42`;
           for (const need of ['book_visit', 'cancel_job', 'query_spine', 'add_technician_seat', 'record_money_event', 'set_firm_profile']) {
             if (!names.includes(need)) return `manager surface is missing ${need}`;
           }
@@ -865,33 +865,6 @@ export function buildToolCases(): ToolCase[] {
             params: [visitId(ctx.tenant, 'visit-t1-rs-05')],
           }),
           (rows) => rows[0]?.promise_level === 'day' && rows[0]?.agrees === true,
-        ),
-      },
-    ],
-  });
-
-  add({
-    id: 'W10',
-    family: 'writes',
-    title: 'set_visit_locks pins a visit as a human privilege',
-    tool: 'set_visit_locks',
-    tenant: 'main',
-    badge: 'manager-sam',
-    steps: [
-      {
-        label: 'pin one visit',
-        args: (ctx) => ({ locked: true, assignmentIds: [visitId(ctx.tenant, 'visit-t1-rs-06')] }),
-        check: ok,
-      },
-      { label: 'confirm if it staged', when: ifStaged, args: lastConfirmId, check: ok },
-      {
-        label: 'the pin is on the row',
-        tool: 'get_job',
-        args: (ctx) => ({ jobId: jobId(ctx.tenant, 'job-t1-rs-06') }),
-        check: dbCheck(
-          'the visit must be locked',
-          (ctx) => ({ text: 'select locked from assignments where id = $1', params: [visitId(ctx.tenant, 'visit-t1-rs-06')] }),
-          (rows) => rows[0]?.locked === true,
         ),
       },
     ],

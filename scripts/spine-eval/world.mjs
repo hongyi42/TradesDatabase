@@ -509,7 +509,6 @@ async function applyTenant(t, existing) {
       // Server-derived from the visit's own day, exactly as bookVisit does — the
       // spec never carries a promised day of its own to get out of step with.
       promisedDay: v.promiseLevel === 'none' ? null : v.date,
-      locked: v.locked,
     });
     visitIds[v.key] = row.id;
   }

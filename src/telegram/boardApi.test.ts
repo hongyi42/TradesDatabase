@@ -11,9 +11,6 @@ import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
 import { appendRawCapture } from '../db/rawCaptures.js';
 import { bookVisit, cancelJob } from '../schedule/booking.js';
-import { upsertOpenReviewItem, updateOpenReviewItemDetail } from '../db/reviewItems.js';
-import { latestScheduleVersion } from '../db/scheduleEvents.js';
-import { PINNED_SKIP_REASON } from '../schedule/freezeSolve.js';
 import * as rosterCache from './rosterCache.js';
 
 // Integration: the /board routes over a real HTTP server on an ephemeral port
@@ -199,7 +196,6 @@ interface DayResponse {
       end: string;
       promiseLevel: string;
       promisedDay: string | null;
-      locked: boolean;
       status: string;
       jobId: string | null;
     }>;
@@ -277,7 +273,6 @@ describe('GET /board/api/day', () => {
         'customer',
         'end',
         'jobId',
-        'locked',
         'promiseLevel',
         'promisedDay',
         'start',
@@ -295,7 +290,6 @@ describe('GET /board/api/day', () => {
       address: '12 Board St, Springfield, OR, 97477',
       promiseLevel: 'none',
       promisedDay: null,
-      locked: false, // human-privilege pinning (plan 4b-3): no verb auto-locks
       status: 'confirmed',
     });
     expect(typeof stop.jobId).toBe('string');
@@ -458,7 +452,6 @@ describe('GET /board/api/visit (tap-into-a-visit detail)', () => {
       jobTitle: 'AC tune-up',
       promiseLevel: 'none',
       promisedDay: null,
-      locked: false, // human-privilege pinning (plan 4b-3)
       customer: {
         name: 'Board Casa',
         phone: '555-014-2000',
@@ -1589,48 +1582,11 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
   test('tier gates: every quick-edit surface is managers-only', async () => {
     const roster = await fetch(`${base}/board/api/roster`, { headers: tma(900000002) });
     expect(roster.status).toBe(403);
-    for (const path of ['/board/api/book', '/board/api/promise', '/board/api/job', '/board/api/lock']) {
+    for (const path of ['/board/api/book', '/board/api/promise', '/board/api/job']) {
       const resp = await post(path, {}, 900000002);
       expect(resp.status).toBe(403);
       expect(((await resp.json()) as { error: string }).error).toBe('managers only');
     }
-  });
-
-  test('lock toggle (plan 4b-3): one-shot pin/unpin; preview + non-boolean refused', async () => {
-    // Preview is refused — the toggle is one-shot by doctrine.
-    const pv = await post('/board/api/lock', { assignmentId: notesVisitId, locked: true }, 900000001, true);
-    expect(pv.status).toBe(400);
-    const nb = await post('/board/api/lock', { assignmentId: notesVisitId, locked: 'yes' }, 900000001);
-    expect(nb.status).toBe(400);
-    expect(((await nb.json()) as { error: string }).error).toBe('locked must be a boolean');
-
-    const pin = await post('/board/api/lock', { assignmentId: notesVisitId, locked: true }, 900000001);
-    expect(pin.status).toBe(200);
-    expect(await pin.json()).toEqual({ status: 'ok', locked: true });
-    // The chip's data: the day read now carries locked:true for this stop.
-    const dayResp = await day(`?from=${NOTES_DAY}`, tma(900000001));
-    const dayBody = (await dayResp.json()) as DayResponse;
-    const stop = dayBody.days[0].stops.find((s) => s.assignmentId === notesVisitId);
-    expect(stop?.locked).toBe(true);
-    // …and the DETAIL read forwards the truth too (final-review finding: the
-    // sheet's Pin/Unpin toggle keys on this — a hardcoded false would make
-    // Unpin unreachable from the board while every other test stays green).
-    const detailResp = await fetch(`${base}/board/api/visit?assignmentId=${notesVisitId}`, {
-      headers: tma(900000001),
-    });
-    expect(((await detailResp.json()) as { locked: boolean }).locked).toBe(true);
-
-    const unpin = await post('/board/api/lock', { assignmentId: notesVisitId, locked: false }, 900000001);
-    expect(unpin.status).toBe(200);
-    expect(await unpin.json()).toEqual({ status: 'ok', locked: false });
-
-    // Unknown id → verb refusal (409), never a server fault.
-    const missing = await post(
-      '/board/api/lock',
-      { assignmentId: '00000000-0000-0000-0000-00000000dead', locked: true },
-      900000001,
-    );
-    expect(missing.status).toBe(409);
   });
 
   test('roster: active + seat-exempt appear, offboarded never; {ref,name} shape', async () => {
@@ -1991,249 +1947,5 @@ describe('route ordering', () => {
     // An unrouted /board/api/* path terminates in the board handler (404), it
     // must not fall through to the MCP catch-all.
     expect((await fetch(`${base}/board/api/nope`)).status).toBe(404);
-  });
-});
-
-describe('/board/api/freeze-proposal (read-only proposal view)', () => {
-  // The projection's full state matrix is pure-tested in freezeProposal.test.ts;
-  // this suite proves the WIRING: auth posture, the manager gate, the two DB
-  // reads, and that the served body is the projection's output — including the
-  // one state (stale) that needs a REAL schedule-version bump to manufacture.
-  const DAY_FRZ = relDate(25); // distinct offset (house rule — never collide)
-  const url = () => `${base}/board/api/freeze-proposal`;
-
-  const planFixture = () => ({
-    horizonFrom: relDate(0),
-    horizonTo: relDate(13),
-    placements: [
-      {
-        kind: 'unscheduled_job',
-        jobId: 'fixture-job',
-        assignmentId: null,
-        customer: 'Freeze Casa',
-        jobTitle: 'Proposal probe',
-        technicianRef: 'board-t1',
-        date: DAY_FRZ,
-        startTime: '09:00',
-        endTime: '10:00',
-      },
-    ],
-    skipped: [{ ref: 'a-pin', label: 'Pinned Pete', reason: PINNED_SKIP_REASON }],
-    capacity: [
-      { technicianRef: 'board-t1', technicianName: 'Tess One', committedMin: 60, availableMin: 480 },
-    ],
-  });
-
-  // What run_resolve stores on top of the freeze shape (plan 2026-07-30):
-  // one cross-tech move — board-t1 has a capacity row (name 'Tess One'),
-  // board-t2 has none, so the served techChange proves BOTH name arms.
-  const resolvePlanFixture = () => ({
-    ...planFixture(),
-    moves: [
-      {
-        assignmentId: 'a-wire-mv',
-        jobId: 'fixture-job-mv',
-        customer: 'Wire Mover',
-        jobTitle: 'route probe',
-        fromTechnicianRef: 'board-t1',
-        fromDate: DAY_FRZ,
-        fromStart: '11:00',
-        fromEnd: '12:00',
-        toTechnicianRef: 'board-t2',
-        toDate: DAY_FRZ,
-        toStartTime: '08:00',
-        toEndTime: '09:00',
-      },
-    ],
-    keptCount: 2,
-  });
-
-  // Stage exactly what run_freeze / run_resolve store (server.ts stagedDetail
-  // shape) — upsert then detail-rewrite, the stage-race idiom.
-  const stage = async (
-    over: Record<string, unknown> = {},
-    kind: 'pending_freeze' | 'pending_resolve' = 'pending_freeze',
-  ): Promise<string> => {
-    const item = await upsertOpenReviewItem({
-      tenantId,
-      kind,
-      subjectRef: 'board-mgr',
-      detail: {},
-    });
-    const detail = {
-      plan: kind === 'pending_resolve' ? resolvePlanFixture() : planFixture(),
-      scheduleVersion: await latestScheduleVersion(tenantId),
-      horizonFrom: relDate(0),
-      horizonTo: relDate(13),
-      stagedAt: new Date().toISOString(),
-      ...over,
-    };
-    const pinned = await updateOpenReviewItemDetail(item.id, tenantId, detail as never);
-    if (!pinned) throw new Error('fixture token closed unexpectedly');
-    return item.id;
-  };
-
-  beforeEach(async () => {
-    // Each test manufactures its own token; close any leftover, both kinds.
-    await pg.query(
-      "update review_items set status = 'dismissed' where kind in ('pending_freeze', 'pending_resolve')",
-    );
-  });
-
-  test('401 with no slip; 403 for a technician (manager-only, every proposal surface)', async () => {
-    expect((await fetch(url())).status).toBe(401);
-    const res = await fetch(url(), { headers: tma(900000002) });
-    expect(res.status).toBe(403);
-  });
-
-  test('nothing staged → none, with the verb-neutral run-it-in-chat copy', async () => {
-    const res = await fetch(url(), { headers: tma(900000001) });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { state: string; message: string };
-    expect(body.state).toBe('none');
-    expect(body.message).toContain('run the freeze');
-    expect(body.message).toContain('re-plan');
-  });
-
-  test('open: serves the staged plan with weekday + pinnedCount, and leaks no confirm handle', async () => {
-    const id = await stage();
-    const res = await fetch(url(), { headers: tma(900000001) });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      state: string;
-      kind: string;
-      pinnedCount: number;
-      placements: Array<Record<string, unknown>>;
-    };
-    expect(body.state).toBe('open');
-    expect(body.kind).toBe('freeze'); // unchanged shape, now labeled
-    expect(body.pinnedCount).toBe(1);
-    expect(body.placements[0].weekday).toBeDefined(); // server-computed (house rule)
-    expect(body.placements[0].startTime).toBe('09:00');
-    // The ritual doctrine: the confirm handle must never reach the page.
-    const raw = JSON.stringify(body);
-    expect(raw).not.toContain(id);
-    expect(raw).not.toContain('confirmId');
-  });
-
-  test('open resolve token → kind resolve with the moves render source, no confirm handle (plan 2026-07-30)', async () => {
-    const id = await stage({}, 'pending_resolve');
-    const res = await fetch(url(), { headers: tma(900000001) });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      state: string;
-      kind: string;
-      keptCount: number;
-      moves: Array<Record<string, unknown>>;
-      placements: Array<Record<string, unknown>>;
-    };
-    expect(body.state).toBe('open');
-    expect(body.kind).toBe('resolve');
-    expect(body.keptCount).toBe(2);
-    expect(body.moves).toHaveLength(1);
-    // Server-composed render source: weekday-labeled both ends, the
-    // capacity-name → ref-fallback techChange, and the grouping pair.
-    const mv = body.moves[0] as {
-      fromLabel: string;
-      toLabel: string;
-      techChange: string;
-      toDate: string;
-      toWeekday: string;
-    };
-    expect(mv.toWeekday).toMatch(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/); // relative fixture — assert the form
-    expect(mv.fromLabel).toBe(`${mv.toWeekday} ${DAY_FRZ} 11:00–12:00`);
-    expect(mv.toLabel).toBe(`${mv.toWeekday} ${DAY_FRZ} 08:00–09:00`);
-    expect(mv.techChange).toBe('Tess One → board-t2');
-    expect(mv.toDate).toBe(DAY_FRZ);
-    // The freeze sections ride along unchanged.
-    expect(body.placements[0].startTime).toBe('09:00');
-    const raw = JSON.stringify(body);
-    expect(raw).not.toContain(id);
-    expect(raw).not.toContain('confirmId');
-  });
-
-  test('both kinds open → the newest token wins; a backdated resolve token expires with re-solve copy', async () => {
-    await stage({ stagedAt: new Date(Date.now() - 3600_000).toISOString() });
-    await stage({}, 'pending_resolve');
-    const both = (await (await fetch(url(), { headers: tma(900000001) })).json()) as {
-      state: string;
-      kind: string;
-    };
-    expect(both.state).toBe('open');
-    expect(both.kind).toBe('resolve');
-    // Expired parity for the resolve kind, through the real endpoint.
-    await pg.query(
-      "update review_items set status = 'dismissed' where kind in ('pending_freeze', 'pending_resolve')",
-    );
-    await stage({ stagedAt: new Date(Date.now() - 13 * 3600_000).toISOString() }, 'pending_resolve');
-    const expired = (await (await fetch(url(), { headers: tma(900000001) })).json()) as {
-      state: string;
-      kind: string;
-      message: string;
-    };
-    expect(expired.state).toBe('expired');
-    expect(expired.kind).toBe('resolve');
-    expect(expired.message).toContain('Run the re-solve again');
-  });
-
-  test('a real booking after staging a resolve token → stale (version-pin parity with the freeze kind)', async () => {
-    await stage({}, 'pending_resolve');
-    const casa = await createCustomer({ tenantId, name: 'Resolve Drift Casa' });
-    const job = await createJob({
-      tenantId,
-      customerId: casa.id,
-      title: 'resolve version bumper',
-      status: 'open',
-    });
-    await bookVisit({
-      tenantId,
-      jobId: job.id,
-      title: 'resolve version bumper',
-      date: DAY_FRZ,
-      startTime: '15:00',
-      endTime: '16:00',
-      actorRef: 'board-mgr',
-    });
-    const body = (await (await fetch(url(), { headers: tma(900000001) })).json()) as {
-      state: string;
-      kind: string;
-      message: string;
-    };
-    expect(body.state).toBe('stale');
-    expect(body.kind).toBe('resolve');
-    expect(body.message).toContain('schedule changed');
-    expect(body.message).toContain('Run the re-solve again');
-  });
-
-  test('backdated past the TTL → expired', async () => {
-    await stage({ stagedAt: new Date(Date.now() - 13 * 3600_000).toISOString() });
-    const res = await fetch(url(), { headers: tma(900000001) });
-    const body = (await res.json()) as { state: string; message: string };
-    expect(body.state).toBe('expired');
-    expect(body.message).toContain('12 hours');
-  });
-
-  test('a real booking after staging bumps the version → stale (the REAL staleness guard, wired live)', async () => {
-    await stage();
-    const casa = await createCustomer({ tenantId, name: 'Freeze Drift Casa' });
-    const job = await createJob({
-      tenantId,
-      customerId: casa.id,
-      title: 'version bumper',
-      status: 'open',
-    });
-    await bookVisit({
-      tenantId,
-      jobId: job.id,
-      title: 'version bumper',
-      date: DAY_FRZ,
-      startTime: '13:00',
-      endTime: '14:00',
-      actorRef: 'board-mgr',
-    });
-    const res = await fetch(url(), { headers: tma(900000001) });
-    const body = (await res.json()) as { state: string; message: string };
-    expect(body.state).toBe('stale');
-    expect(body.message).toContain('schedule changed');
   });
 });

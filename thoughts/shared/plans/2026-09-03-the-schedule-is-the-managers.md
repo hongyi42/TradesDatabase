@@ -2,7 +2,7 @@
 date: 2026-09-03
 task: "Rung 8 — the schedule is the manager's: delete the autonomous solver and pinning"
 research: thoughts/shared/research/2026-09-03-the-schedule-is-the-managers.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -111,6 +111,12 @@ is `export *` — nothing to edit.)
 **`src/telegram/boardApi.ts`** — import `:38`; `findOpenReviewItemsByKind` `:30` and
 `latestScheduleVersion` `:34` (only the proposal handler used them); the handler `:316-339` + its comment.
 **`src/telegram/boardNotify.ts:236-240`** — the `freezeRun`/`resolveRun` digest heading branch.
+The three `case 'freeze_committed' | 'resolve_committed' | 'undo_committed'` push handlers stay for
+now and are **deferred to Phase 3, not required to stay** (Phase-1 review). The honest reason is not
+the append-only Decisions clause — that protects the DATA and imposes nothing on the code. They are
+genuinely unreachable: `pollOnce` seeds `lastSeen` at `latestScheduleVersion(tenantId)` on first
+sight of a tenant and only advances, so historic rows are never re-read, and no writer of those
+kinds survives. They live only because three tests hand-insert the rows.
 **`web/board/board.js`** — proposal state `:37-45`, `fetchFreezeProposal` `:536-552` + call `:468`,
 `proposalTitle` `:557-559`, `syncFreezePill` `:567-~600` + calls `:376-380`, `openProposal` `:720-~750`;
 `freeze-pill` rules in `board.css` if present.
@@ -132,14 +138,20 @@ is `export *` — nothing to edit.)
   `:1140`, `:1152`, enclosing objects).
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `grep -rnE "run_freeze|run_resolve|undo_run|freezeSolve|freezeProposal|freezeCommit|resolveCommit|undoRun|roiClient|geocode\.js|latestCommittedRun|findUndoOfRun|listEventsByRunStamp|pending_(freeze|resolve|undo)|PINNED_SKIP_REASON|freezeRun|resolveRun|proposalLink|GOOGLE_ROUTES_SA_KEY_JSON" src scripts web package.json` returns nothing
-- [ ] `npx vitest run src/mcp/server.test.ts src/eval/toolCases.test.ts src/eval/worldSpec.test.ts src/telegram/boardApi.test.ts` — the 43 / 17 / 44 pins hold (the 43 lives inside the tests at `:2001` and `:2305`, not a "tool surface" test — run the files)
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `grep -rnE "run_freeze|run_resolve|undo_run|freezeSolve|freezeProposal|freezeCommit|resolveCommit|undoRun|roiClient|geocode\.js|latestCommittedRun|findUndoOfRun|listEventsByRunStamp|pending_(freeze|resolve|undo)|PINNED_SKIP_REASON|freezeRun|resolveRun|proposalLink|GOOGLE_ROUTES_SA_KEY_JSON" src scripts web package.json` returns **no live code** — corrected from "returns nothing", which was never achievable: a comment explaining that something was removed has to name it. Remaining hits must each be one of: a comment saying the thing is gone, an inert test fixture the plan permitted to stay, or a Phase-3 doc (`scripts/spine-eval/README.md:82`)
+- [x] `npx vitest run src/mcp/server.test.ts src/eval/toolCases.test.ts src/eval/worldSpec.test.ts src/telegram/boardApi.test.ts` — the 43 / 17 / 44 pins hold (the 43 lives inside the tests at `:2001` and `:2305`, not a "tool surface" test — run the files)
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack.
-- [ ] A fresh-context subagent lists tools as `mgr-test` via `dispatchForIdentity` and reports the
+- [x] A fresh-context subagent lists tools as `mgr-test` via `dispatchForIdentity` and reports the
       names: none of the three present; `find_slots`, `book_visit`, `cancel_job` present.
+      **Evidence (2026-09-04):** manager list = 43 names, technician = 17. All three verbs ABSENT from
+      both. Driven through `dispatchForIdentity`, the three throw `unknown tool: run_freeze` etc. —
+      the switch DEFAULT, not a tier refusal, which is the distinction that proves they are gone
+      rather than gated. Survivors reach their own argument validation (`book_visit` → "startTime and
+      endTime are required", `get_team_schedule` → `{"status":"ok",…}`). Local stack only; scratch
+      roster rows and script deleted; `git status` unchanged by the check.
 
 ### Manual verification
 - [ ] None.
@@ -196,15 +208,24 @@ pinned` rules in `board.css` if present.
   `scripts/spine-eval/world.mjs:512`; `scripts/backfill-schedule.mjs:12-13, :208-213` (comments).
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `grep -rnE "\blocked\b|set_visit_locks|pinned" src web scripts --include='*.ts' --include='*.js' --include='*.mjs' | grep -vE "skip locked|pinned by a test|pinned to|pin openclaw"` returns nothing
-- [ ] `npx vitest run src/mcp/server.test.ts -t "spine_read schema carries the view catalog"` passes with the new `not.toContain('locked')`
-- [ ] Local stack: `\d v_schedule` and `\d assignments` show no `locked`; `no_confirmed_overlap` and `assignment_placed_or_windowed` unchanged (`\d assignments`)
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `grep -rnE "\blocked\b|set_visit_locks|pinned" src web scripts --include='*.ts' --include='*.js' --include='*.mjs'` shows **no live pinning code** — corrected from "returns nothing", unachievable for the same reason as Phase 1's: `find_slots` uses `pinnedRef` for its TECHNICIAN filter (`server.ts:6397,6662-6671,6786-6806`) and ~120 unrelated "pin/pinned" comments mean *anchored*. Neither may be renamed.
+- [x] `npx vitest run src/mcp/server.test.ts -t "spine_read schema carries the view catalog"` passes with the new `not.toContain('locked')`
+- [x] Local stack: `\d v_schedule` and `\d assignments` show no `locked`; `no_confirmed_overlap` and `assignment_placed_or_windowed` unchanged (`\d assignments`)
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack, migration applied.
-- [ ] Subagent books a visit as `mgr-test`, calls `get_team_schedule`, reports the stop has no `locked`
+- [x] Subagent books a visit as `mgr-test`, calls `get_team_schedule`, reports the stop has no `locked`
       key; `spine_read` over `v_schedule` as `spine:team-lead` returns rows with no `locked` column.
+      **Evidence (2026-09-04):** `set_visit_locks` through `dispatchForIdentity` as a manager throws
+      `unknown tool: set_visit_locks`; the CONTRAST case (an admin tool as a technician) throws
+      `admin tools require a manager badge` — different strings, so this is the switch default, not a
+      gate. Manager 42 / technician 17, absent from both. A real `book_visit` → `get_team_schedule`
+      stop came back with 12 keys and no `locked`. `spine_read` over `v_schedule` returned 20 columns,
+      no `locked`, and `select locked from v_schedule` throws `column "locked" does not exist`. psql
+      read-back confirms the column is gone from table and view, both constraints intact, and the
+      booked row real. The catalog string the model is shown (read off the compiled
+      `TEAM_LEAD_TOOL_SCHEMAS`) contains no `locked` and no `pin`.
 
 ### Manual verification
 - [ ] None.
@@ -231,10 +252,17 @@ already have it; removes the pinning clause; corrects the docs; records the rung
 
 **`src/eval/doctrine.ts:39`** — remove the entry; `doctrine.test.ts:19-29` then passes both directions.
 
+**`src/telegram/boardNotify.ts`** — the three `case 'freeze_committed' | 'resolve_committed' |
+'undo_committed'` handlers deferred from Phase 1 (unreachable: no writer survives and `pollOnce`
+never re-reads historic rows), plus the three tests that hand-insert those rows
+(`boardNotify.test.ts`, the `resolve_committed` / `freeze_committed` / undo cases).
+
 **Docs** — `docs/onboarding.md:264-277` (four bullets + the "freeze/resolve's job" sentence), `:282-283`,
 `:352`, `:627`; `docs/nemoclaw-tech-agent.md:105`, `:134` (the four tool descriptions inside the line),
 `:164`, `:255-285` → one line: retired 2026-09-03, rung 8; `scripts/spine-eval/README.md:82-84`;
-`docs/engineering-memory.md` §6a rung 8 → `[BUILT <date>]` + a `### 8.` section recording what was
+`docs/engineering-memory.md:4141` (the tool surface is cited as `17/46/47` — it is `17/43/42` after
+Phase 2: 17 technician, 43 manager after Phase 1, 42 after Phase 2; the `spineToolNames()` regex pin
+goes 47 → 44 → 43); and §6a rung 8 → `[BUILT <date>]` + a `### 8.` section recording what was
 deleted, the retained `awk` line, and the deploy notes.
 
 **Deploy notes (user actions):** Phase 2's migration BEFORE the code (deploys run no migrations). Remove
@@ -242,20 +270,61 @@ deleted, the retained `awk` line, and the deploy notes.
 copies on `trades-box-1` against the repo (memory `bootstrap-copy-drift-trap`); s2 first, then the fleet.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `npx vitest run src/eval/doctrine.test.ts` — no unknown and no missing section
-- [ ] `bash -n Box_Setup_Stuff/bootstrap-box.sh` parses (the review found the first draft's range would
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `npx vitest run src/eval/doctrine.test.ts` — no unknown and no missing section
+- [x] `bash -n Box_Setup_Stuff/bootstrap-box.sh` parses (the review found the first draft's range would
       have beheaded the next heredoc)
-- [ ] `grep -nE "freeze|set_visit_locks|pinned" Box_Setup_Stuff/bootstrap-box.sh` shows only the openclaw
+- [x] `grep -nE "freeze|set_visit_locks|pinned" Box_Setup_Stuff/bootstrap-box.sh` shows only the openclaw
       version-pin lines and the retained delete block
-- [ ] `npm run decisions:index` clean
+- [x] `npm run decisions:index` clean
 
 ### Live verification (agent-executable)
 - Prerequisites: none codified — the box rollout is a deploy-time step.
 - [ ] Deferred to rollout: on s2 after re-running the script, `grep -c "The freeze ritual" AGENTS.md` → 0.
+      (Not runnable here — the box rollout is a deploy-time step. `bash -n` + the retained `awk`
+      delete are what this phase could verify, and both pass.)
 
 ### Manual verification
 - [ ] Read the renumbered Confirmations block and judge it reads as one list.
 
 ---
 *Pause after this phase — its Manual verification list is non-empty.*
+
+---
+
+## Final gate — RUN 2026-09-04, eleven findings, all resolved
+
+`/code-review high` over the combined three-commit diff (60 files, 504+/9090−). Each phase had its
+own review; this gate caught what only the whole diff shows.
+
+**The one that mattered: the deploy order was INVERTED.** Every migration note in this repo says
+apply-before-deploy, because a deploy runs no migrations and code that READS a new column must wait
+for it. This is a DROP, and the rule reverses: the pilot's pre-rung-8 code writes
+`locked: input.locked ?? false` on every insert, so applying the migration first would break every
+book / move / backfill until the deploy landed. The other order is strictly safe — the column keeps
+its `not null default false`, so rung 8's code runs happily against a database that still has it.
+Corrected in the migration header, §8b and the deploy notes.
+
+**Legacy staged tokens would have become actively harmful, not merely stale.** `review_items.kind`
+has no CHECK, so an open `pending_freeze` / `pending_resolve` / `pending_undo` row can survive. With
+the summarizer deleted it would dump its whole embedded plan into the agent's context, and
+`resolve_review` would now accept `resolved` on it — the `STAGED_ACTION_KINDS` guard that refused
+exactly that went with the verbs. The migration now dismisses them (review_items is mutable, unlike
+`schedule_events`, whose historic freeze rows correctly stay).
+
+**One behaviour lost its only test.** "A `needs_confirmation` result is never board-decorated" was
+asserted solely inside the deleted `run_freeze` describe, so removing the solver silently took the
+GENERAL rule's coverage with it. Re-pinned in the `boardLink decoration` test against `cancel_job`
+(always two-step, and in the decorated set, so the absence proves the staged-result rule rather than
+the tool). Mutation-verified: forcing the decorator past its status guard fails the test.
+
+**Eight more, all real:** a firm-facing cheat-sheet row still saying "Pin the Henderson visit"; the
+customer-onboarding runbook's go-live check #5 "Manager runs the freeze" (an impossible gate, and it
+was named one of the two that matter most); `customers.ts`'s coords note still warning that "the
+solver keeps routing to the old location"; `booking.ts`'s header still naming the auto-scheduler as a
+caller; `engineering-memory:1955`'s "13 base + 30 admin = 43" contradicting the file's own new §8b;
+`world.mjs`'s pilot-tenant note justifying itself with the deleted tenants; and the prod checklist
+still tracking an orphan `freezeLiveE2E.test.ts`.
+
+**Gates at close:** typecheck, lint, build clean; **2,551 tests**. `bash -n` on the bootstrap script
+passes. `npm run decisions:index` clean.

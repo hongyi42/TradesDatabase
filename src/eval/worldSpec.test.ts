@@ -347,7 +347,6 @@ describe('buildWorldSpec — isolation and density', () => {
       // that read them grade against an empty set.
       expect(main.visits.some((v) => v.promiseLevel === 'day')).toBe(true);
       expect(main.visits.some((v) => v.promiseLevel === 'time')).toBe(true);
-      expect(main.visits.some((v) => v.locked)).toBe(true);
       expect(main.visits.some((v) => !isPlacedSpec(v))).toBe(true);
       expect(main.visits.some((v) => v.technicianRef === null)).toBe(true);
     });
@@ -364,20 +363,6 @@ describe('buildWorldSpec — isolation and density', () => {
       }
       expect(w.span.from < anchor).toBe(true);
       expect(w.span.to > addDays(anchor, HORIZON_DAYS)).toBe(true);
-    });
-  });
-
-  it('gives the solver tenants a pin to respect and a queue to drain', () => {
-    eachWorld((w, anchor) => {
-      for (const key of ['freeze', 'resolve']) {
-        const t = w.tenants.find((x) => x.key === key)!;
-        const scheduled = new Set(t.visits.map((v) => v.jobKey));
-        expect(t.visits.filter((v) => v.locked).length, `${key} pins @ ${anchor}`).toBe(1);
-        expect(
-          t.jobs.filter((j) => !scheduled.has(j.key)).length,
-          `${key} queue @ ${anchor}`,
-        ).toBeGreaterThanOrEqual(2);
-      }
     });
   });
 

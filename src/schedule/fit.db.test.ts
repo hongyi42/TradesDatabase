@@ -295,7 +295,6 @@ describe('findDisplacementCandidates', () => {
       weekday: 'Tue', // server-computed — the agent never does calendar math
       span: '08:00–10:00',
       promiseLevel: 'day',
-      locked: false,
     });
     expect(p?.customer).toContain('Fit cust');
   });

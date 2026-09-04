@@ -52,7 +52,6 @@ function visit(over: Partial<PlacedAssignment>): PlacedAssignment {
     source_capture_id: null,
     promise_level: 'none',
     promised_day: null,
-    locked: false,
     reason: null,
     created_at: '2026-08-01T00:00:00.000Z',
     updated_at: '2026-08-01T00:00:00.000Z',

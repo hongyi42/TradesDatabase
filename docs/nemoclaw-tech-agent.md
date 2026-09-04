@@ -102,7 +102,7 @@ read RENDERS it: stops come back in booked (time) order — the same order the b
 **each stop carries its own `mapsUrl`**, a destination-only Google Maps link. Consequences: no
 10-stop link cap (a single-destination URL has no waypoints to truncate), and a stop with no
 usable address simply has `mapsUrl: null` while staying in the one chronological list. Deciding
-order means MOVING visits — that is `run_freeze`/`run_resolve`, never a read.
+order means MOVING visits — that is the manager's call through `move_visit`, never a read.
 ⚠ **This changed `get_schedule`'s DESCRIPTION, so the technician `tools/list` payload moved.**
 Gateways cache `tools/list` per process, so technician sandboxes need `nemoclaw <s> gateway
 restart` or the agent keeps describing drive minutes that no longer exist. A full box wire re-run
@@ -131,7 +131,7 @@ schedule-input tools `set_availability`/`add_time_off`/`remove_time_off`/`set_jo
 `set_technician_skills` since 2026-07-20 — all one-shot, no confirm; `set_availability` is the
 step that makes a person schedulable, tracked by an `availability_setup` review item opened at
 seat confirm; `find_slots` since 2026-07-20 — the read-only ranked slot finder: feasibility is
-its verdict, it books nothing; like every schedule answer it carries the board link (originally excluded — the agent FABRICATED a URL to satisfy the every-answer doctrine, live 2026-07-21); `update_job` since 2026-07-21 — one-shot job-identity editor, title/jobType/priority with old→new echo; `set_promise` since 2026-07-22 — one-shot promise-record editor, assignmentId + promiseLevel none/day/time with old→new echo, the promised day derived server-side from the visit's own date — the chat-reachable fix for a promise that went unrecorded at booking, which would otherwise let a genuinely promised visit move with no confirmation; `set_technician_horizon` since 2026-07-22 — one-shot visibility dial: how far ahead TECHNICIANS see the schedule, whole weeks 1-12 stored per-tenant (default 4 weeks); technician-tier reads and board views beyond it answer "not published yet", managers never clamp; since 2026-07-23 (plan 4a.5, count unchanged): `move_visit` gained `unassign:true` — PARKS a visit (pulls the person off, keeps day/time; find it under `get_team_schedule unassignedOnly:true` or the board's loose bucket; mutually exclusive with `technicianRef`), and the promise ladder gained a fourth level `time_only` ("told a time but not the day" — the START TIME gates moves/cancels while the day moves freely; carries NO promised day) accepted by `book_visit`/`set_promise`; since 2026-07-25 (cancel-vocabulary change): `cancel_visit` RENAMED `unschedule_visit` — same behavior, and the name now says it: the visit comes OFF the calendar while the WORK survives, job back in the loose bucket — and +`cancel_job`, the TERMINAL verb: the job closes for good (no un-cancel), leaves the loose bucket, and its live visits are cancelled with it; ALWAYS two-step with the promises disclosed in the preview; ambiguous manager wording ("cancel the Hendersons") means ASK which; since 2026-07-26 (plan 4b-3): +`set_visit_locks` — one-shot pin/unpin, singular (assignmentIds) or batch (from/to + optional technicianRef); PINNED = the manager's "hands off automatic scheduling" mark, nothing pins automatically — and +`run_freeze`, ALWAYS two-step: solves the three loose queues into a whole placement plan (Google Route Optimization, service-account auth), stages ONE tenant-wide proposal (12h expiry, dies on schedule drift), commits through the normal verbs only on the manager's yes; since 2026-07-30 (re-solve plan): +`run_resolve` — the freeze's sibling re-optimizer, ALWAYS two-step: every UNPINNED placed visit may move (promise-graded freedom — a promised day is kept, a promised time never moves; displacement is priced so the solver only moves what genuinely improves the routes), queues drain in the same solve, optional `technicianRef`/`onDate` narrowing; both freeze and re-solve commit replies now end with a PIN OFFER (one yes → set_visit_locks with the minted ids in the reply) — and +`undo_run` — restore the LATEST committed freeze/re-solve from its own ledger trail (no solver; moved visits return to their pre-run slot/person, run placements return to the loose bucket; rows changed/pinned since the run are skipped and listed, never force-reverted; 15-MINUTE staged token, chat-only preview, latest run only): `add_technician_seat`
+its verdict, it books nothing; like every schedule answer it carries the board link (originally excluded — the agent FABRICATED a URL to satisfy the every-answer doctrine, live 2026-07-21); `update_job` since 2026-07-21 — one-shot job-identity editor, title/jobType/priority with old→new echo; `set_promise` since 2026-07-22 — one-shot promise-record editor, assignmentId + promiseLevel none/day/time with old→new echo, the promised day derived server-side from the visit's own date — the chat-reachable fix for a promise that went unrecorded at booking, which would otherwise let a genuinely promised visit move with no confirmation; `set_technician_horizon` since 2026-07-22 — one-shot visibility dial: how far ahead TECHNICIANS see the schedule, whole weeks 1-12 stored per-tenant (default 4 weeks); technician-tier reads and board views beyond it answer "not published yet", managers never clamp; since 2026-07-23 (plan 4a.5, count unchanged): `move_visit` gained `unassign:true` — PARKS a visit (pulls the person off, keeps day/time; find it under `get_team_schedule unassignedOnly:true` or the board's loose bucket; mutually exclusive with `technicianRef`), and the promise ladder gained a fourth level `time_only` ("told a time but not the day" — the START TIME gates moves/cancels while the day moves freely; carries NO promised day) accepted by `book_visit`/`set_promise`; since 2026-07-25 (cancel-vocabulary change): `cancel_visit` RENAMED `unschedule_visit` — same behavior, and the name now says it: the visit comes OFF the calendar while the WORK survives, job back in the loose bucket — and +`cancel_job`, the TERMINAL verb: the job closes for good (no un-cancel), leaves the loose bucket, and its live visits are cancelled with it; ALWAYS two-step with the promises disclosed in the preview; ambiguous manager wording ("cancel the Hendersons") means ASK which; the four autonomous-solver tools added 2026-07-26 (`set_visit_locks`, `run_freeze`) and 2026-07-30 (`run_resolve`, `undo_run`) were REMOVED 2026-09-03, rung 8 — see the retirement note below: `add_technician_seat`
 (two-step confirm since 2026-07-17 — mints a permanent ref + burns a seat, not reversible;
 `seatExempt:true` since 2026-07-19 adds a SCHEDULE-ONLY person instead — no seat occupied,
 bookable on visits and visible on the board, but `bind_telegram`/`get_connect_link` refuse them:
@@ -252,39 +252,13 @@ date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). Array
   results only per the §0e rules; server enforces SSRF guard, a length cap on non-search URLs,
   per-person daily caps, and logs every request to `web_requests`). Content comes back labeled
   untrusted; the §0e AGENTS.md block (Box_Setup_Stuff setup guide) carries the behavior rules.
-- **The freeze ritual (2026-07-26, manager tier; chat copy reshaped 2026-07-27):**
-  `run_freeze` proposes a whole placement plan (the three loose queues → real slots via
-  Google's Route Optimization API) and is ALWAYS two-step — the confirm is a human's yes in
-  the conversation, never an unattended commit. The chat message is a SHORT summary (counts +
-  the most consequential skips + the pin-cleanup line) ending with the **proposal board
-  link** (`?startapp=freeze` deep link) — the full plan renders on the board's read-only
-  proposal view (`/board/api/freeze-proposal`, manager-only; mirrors the confirm path's 12h
-  clock AND schedule-version staleness guards; serves no confirm handle). Chat shows the
-  entire plan only when no board link is available. A recurring freeze ("every Friday
-  morning") is an agent-side OpenClaw cron job under the §0g rules whose payload is: run the
-  freeze, present the summary + proposal link, and STOP — the message in chat IS the
-  reminder (12h expiry; a later run supersedes; `resolve_review dismissed` cancels early).
-  Pinning (`set_visit_locks`, the board's Pin toggle) is the manager's "hands off" mark; the
-  freeze never touches pinned or already-placed visits. The §0h AGENTS.md block
-  (Box_Setup_Stuff, refreshed per wire run) carries the behavior rules; agent cron jobs are
-  wiped by sandbox rebuilds — re-create the firm's freeze schedule after one.
-- **The re-solve + the undo (2026-07-30, manager tier):** `run_resolve` is the freeze's
-  sibling under the SAME ritual — two-step, 12h proposal, board deep link (the proposal
-  view is kind-agnostic: the pill reads "Re-plan proposal" and the sheet leads with a
-  Moves section, from→to per day with the technician change shown only when it changes).
-  What's different: already-placed UNPINNED visits may move, graded by the promise ladder
-  ('none' roams the horizon, 'day' slides within its promised day, time-level promises
-  never move), and moving costs the solver something — so it reshuffles only for real
-  route wins. Scope args narrow WHO/WHAT may move (`technicianRef`, `onDate`); queues
-  still place fleet-wide in the same run. After EITHER commit the reply ends with the pin
-  OFFER — "want these pinned so future re-plans leave them alone?" — one yes, one
-  `set_visit_locks` call with exactly the minted ids in the reply. `undo_run` is the
-  safety net: it restores the LATEST committed run from its own ledger trail (restore,
-  never re-optimize — no solver call); moved visits go back to their pre-run slot and
-  person, run placements return to the loose bucket, and anything the manager touched
-  since (moved, cancelled, pinned, promised) is skipped and listed, never force-reverted.
-  Its staged token lives 15 MINUTES (a fresh-mistake tool), previews in chat only, and
-  only the latest run is reachable — there is no deeper history.
+- **The autonomous solver — RETIRED 2026-09-03 (rung 8).** `run_freeze` (propose a whole
+  placement plan via Google's Route Optimization API), `run_resolve` (re-optimize placed
+  visits), `undo_run` (restore the latest run from its ledger trail) and `set_visit_locks`
+  (pin a visit against them) are DELETED, along with the board's proposal view, the
+  `?startapp=freeze` deep link and the §0h AGENTS.md block. The manager makes the schedule;
+  route optimization returns in rung 10 as an ADVISORY tool the manager's agent may choose
+  to call. Reasoning and the full deletion footprint: `docs/engineering-memory.md` §6a/§8.
 
 ## 6. Email ingestion (Phase 4 — separate from the chat channel)
 A second input channel pulls the technician's email and feeds **only work-related** mail through the

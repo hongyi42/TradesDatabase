@@ -1,7 +1,8 @@
 // The deterministic booking verbs (no AI, no MCP): book / move / cancel one
-// visit on the DB-owned schedule, plus their stage-time PREVIEWS. The MCP
-// tools (Phase 3), the Mini App (Plan 2), and the auto-scheduler (Plan 3) all
-// call THESE — every guard here protects every surface at once. Previews and
+// visit on the DB-owned schedule, plus their stage-time PREVIEWS. The MCP tools
+// (Phase 3) and the Mini App (Plan 2) both call THESE — every guard here
+// protects every surface at once. (The auto-scheduler was a third caller until
+// rung 8 deleted it; the manager makes the schedule now.) Previews and
 // verbs share one resolution front-half so what a preview shows is exactly
 // what the commit will do (preview == commit, house rule).
 //
@@ -22,7 +23,6 @@ import {
   isInactiveState,
   isOverlapViolation,
   isValidDuration,
-  listAssignmentsForLockRange,
   listAssignmentsForTechnician,
   listTimeOffForTechnician,
   listAssignmentsForJob,
@@ -30,7 +30,6 @@ import {
   listIdenticalUnplacedVisits,
   listOpenJobsForCustomer,
   rescheduleAssignment,
-  updateAssignmentsLocked,
   updateAssignmentPromise,
   updateAssignmentStatus,
   updateJobDetails,
@@ -202,8 +201,8 @@ export interface BookVisitInput {
   // the freeze passes 'freeze <run>' so ledger rows say who decided (4b-3).
   reason?: string;
   // Extra ledger-event detail (plan 4b-3): merged UNDER the computed keys —
-  // computed detail always wins on a name clash. The freeze stamps
-  // { freezeRun } here so committed rows are findable as one run.
+  // computed detail always wins on a name clash. A batch caller stamps its own
+  // run identity here so the rows it wrote are findable as one run.
   eventDetailExtra?: Json;
   actorRef: string;
 }
@@ -573,9 +572,6 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       promisedDay: carriesPromisedDay(r.promiseLevel)
         ? (r.startISO ? (input.date as string) : (r.earliestDate as string))
         : null,
-      // locked stays at its FALSE default (plan 4b-3): pinning is a human
-      // privilege — no verb auto-stamps it. A manager pins via
-      // set_visit_locks / the board toggle when they mean "hands off".
     });
   } catch (err) {
     // The pre-check raced a concurrent booking and the DB guard fired. If WE
@@ -826,8 +822,6 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
       status: 'confirmed', // default-'proposed' would vanish from every reader
       // Promise level carries from the old row; the promised day tracks the new
       // date only for day-carrying levels ('none'/'time_only' stay day-free).
-      // locked is deliberately OMITTED (plan 4b-3): rescheduleAssignment then
-      // carries the old row's flag — a move never re-decides a human's pin.
       promisedDay: carriesPromisedDay(r.old.promise_level) ? input.date : null,
     });
   } catch (err) {
@@ -847,9 +841,9 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
         assignmentId: r.old.id,
         kind: 'move_failed',
         actorRef: input.actorRef,
-        // The run stamp rides along (Phase-2 review flag-forward): a
-        // resolve/undo-run stranding's ledger row must be findable by
-        // listEventsByRunStamp like every other row the run wrote.
+        // Caller-supplied detail rides along, so a batch caller can stamp its
+        // own identity onto every ledger row it writes — including this
+        // stranding one.
         detail: { ...extraDetail(input.eventDetailExtra), toDay: input.date, reason: why },
       });
     } catch {
@@ -886,9 +880,8 @@ export interface UnscheduleVisitInput {
   tenantId: string;
   assignmentId: string;
   reason: string;
-  // Extra ledger-event detail — same contract as Book/MoveVisitInput's. The
-  // undo (plan 2026-07-30 Phase 5) stamps { undoRun } here; without it the
-  // run's unschedule steps would be invisible to listEventsByRunStamp.
+  // Extra ledger-event detail — same contract as Book/MoveVisitInput's, so a
+  // batch caller can stamp its own identity onto the rows it writes.
   eventDetailExtra?: Json;
   actorRef: string;
 }
@@ -1050,7 +1043,6 @@ export async function attachUnplacedVisit(
       status: 'confirmed',
       promiseLevel: old.promise_level,
       promisedDay: old.promised_day,
-      locked: old.locked,
     });
   } catch (err) {
     // Cancel-first means ANY insert failure leaves the visit gone from every
@@ -1162,104 +1154,6 @@ export async function setVisitPromise(
     },
   });
   return { previous: row, updated };
-}
-
-// ---- Visit locks (plan 4b-3): pinning is a HUMAN privilege ----
-//
-// `locked` = a manager pinned this visit: automatic scheduling (the freeze)
-// must never place, move, or consider it — on unplaced rows it means "I'll
-// place this myself". Nothing auto-locks; this core is the ONE writer every
-// surface (chat verb, board toggle) calls. Reversible + internal → one-shot,
-// no confirmation (the doctrine).
-
-export type VisitLockSelector =
-  | { assignmentIds: string[] }
-  | { from: string; to: string; technicianRef?: string };
-
-export interface SetVisitLocksResult {
-  updated: Assignment[];
-  days: string[]; // distinct visit days touched, sorted
-}
-
-export async function setVisitLocks(
-  tenantId: string,
-  selector: VisitLockSelector,
-  locked: boolean,
-  actorRef: string,
-): Promise<SetVisitLocksResult> {
-  let targets: Assignment[];
-  let rangeDetail: { from?: string; to?: string } = {};
-  if ('assignmentIds' in selector) {
-    const ids = [...new Set(selector.assignmentIds)];
-    if (ids.length === 0) throw new Error('assignmentIds is empty — name at least one visit');
-    targets = [];
-    for (const id of ids) {
-      const row = await getAssignmentForTenant(id, tenantId);
-      if (!row) throw new Error(`visit ${id} not found`);
-      // Terminal rows have nothing to protect — refuse instead of silently
-      // stamping a flag no reader will ever consult.
-      if (row.status !== 'confirmed' && row.status !== 'proposed') {
-        throw new Error(`cannot ${locked ? 'pin' : 'unpin'} a ${row.status} visit`);
-      }
-      targets.push(row);
-    }
-  } else {
-    if (
-      !DATE_RE.test(selector.from) ||
-      !DATE_RE.test(selector.to) ||
-      selector.from > selector.to
-    ) {
-      throw new Error('from/to must be YYYY-MM-DD with from <= to');
-    }
-    const technician = selector.technicianRef
-      ? await resolveTechnician(tenantId, selector.technicianRef)
-      : null;
-    targets = await listAssignmentsForLockRange(
-      tenantId,
-      selector.from,
-      selector.to,
-      technician?.id,
-    );
-    rangeDetail = { from: selector.from, to: selector.to };
-    // Refuse an empty resolution — a silent zero-row "success" would let the
-    // manager believe next week is pinned when nothing was.
-    if (targets.length === 0) {
-      throw new Error(
-        `nothing matched ${selector.from}–${selector.to}` +
-          (technician ? ` for ${technician.display_name}` : '') +
-          ' — no confirmed visits on those days',
-      );
-    }
-  }
-  // ONE guarded bulk UPDATE (final-review hardening): atomic — a batch can
-  // never half-apply with no ledger trace — and its status predicate closes
-  // the check-then-write gap (a row cancelled since the read simply doesn't
-  // match, instead of getting stamped).
-  const updated = await updateAssignmentsLocked(
-    tenantId,
-    targets.map((r) => r.id),
-    locked,
-  );
-  if (updated.length === 0) {
-    throw new Error(
-      'nothing matched — the selected visits changed state while updating; check the schedule and try again',
-    );
-  }
-  // ONE ledger entry per run — a batch is one human act, not N rows of noise.
-  await appendScheduleEvent({
-    tenantId,
-    kind: 'lock_updated',
-    actorRef,
-    detail: {
-      locked,
-      assignmentIds: updated.map((r) => r.id),
-      ...rangeDetail,
-    },
-  });
-  return {
-    updated,
-    days: [...new Set(updated.map((r) => visitDay(r)))].sort(),
-  };
 }
 
 export interface UpdateJobIdentityResult {

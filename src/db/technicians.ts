@@ -127,9 +127,10 @@ export async function getTechnicianById(
   return data;
 }
 
-// ACTIVE manager-tier rows with a Telegram binding (plan 4b-3): the
-// freeze_committed run summary is the first MANAGER-directed push — in a
-// multi-manager firm, everyone hears what a colleague committed.
+// ACTIVE manager-tier rows with a Telegram binding. Its consumer is the call
+// notifier (src/calls/notify.ts): in a multi-manager firm, everyone hears about
+// a call that needs a human. (It was introduced for the freeze's run summary —
+// the first MANAGER-directed push — which went with the solver, rung 8.)
 export async function listManagersWithTelegram(tenantId: string): Promise<Technician[]> {
   const { data, error } = await getClient()
     .from('technicians')

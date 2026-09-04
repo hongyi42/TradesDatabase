@@ -48,7 +48,6 @@ export interface UpcomingVisit {
   phrase: string;
   promiseLevel: string | null;
   promisedDay: string | null;
-  locked: boolean;
 }
 
 export interface CustomerContext {
@@ -126,7 +125,6 @@ export async function getCustomerContext(
           phrase,
           promiseLevel: r.promise_level,
           promisedDay: r.promised_day,
-          locked: r.locked,
         };
       });
   }

@@ -79,10 +79,6 @@ which produced two customers called "Aisha Nguyen" — and an agent that passed 
 literal string `"rs-05"` to a tool expecting a uuid. Fixture data has to look like
 customer data or the eval measures its own labels.
 
-The solver verbs (`run_freeze`, `run_resolve`, `undo_run`) drain queues **tenant-wide**,
-so they get dedicated tenants (`Eval Freeze`, `Eval Resolve`) and cannot be run in the
-shared world at all.
-
 ## What each tier measures
 
 ### Tier 1 — the tool layer

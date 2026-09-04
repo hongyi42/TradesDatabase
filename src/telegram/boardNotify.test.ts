@@ -21,7 +21,6 @@ import { getClient } from '../db/client.js';
 import { setTenantSeats } from '../db/tenants.js';
 import { insertTechnician, updateTechnician } from '../db/technicians.js';
 import { createCustomer } from '../db/customers.js';
-import { appendScheduleEvent } from '../db/scheduleEvents.js';
 import type { Json } from '../db/database.types.js';
 import { bookVisit, unscheduleVisit, moveVisit } from '../schedule/booking.js';
 
@@ -90,21 +89,17 @@ const book = (args: {
     ...args,
   });
 
-// Books `count` back-to-back one-hour visits for one person on one day —
-// the shape of a freeze commit's burst. Sequential, so event order is fixed.
-const burst = async (
-  technicianRef: string,
-  date: string,
-  count: number,
-  eventDetailExtra?: Json,
-): Promise<void> => {
+// Books `count` back-to-back one-hour visits for one person on one day — the
+// shape of a burst. Sequential, so event order is fixed. (It took an
+// `eventDetailExtra` to stamp a batch-run identity onto the rows; run
+// attribution died with the solver, rung 8, and nothing read it after that.)
+const burst = async (technicianRef: string, date: string, count: number): Promise<void> => {
   for (let i = 0; i < count; i++) {
     await book({
       technicianRef,
       date,
       startTime: `${String(5 + i).padStart(2, '0')}:00`,
       endTime: `${String(6 + i).padStart(2, '0')}:00`,
-      ...(eventDetailExtra ? { eventDetailExtra } : {}),
     });
   }
 };
@@ -329,97 +324,6 @@ describe('pollOnce', () => {
     }
   });
 
-  test('a burst stamped by one freeze run names the freeze in the digest header', async () => {
-    await burst('notify-n1', '2026-11-04', 4, { freezeRun: '2026-11-01T08:00:00.000Z' });
-    expect(await pollOnce(lastSeen)).toBe(1);
-    const [push] = sentTo();
-    // No count in the freeze header — a slow commit can straddle poll ticks,
-    // so a batch count would misstate what the freeze did.
-    expect(push.text).toContain('The schedule freeze updated your schedule:');
-    expect(push.text).toContain('• New visit on your schedule: 2026-11-04, 05:00–06:00.');
-  });
-
-  test('a burst stamped by one RESOLVE run gets the re-plan header (plan 2026-07-30)', async () => {
-    await burst('notify-n1', '2026-11-14', 4, { resolveRun: '2026-11-01T08:30:00.000Z' });
-    expect(await pollOnce(lastSeen)).toBe(1);
-    const [push] = sentTo();
-    expect(push.text).toContain('The schedule re-plan updated your schedule:');
-    expect(push.text).not.toContain('freeze');
-  });
-
-  test('resolve_committed pushes the run summary to bound MANAGERS only', async () => {
-    const mgr = await insertTechnician({
-      tenantId,
-      ref: 'notify-mgr8',
-      displayName: 'Manager Eight',
-      tier: 'manager',
-    });
-    await updateTechnician(mgr.id, { telegram_user_id: '910000008', state: 'active' });
-    await appendScheduleEvent({
-      tenantId,
-      kind: 'resolve_committed',
-      actorRef: 'notify-mgr8',
-      detail: { resolveRun: '2026-11-02T08:00:00.000Z', moved: 4, placed: 2, kept: 7 },
-    });
-    expect(await pollOnce(lastSeen)).toBe(1);
-    expect(sentTo()).toEqual([
-      {
-        userId: '910000008',
-        text: 'Re-solve ran (by notify-mgr8): moved 4, placed 2, kept 7 — see the board.',
-      },
-    ]);
-    // Deactivate so later manager-push tests still see exactly ONE manager.
-    await pg.query("update technicians set state = 'offboarded' where ref = 'notify-mgr8'");
-  });
-
-  test('undo_committed pushes the restore summary to bound MANAGERS only (plan 2026-07-30 Phase 5)', async () => {
-    const mgr = await insertTechnician({
-      tenantId,
-      ref: 'notify-mgr10',
-      displayName: 'Manager Ten',
-      tier: 'manager',
-    });
-    await updateTechnician(mgr.id, { telegram_user_id: '910000010', state: 'active' });
-    await appendScheduleEvent({
-      tenantId,
-      kind: 'undo_committed',
-      actorRef: 'notify-mgr10',
-      detail: {
-        undoRun: '2026-11-02T09:00:00.000Z',
-        undid: '2026-11-02T08:00:00.000Z',
-        undidKind: 'resolve',
-        restored: 3,
-        skipped: 1,
-        // Stranded counts ride into the push (final-review finding): a
-        // colleague manager's summary must not read routine when rows sit
-        // person-less / dropped to the bucket.
-        stranded: 1,
-        strandedTbd: 2,
-      },
-    });
-    expect(await pollOnce(lastSeen)).toBe(1);
-    expect(sentTo()).toEqual([
-      {
-        userId: '910000010',
-        text:
-          'Undo ran (by notify-mgr10): restored 3, skipped 1 — see the board. ' +
-          'STRANDED: 1 visit(s) left with NOBODY assigned; 2 visit(s) dropped to the ' +
-          'loose bucket un-rebooked — fix by hand.',
-      },
-    ]);
-    // Same single-manager hygiene as the resolve test above.
-    await pg.query("update technicians set state = 'offboarded' where ref = 'notify-mgr10'");
-  });
-
-  test('a mixed burst (freeze rows + a manual edit that raced in) keeps the generic header', async () => {
-    await burst('notify-n1', '2026-11-05', 3, { freezeRun: '2026-11-01T09:00:00.000Z' });
-    await book({ technicianRef: 'notify-n1', date: '2026-11-05', startTime: '10:00', endTime: '11:00' });
-    expect(await pollOnce(lastSeen)).toBe(1);
-    const [push] = sentTo();
-    expect(push.text).toContain('Your schedule changed — 4 updates:');
-    expect(push.text).not.toContain('freeze');
-  });
-
   test('a huge digest caps its bullet list and counts the remainder (Telegram length guard)', async () => {
     await burst('notify-n1', '2026-11-06', 14);
     expect(await pollOnce(lastSeen)).toBe(1);
@@ -454,28 +358,4 @@ describe('pollOnce', () => {
     expect(texts).not.toContain('New visit on your schedule: 2026-11-09, 08:00–09:00.');
   });
 
-  test('freeze_committed pushes the run summary to bound MANAGERS only (plan 4b-3)', async () => {
-    // First manager-directed push: the bound technicians (n1/n2) must NOT
-    // hear it — their committed rows already pushed individually.
-    const mgr = await insertTechnician({
-      tenantId,
-      ref: 'notify-mgr9',
-      displayName: 'Manager Nine',
-      tier: 'manager',
-    });
-    await updateTechnician(mgr.id, { telegram_user_id: '910000009', state: 'active' });
-    await appendScheduleEvent({
-      tenantId,
-      kind: 'freeze_committed',
-      actorRef: 'notify-mgr9',
-      detail: { freezeRun: '2026-07-26T08:00:00.000Z', placed: 3, skipped: 2 },
-    });
-    expect(await pollOnce(lastSeen)).toBe(1);
-    expect(sentTo()).toEqual([
-      {
-        userId: '910000009',
-        text: 'Freeze ran (by notify-mgr9): placed 3, skipped 2 — see the board.',
-      },
-    ]);
-  });
 });

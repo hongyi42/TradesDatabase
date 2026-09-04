@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 205 documents · 198 live · 7 superseded.
+Regenerate with `npm run decisions:index`. 206 documents · 199 live · 7 superseded.
 
 ## Superseded — do not build on these
 
@@ -46,6 +46,7 @@ Regenerate with `npm run decisions:index`. 205 documents · 198 live · 7 supers
 
 ## Live
 
+- `2026-09-03` `research` [2026-09-03-the-schedule-is-the-managers](shared/research/2026-09-03-the-schedule-is-the-managers.md) `not landed` — "Rung 8 — the schedule is the manager's: the demolition footprint of the autonomous solver"
 - `2026-09-02` `plan` [2026-09-02-one-send-verb](shared/plans/2026-09-02-one-send-verb.md) — "Build 6.5 — one generalized `send`: the planner chooses who to talk to, and a message need not be about a ga…
 - `2026-09-02` `plan` [2026-09-02-the-record-has-authors](shared/plans/2026-09-02-the-record-has-authors.md) — "Build 7 — the record has authors: the planner opens its own observations, and a seat's inform can become one"
 - `2026-09-02` `research` [2026-09-02-a-visit-is-not-a-person](shared/research/2026-09-02-a-visit-is-not-a-person.md) `not landed` — "Build 8 — a visit is not a person: where the one-person-per-visit assumption lives"

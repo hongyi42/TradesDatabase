@@ -2,9 +2,15 @@
 date: 2026-09-03
 task: "Build 8 — a crew visit counts as ONE visit, and the planner is told two crew gaps are one question"
 research: thoughts/shared/research/2026-09-02-a-visit-is-not-a-person.md
-status: draft
+status: superseded
 supersedes: docs/engineering-memory.md §8 (two factual claims + the framing — see Decisions)
 ---
+
+> **SUPERSEDED 2026-09-03 (user).** This plan patched the reading layer — counts, a `with:` line,
+> confirmations — of a schema the user then decided to replace: *"we designed the scheduling features
+> badly… we're really just trying to have the users fit to our reality of scheduling."* The remodel is
+> rungs 8–11 in `docs/engineering-memory.md` §6a. The research this plan cites stands. Nothing here
+> was implemented.
 
 ## Overview
 

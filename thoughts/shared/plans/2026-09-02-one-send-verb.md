@@ -2,7 +2,7 @@
 date: 2026-09-02
 task: "Build 6.5 — one generalized `send`: the planner chooses who to talk to, and a message need not be about a gap"
 research: thoughts/shared/research/2026-09-01-one-send-verb.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -48,7 +48,10 @@ consequence of the collapse rather than as machinery of its own.
   on every ordinary gap ask would regress the most-used verb and orphan four corpus expectations,
   for no gain. Absent `to` = today's behaviour exactly.
 - **The planner is shown a roster** so a `to` is COPIED from a list, never invented. It carries
-  per-person reachability: chat needs a seat AND a phone; the assistant needs only a seat.
+  per-person reachability, and the predicate is what the TRANSPORTS require, not what rank someone
+  holds: both legs need a HOST and a sandbox (every delivery starts from a host pull filtering
+  `technicians.host_id` — `nudges.ts:192`, `officeMessages.ts:158`), and chat needs the Telegram
+  binding on top. Corrected after the Phase 1 review, which caught the claim omitting `host_id`.
 - **The roster is firm state, not an addressing aid** (user 2026-09-02: "if the planner is the
   central intelligence of the firm, it should know the roster of the team actively"). What exists
   today is a per-gap `person: <display name>` line (`buildGapView`) — so the planner knows the
@@ -76,19 +79,46 @@ consequence of the collapse rather than as machinery of its own.
 - **A FULL ROSTER TRAIL, not just a departure date** (user ruling 2026-09-02, choosing between the
   two: *"the planner should probably have a record of the firm's roster (with history) … so it
   doesn't have to go looking for record that proves a person was offboarded"*). New
-  `roster_events` table — joined / left / came back, when, and who did it. Two facts made this
-  cheap and made the alternative dishonest: every state change already funnels through ONE
-  function (`setTechnicianState`, `technicians.ts:321`; the only other write of `state` is the
-  insert at `:169`), and `technicians.updated_at` is bumped by ANY edit, so it can never answer
-  "when did they leave". **The trail cannot be backfilled** — it starts empty, and a departure
-  that predates it must render `date unknown` rather than a guess. Written app-side rather than by
-  a DB trigger because a trigger cannot see WHO made the change, and the actor is exactly the half
-  a bare timestamp cannot give; the single-funnel property is what makes app-side safe, so a test
-  pins it.
+  `roster_events` table — joined / left / came back, and when. `technicians.updated_at` is bumped
+  by ANY edit, so it can never answer "when did they leave", and **the trail cannot be
+  backfilled** — it starts empty, and a departure predating it renders `date unknown`, never a
+  guess.
+- **CAPTURED BY A DATABASE TRIGGER, and `actor_ref` stays empty** (user ruling 2026-09-02, after
+  the plan's premise was found false at implementation time). This plan first said state changes
+  "funnel through ONE function, `setTechnicianState`", and hooked it app-side to carry the actor.
+  **`setTechnicianState` has NO production runtime callers** — only the test suite and two scripts
+  (`scripts/seed.mjs:266`, `scripts/spine-eval/world.mjs:388`). Every real
+  transition goes through `casTechnician` (`server.ts:5444` deactivate, `:5540` reactivate,
+  `:7905` pairing-verified, `composio/pairing.ts:123,291`, `composio/offboarding.ts:86`) or
+  `updateTechnician` (`server.ts:5745`), both of which take a patch OBJECT — which is why a grep
+  for an inline `state:` literal missed them, and `casTechnician`'s own comment says so outright:
+  *"Every lifecycle transition goes through this."* The planned design would have produced a trail
+  that is FULL IN TESTS AND EMPTY IN PRODUCTION — the worst failure available, because every test
+  would have proved it working. A trigger catches all four writers and any fifth added later.
+  The cost, accepted: a trigger cannot see WHO acted, and no mechanism exists to pass one down
+  (`spine.tenant_id`, this codebase's only session setting, is set inside SQL and has no
+  TypeScript caller). `actor_ref` stays a nullable column, always empty, so attribution can be
+  added later without redesign.
 - **Departures are shown only when a gap names them.** The roster block lists everyone reachable
   plus any departed person the tick's own gaps mention. An unbounded alumni list would grow
   forever and spend context every tick on people nobody is asking about; `v_roster_events` is
   there for the rest.
+- **THE BRIEFING CARRIES A SUMMARY, NOT THE TRAIL** (user ruling 2026-09-02, asked directly
+  whether the planner sees the whole history: *"Leave it as it is"*). Three layers, and only the
+  third reaches the model: `roster_events` STORES every transition forever; a tick READS events
+  only for people who are both departed AND named by an open gap; and one DERIVED date is
+  rendered (`currentDeparture` — the start of the departure that still stands). Everything else —
+  who joined when, who left and came back, a seat that churned — is a `spine_read` on
+  `v_roster_events` the planner makes when it wants it. **Accepted cost, named at ruling time:** a
+  gap's evidence lines carry technician refs, so a note written by somebody who has since left
+  reads as though they are still around; only the person the gap's `technician_id` points at gets
+  the departure line.
+- **The block's SHAPE was rewritten after the user read the first draft** (2026-09-02: "This
+  doesn't seem very readable"). The draft was a three-column table whose columns did not align —
+  names vary in width — carrying jargon ("chat, assistant") in a document that is otherwise
+  `key: value` lines and plain sentences. Now one short line per person, a second indented line
+  ONLY for somebody a message cannot fully reach, and departures as sentences. Header is
+  `THE TEAM`, not `WHO YOU CAN REACH`.
 - **Gap-less sends stay in `decisions` with `nudgeId` optional**, not a second `messages` array —
   the model should not pick a container before it picks an act.
 - **A gap-less decision IS recorded in `nudge_decisions`** (subject CHECK relaxed, `to_ref`/`via`
@@ -201,20 +231,24 @@ row is never deleted — who used to be here and when they left. No verb, schema
   `grant select on v_roster_events to spine_reader` (the `v_nudges` posture, `20260823120000:121-123`).
 - DEPLOY ORDER header: apply BEFORE the code.
 
+- **The capture is a TRIGGER, not an app-side write** (see Decisions — `setTechnicianState` has no
+  production runtime callers and the production paths are
+  `casTechnician`/`updateTechnician`):
+  `after insert or update on technicians for each row`, writing an event when `tg_op = 'INSERT'`
+  (`from_state` null — "we started watching here") or when
+  `new.state is distinct from old.state`. Columns take the `technician_state` ENUM, not text, so
+  a bad value cannot land. No app-side writer is added anywhere.
+
 **`src/db/technicians.ts`**
-- `setTechnicianState` (`:321`) — **the ONE funnel every state change already passes through**
-  (verified: the only other write of `state` is the insert at `:169`) — reads the row first and
-  appends a `roster_events` row with `from_state`/`to_state`, gaining optional `actorRef` and
-  `reason` params. App-side rather than a DB trigger, deliberately: a trigger cannot see WHO made
-  the change, and the actor is the half a bare timestamp cannot give. The single-funnel property
-  is what makes app-side safe, so it gets a test that pins it.
-- New `listRosterEvents(tenantId, technicianIds)` — bounded by ids, never a tenant scan.
+- New `listRosterEvents(tenantId, technicianIds)` — bounded by ids, never a tenant scan. This is
+  the ONLY change to this file; no existing function is touched, which is the point of the
+  trigger.
 
 **`src/teamLead/planner.ts`**
 - `interface Addressee { ref: string; technicianId: string; displayName: string; tier: string;
   state: TechnicianState; chat: boolean; assistant: boolean; leftAt: string | null }` and
   `buildReachableBlock(team: Technician[], departures: Map<string, string>): string` rendering
-  `WHO YOU CAN REACH — copy a \`to\` exactly from this list.` plus one line per non-inactive row:
+  `THE TEAM — copy a name exactly when you write to somebody.` plus one line per non-inactive row:
   `  <ref>  <display_name>  <tier>  — chat, assistant | assistant only (no phone linked) |
   UNREACHABLE (schedule only)`. `chat` = `sandbox_ref && telegram_user_id`; `assistant` =
   `sandbox_ref`; `seat_exempt` or `isInactiveState` → neither. Skills/cities are NOT printed.
@@ -247,29 +281,33 @@ sharing the catalog with `query_spine` is acceptable — record that acceptance 
 `v_observations`' was.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] migration applies to the local stack and is re-runnable (run it twice)
-- [ ] new: `setTechnicianState` appends exactly one `roster_events` row per change, carrying the
-      previous state; a no-op re-set of the same state appends nothing
-- [ ] new: a structural test pinning `setTechnicianState` as the only writer of `technicians.state`
-- [ ] new: `buildReachableBlock` renders all four reachability states, omits offboarded rows from
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] migration applies to the local stack and is re-runnable (run it twice)
+- [x] new: the trigger appends exactly one `roster_events` row per state change, carrying the
+      previous state; an update that does NOT change state appends nothing; inserting a
+      technician appends one row with `from_state` null
+- [x] new: **the trigger fires for `casTechnician` AND `updateTechnician`, not just
+      `setTechnicianState`** — this is the finding that changed the design, so it gets its own
+      test naming all three paths. Without it the suite would pass on the test-only helper while
+      production wrote nothing.
+- [x] new: `buildReachableBlock` renders all four reachability states, omits offboarded rows from
       the reachable list, and lists a departure ONLY when a gap names that person
-- [ ] new: a gap whose person is `offboarded` renders `NO LONGER ON THE TEAM`; one whose person is
+- [x] new: a gap whose person is `offboarded` renders `NO LONGER ON THE TEAM`; one whose person is
       seat-exempt renders `nobody to ask here` — both from the roster, NOT from the stale
       `technicianName` in `context`
-- [ ] new: a gap whose person was RENAMED since it was minted renders the CURRENT name
-- [ ] new: a departure with no `roster_events` row renders `date unknown`, never a guess
-- [ ] the two view-count pins updated: `server.test.ts:8287`, `querySpine.test.ts:317`
+- [x] new: a gap whose person was RENAMED since it was minted renders the CURRENT name
+- [x] new: a departure with no `roster_events` row renders `date unknown`, never a guess
+- [x] the two view-count pins updated: `server.test.ts:8287`, `querySpine.test.ts:317`
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack (`npx supabase start`, `.env.test`), `npm run seed:local`
-- [ ] Offboard a seeded technician who holds an open gap through the real tool path, then drive one
+- [x] Offboard a seeded technician who holds an open gap through the real tool path, then drive one
       tick and read the RENDERED user message back: the gap must say `NO LONGER ON THE TEAM` with
       the date, and `roster_events` must hold the `active → offboarded` row. Cross-channel: the
       prompt text and the table, not one inferred from the other.
 
 ### Manual verification
-- [ ] The roster block reads like something a person would write, and leaks nothing a manager
+- [x] The roster block reads like something a person would write, and leaks nothing a manager
       would not want the planner repeating
 
 ---
@@ -296,21 +334,21 @@ delivery paths unchanged.
 - `applyDecision` (`:2360`): address the resolved person when `toRef` is set.
 
 **`src/teamLead/plannerPrompt.ts`** — `SUBMIT_PLAN_TOOL` (`:328`) gains `to`: "the person this
-message goes to, ref copied exactly from WHO YOU CAN REACH. Leave it out to reach the gap's own
+message goes to, ref copied exactly from THE TEAM. Leave it out to reach the gap's own
 person."
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] new: `to` naming an unknown ref is REFUSED, with the ref in the detail
-- [ ] new: `to` naming a seat-exempt person is REFUSED before any write
-- [ ] new: `to` naming somebody who has LEFT is REFUSED, naming the departure
-- [ ] new: no `to` still addresses the gap's person (the four existing office-verb tests at
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] new: `to` naming an unknown ref is REFUSED, with the ref in the detail
+- [x] new: `to` naming a seat-exempt person is REFUSED before any write
+- [x] new: `to` naming somebody who has LEFT is REFUSED, naming the departure
+- [x] new: no `to` still addresses the gap's person (the four existing office-verb tests at
       `planner.test.ts:808-880` and `:4456-4458` must pass unchanged)
-- [ ] new: an `ask_agent` with `to` on a gap whose `technician_id` is NULL is now ACCEPTED
+- [x] new: an `ask_agent` with `to` on a gap whose `technician_id` is NULL is now ACCEPTED
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack, `npm run seed:local`
-- [ ] Seed a firm with a technician gap and a separate manager; drive one tick; read back the
+- [x] Seed a firm with a technician gap and a separate manager; drive one tick; read back the
       `office_messages` row and confirm `technician_id` is the MANAGER's roster id while
       `nudge_id` is the technician's gap — the cross-channel check the send cannot fake
 
@@ -345,6 +383,14 @@ tolerate a null nudgeId in its log line. Fix the now-false comment at `:182-183`
 "Required for hold, close, dismiss and recover. For send, include it only when the message is
 ABOUT a gap."
 
+**ADAPTATION MADE AT IMPLEMENTATION TIME (2026-09-02).** This phase's text was written imagining
+Phase 4's collapsed `send` as the gap-less verb — but `send` does not exist in that form until the
+NEXT phase, and every gap-less rail here would have had no producer and no end-to-end test. So the
+gap-less shape is carried by the two OFFICE VERBS, which Phase 2 just taught to name an addressee:
+`inform_agent`/`ask_agent` with a `to` and no `nudgeId` is "a message to a person about nothing",
+which is precisely this phase's stated purpose. Phase 4's collapse inherits it unchanged. `send`
+still requires a gap here, and is refused without one alongside the other three.
+
 **`src/teamLead/planner.ts`**
 - `PlannerDecision.nudgeId` / `DroppedDecision.nudgeId` → `string | null`.
 - `validateDecisions`: `hold|close|dismiss|recover` without a `nudgeId` refused ("<verb> needs the
@@ -359,16 +405,16 @@ asserting exactly the constraint this phase removes; rewrite it to assert the ne
 null is now legal; the row is a message, not a gap decision).
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] migration applies to the local stack and is re-runnable (run it twice)
-- [ ] new: each of the four gap verbs is refused without a `nudgeId`
-- [ ] new: `recordNudgeDecisions` writes a both-null row; `listDecisionsForNudges` returns it for
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] migration applies to the local stack and is re-runnable (run it twice)
+- [x] new: each of the four gap verbs is refused without a `nudgeId`
+- [x] new: `recordNudgeDecisions` writes a both-null row; `listDecisionsForNudges` returns it for
       no gap
-- [ ] new: a REFUSED gap-less send is still recorded
+- [x] new: a REFUSED gap-less send is still recorded
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack
-- [ ] Insert a both-null decision through the real writer **carrying a job_id**, then
+- [x] Insert a both-null decision through the real writer **carrying a job_id**, then
       `select * from mv_whiplash` and `select * from mv_gap_outcomes` (plain SELECT — these are
       views) and confirm neither gains a row and neither errors. The job_id is what makes this
       test the partition fix rather than a pass on the pre-existing `r.job_id is not null` filter.
@@ -441,25 +487,25 @@ is injected as an agent turn as well as texted.
 `listQueuedOfficeMessagesForHost` gains a `via` filter.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] both migrations applied; re-runnable
-- [ ] the pins, each named: `planner.test.ts:3021-3031` (enum == actions),
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] both migrations applied; re-runnable
+- [x] the pins, each named: `planner.test.ts:3021-3031` (enum == actions),
       `watchers.test.ts:1227` (judgment set) and **`:1234` (`toHaveLength(7)` → 5)**
-- [ ] new: a chat send with `countsAsTheAsk` queues a NUDGE and no office row; without it, an
+- [x] new: a chat send with `countsAsTheAsk` queues a NUDGE and no office row; without it, an
       office row with `via='chat'` and no nudge movement
-- [ ] new: the ambiguity rail refuses when the flag is ABSENT, and accepts `false`
-- [ ] new: `countsAsTheAsk` on an already-`asked` gap is refused
-- [ ] new: `buildNudgeDelivery` returns a nudge item and a `via='chat'` item for one host;
+- [x] new: the ambiguity rail refuses when the flag is ABSENT, and accepts `false`
+- [x] new: `countsAsTheAsk` on an already-`asked` gap is refused
+- [x] new: `buildNudgeDelivery` returns a nudge item and a `via='chat'` item for one host;
       `completeNudgeDelivery` settles each on the correct table, and a `failed` report bumps the
       office row's `attempts`
-- [ ] new: `buildOfficeDelivery` never returns a `via='chat'` row
+- [x] new: `buildOfficeDelivery` never returns a `via='chat'` row
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack; the HTTP server startable locally with a seeded host token
-- [ ] Drive a real pull against `/control/nudges`, confirm the response carries BOTH kinds of item,
+- [x] Drive a real pull against `/control/nudges`, confirm the response carries BOTH kinds of item,
       POST `delivered` for each id, and read both tables back: the nudge is `asked`, the office
       row is `delivered`. Capture the raw JSON both ways.
-- [ ] POST `failed` for a chat id three times and confirm the row freezes on attempts, not serves
+- [x] POST `failed` for a chat id three times and confirm the row freezes on attempts, not serves
 
 ### Manual verification
 - [ ] Read the rendered `SUBMIT_PLAN_TOOL` and `PLANNER_SYSTEM` end to end (per
@@ -489,7 +535,7 @@ is told in one document how five verbs and two legs work.
   plus the count of chat messages sent about this gap since. This is what makes asking again a
   judgment rather than a guess.
 
-**`src/teamLead/plannerPrompt.ts`** — the doctrine as ONE document: five verbs; WHO YOU CAN REACH
+**`src/teamLead/plannerPrompt.ts`** — the doctrine as ONE document: five verbs; THE TEAM
 and how to copy a ref; the two legs and what each costs (a chat message arrives in their own
 assistant's voice and pings them; an assistant message lands silently and may not be passed on);
 what makes a message the question of record; when to ask again, and that asking again is a message
@@ -513,22 +559,22 @@ deliberately left (the board leg, several addressees, the quiet-firm skip, no `v
 Amend the `re-ask-belongs-to-6-5` memory with the corrected mechanics.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `npm run decisions:index` regenerated and committed
-- [ ] new: `buildOutboundBlock` renders nothing with no outbound traffic, truncates honestly, and
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `npm run decisions:index` regenerated and committed
+- [x] new: `buildOutboundBlock` renders nothing with no outbound traffic, truncates honestly, and
       does NOT mark a chat row as unanswered
-- [ ] new: the ASKED line renders age on an asked gap and nothing on a never-asked one
-- [ ] new: the rendered doctrine names no deleted verb (a grep-style assertion)
-- [ ] new: every `BUILD65` scenario fails when the planner does nothing
+- [x] new: the ASKED line renders age on an asked gap and nothing on a never-asked one
+- [x] new: the rendered doctrine names no deleted verb (a grep-style assertion)
+- [x] new: every `BUILD65` scenario fails when the planner does nothing
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack; a real model key for one shadow tick (`.env`), else skip
       with the reason recorded
-- [ ] Drive one real tick against a seeded firm with an unanswered outbound message and confirm
+- [x] Drive one real tick against a seeded firm with an unanswered outbound message and confirm
       the rendered user message carries the outbound block with the right id — read it from the
       tick's own recorded prompt, never a reconstruction
 
 ### Manual verification
-- [ ] Read the rendered doctrine as if you were the planner: is it obvious who you can reach,
+- [x] Read the rendered doctrine as if you were the planner: is it obvious who you can reach,
       which leg to use, when a message becomes the question of record, and that asking again is
       allowed?

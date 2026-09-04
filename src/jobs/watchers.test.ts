@@ -1231,7 +1231,9 @@ describe('build 5 — the judgment vocabulary', () => {
     // together are still equal, and seven is the number this build arrives at.
     expect(PLANNER_JUDGMENT_ACTIONS.has('escalate')).toBe(false); // deleted, Phase 1
     expect(PLANNER_JUDGMENT_ACTIONS.has('leave')).toBe(false); // deleted, Phase 2
-    expect(PLANNER_ACTIONS).toHaveLength(7);
+    // 9 -> 7 in build 6 (escalate, leave), 7 -> 5 in build 6.5 Phase 4 when one
+    // `send` absorbed ask_agent and inform_agent.
+    expect(PLANNER_ACTIONS).toHaveLength(5);
   });
 });
 

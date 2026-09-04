@@ -63,6 +63,34 @@ function queuedRow(over: Partial<QueuedNudgeForHost> = {}): QueuedNudgeForHost {
   } as unknown as QueuedNudgeForHost;
 }
 
+// THE CHAT LEG (build 6.5 Phase 4). Office rows the planner marked via='chat'
+// ride the NUDGE pull, because the box-side runner that texts a person
+// verbatim is this one — and it never asks what table an id came from. That is
+// what makes the whole leg spine-side: no Box_Setup_Stuff change, no rollout.
+function chatRow(over: Record<string, unknown> = {}) {
+  return {
+    id: 'msg-1',
+    tenant_id: 't1',
+    direction: 'to_agent',
+    kind: 'inform',
+    via: 'chat',
+    body: 'Jane says the van needs a service soon.',
+    status: 'queued',
+    serve_count: 0,
+    attempts: 0,
+    technicians: {
+      id: 'tech-1',
+      ref: 'ben-shelton',
+      state: 'active',
+      sandbox_ref: 'sb-1',
+      telegram_user_id: '5501',
+      host_id: 'host-1',
+      tenant_id: 't1',
+    },
+    ...over,
+  } as never;
+}
+
 function baseDeps(over: Partial<NudgeQueueDeps> = {}): NudgeQueueDeps {
   return {
     listQueued: async () => [queuedRow()],
@@ -73,9 +101,117 @@ function baseDeps(over: Partial<NudgeQueueDeps> = {}): NudgeQueueDeps {
     asked: async () => [queuedRow({ status: 'asked' })],
     groupMembers: async () => [],
     attempts: async (_id, _t, n) => queuedRow({ attempts: n }),
+    // THE CHAT LEG (build 6.5 Phase 4) rides this same pull, so every test
+    // here must stub its reader or it reaches the real database — the same
+    // reason every other reader above is stubbed. Empty by default: these
+    // tests are about the nudge half, and a test that wants a chat row says so.
+    listQueuedChat: async () => [],
+    getQueuedChat: async () => null,
+    // The chat leg's writers too — unstubbed, these reach the real database
+    // and the row is silently dropped by the serve loop's own try/catch, which
+    // reads as "the item was not served" rather than as a missing stub.
+    chatServeCount: async (_id, _t, n) => chatRow({ serve_count: n }),
+    chatAttempts: async (_id, _t, n) => chatRow({ attempts: n }),
+    chatDelivery: async () => chatRow({ status: 'delivered' }),
     ...over,
   };
 }
+
+describe('the chat leg rides the nudge pull', () => {
+  test('one pull carries BOTH kinds of item, and the chat body is the message itself', async () => {
+    const { nudges } = await buildNudgeDelivery('host-1', baseDeps({
+      listQueuedChat: async () => [chatRow()],
+    }));
+    expect(nudges).toHaveLength(2);
+    const chat = nudges.find((n) => n.id === 'msg-1');
+    expect(chat?.sandboxRef).toBe('sb-1');
+    expect(chat?.replyTo).toBe('5501');
+    expect(chat?.sessionId).toBe('chat-msg-1');
+    expect(Buffer.from(chat!.directMessageB64, 'base64').toString('utf8')).toBe(
+      'Jane says the van needs a service soon.',
+    );
+  });
+
+  test('no Telegram binding = frozen, not failed — this is the leg that texts a phone', async () => {
+    const { nudges } = await buildNudgeDelivery('host-1', baseDeps({
+      listQueued: async () => [],
+      listQueuedChat: async () => [
+        chatRow({
+        technicians: {
+          id: 'tech-1', ref: 'ben-shelton', state: 'active', sandbox_ref: 'sb-1',
+          telegram_user_id: null, host_id: 'host-1', tenant_id: 't1',
+        },
+      }),
+      ],
+    }));
+    expect(nudges).toEqual([]);
+  });
+
+  test('the caps freeze it, and the serve is counted BEFORE shipping', async () => {
+    const served: number[] = [];
+    const one = await buildNudgeDelivery('host-1', baseDeps({
+      listQueued: async () => [],
+      listQueuedChat: async () => [chatRow()],
+      chatServeCount: async (_i, _t, n) => {
+        served.push(n);
+        return chatRow({ serve_count: n });
+      },
+    }));
+    expect(one.nudges).toHaveLength(1);
+    expect(served).toEqual([1]);
+
+    for (const over of [{ serve_count: MAX_SERVE_COUNT }, { attempts: MAX_DELIVERY_ATTEMPTS }]) {
+      const frozen = await buildNudgeDelivery('host-1', baseDeps({
+        listQueued: async () => [],
+        listQueuedChat: async () => [chatRow(over)],
+      }));
+      expect(frozen.nudges).toEqual([]);
+    }
+  });
+
+  test('a report is routed to the table that owns the id', async () => {
+    // The box posts {id, outcome} and never says which table it came from.
+    const settled: unknown[] = [];
+    const delivered = await completeNudgeDelivery('host-1', 'msg-1', 'delivered', null, baseDeps({
+      getQueued: async () => null, // not a nudge...
+      getQueuedChat: async () => chatRow(), // ...it is a chat message
+      chatDelivery: async (...args) => {
+        settled.push(args);
+        return chatRow({ status: 'delivered' });
+      },
+    }));
+    expect(delivered).toBe('delivered');
+    expect(settled).toHaveLength(1);
+  });
+
+  test('a FAILED chat report bumps attempts — freezing on attempts, not on serves', async () => {
+    // Without the routing this could never happen: the closed-lead group path
+    // below returns 'ignored' for any non-delivered report, so a chat row would
+    // only ever freeze at MAX_SERVE_COUNT (10) instead of MAX_DELIVERY_ATTEMPTS (3).
+    const bumped: number[] = [];
+    const deps = (attempts: number) => baseDeps({
+      getQueued: async () => null,
+      getQueuedChat: async () => chatRow({ attempts }),
+      chatAttempts: async (_i, _t, n) => {
+        bumped.push(n);
+        return chatRow({ attempts: n });
+      },
+    });
+    expect(await completeNudgeDelivery('host-1', 'msg-1', 'failed', 'boom', deps(0))).toBe('retry');
+    expect(await completeNudgeDelivery('host-1', 'msg-1', 'failed', 'boom', deps(2))).toBe('failed');
+    expect(bumped).toEqual([1, 3]);
+  });
+
+  test('an id neither table claims is ignored', async () => {
+    expect(
+      await completeNudgeDelivery('host-1', 'ghost', 'delivered', null, baseDeps({
+        getQueued: async () => null,
+        getQueuedChat: async () => null,
+        groupMembers: async () => [],
+      })),
+    ).toBe('ignored');
+  });
+});
 
 describe('buildNudgeDelivery', () => {
   test('serves a deliverable: fresh session id, base64 message, serve counted BEFORE shipping', async () => {

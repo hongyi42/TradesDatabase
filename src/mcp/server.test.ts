@@ -8282,10 +8282,11 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
       'write_job_note',
     ]);
     const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
-    // the catalog — thirteen since v_observations (plan 2026-08-31); the count
-    // and the list must move together or the description lies to the model
-    expect(desc).toContain('thirteen views');
+    // the catalog — fourteen since v_roster_events (build 6.5 Phase 1); the
+    // count and the list must move together or the description lies to the model
+    expect(desc).toContain('fourteen views');
     expect(desc).toContain('v_observations');
+    expect(desc).toContain('v_roster_events');
     // BOTH dismissed sets since build 6 Phase 3 — a question can be dismissed
     // too, and the catalog is the only place the model learns where to look for
     // a `recover` id. Naming one view and not the other would leave half the

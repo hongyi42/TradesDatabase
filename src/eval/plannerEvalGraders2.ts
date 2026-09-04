@@ -97,6 +97,27 @@ export function gradeScenario(row: GradableRow, t0Ms: number): GraderFinding[] {
         });
       }
     }
+    if (e.gapLessAction) {
+      // NOT filtered by `targets`, and that is the whole point: a gap-less
+      // decision has no key, so `gapIdOf` returns null and every filter above
+      // drops it. Without this the one class of action build 6.5 added could
+      // not be graded at all — a scenario asking for it would pass on an
+      // ordinary send about a gap instead.
+      const gapLess = row.ticks.flatMap((t) =>
+        t.decisions.filter((d) => gapIdOf(d) === null && d.action !== 'unmentioned'),
+      );
+      const hit = gapLess.some(
+        (d) => d.action === e.gapLessAction && d.outcome === 'applied',
+      );
+      if (!hit) {
+        findings.push({
+          kind: 'wrong-action',
+          detail:
+            `expected an APPLIED '${e.gapLessAction}' about NO gap in some tick; got ` +
+            (gapLess.map((d) => `${d.action}/${d.outcome}`).join(', ') || 'no gap-less decision'),
+        });
+      }
+    }
     if (e.actionNot) {
       const hit = allTicks.find(
         (d) => d.action === e.actionNot && (d.outcome === 'applied' || d.outcome === 'refused'),

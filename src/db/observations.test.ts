@@ -163,14 +163,27 @@ describe('observations', () => {
       [tenantId, row.id],
     );
     expect(ins.rows[0].id).toBeTruthy();
-    // neither subject: the CHECK refuses (23514).
-    await expect(
-      pg.query(
-        `insert into nudge_decisions (tenant_id, mode, action, confidence, reason, outcome)
-         values ($1, 'live', 'leave', 'high', 'test', 'applied')`,
-        [tenantId],
-      ),
-    ).rejects.toMatchObject({ code: '23514' });
+    // NEITHER SUBJECT IS NOW LEGAL (build 6.5 Phase 3, migration
+    // 20260903120000). This test used to pin the opposite — the CHECK refused
+    // it with 23514 — and the constraint was dropped rather than widened,
+    // because a both-null row is not a decision that lost its gap: it is a
+    // MESSAGE TO A PERSON that no gap ever raised. `to_ref` says who.
+    const gapless = await pg.query(
+      `insert into nudge_decisions
+         (tenant_id, mode, action, confidence, reason, outcome, to_ref)
+       values ($1, 'live', 'inform_agent', 'high', 'a word to the manager', 'applied',
+               'manager-sam')
+       returning id, nudge_id, observation_id, to_ref`,
+      [tenantId],
+    );
+    expect(gapless.rows[0].nudge_id).toBeNull();
+    expect(gapless.rows[0].observation_id).toBeNull();
+    expect(gapless.rows[0].to_ref).toBe('manager-sam');
+    // And it belongs to no gap's history — asserted through the READER that
+    // makes the claim, not through a SQL predicate that merely agrees with it.
+    const history = await listDecisionsForNudges(tenantId, [row.id]);
+    expect(history.get(row.id) ?? []).toHaveLength(1); // the dismiss, not the message
+    expect((history.get(row.id) ?? []).every((d) => d.observation_id === row.id)).toBe(true)
   });
 
   test('deleting an observation cascades its decision rows', async () => {

@@ -1073,6 +1073,8 @@ export type Database = {
           question_draft: string | null
           reason: string
           tenant_id: string
+          to_ref: string | null
+          via: string | null
         }
         Insert: {
           action: string
@@ -1094,6 +1096,8 @@ export type Database = {
           question_draft?: string | null
           reason?: string
           tenant_id: string
+          to_ref?: string | null
+          via?: string | null
         }
         Update: {
           action?: string
@@ -1115,6 +1119,8 @@ export type Database = {
           question_draft?: string | null
           reason?: string
           tenant_id?: string
+          to_ref?: string | null
+          via?: string | null
         }
         Relationships: [
           {
@@ -1329,6 +1335,7 @@ export type Database = {
           id: string
           in_reply_to: string | null
           kind: string
+          message_group_id: string | null
           nudge_id: string | null
           read_at: string | null
           serve_count: number
@@ -1338,6 +1345,7 @@ export type Database = {
           tier: string | null
           to_ref: string
           updated_at: string
+          via: string
         }
         Insert: {
           attempts?: number
@@ -1349,6 +1357,7 @@ export type Database = {
           id?: string
           in_reply_to?: string | null
           kind: string
+          message_group_id?: string | null
           nudge_id?: string | null
           read_at?: string | null
           serve_count?: number
@@ -1358,6 +1367,7 @@ export type Database = {
           tier?: string | null
           to_ref: string
           updated_at?: string
+          via?: string
         }
         Update: {
           attempts?: number
@@ -1369,6 +1379,7 @@ export type Database = {
           id?: string
           in_reply_to?: string | null
           kind?: string
+          message_group_id?: string | null
           nudge_id?: string | null
           read_at?: string | null
           serve_count?: number
@@ -1378,6 +1389,7 @@ export type Database = {
           tier?: string | null
           to_ref?: string
           updated_at?: string
+          via?: string
         }
         Relationships: [
           {
@@ -1772,6 +1784,54 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "review_items_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      roster_events: {
+        Row: {
+          actor_ref: string | null
+          from_state: Database["public"]["Enums"]["technician_state"] | null
+          id: string
+          occurred_at: string
+          reason: string | null
+          technician_id: string
+          tenant_id: string
+          to_state: Database["public"]["Enums"]["technician_state"]
+        }
+        Insert: {
+          actor_ref?: string | null
+          from_state?: Database["public"]["Enums"]["technician_state"] | null
+          id?: string
+          occurred_at?: string
+          reason?: string | null
+          technician_id: string
+          tenant_id: string
+          to_state: Database["public"]["Enums"]["technician_state"]
+        }
+        Update: {
+          actor_ref?: string | null
+          from_state?: Database["public"]["Enums"]["technician_state"] | null
+          id?: string
+          occurred_at?: string
+          reason?: string | null
+          technician_id?: string
+          tenant_id?: string
+          to_state?: Database["public"]["Enums"]["technician_state"]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "roster_events_technician_id_fkey"
+            columns: ["technician_id"]
+            isOneToOne: false
+            referencedRelation: "technicians"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "roster_events_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
             referencedRelation: "tenants"
@@ -2992,6 +3052,18 @@ export type Database = {
           subject_ref?: string | null
           suggestion?: string | null
           technician_ref?: never
+        }
+        Relationships: []
+      }
+      v_roster_events: {
+        Row: {
+          from_state: Database["public"]["Enums"]["technician_state"] | null
+          id: string | null
+          occurred_at: string | null
+          technician_name: string | null
+          technician_ref: string | null
+          tier: Database["public"]["Enums"]["technician_tier"] | null
+          to_state: Database["public"]["Enums"]["technician_state"] | null
         }
         Relationships: []
       }

@@ -1266,6 +1266,7 @@ export type Database = {
       }
       observations: {
         Row: {
+          author: string
           context: Json
           dismiss_reason: string | null
           dismissed_at: string | null
@@ -1280,6 +1281,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          author?: string
           context?: Json
           dismiss_reason?: string | null
           dismissed_at?: string | null
@@ -1294,6 +1296,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          author?: string
           context?: Json
           dismiss_reason?: string | null
           dismissed_at?: string | null
@@ -1397,6 +1400,13 @@ export type Database = {
             columns: ["in_reply_to"]
             isOneToOne: false
             referencedRelation: "office_messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "office_messages_in_reply_to_fkey"
+            columns: ["in_reply_to"]
+            isOneToOne: false
+            referencedRelation: "v_office_messages"
             referencedColumns: ["id"]
           },
           {
@@ -2999,6 +3009,7 @@ export type Database = {
       }
       v_observations: {
         Row: {
+          author: string | null
           dismiss_reason: string | null
           dismissed_at: string | null
           id: string | null
@@ -3012,6 +3023,72 @@ export type Database = {
           technician_ref: string | null
         }
         Relationships: []
+      }
+      v_office_messages: {
+        Row: {
+          body: string | null
+          created_at: string | null
+          delivered_at: string | null
+          direction: string | null
+          from_ref: string | null
+          id: string | null
+          in_reply_to: string | null
+          kind: string | null
+          nudge_id: string | null
+          read_at: string | null
+          status: string | null
+          tier: string | null
+          to_ref: string | null
+          via: string | null
+        }
+        Insert: {
+          body?: string | null
+          created_at?: string | null
+          delivered_at?: string | null
+          direction?: string | null
+          from_ref?: string | null
+          id?: string | null
+          in_reply_to?: string | null
+          kind?: string | null
+          nudge_id?: string | null
+          read_at?: string | null
+          status?: string | null
+          tier?: string | null
+          to_ref?: string | null
+          via?: string | null
+        }
+        Update: {
+          body?: string | null
+          created_at?: string | null
+          delivered_at?: string | null
+          direction?: string | null
+          from_ref?: string | null
+          id?: string | null
+          in_reply_to?: string | null
+          kind?: string | null
+          nudge_id?: string | null
+          read_at?: string | null
+          status?: string | null
+          tier?: string | null
+          to_ref?: string | null
+          via?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "office_messages_in_reply_to_fkey"
+            columns: ["in_reply_to"]
+            isOneToOne: false
+            referencedRelation: "office_messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "office_messages_in_reply_to_fkey"
+            columns: ["in_reply_to"]
+            isOneToOne: false
+            referencedRelation: "v_office_messages"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       v_review_items: {
         Row: {

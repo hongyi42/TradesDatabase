@@ -758,7 +758,7 @@ const TOOLS = [
 // fix to the direction-comes-from-kind warning, lands on one tool and not the
 // other.
 const SPINE_VIEW_CATALOG =
-  'It CANNOT write, and it can only read these fourteen views (nothing else exists to it): ' +
+  'It CANNOT write, and it can only read these fifteen views (nothing else exists to it): ' +
   'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, promise_level, ' +
   'promised_day, locked, earliest_date, latest_date, technician_ref, technician_name, job_id, ' +
   'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
@@ -814,9 +814,15 @@ const SPINE_VIEW_CATALOG =
   'technician_ref, escalated_from_nudge, created_at, resolved_at) — the ' +
   "manager's queue; status='open' is what nobody has acted on; " +
   'v_observations(id, kind, status, subject_ref, technician_ref, technician_name, job_id, ' +
-  'dismiss_reason, dismissed_at, not_before, noticed_at) — everything the record has noticed, ' +
-  "the DISMISSED ones included: status='dismissed' rows are the OTHER place `recover` ids " +
-  'come from, and dismiss_reason is what you said when you set one aside; ' +
+  'dismiss_reason, dismissed_at, not_before, noticed_at, author) — everything the record has ' +
+  "noticed, the DISMISSED ones included: status='dismissed' rows are the OTHER place `recover` " +
+  'ids come from, and dismiss_reason is what you said when you set one aside. `author` says ' +
+  "which of the two noticed it: 'detector' (the automatic checks) or 'planner'; " +
+  'v_office_messages(id, direction, kind, from_ref, to_ref, body, tier, nudge_id, in_reply_to, ' +
+  'status, via, created_at, read_at, delivered_at) — every message between the office and the ' +
+  "seats, BOTH ways and however old: direction 'to_planner' is what a seat told you, " +
+  "'to_agent' is what you sent. The block in your briefing shows only the unread ones; this is " +
+  'where the rest of them live, including every one you have already read; ' +
   // The roster TRAIL (build 6.5 Phase 1). v_team says who is here NOW; this
   // says how the team got that way — and it is the only honest source for
   // when somebody left, because technicians.updated_at is bumped by any edit.

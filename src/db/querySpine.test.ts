@@ -314,7 +314,7 @@ describe('query_spine — bounds', () => {
 });
 
 describe('query_spine — the view surface is closed', () => {
-  test('spine_reader holds SELECT on exactly the fourteen views and nothing else', async () => {
+  test('spine_reader holds SELECT on exactly the fifteen views and nothing else', async () => {
     // A new table must not become readable by default. This is the test that
     // fails when someone adds a grant without thinking.
     // v_money_events added 2026-08-15 (money-ledger plan, manager-only money
@@ -329,6 +329,13 @@ describe('query_spine — the view surface is closed', () => {
     // the ONLY honest source for when somebody left, since technicians
     // .updated_at is bumped by any edit. Same recorded acceptance: a firm's own
     // roster history is data its managers already own).
+    // v_office_messages added 2026-09-02 (build 7, user ruling): the planner
+    // could look back at its decisions, its notes, its observations and its
+    // questions — its own INBOX was the one thing it could not. And because
+    // spine_read is a CITABLE tool, this is also what lets a seat agent's words
+    // close a gap, superseding the 5.5 rule that office answers never fill the
+    // record. Manager visibility through the shared catalog is the same
+    // recorded acceptance as v_observations and v_roster_events.
     const { rows } = await pg.query(
       `select table_name from information_schema.table_privileges
         where grantee = 'spine_reader' order by table_name`,
@@ -342,6 +349,7 @@ describe('query_spine — the view surface is closed', () => {
       'v_money_events',
       'v_nudges',
       'v_observations',
+      'v_office_messages',
       'v_review_items',
       'v_roster_events',
       'v_schedule',
@@ -349,6 +357,54 @@ describe('query_spine — the view surface is closed', () => {
       'v_time_off',
       'v_visits',
     ]);
+  });
+
+  // BUILD 7 FINAL REVIEW, and the highest-severity finding of the build.
+  //
+  // `to_agent` bodies are the PLANNER'S OWN WORDS — its send text and the desk
+  // answers written in its name. `spine_read` is in CITABLE_TOOLS, so a view
+  // without this filter lets the planner read its own prose back and quote it
+  // into an evidence-basis close: exactly the laundering build 6 Phase 4 found
+  // by live probe and shut. The same build excludes desk pairs from `readText`
+  // and keeps `read_memory` out of CITABLE_TOOLS for that one reason, so a view
+  // that reopened the door would have made both guards decorative.
+  test('v_office_messages is the INBOX only — the planner never reads its own words back', async () => {
+    const def = await pg.query(
+      `select pg_get_viewdef('v_office_messages'::regclass, true) as def`,
+    );
+    expect(def.rows[0].def).toContain("direction = 'to_planner'");
+
+    // Asserted against real rows too, not just the definition: a filter can be
+    // present and wrong.
+    const t = await pg.query(`select id from tenants where name = 'Default Tenant'`);
+    const tenantId = t.rows[0].id;
+    const tech = await pg.query(
+      `insert into technicians (tenant_id, ref, display_name, state, seat_exempt)
+       values ($1, 'qs-office-rail', 'Rail Probe', 'active', true) returning id`,
+      [tenantId],
+    );
+    await pg.query(
+      `insert into office_messages (tenant_id, direction, kind, from_ref, to_ref, technician_id, body)
+       values ($1,'to_planner','inform','qs-office-rail','spine:team-lead',$2,'INBOUND probe body'),
+              ($1,'to_agent','inform','spine:team-lead','qs-office-rail',$2,'OUTBOUND planner prose')`,
+      [tenantId, tech.rows[0].id],
+    );
+    try {
+      // `false`, not `true`: a local set_config dies with the (implicit)
+      // transaction, so the next statement reads '' and the view's uuid cast
+      // throws. Session scope keeps it for the read below.
+      await pg.query(`select set_config('spine.tenant_id', $1, false)`, [tenantId]);
+      const seen = await pg.query(
+        `select body, direction from v_office_messages where from_ref = 'qs-office-rail'
+            or to_ref = 'qs-office-rail'`,
+      );
+      expect(seen.rows.map((r) => r.body)).toEqual(['INBOUND probe body']);
+      expect(seen.rows.every((r) => r.direction === 'to_planner')).toBe(true);
+    } finally {
+      await pg.query(`select set_config('spine.tenant_id', '', false)`);
+      await pg.query(`delete from office_messages where technician_id = $1`, [tech.rows[0].id]);
+      await pg.query(`delete from technicians where id = $1`, [tech.rows[0].id]);
+    }
   });
 
   test('only service_role may execute query_spine — NOT anon or authenticated', async () => {

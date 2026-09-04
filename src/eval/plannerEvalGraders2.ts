@@ -97,6 +97,28 @@ export function gradeScenario(row: GradableRow, t0Ms: number): GraderFinding[] {
         });
       }
     }
+    if (e.anyAction) {
+      // NEITHER key-filtered NOR gap-less-filtered, and build 7 forced it.
+      // `action:` only inspects decisions keyed to a SEEDED gap, and an
+      // `observe` creates a gap this tick, so its id was never in `targets`.
+      // `gapLessAction:` cannot serve either: the decision row keys to
+      // `observation_id`, and plannerSim coalesces that into `nudge_id` before
+      // the graders run, so `gapIdOf` returns non-null. Without this key the
+      // one class of action build 7 adds would be ungradeable — and a scenario
+      // asking for it would silently pass by grading the pre-build-7 behaviour,
+      // which is the trap build 6.5 deleted a scenario over.
+      const all = row.ticks.flatMap((t) =>
+        t.decisions.filter((d) => d.action !== 'unmentioned'),
+      );
+      if (!all.some((d) => d.action === e.anyAction && d.outcome === 'applied')) {
+        findings.push({
+          kind: 'wrong-action',
+          detail:
+            `expected an APPLIED '${e.anyAction}' in some tick, about a gap or not; got ` +
+            (all.map((d) => `${d.action}/${d.outcome}`).join(', ') || 'no decision'),
+        });
+      }
+    }
     if (e.gapLessAction) {
       // NOT filtered by `targets`, and that is the whole point: a gap-less
       // decision has no key, so `gapIdOf` returns null and every filter above

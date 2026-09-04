@@ -2,11 +2,17 @@
 date: 2026-09-02
 task: "Build 7 — the record has authors: the planner opens its own observations, and a seat's inform can become one"
 research: thoughts/shared/research/2026-09-02-the-detectors-report.md
-status: draft
-supersedes: nothing
+status: complete
+supersedes: thoughts/shared/plans/2026-08-31-the-planners-inbox.md (the build-5.5 rule that office-channel answers NEVER fill the record — overturned by user ruling 2026-09-02, see Decisions)
 ---
 
-**`supersedes:` — nothing.** This plan overturns no earlier document. It implements §6a entry 7 as
+**`supersedes:` — build 5.5's inbox plan, in ONE respect.** That build established that an answer
+arriving on the office channel *informs* the planner's judgment and never *fills* the record; the
+doctrine said so in as many words and §6a entry 6.5 recorded it. The user overturned it on
+2026-09-02, mid-Phase-3 (reasoning in Decisions below). Nothing else in that plan is affected —
+the bucket, the drain, the desk and the three seat tools all stand. Named here because the
+sentence it replaces was deliberate, and a future reader finding the old text in that plan needs
+to know which way the decision went. It implements §6a entry 7 as
 reshaped by the user on 2026-09-02; the reshape is recorded in the research doc's ADDENDUM and in
 §6a, and the entries it corrects (the "15 staged tokens" count, the dead-end kinds, the
 `query_spine` residue) were corrected in place there rather than superseded.
@@ -60,6 +66,34 @@ the planner can turn into a standing item instead of a message read once and los
   `v_observations` (which selects no `context`), and is not a citation source. A date in a note
   still cannot reach a person: a message carrying it must pass that gap's own `dateLabels`. Phase 2
   pins exactly that, both directions.
+- **The planner can read its own inbox — `v_office_messages`** — USER RULING 2026-09-02, raised
+  as a question against Phase 3's doctrine ("Shouldn't the planner be able to read anything?").
+  There was no principled reason for the gap: no sensitivity column, no manager-only concept, and
+  bodies less sensitive than `v_captures`, which is already exposed. It was simply the one thing
+  the planner could not look back at, next to its own decisions, notes, observations and questions.
+- **A seat's words may CLOSE a gap — the 5.5 rule is superseded** — USER RULING 2026-09-02, in the
+  user's own words: *"The planner already gets to consider whether or not a gap should exist. Then
+  they should naturally get to just close the gap with any information, even the messages from the
+  seats, because they already get to kill a gap with no information. Also, when a planner needs
+  information from the seat agents, chances are the information is not obtainable from the record,
+  or else the planner would've just gotten it from the record."* One asymmetry recorded so the
+  reasoning survives scrutiny: `dismiss` (kill with no information) and `close` (the hole is
+  filled) are different claims, so this is not parity — it is that a planner trusted to end a gap
+  outright is trusted to weigh a technician's relayed report. **What does NOT widen:** a citation
+  from a message stamps no capture id, so `mv_gap_outcomes.closed_by_technician` is unmoved —
+  build 6 Phase 4's rule that widening what may be CITED must never widen what may be COUNTED.
+- **The shown messages are citable directly; the block is not a lookup** — USER CHOICE 2026-09-02.
+  The rail's own logic is "you may quote what you were actually shown", and a gap's evidence lines
+  are already citable with no lookup, so this matches the precedent rather than inventing one.
+  BODIES only: not the block's framing (our words, not anybody's) and **not the desk pairs**, which
+  are answers given in the planner's own name — quoting those is the self-citation the rail exists
+  to prevent. Older messages stay reachable the ordinary way, through `spine_read`.
+- **The doctrine states capabilities, it does not push them** — USER CORRECTION 2026-09-02, and it
+  caught a violation of a ruling already on the record. §6a entry 4 says a planner-opened
+  observation is *"a CAPABILITY, not a doctrine push: nothing encourages it (the job-notepad
+  posture — 'nothing tells you to write one')"*. Phase 3's first draft pushed in three places
+  (*"if one is worth keeping, observe it"*, *"say so while you can see it"*, *"you should when"*).
+  All three now end the way the notepad does: **Nothing tells you to make one.**
 - **`fromMessageId` is validated against THIS tick's unread ids** — implementation decision, from
   the review. It renders as provenance ("from a message from `<ref>`"), so an unchecked
   model-supplied id would let the planner attribute its own noticing to a person — the exact trust
@@ -151,20 +185,31 @@ sweep can never mint it.
 
 **`src/db/database.types.ts`** — regenerate with `--local`.
 
+**`v_observations` + `src/mcp/server.ts:816` — ADDED DURING IMPLEMENTATION, not in the plan.**
+The Phase-1 verification made the omission plain: the view is `spine_reader`'s ONLY window on this
+table — the surface doctrine points the planner at to find dismissed rows — and it could not say who
+authored a row, in the phase whose title is "the record learns who wrote it". `author` is appended
+LAST (what `create or replace view` requires), grants re-asserted, and the `SPINE_VIEW_CATALOG`
+string the planner is actually SHOWN now lists it. Worded neutrally on purpose: Phase 1 must not
+advertise a verb Phase 2 has not built yet.
+
 ### Automated verification
-- [ ] `npx supabase migration up` applies clean; re-applying is a no-op
-- [ ] `npx tsc --noEmit`, `npm run lint`, `npm test` pass — **unchanged**, nothing writes `'planner'` yet
-- [ ] new `observations.test.ts`: two `createObservation` calls with the same `(kind, subject_ref)`
+- [x] `npx supabase migration up` applies clean; re-applying is a clean 3-NOTICE no-op (replayed the file directly 3x)
+- [x] `npx tsc --noEmit`, `npm run lint`, `npm test` pass — **2620** (2618 + 2 new); no existing test changed behaviour
+- [x] new `observations.test.ts`: two `createObservation` calls with the same `(kind, subject_ref)`
       and `author:'planner'` both succeed with distinct ids; the same pair at the default author
-      returns a row then `null`
-- [ ] ACL probe (the existing Phase-1 pattern): `observations` and `v_observations` stay revoked
-      from `anon` / `authenticated` after the migration
+      returns a row then `null`. **Mutation-checked both ways by the round-2 reviewer:** whole index
+      → both new tests fail; `.eq('author','detector')` removed → the detector's-memory test fails
+- [x] ACL probe: `observations` and `v_observations` stay revoked from `anon` / `authenticated`
+      after the migration AND after the `create or replace view` (grants re-asserted in the file)
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack only.
-- [ ] Read `pg_indexes` back and confirm `indexdef` contains `WHERE (author = 'detector'::text)`, and
-      that the CHECK exists. **Never** `supabase migration list` — that ledger has drifted from real
-      schema before ([[deploy-does-not-migrate]]). Capture the `indexdef` string as evidence.
+- [x] `indexdef` = `CREATE UNIQUE INDEX uq_observations_subject_ever ON public.observations USING
+      btree (tenant_id, kind, subject_ref) WHERE (author = 'detector'::text)`; `pg_constraint` lookup
+      returns 0 rows; CHECK = `((author = ANY (ARRAY['detector'::text, 'planner'::text])))`.
+      **Behaviour tested, not inferred** (rolled-back txn): 2 planner rows on one triple both insert;
+      2 detector rows → 2nd raises 23505; a detector + 2 planner rows coexist; 0 rows left behind.
 
 ### Manual verification
 None.
@@ -243,29 +288,31 @@ literal the equality tests do not cover; without this `npm test` fails at the ph
 recover and send" — it must now also exclude `observe`.
 
 ### Automated verification
-- [ ] `npx tsc --noEmit`, `npm run lint`, `npm test` pass
-- [ ] the three pinned equalities hold, and `applyDecision`'s switch stays exhaustive (a missing case
-      is a `tsc` error — the property `:2766-2769` exists to preserve)
-- [ ] new `validateDecisions` tests: no `note` → refused; naming a gap → refused **via the gap-bound
-      path, not the tail**; `jobId:'not-a-uuid'` → refused with a sentence naming the field; two
-      observes in one tick both survive
-- [ ] new `runPlanner` test (not a direct `applyDecision` test — it is module-private): an applied
-      `observe` writes an `author:'planner'` row AND a `nudge_decisions` row whose **`observation_id`**
-      is the created id and whose `nudge_id` is null; a refused one writes a both-null row
-- [ ] **the date-rail pin, both directions:** a note containing "Thursday" is ACCEPTED, and a `send`
-      whose `message` contains "Thursday" is still REFUSED when that gap's `dateLabels` lack it
-- [ ] new `buildGapView` tests: a planner row with no job renders `about: <the note>`; a detector
-      row's `about:` line is **byte-identical** to today's
-- [ ] a malformed `jobId` reaching `jobIds` (hand-built row) does not throw the tenant's tick
+- [x] `npx tsc --noEmit`, `npm run lint`, `npm test` pass — **2628**
+- [x] the three pinned equalities hold; deleting `case 'observe'` is a `tsc` TS2366 (reviewer-checked)
+- [x] new `validateDecisions` tests: no `note`; naming a gap (gap-bound path — mutation-confirmed
+      that deleting the rail lets the tail ACCEPT it with no note); five malformed `jobId` shapes;
+      two observes in one tick
+- [x] new `runPlanner` tests, applied and refused. NOTE: these assert the INPUT to a mocked
+      recorder; the `subject → observation_id` routing itself is proven by the live check below, not
+      by a unit test (no test in the repo covers that routing)
+- [x] **the date-rail pin, both directions** — and the reviewer independently traced every escape
+      route: `v_observations` selects no `context`, the citation haystack is evidence + CITABLE_TOOLS
+      only, and a planner row's `dateLabels` cannot supply the word to a later send
+- [x] new `buildGapView` tests, plus the review's finding: the `notes:` line asserted a job in the
+      same block. Now pinned as a WHOLE-BLOCK invariant (`not.toContain('this job')`), mutation-
+      verified — reverting the fix fails the test
+- [x] a malformed `jobId` never reaches any of the three reads (`readJobIds`), asserted per read
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack. No MCP or model key — `runPlanner` takes an injected
   `runLoop`, so a scripted plan drives the whole path.
-- [ ] Drive one tick with an injected loop returning a single `observe`, then **read back through a
-      different channel than the one that wrote it**: query `observations` for `author='planner'` and
-      `nudge_decisions` for the row keyed by `observation_id`. Then run a SECOND tick with no
-      decisions and confirm the observation appears in the rendered prompt as a `noticed` block. The
-      round trip is the claim, not the write. Capture both rows and both prompts.
+- [x] Three real ticks against the local stack, only `runLoop` injected, read back via `psql`:
+      row = `author=planner / kind=planner_observation / status=open`, context carrying note+jobId;
+      decision row = `observation_id=<new id>, nudge_id=NULL, job_id SET, outcome=applied` (FK
+      join-verified); tick 2 rendered the block with `kind: planner_observation`, `state: noticed`
+      and the planner's own words as `about:`; tick 3's identical observe made a SECOND row (no
+      dedup). Every table restored to its prior count.
 
 ### Manual verification
 None.
@@ -316,25 +363,27 @@ asserts the map exactly and the total, so omitting it fails `npm test`. Note in 
 that, like every action expectation here, it grades only under the key-gated live runner.
 
 ### Automated verification
-- [ ] `npx tsc --noEmit`, `npm run lint`, `npm test`, `npm run build` pass
-- [ ] **doctrine pinned BOTH directions** with a CONTIGUOUS single-line phrase — `PLANNER_SYSTEM` and
-      the office header are joined arrays, so a pin spanning a line break can never match (§6a entry
-      6, lesson 2). Assert the new clause present AND *"takes no decision entry"* absent
-- [ ] the two surviving clauses still render (their existing pins must stay green)
-- [ ] `plannerCorpus.test.ts` passes, `FAMILY_COUNTS` included
-- [ ] new tests: the source line renders only when `fromOfficeMessageId` is set; a `fromMessageId`
-      not among this tick's unread messages is REFUSED; `fromRef` never comes from the model
-- [ ] **render `PLANNER_SYSTEM` and the office block and READ them** before claiming the phase done —
-      an edit script's exit code is not evidence it landed ([[read-the-rendered-artifact]])
+- [x] `npx tsc --noEmit`, `npm run lint`, `npm test` (**2635**), `npm run build` pass
+- [x] **doctrine pinned BOTH directions**, contiguous phrases. Rendered and READ before claiming
+      it landed — which caught a wrap bug ("It is not a / message") no assertion would have
+- [x] both surviving clauses render; their pre-existing pins stayed green throughout
+- [x] `plannerCorpus.test.ts` passes with `build7: 1`. `anyAction` verified non-vacuous by the
+      reviewer driving `gradeScenario` directly: an applied observe passes; silence, a pre-build-7
+      send, and a REFUSED observe each produce a finding
+- [x] those, plus TWO END-TO-END tests the review's findings forced: deleting either wiring hop
+      (the map at the call site, the context spread in apply) previously passed all 2632 tests.
+      Both mutations now fail. Plus null-as-absent for `fromMessageId`/`jobId`
+- [x] rendered and read, twice — after the first write and again after the review's scoping fix
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack; a model key in `.env` optional (without it, drive an injected
   loop as in Phase 2 — a fresh worktree has no `.env` and those tests skip, which is expected).
-- [ ] Seed a `to_planner` inform, run one tick, and confirm through a **separate read** that (a) the
-      inform was marked read and (b) an observation exists carrying `context.fromOfficeMessageId`
-      equal to that message's id. Run a second tick and confirm the observation is still on the list
-      while the inform is gone from the block — that persistence past the drain is the entire point
-      of the build. Capture both ticks' rendered prompts.
+- [x] Three real ticks, local stack, only `runLoop` injected, read back via `psql`. Tick 1: header
+      correct (both trust clauses intact), message drained to `status='read'`, observation written
+      with `fromOfficeMessageId` + `fromRef='p3-tech'` taken off the ROW. Tick 2: **no OFFICE
+      MESSAGES block at all** while the observation stands as a `noticed` gap carrying
+      `from: something p3-tech said`. Tick 3 (adversarial, with a REAL second message in the map so
+      the rail had to discriminate): a never-shown id REFUSED, nothing written, refusal recorded.
 
 ### Manual verification
 - [ ] Read the rewritten office header and the `observe` doctrine as a person would: does a seat's
@@ -343,6 +392,36 @@ that, like every action expectation here, it grades only under the key-gated liv
 
 ---
 *Manual verification is non-empty: PAUSE after this phase and wait for the user.*
+
+## Final gate — RUN 2026-09-02, five findings, all resolved
+
+`/code-review high` over the combined 4-commit diff. Per-phase reviews could not
+see these; three were defects, one was a false promise, one is recorded.
+
+1. **`v_office_messages` exposed `to_agent` bodies** — the planner's own send text and desk
+   answers, readable via `spine_read`, which is CITABLE. That is the self-citation laundering
+   build 6 Phase 4 found by live probe and shut, reopened by a view added in the same commit that
+   excluded desk pairs from `readText` for exactly that reason. FIXED: the view is
+   `direction = 'to_planner'` only — the INBOX, which is what the ruling asked for. Outbound stays
+   in the build-6.5 block. Mutation-verified: removing the filter fails the new test.
+2. **Money authorised a record-basis close on a planner observation.** `planner_observation` is the
+   first kind whose hole no code-computed fact can speak to, so a deposit landing on the attached
+   job would have closed "the customer sounded ready to walk" ON THE RECORD, citing the ledger.
+   FIXED: money is excluded for that kind only; `recordFilled` and the moot fact stay, because
+   both are genuinely about the thing the gap names.
+3. **A jobless observation asserted a firm-wide negative** — "NO notes have landed on the record",
+   from a job-scoped query that never ran. The first fix gated the WORDING and still made the
+   claim. FIXED: the line is omitted entirely when there is no job.
+4. **The `jobId` schema promised a rail that does not exist** ("an id not copied from a `job id:`
+   line is refused"); validate checks shape only. FIXED by making the text true and naming the
+   consequence, rather than adding a rail that would refuse a job legitimately looked up.
+5. **RECORDED, not fixed: `v_observations` cannot identify a planner row usefully.** `author` is
+   there, but the note lives in unselected `context` and `subject_ref` is now random — so the
+   doctrine's "find dismissed ones in v_observations and name the id" is weakest for exactly the
+   rows this build creates. Adding `note` to the view would make the planner's own prose citable,
+   which is finding 1 again by another door. Note that `dismiss_reason` (v_observations) and
+   `resolution` (v_nudges) are ALREADY planner-written and already exposed — so the self-citation
+   surface is wider than this build, and closing it properly is evaluation-phase work.
 
 ## Final gate
 

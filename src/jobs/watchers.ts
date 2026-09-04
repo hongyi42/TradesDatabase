@@ -145,6 +145,10 @@ export const PLANNER_JUDGMENT_ACTIONS: ReadonlySet<string> = new Set([
   'close',
   'dismiss',
   'recover',
+  // BUILD 7. Opening an observation is a real judgment about the record — the
+  // planner looked at something and decided it was worth keeping — so a tick
+  // that only observed must not read as neglect.
+  'observe',
   // (`ask_agent`/`inform_agent` stood here — deleted with the verbs in build
   // 6.5 Phase 4, where one `send` absorbed them. They live on in
   // `attentionActions` below, which is about HISTORIC rows.)

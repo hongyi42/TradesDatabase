@@ -1232,8 +1232,10 @@ describe('build 5 — the judgment vocabulary', () => {
     expect(PLANNER_JUDGMENT_ACTIONS.has('escalate')).toBe(false); // deleted, Phase 1
     expect(PLANNER_JUDGMENT_ACTIONS.has('leave')).toBe(false); // deleted, Phase 2
     // 9 -> 7 in build 6 (escalate, leave), 7 -> 5 in build 6.5 Phase 4 when one
-    // `send` absorbed ask_agent and inform_agent.
-    expect(PLANNER_ACTIONS).toHaveLength(5);
+    // `send` absorbed ask_agent and inform_agent, 5 -> 6 in build 7 (`observe`,
+    // the only verb that CREATES a gap rather than acting on one).
+    expect(PLANNER_ACTIONS).toHaveLength(6);
+    expect(PLANNER_JUDGMENT_ACTIONS.has('observe')).toBe(true);
   });
 });
 

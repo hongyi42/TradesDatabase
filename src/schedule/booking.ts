@@ -202,8 +202,8 @@ export interface BookVisitInput {
   // the freeze passes 'freeze <run>' so ledger rows say who decided (4b-3).
   reason?: string;
   // Extra ledger-event detail (plan 4b-3): merged UNDER the computed keys —
-  // computed detail always wins on a name clash. The freeze stamps
-  // { freezeRun } here so committed rows are findable as one run.
+  // computed detail always wins on a name clash. A batch caller stamps its own
+  // run identity here so the rows it wrote are findable as one run.
   eventDetailExtra?: Json;
   actorRef: string;
 }
@@ -847,9 +847,9 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
         assignmentId: r.old.id,
         kind: 'move_failed',
         actorRef: input.actorRef,
-        // The run stamp rides along (Phase-2 review flag-forward): a
-        // resolve/undo-run stranding's ledger row must be findable by
-        // listEventsByRunStamp like every other row the run wrote.
+        // Caller-supplied detail rides along, so a batch caller can stamp its
+        // own identity onto every ledger row it writes — including this
+        // stranding one.
         detail: { ...extraDetail(input.eventDetailExtra), toDay: input.date, reason: why },
       });
     } catch {
@@ -886,9 +886,8 @@ export interface UnscheduleVisitInput {
   tenantId: string;
   assignmentId: string;
   reason: string;
-  // Extra ledger-event detail — same contract as Book/MoveVisitInput's. The
-  // undo (plan 2026-07-30 Phase 5) stamps { undoRun } here; without it the
-  // run's unschedule steps would be invisible to listEventsByRunStamp.
+  // Extra ledger-event detail — same contract as Book/MoveVisitInput's, so a
+  // batch caller can stamp its own identity onto the rows it writes.
   eventDetailExtra?: Json;
   actorRef: string;
 }

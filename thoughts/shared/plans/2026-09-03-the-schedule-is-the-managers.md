@@ -111,6 +111,12 @@ is `export *` — nothing to edit.)
 **`src/telegram/boardApi.ts`** — import `:38`; `findOpenReviewItemsByKind` `:30` and
 `latestScheduleVersion` `:34` (only the proposal handler used them); the handler `:316-339` + its comment.
 **`src/telegram/boardNotify.ts:236-240`** — the `freezeRun`/`resolveRun` digest heading branch.
+The three `case 'freeze_committed' | 'resolve_committed' | 'undo_committed'` push handlers stay for
+now and are **deferred to Phase 3, not required to stay** (Phase-1 review). The honest reason is not
+the append-only Decisions clause — that protects the DATA and imposes nothing on the code. They are
+genuinely unreachable: `pollOnce` seeds `lastSeen` at `latestScheduleVersion(tenantId)` on first
+sight of a tenant and only advances, so historic rows are never re-read, and no writer of those
+kinds survives. They live only because three tests hand-insert the rows.
 **`web/board/board.js`** — proposal state `:37-45`, `fetchFreezeProposal` `:536-552` + call `:468`,
 `proposalTitle` `:557-559`, `syncFreezePill` `:567-~600` + calls `:376-380`, `openProposal` `:720-~750`;
 `freeze-pill` rules in `board.css` if present.
@@ -132,14 +138,20 @@ is `export *` — nothing to edit.)
   `:1140`, `:1152`, enclosing objects).
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `grep -rnE "run_freeze|run_resolve|undo_run|freezeSolve|freezeProposal|freezeCommit|resolveCommit|undoRun|roiClient|geocode\.js|latestCommittedRun|findUndoOfRun|listEventsByRunStamp|pending_(freeze|resolve|undo)|PINNED_SKIP_REASON|freezeRun|resolveRun|proposalLink|GOOGLE_ROUTES_SA_KEY_JSON" src scripts web package.json` returns nothing
-- [ ] `npx vitest run src/mcp/server.test.ts src/eval/toolCases.test.ts src/eval/worldSpec.test.ts src/telegram/boardApi.test.ts` — the 43 / 17 / 44 pins hold (the 43 lives inside the tests at `:2001` and `:2305`, not a "tool surface" test — run the files)
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `grep -rnE "run_freeze|run_resolve|undo_run|freezeSolve|freezeProposal|freezeCommit|resolveCommit|undoRun|roiClient|geocode\.js|latestCommittedRun|findUndoOfRun|listEventsByRunStamp|pending_(freeze|resolve|undo)|PINNED_SKIP_REASON|freezeRun|resolveRun|proposalLink|GOOGLE_ROUTES_SA_KEY_JSON" src scripts web package.json` returns **no live code** — corrected from "returns nothing", which was never achievable: a comment explaining that something was removed has to name it. Remaining hits must each be one of: a comment saying the thing is gone, an inert test fixture the plan permitted to stay, or a Phase-3 doc (`scripts/spine-eval/README.md:82`)
+- [x] `npx vitest run src/mcp/server.test.ts src/eval/toolCases.test.ts src/eval/worldSpec.test.ts src/telegram/boardApi.test.ts` — the 43 / 17 / 44 pins hold (the 43 lives inside the tests at `:2001` and `:2305`, not a "tool surface" test — run the files)
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack.
-- [ ] A fresh-context subagent lists tools as `mgr-test` via `dispatchForIdentity` and reports the
+- [x] A fresh-context subagent lists tools as `mgr-test` via `dispatchForIdentity` and reports the
       names: none of the three present; `find_slots`, `book_visit`, `cancel_job` present.
+      **Evidence (2026-09-04):** manager list = 43 names, technician = 17. All three verbs ABSENT from
+      both. Driven through `dispatchForIdentity`, the three throw `unknown tool: run_freeze` etc. —
+      the switch DEFAULT, not a tier refusal, which is the distinction that proves they are gone
+      rather than gated. Survivors reach their own argument validation (`book_visit` → "startTime and
+      endTime are required", `get_team_schedule` → `{"status":"ok",…}`). Local stack only; scratch
+      roster rows and script deleted; `git status` unchanged by the check.
 
 ### Manual verification
 - [ ] None.
@@ -231,10 +243,17 @@ already have it; removes the pinning clause; corrects the docs; records the rung
 
 **`src/eval/doctrine.ts:39`** — remove the entry; `doctrine.test.ts:19-29` then passes both directions.
 
+**`src/telegram/boardNotify.ts`** — the three `case 'freeze_committed' | 'resolve_committed' |
+'undo_committed'` handlers deferred from Phase 1 (unreachable: no writer survives and `pollOnce`
+never re-reads historic rows), plus the three tests that hand-insert those rows
+(`boardNotify.test.ts`, the `resolve_committed` / `freeze_committed` / undo cases).
+
 **Docs** — `docs/onboarding.md:264-277` (four bullets + the "freeze/resolve's job" sentence), `:282-283`,
 `:352`, `:627`; `docs/nemoclaw-tech-agent.md:105`, `:134` (the four tool descriptions inside the line),
 `:164`, `:255-285` → one line: retired 2026-09-03, rung 8; `scripts/spine-eval/README.md:82-84`;
-`docs/engineering-memory.md` §6a rung 8 → `[BUILT <date>]` + a `### 8.` section recording what was
+`docs/engineering-memory.md:4141` (the tool surface is cited as `17/46/47` — it is `17/43/42` after
+Phase 2: 17 technician, 43 manager after Phase 1, 42 after Phase 2; the `spineToolNames()` regex pin
+goes 47 → 44 → 43); and §6a rung 8 → `[BUILT <date>]` + a `### 8.` section recording what was
 deleted, the retained `awk` line, and the deploy notes.
 
 **Deploy notes (user actions):** Phase 2's migration BEFORE the code (deploys run no migrations). Remove

@@ -22,18 +22,6 @@ export type ReviewKind =
   | 'pending_visit_cancel'
   | 'pending_job_cancel'
   | 'pending_seat_add'
-  // The staged freeze plan (plan 4b-3): ONE open token per TENANT, kind-wide
-  // (staging dismisses every open one first — see findOpenReviewItemsByKind).
-  | 'pending_freeze'
-  // The staged re-solve plan (plan 2026-07-30): same one-per-tenant kind-wide
-  // rule; no cross-kind supersede with pending_freeze — committing either
-  // bumps the schedule version, which stales the other at confirm.
-  | 'pending_resolve'
-  // The staged undo of the latest committed run (plan 2026-07-30 Phase 5):
-  // one per tenant kind-wide; 15-MINUTE TTL (the send_email fresh-mistake
-  // idiom, NOT the 12h proposal kernel) — an undo is reached for right after
-  // the run, never rediscovered the next morning.
-  | 'pending_undo'
   // Onboarding task-reminder (NOT a staged token): opened when a seat is
   // confirmed, auto-resolved by set_availability, dismissable as the explicit
   // "no availability yet" acknowledgment (user decision 2026-07-20).
@@ -359,11 +347,12 @@ export async function getOpenReviewItem(
   return data;
 }
 
-// Every OPEN item of a kind, tenant-wide (plan 4b-3). The partial unique
-// index is per (tenant, kind, SUBJECT) — so two managers could each hold an
-// open `pending_freeze` under their own subjectRef. The freeze wants ONE live
-// plan per TENANT: staging first dismisses every open token of the kind,
-// whoever staged it, via this lister.
+// Every OPEN item of a kind, tenant-wide (plan 4b-3). The partial unique index
+// is per (tenant, kind, SUBJECT), so two managers can each hold an open item of
+// one kind under their own subjectRef. A kind that wants ONE live token per
+// TENANT dismisses every open one of its kind through this lister first,
+// whoever staged it. (The staged solver plans were that pattern's first user;
+// the sweep's per-kind gap read is what uses it now.)
 export async function findOpenReviewItemsByKind(
   tenantId: string,
   kind: ReviewKind,

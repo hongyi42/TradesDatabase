@@ -34,13 +34,16 @@ import type { RouteStop } from '../routes/deepLink.js';
 // ---------------------------------------------------------------------------
 // Pure minute math
 
-// Exported since 4b-3: freezeSolve shares THE minute math (a second copy could
-// drift from the one find_slots trusts).
-export const toMin = (hhmm: string): number => {
+// Module-local minute math. It was EXPORTED for 4b-3, when the freeze solver
+// shared it rather than keeping a second copy that could drift from the one
+// find_slots trusts; the solver is gone (rung 8) and nothing outside this file
+// reads it, so the export goes with it. `addDaysISO` and `dayWindows` DO have
+// other consumers and stay exported.
+const toMin = (hhmm: string): number => {
   const [h, m] = hhmm.split(':').map(Number);
   return h * 60 + m;
 };
-export const toHHMM = (min: number): string =>
+const toHHMM = (min: number): string =>
   `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 
 // Emission clamp: a slot may END at minute 1440 ('24:00' window edge) but

@@ -29,12 +29,6 @@ import { sendBoardMessage } from './boardBot.js';
 interface Push {
   userId: string;
   text: string;
-  // Set when the source event was stamped by a batch run (freezeCommit stamps
-  // `freezeRun`, resolveCommit stamps `resolveRun`) — lets a burst digest say
-  // WHY the schedule just changed. Undo runs (`undoRun`) stay unkinded on
-  // purpose: their bursts read fine under the generic header.
-  runStamp?: string;
-  runKind?: 'freeze' | 'resolve';
 }
 
 // A recipient getting more than this many messages in one poll tick has hit a
@@ -52,22 +46,10 @@ function digestText(pushes: Push[]): string {
   const lines = pushes.slice(0, DIGEST_MAX_LINES).map((p) => `• ${p.text}`);
   const more = pushes.length - DIGEST_MAX_LINES;
   if (more > 0) lines.push(`…and ${more} more — open the board for the full list.`);
-  // Name the run only when EVERY line came from the same one — a mixed burst
-  // (run + a manual edit that raced in) keeps the generic header rather than
-  // mis-attributing the manual change. No count in the run headers: a slow
-  // commit can straddle two poll ticks, so this batch's count is NOT
-  // necessarily "what the run did" — the bullets speak for themselves. The
-  // generic header's count is a claim about the batch only, so it stays.
-  const stamp = pushes[0]?.runStamp;
-  const kind = pushes[0]?.runKind;
-  const uniform =
-    stamp !== undefined && pushes.every((p) => p.runStamp === stamp && p.runKind === kind);
-  const header =
-    uniform && kind === 'freeze'
-      ? 'The schedule freeze updated your schedule:'
-      : uniform && kind === 'resolve'
-        ? 'The schedule re-plan updated your schedule:'
-        : `Your schedule changed — ${pushes.length} updates:`;
+  // ONE header now. The batch runs that used to name themselves here
+  // (`freezeRun` / `resolveRun` stamps) died with the solver, rung 8 — every
+  // burst is manual edits, and the count is a claim about this batch only.
+  const header = `Your schedule changed — ${pushes.length} updates:`;
   return [header, ...lines].join('\n');
 }
 
@@ -233,12 +215,7 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
     }
     // completed/backfilled and future kinds: no push.
   }
-  const freezeRun = detailStr(detail, 'freezeRun');
-  const resolveRun = detailStr(detail, 'resolveRun');
-  const stamp = freezeRun ?? resolveRun;
-  if (!stamp) return out;
-  const kind = freezeRun !== null ? ('freeze' as const) : ('resolve' as const);
-  return out.map((p) => ({ ...p, runStamp: stamp, runKind: kind }));
+  return out;
 }
 
 // One poll pass over every tenant with live Telegram bindings. `lastSeen` is

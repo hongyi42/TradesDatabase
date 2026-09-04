@@ -27,15 +27,12 @@ import {
 } from '../schedule/booking.js';
 import {
   durationError,
-  findOpenReviewItemsByKind,
   getTenant,
   isValidDuration,
   JOB_PRIORITIES,
-  latestScheduleVersion,
   type JobPriority,
 } from '../db/index.js';
 import { localDateISO } from '../schedule/availability.js';
-import { projectOpenProposal } from '../schedule/freezeProposal.js';
 
 // The dispatch board's HTTP surface, mounted by httpServer.ts BEFORE the IP
 // allowlist: board traffic comes from users' public browsers (the Telegram
@@ -302,40 +299,6 @@ export async function handleBoardRequest(
         return;
       }
       json(res, 200, { technicians: await readRosterForBoard(auth.tenantId) });
-      return;
-    }
-
-    // The staged proposal (read-only; the CONFIRM lives in chat — ritual
-    // doctrine, so this surface has no write path and serves no confirmId).
-    // Kind-agnostic since plan 2026-07-30: serves the ONE open proposal,
-    // freeze OR re-solve — the path keeps its shipped name (the deep link and
-    // the page are already wired to it). Manager-only like every proposal
-    // surface. The projection mirrors BOTH confirm-time staleness guards
-    // (12h clock + schedule-version pin), so the page can never show a plan
-    // the confirm would refuse.
-    if (pathname === '/board/api/freeze-proposal' && req.method === 'GET') {
-      const auth = await authBoard(req);
-      if (!auth.ok) {
-        deny(res, auth);
-        return;
-      }
-      if (auth.technician.tier !== 'manager') {
-        json(res, 403, { error: 'managers only' });
-        return;
-      }
-      // Items first, version only when something is open: this endpoint runs
-      // on every manager board paint, and outside the ~12h proposal window
-      // the version read would be pure waste (final-review efficiency
-      // finding). Sequencing costs one round-trip only in the rare open case.
-      const [freezeItems, resolveItems] = await Promise.all([
-        findOpenReviewItemsByKind(auth.tenantId, 'pending_freeze'),
-        findOpenReviewItemsByKind(auth.tenantId, 'pending_resolve'),
-      ]);
-      const version =
-        freezeItems.length || resolveItems.length
-          ? await latestScheduleVersion(auth.tenantId)
-          : 0;
-      json(res, 200, projectOpenProposal(freezeItems, resolveItems, version, Date.now()));
       return;
     }
 

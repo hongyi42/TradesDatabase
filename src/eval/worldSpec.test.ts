@@ -367,20 +367,6 @@ describe('buildWorldSpec — isolation and density', () => {
     });
   });
 
-  it('gives the solver tenants a pin to respect and a queue to drain', () => {
-    eachWorld((w, anchor) => {
-      for (const key of ['freeze', 'resolve']) {
-        const t = w.tenants.find((x) => x.key === key)!;
-        const scheduled = new Set(t.visits.map((v) => v.jobKey));
-        expect(t.visits.filter((v) => v.locked).length, `${key} pins @ ${anchor}`).toBe(1);
-        expect(
-          t.jobs.filter((j) => !scheduled.has(j.key)).length,
-          `${key} queue @ ${anchor}`,
-        ).toBeGreaterThanOrEqual(2);
-      }
-    });
-  });
-
   it('exhausts the seats tenant so the cap can be tested', () => {
     eachWorld((w) => {
       const seats = w.tenants.find((t) => t.key === 'seats')!;

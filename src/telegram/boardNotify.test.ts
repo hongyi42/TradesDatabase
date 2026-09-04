@@ -90,21 +90,17 @@ const book = (args: {
     ...args,
   });
 
-// Books `count` back-to-back one-hour visits for one person on one day —
-// the shape of a freeze commit's burst. Sequential, so event order is fixed.
-const burst = async (
-  technicianRef: string,
-  date: string,
-  count: number,
-  eventDetailExtra?: Json,
-): Promise<void> => {
+// Books `count` back-to-back one-hour visits for one person on one day — the
+// shape of a burst. Sequential, so event order is fixed. (It took an
+// `eventDetailExtra` to stamp a batch-run identity onto the rows; run
+// attribution died with the solver, rung 8, and nothing read it after that.)
+const burst = async (technicianRef: string, date: string, count: number): Promise<void> => {
   for (let i = 0; i < count; i++) {
     await book({
       technicianRef,
       date,
       startTime: `${String(5 + i).padStart(2, '0')}:00`,
       endTime: `${String(6 + i).padStart(2, '0')}:00`,
-      ...(eventDetailExtra ? { eventDetailExtra } : {}),
     });
   }
 };
@@ -329,24 +325,6 @@ describe('pollOnce', () => {
     }
   });
 
-  test('a burst stamped by one freeze run names the freeze in the digest header', async () => {
-    await burst('notify-n1', '2026-11-04', 4, { freezeRun: '2026-11-01T08:00:00.000Z' });
-    expect(await pollOnce(lastSeen)).toBe(1);
-    const [push] = sentTo();
-    // No count in the freeze header — a slow commit can straddle poll ticks,
-    // so a batch count would misstate what the freeze did.
-    expect(push.text).toContain('The schedule freeze updated your schedule:');
-    expect(push.text).toContain('• New visit on your schedule: 2026-11-04, 05:00–06:00.');
-  });
-
-  test('a burst stamped by one RESOLVE run gets the re-plan header (plan 2026-07-30)', async () => {
-    await burst('notify-n1', '2026-11-14', 4, { resolveRun: '2026-11-01T08:30:00.000Z' });
-    expect(await pollOnce(lastSeen)).toBe(1);
-    const [push] = sentTo();
-    expect(push.text).toContain('The schedule re-plan updated your schedule:');
-    expect(push.text).not.toContain('freeze');
-  });
-
   test('resolve_committed pushes the run summary to bound MANAGERS only', async () => {
     const mgr = await insertTechnician({
       tenantId,
@@ -409,15 +387,6 @@ describe('pollOnce', () => {
     ]);
     // Same single-manager hygiene as the resolve test above.
     await pg.query("update technicians set state = 'offboarded' where ref = 'notify-mgr10'");
-  });
-
-  test('a mixed burst (freeze rows + a manual edit that raced in) keeps the generic header', async () => {
-    await burst('notify-n1', '2026-11-05', 3, { freezeRun: '2026-11-01T09:00:00.000Z' });
-    await book({ technicianRef: 'notify-n1', date: '2026-11-05', startTime: '10:00', endTime: '11:00' });
-    expect(await pollOnce(lastSeen)).toBe(1);
-    const [push] = sentTo();
-    expect(push.text).toContain('Your schedule changed — 4 updates:');
-    expect(push.text).not.toContain('freeze');
   });
 
   test('a huge digest caps its bullet list and counts the remainder (Telegram length guard)', async () => {

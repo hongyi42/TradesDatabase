@@ -46,7 +46,7 @@ Regenerate with `npm run decisions:index`. 207 documents · 200 live · 7 supers
 
 ## Live
 
-- `2026-09-03` `plan` [2026-09-03-the-schedule-is-the-managers](shared/plans/2026-09-03-the-schedule-is-the-managers.md) · _draft_ — "Rung 8 — the schedule is the manager's: delete the autonomous solver and pinning"
+- `2026-09-03` `plan` [2026-09-03-the-schedule-is-the-managers](shared/plans/2026-09-03-the-schedule-is-the-managers.md) — "Rung 8 — the schedule is the manager's: delete the autonomous solver and pinning"
 - `2026-09-03` `research` [2026-09-03-the-schedule-is-the-managers](shared/research/2026-09-03-the-schedule-is-the-managers.md) `not landed` `describes 7 deleted files` — "Rung 8 — the schedule is the manager's: the demolition footprint of the autonomous solver"
 - `2026-09-02` `plan` [2026-09-02-one-send-verb](shared/plans/2026-09-02-one-send-verb.md) — "Build 6.5 — one generalized `send`: the planner chooses who to talk to, and a message need not be about a ga…
 - `2026-09-02` `plan` [2026-09-02-the-record-has-authors](shared/plans/2026-09-02-the-record-has-authors.md) — "Build 7 — the record has authors: the planner opens its own observations, and a seat's inform can become one"

@@ -2,7 +2,7 @@
 date: 2026-09-03
 task: "Rung 8 — the schedule is the manager's: delete the autonomous solver and pinning"
 research: thoughts/shared/research/2026-09-03-the-schedule-is-the-managers.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -289,3 +289,42 @@ copies on `trades-box-1` against the repo (memory `bootstrap-copy-drift-trap`); 
 
 ---
 *Pause after this phase — its Manual verification list is non-empty.*
+
+---
+
+## Final gate — RUN 2026-09-04, eleven findings, all resolved
+
+`/code-review high` over the combined three-commit diff (60 files, 504+/9090−). Each phase had its
+own review; this gate caught what only the whole diff shows.
+
+**The one that mattered: the deploy order was INVERTED.** Every migration note in this repo says
+apply-before-deploy, because a deploy runs no migrations and code that READS a new column must wait
+for it. This is a DROP, and the rule reverses: the pilot's pre-rung-8 code writes
+`locked: input.locked ?? false` on every insert, so applying the migration first would break every
+book / move / backfill until the deploy landed. The other order is strictly safe — the column keeps
+its `not null default false`, so rung 8's code runs happily against a database that still has it.
+Corrected in the migration header, §8b and the deploy notes.
+
+**Legacy staged tokens would have become actively harmful, not merely stale.** `review_items.kind`
+has no CHECK, so an open `pending_freeze` / `pending_resolve` / `pending_undo` row can survive. With
+the summarizer deleted it would dump its whole embedded plan into the agent's context, and
+`resolve_review` would now accept `resolved` on it — the `STAGED_ACTION_KINDS` guard that refused
+exactly that went with the verbs. The migration now dismisses them (review_items is mutable, unlike
+`schedule_events`, whose historic freeze rows correctly stay).
+
+**One behaviour lost its only test.** "A `needs_confirmation` result is never board-decorated" was
+asserted solely inside the deleted `run_freeze` describe, so removing the solver silently took the
+GENERAL rule's coverage with it. Re-pinned in the `boardLink decoration` test against `cancel_job`
+(always two-step, and in the decorated set, so the absence proves the staged-result rule rather than
+the tool). Mutation-verified: forcing the decorator past its status guard fails the test.
+
+**Eight more, all real:** a firm-facing cheat-sheet row still saying "Pin the Henderson visit"; the
+customer-onboarding runbook's go-live check #5 "Manager runs the freeze" (an impossible gate, and it
+was named one of the two that matter most); `customers.ts`'s coords note still warning that "the
+solver keeps routing to the old location"; `booking.ts`'s header still naming the auto-scheduler as a
+caller; `engineering-memory:1955`'s "13 base + 30 admin = 43" contradicting the file's own new §8b;
+`world.mjs`'s pilot-tenant note justifying itself with the deleted tenants; and the prod checklist
+still tracking an orphan `freezeLiveE2E.test.ts`.
+
+**Gates at close:** typecheck, lint, build clean; **2,551 tests**. `bash -n` on the bootstrap script
+passes. `npm run decisions:index` clean.

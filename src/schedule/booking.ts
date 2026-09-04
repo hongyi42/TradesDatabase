@@ -1,7 +1,8 @@
 // The deterministic booking verbs (no AI, no MCP): book / move / cancel one
-// visit on the DB-owned schedule, plus their stage-time PREVIEWS. The MCP
-// tools (Phase 3), the Mini App (Plan 2), and the auto-scheduler (Plan 3) all
-// call THESE — every guard here protects every surface at once. Previews and
+// visit on the DB-owned schedule, plus their stage-time PREVIEWS. The MCP tools
+// (Phase 3) and the Mini App (Plan 2) both call THESE — every guard here
+// protects every surface at once. (The auto-scheduler was a third caller until
+// rung 8 deleted it; the manager makes the schedule now.) Previews and
 // verbs share one resolution front-half so what a preview shows is exactly
 // what the commit will do (preview == commit, house rule).
 //

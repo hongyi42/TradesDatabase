@@ -77,9 +77,10 @@ const MODE = hasFlag('pilot') ? 'pilot' : 'local';
 console.log(`\n=== SPINE EVAL — BUILD WORLD (${MODE}) ===`);
 const { dbUrl } = MODE === 'pilot' ? requirePilotStack() : requireLocalStack();
 
-// In pilot mode only the tenants tier 3 actually drives are built. `freeze`,
-// `resolve` and `seats` are tier-1 mechanical fixtures and tier 1 stays local, so
-// writing them to the pilot would be permanent footprint bought for nothing.
+// In pilot mode only the tenants tier 3 actually drives are built. `seats` is a
+// tier-1 mechanical fixture and tier 1 stays local, so writing it to the pilot
+// would be permanent footprint bought for nothing. (`freeze` and `resolve` were
+// two more until rung 8 deleted the solver they existed for.)
 // `other` stays: the cross-tenant isolation scenarios are among the most valuable
 // things tier 3 can check, and they need a second tenant to fail against.
 const PILOT_TENANT_KEYS = ['main', 'other'];

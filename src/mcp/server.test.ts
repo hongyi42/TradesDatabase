@@ -5031,6 +5031,35 @@ describe('boardLink decoration (chat → board bridge)', () => {
       expect(team.data?.boardLink).toBeUndefined();
       expect(team.data?.boardNote).toBeUndefined();
 
+      // A STAGED result is never decorated either, and this is a different
+      // rule from the one above: cancel_job IS in the decorated set, so the
+      // absence here comes from `status === 'needs_confirmation'`, not from
+      // the tool. Staging writes nothing, so "see it on the board" mid-confirm
+      // would show the OLD schedule at the exact moment precision matters.
+      //
+      // RE-PINNED HERE (rung 8): the only assertion of this rule lived inside
+      // the deleted `run_freeze` describe — which had the one staged result the
+      // decorator treated specially — so removing the solver silently took the
+      // general rule's coverage with it.
+      const stagingCustomer = await createCustomer({ tenantId, name: 'BoardLink Staging Casa' });
+      const stagingJob = await createJob({
+        tenantId,
+        customerId: stagingCustomer.id,
+        title: 'staged, never decorated',
+      });
+      const { client: deco, callWith: decoCall } = await clientFor({
+        tenantId,
+        technicianRef: 'mgr-test',
+      });
+      try {
+        const staged = await decoCall('cancel_job', { jobId: stagingJob.id, reason: 'probe' });
+        expect(staged.data.status).toBe('needs_confirmation');
+        expect(staged.data.boardLink).toBeUndefined();
+        expect(staged.data.boardNote).toBeUndefined();
+      } finally {
+        await deco.close();
+      }
+
       // A malformed handle is treated as UNSET (never relayed): t.me has
       // sensitive deep-link namespaces a mangled value could reach.
       process.env.BOARD_BOT_HANDLE = 't.me/Not A Handle';

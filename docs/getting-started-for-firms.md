@@ -344,7 +344,6 @@ feature can reach.
 | Move | "Move the Costa quote to Thursday" |
 | Find room | "When can we fit a 2-hour job this week?" |
 | See what's unplanned | "What still needs assigning?" |
-| Protect a visit | "Pin the Henderson visit" |
 | Add someone | "Add Ben Shelton as a technician" |
 | Set hours | "Ben works Monday to Friday 8 to 5" |
 | Time off | "Priya is off the 14th through the 18th" |

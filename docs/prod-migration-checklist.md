@@ -168,7 +168,6 @@ if (isProd && process.env.INBOUND_DEBUG)       throw new Error('FATAL: INBOUND_D
 - [ ] `npm run lint` clean
 - [ ] `npm test` green against the **local** stack (confirm `testEnvGuard` blocks any hosted URL)
 - [ ] `npm run build` clean
-- [ ] Decide the fate of untracked `src/schedule/freezeLiveE2E.test.ts` (commit or exclude — no orphan)
 - [ ] Suite runs twice back-to-back cleanly (`fileParallelism:false`; watch cost-suite contamination)
 
 ### Tier 1 — Data integrity (the append-only spine)

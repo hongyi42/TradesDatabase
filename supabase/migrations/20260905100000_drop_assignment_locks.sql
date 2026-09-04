@@ -8,8 +8,15 @@
 -- for a concept the doctrine no longer teaches, is the learnability cost the
 -- scheduling remodel exists to remove (user ruling 2026-09-03, §6a rung 8).
 --
--- DEPLOY ORDER: apply BEFORE deploying the code. Deploys run no migrations, and
--- the code stops selecting `locked` the moment rung 8 ships.
+-- DEPLOY ORDER: **CODE FIRST, THEN THIS MIGRATION** — the reverse of this repo's
+-- usual rule, and the reverse is what is safe here. The rule exists because a
+-- deploy runs no migrations, so a code change that READS a new column must wait
+-- for it. This is a DROP: the code still running in the pilot writes
+-- `locked: input.locked ?? false` on every insert (`createAssignment`), so
+-- applying this first would break every book / move / backfill until the deploy
+-- landed. The other order is strictly safe: the column keeps its
+-- `not null default false`, so rung 8's code — which never names it — runs
+-- happily against a database that still has it.
 --
 -- DROP + CREATE, not CREATE OR REPLACE: replace cannot change a view's column
 -- list (42P16 bites on removals, not body changes — see the note in
@@ -62,3 +69,20 @@ grant select on v_schedule to spine_reader;
 revoke all on v_schedule from anon, authenticated;
 
 alter table assignments drop column locked;
+
+-- CLOSE THE SOLVER'S ORPHANED STAGED TOKENS. `pending_freeze` / `pending_resolve`
+-- / `pending_undo` rows each embed a WHOLE staged plan, and `review_items.kind`
+-- is free text with no CHECK, so nothing stops an old open one surviving. Left
+-- open they are actively harmful, not merely stale: `list_pending_reviews` no
+-- longer summarizes them (the summarizer died with the verbs), so one would dump
+-- its entire plan into the agent's context, and `resolve_review` would now accept
+-- `resolved` on it — the STAGED_ACTION_KINDS guard that refused exactly that is
+-- gone too. There is no tool left to confirm them with, so dismissed is the only
+-- honest end. review_items is mutable (no append-only trigger), unlike
+-- schedule_events, whose historic freeze rows correctly stay.
+update review_items
+   set status = 'dismissed',
+       resolution = 'the freeze was removed (rung 8) — this plan can no longer be confirmed',
+       resolved_at = now()
+ where kind in ('pending_freeze', 'pending_resolve', 'pending_undo')
+   and status = 'open';

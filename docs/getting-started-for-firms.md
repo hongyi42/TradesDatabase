@@ -4,7 +4,7 @@
 first time, and the technicians who work for them. No technical background assumed. If a word needs
 explaining, it gets explained.
 
-**How to use it:** read Part 1 and Part 2 before your first day. Then work through Parts 3–6 one per
+**How to use it:** read Part 1 and Part 2 before your first day. Then work through Parts 3–5 one per
 week — the system rewards learning it in that order, because each part depends on the one before.
 
 ---
@@ -271,51 +271,8 @@ with real customers and one you can't.
 
 If you got a promise wrong, fix it: *"actually I only promised the Millers a day, not a time."*
 
-### Pinning
 
-> **You:** Pin the Henderson visit — Ben specifically asked for it.
-
-Pinned means automatic scheduling will never touch it, for any reason. **Only a human ever pins
-anything** — the assistant never pins on its own. Use it for the things you know that the system
-doesn't.
-
----
-
-## Part 6 — Week 3, Manager: the weekly freeze
-
-This is where the system starts saving you your Sunday evening.
-
-During the week, work accumulates in the loose pile — jobs with no visit yet, visits with nobody
-attached, visits that have a day but no time. Once a week (most firms do it Friday afternoon), you
-run **the freeze**:
-
-> **You:** Run the freeze for next week.
->
-> **Assistant:** Proposed plan: 23 placed, 4 skipped, 2 pinned untouched. The two that matter: the
-> Costa install needs a full day and nothing has one free before the 19th; Priya's Wednesday is over
-> capacity by 90 minutes. Nothing is booked yet — the full plan is on the board.
->
-> *(You open the board, look it over, drag two things around.)*
->
-> **You:** Yes, go ahead.
-
-What just happened: it worked out real driving routes and placed the loose pile across your team's
-week — respecting hours, time off, job lengths, promises, and pinned work. It **booked nothing** until
-you said yes.
-
-Three things worth knowing:
-
-- **A proposal expires after 12 hours**, and dies immediately if the schedule changes underneath it.
-  Re-run for a fresh one — this is deliberate, so you never commit a stale plan.
-- **When reality breaks the plan** — someone calls in sick, an emergency lands — you can re-plan the
-  whole week rather than hand-patching it: *"re-solve the rest of the week."* Same deal: proposal
-  first, your yes second. It prefers small same-day shuffles over throwing everything around.
-- **If you regret it:** *"undo that."* It puts everything back where it was — but only for the most
-  recent run, and **only within 15 minutes**. It is a fresh-mistake tool, not a time machine.
-
----
-
-## Part 7 — Week 4: the channels that fill the record for you
+## Part 6 — Week 4: the channels that fill the record for you
 
 Everything so far was people typing and talking. These two fill the record by themselves.
 
@@ -365,7 +322,7 @@ feature can reach.
 
 ---
 
-## Part 8 — Cheat sheet
+## Part 7 — Cheat sheet
 
 **Technicians**
 
@@ -387,9 +344,6 @@ feature can reach.
 | Move | "Move the Costa quote to Thursday" |
 | Find room | "When can we fit a 2-hour job this week?" |
 | See what's unplanned | "What still needs assigning?" |
-| Plan the week | "Run the freeze" |
-| Re-plan after chaos | "Re-solve the rest of the week" |
-| Undo (within 15 min) | "Undo that" |
 | Protect a visit | "Pin the Henderson visit" |
 | Add someone | "Add Ben Shelton as a technician" |
 | Set hours | "Ben works Monday to Friday 8 to 5" |
@@ -398,7 +352,7 @@ feature can reach.
 
 ---
 
-## Part 9 — When something seems wrong
+## Part 8 — When something seems wrong
 
 | What you see | What's happening | What to do |
 |---|---|---|
@@ -417,7 +371,7 @@ a bug worth knowing about.
 
 ---
 
-## Part 10 — What it doesn't do
+## Part 9 — What it doesn't do
 
 Worth knowing before you build a habit around something that isn't there:
 
@@ -431,7 +385,7 @@ Worth knowing before you build a habit around something that isn't there:
 
 ---
 
-## Part 11 — Your first month, honestly
+## Part 10 — Your first month, honestly
 
 - **Week 1:** get everyone recording voice notes after every job. That single habit is 80% of the
   value, and it is the only one that needs real behavior change. Nothing else works well until the
@@ -440,8 +394,7 @@ Worth knowing before you build a habit around something that isn't there:
   at it on your own.
 - **Week 3:** start each morning by asking for a briefing on your first two customers. This is where
   technicians usually get convinced.
-- **Week 4:** run the freeze for real, and let the phone and email channels fill the record while you
-  do.
+- **Week 4:** let the phone and email channels fill the record while you work.
 
 The compounding is the point. A record with three months of notes in it is a different product from an
 empty one — briefings get sharper, repeat customers stop needing to re-explain their history, and the

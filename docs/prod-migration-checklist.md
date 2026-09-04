@@ -195,8 +195,8 @@ if (isProd && process.env.INBOUND_DEBUG)       throw new Error('FATAL: INBOUND_D
 - [ ] Config audit — every var present + valid on the **right** service (web / cron / box). See B3
       table + full list in `docs/control-plane.md` and `.env.example`.
 - [ ] `INBOUND_DEBUG` unset in prod; `ALLOWED_CLIENT_IPS` populated.
-- [ ] `GOOGLE_ROUTES_SA_KEY_JSON` = one-line, **no wrapping quotes**; its key allowlist includes the
-      Geocoding API.
+- [ ] `GOOGLE_ROUTES_SA_KEY_JSON` **REMOVED** from the web service — rung 8 deleted the solver and
+      nothing reads it (`GOOGLE_MAPS_API_KEY` stays: `find_slots` uses the Routes API).
 - [ ] Break-tests: invalidate `INFERENCE_API_KEY` → loud failure + alert; mismatch
       `COMPOSIO_WEBHOOK_SECRET` → inbound 401 + you notice; unset cron `COMPOSIO_API_KEY` → visible
       skip, not hidden.
@@ -244,9 +244,8 @@ if (isProd && process.env.INBOUND_DEBUG)       throw new Error('FATAL: INBOUND_D
 - [ ] `no_confirmed_overlap` exclusion constraint blocks double-booking at the DB level
 - [ ] `rescheduleAssignment` moves pass `status:'confirmed'` (rows created `'proposed'` are invisible)
 - [ ] Naive-local time: availability uses `'UTC'` — confirm no pilot tenant spans timezones
-- [ ] Pattern-less techs are invisible to freeze/find_slots — confirm live techs have patterns
+- [ ] Pattern-less techs are invisible to find_slots — confirm live techs have patterns
 - [ ] DST-boundary booking lands correctly
-- [ ] Freeze commit (`freezeCommit.ts`, under-tested) — mass mutation idempotency/guards verified
 
 ### Tier 8 — Cost tracking
 - [ ] No double-count — infra invoice netted of already-metered spend, on one real bill
@@ -290,8 +289,8 @@ if (isProd && process.env.INBOUND_DEBUG)       throw new Error('FATAL: INBOUND_D
 - [ ] **`email/classify.ts`** — real classifier is LIVE-only, self-skipping. Add a keyed CI job or a
       fixture-graded run so the inbound gate is verified in CI.
 - [ ] **`telegram/boardWorker.ts`** — worker entrypoint untested. A crash = no dispatch notifications.
-- [ ] `schedule/freezeCommit.ts`, `db/rawCaptures.ts`, `db/foldImpact.ts`, `db/reviewItems.ts` —
-      load-bearing writers tested only transitively; add focused tests.
+- [ ] `db/rawCaptures.ts`, `db/foldImpact.ts`, `db/reviewItems.ts` — load-bearing writers tested
+      only transitively; add focused tests.
 
 ---
 

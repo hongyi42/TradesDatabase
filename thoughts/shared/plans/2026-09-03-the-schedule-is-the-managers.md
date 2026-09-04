@@ -270,17 +270,19 @@ deleted, the retained `awk` line, and the deploy notes.
 copies on `trades-box-1` against the repo (memory `bootstrap-copy-drift-trap`); s2 first, then the fleet.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `npx vitest run src/eval/doctrine.test.ts` — no unknown and no missing section
-- [ ] `bash -n Box_Setup_Stuff/bootstrap-box.sh` parses (the review found the first draft's range would
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `npx vitest run src/eval/doctrine.test.ts` — no unknown and no missing section
+- [x] `bash -n Box_Setup_Stuff/bootstrap-box.sh` parses (the review found the first draft's range would
       have beheaded the next heredoc)
-- [ ] `grep -nE "freeze|set_visit_locks|pinned" Box_Setup_Stuff/bootstrap-box.sh` shows only the openclaw
+- [x] `grep -nE "freeze|set_visit_locks|pinned" Box_Setup_Stuff/bootstrap-box.sh` shows only the openclaw
       version-pin lines and the retained delete block
-- [ ] `npm run decisions:index` clean
+- [x] `npm run decisions:index` clean
 
 ### Live verification (agent-executable)
 - Prerequisites: none codified — the box rollout is a deploy-time step.
 - [ ] Deferred to rollout: on s2 after re-running the script, `grep -c "The freeze ritual" AGENTS.md` → 0.
+      (Not runnable here — the box rollout is a deploy-time step. `bash -n` + the retained `awk`
+      delete are what this phase could verify, and both pass.)
 
 ### Manual verification
 - [ ] Read the renumbered Confirmations block and judge it reads as one list.

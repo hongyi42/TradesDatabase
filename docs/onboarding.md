@@ -256,31 +256,28 @@ rule is single-sourced as `requiresConfirmation` on tool previews in
 The scheduling verbs, in rough order of depth:
 
 - `book_visit` / `move_visit` / `unschedule_visit` / `cancel_job` — the deterministic one-visit
-  verbs. **Every surface calls these** (chat, board, solver). One write path, one guard set.
+  verbs. **Every surface calls these** (chat, board). One write path, one guard set.
 - `find_slots` — the fit engine ([src/schedule/fit.ts](../src/schedule/fit.ts)): pure gap math and
   candidate scoring, no clock (`today`/`now` are inputs, so everything is fake-clock testable).
   Feasibility is a **tool verdict, never the model's opinion** — every emitted slot must be
   bookable verbatim.
-- `run_freeze` — the weekly ritual. Calls Google Route Optimization to place the loose queues
-  across the team's week, stages a proposal, and **stops**. The manager's "yes" in chat is the only
-  commit path. ([src/schedule/freezeSolve.ts](../src/schedule/freezeSolve.ts))
-- `run_resolve` — the freeze's sibling: a horizon-wide re-optimizer where every *unpinned* visit is
-  movable and the promise level sets its degree of freedom. Displacement is priced, so the solver
-  prefers cheap same-day shuffles over day hops.
-- `undo_run` — restore the last batch run. **No solver.** The run-stamped event ledger plus the
-  cancelled predecessor rows *are* the memory (every move cancels + remints a row, so each prior
-  state still exists).
-- `set_visit_locks` — pinning. Pinning is a **human privilege**: the verbs never auto-pin.
+
+**The autonomous solver is gone (rung 8, 2026-09-03).** `run_freeze` placed the loose queues via
+Google Route Optimization, `run_resolve` re-optimized already-placed visits, `undo_run` reversed
+either, and `set_visit_locks` pinned a visit against them. The user's ruling is that **the manager
+makes the schedule** — the sophistication was unproven and it was making users fit our model of
+scheduling rather than the reverse. Route optimization returns in rung 10 as an *advisory* tool the
+manager's agent may choose to call. See `docs/engineering-memory.md` §6a.
 
 A **schedule read renders the booked order; it never re-derives one.** Reads return stops in booked
-(time) order with a per-stop Maps link. Deciding order means *moving* visits, which is
-freeze/resolve's job and requires a human yes.
+(time) order with a per-stop Maps link. Deciding order means *moving* visits, which is the manager's
+call through `move_visit`.
 
 ### 4e. The dispatch board (Telegram Mini App)
 
 `web/board/` + [src/telegram/boardApi.ts](../src/telegram/boardApi.ts) + a background worker. Day
-grid, loose-bucket tray, job sheets, quick edits, freeze/resolve proposal view, push notifications
-(digested — a freeze commit used to machine-gun one push per visit).
+grid, loose-bucket tray, job sheets, quick edits, push notifications (digested — a burst of edits
+would otherwise machine-gun one push per visit).
 
 Non-negotiable guardrail: **every board gesture calls the same `src/schedule/booking.ts` verbs as
 chat.** Never a parallel editing path.
@@ -349,15 +346,14 @@ src/
   writePath/    ← raw → structured: extract.ts (model), identityMatch.ts (deterministic),
                   recordFieldNote.ts (the orchestrator)
   synthesis/    ← briefings, question answering, citation grounding
-  schedule/     ← booking verbs, availability, fit engine, freeze/resolve solvers, undo, policy
+  schedule/     ← booking verbs, availability, fit engine (find_slots), policy
   telegram/     ← the Mini App board API, initData verification, notification worker, roster cache
   admin/        ← the operator cost dashboard API
   composio/     ← connector integration: pairing, sessions, outbound sends, the doorman relay,
                   execution-log ingestion, offboarding
   inbound/      ← webhook receipt + per-source normalizers (Gmail)
   email/        ← work-vs-personal classifier, ingest, formatting
-  routes/       ← Google clients: Routes, Geocoding, Route Optimization (roiClient), Maps deep
-                  links, day source
+  routes/       ← Google clients: Routes (find_slots drive deltas), Maps deep links, day source
   control/      ← badge minting + the badges file the host pulls. (The pull script itself lives
                   in Box_Setup_Stuff/; what's here is the test that guards it.)
   model/        ← forcedTool.ts: ONE transport for all four model calls; usage metering
@@ -624,10 +620,7 @@ discoverable from the code:
 | **Composio** | Third-party connector platform (Gmail, Sheets…) with per-person sessions. |
 | **The board** | The Telegram Mini App dispatch board. |
 | **Promise ladder** | `none` / `day` / `time_only` / `time` — what the customer was told. |
-| **The freeze** | The weekly ritual that plans the loose queue across the team's week. |
-| **Re-solve** | Horizon-wide re-optimization of unpinned visits. |
 | **Loose bucket / tray** | Work that exists but isn't scheduled yet. |
-| **Pinned** | A manager-set flag meaning "the solver must not move this". |
 | **Wire pass** | Re-running the box bootstrap so each sandbox's AGENTS.md contract text refreshes. |
 | **RPI** | Research → Plan → Implement, our feature workflow. |
 | **trades-box-1** | The AWS Lightsail host running all the agent sandboxes. |

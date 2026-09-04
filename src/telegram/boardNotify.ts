@@ -3,7 +3,6 @@ import {
   getTechnicianById,
   isInactiveState,
   latestScheduleVersion,
-  listManagersWithTelegram,
   listScheduleEventsSince,
   listTenantIdsWithTelegramBindings,
   type Assignment,
@@ -144,71 +143,6 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
         out.push({
           userId: tech.telegram_user_id,
           text: `A reschedule of your visit (to ${toDay}) failed — it is currently UNSCHEDULED; check the board.`,
-        });
-      }
-      break;
-    }
-    case 'freeze_committed': {
-      // The run summary goes to MANAGERS (plan 4b-3) — the first
-      // manager-directed push: in a multi-manager firm, everyone hears what a
-      // colleague committed. Technicians hear nothing extra here: each
-      // committed row already produced its own booked/moved push above.
-      const placed = typeof detail.placed === 'number' ? detail.placed : '?';
-      const skipped = typeof detail.skipped === 'number' ? detail.skipped : '?';
-      for (const m of await listManagersWithTelegram(tenantId)) {
-        if (!m.telegram_user_id) continue;
-        out.push({
-          userId: m.telegram_user_id,
-          text: `Freeze ran (by ${ev.actor_ref ?? 'a manager'}): placed ${placed}, skipped ${skipped} — see the board.`,
-        });
-      }
-      break;
-    }
-    case 'resolve_committed': {
-      // Same manager-directed summary for a re-solve run (plan 2026-07-30):
-      // each moved/placed row already pushed the affected technician above.
-      // Stranded counts ride along (final-review finding): in a multi-manager
-      // firm only the ACTING manager's chat sees the URGENT stranded copy —
-      // a colleague's push must not read as routine when a visit sits
-      // person-less.
-      const moved = typeof detail.moved === 'number' ? detail.moved : '?';
-      const placed = typeof detail.placed === 'number' ? detail.placed : '?';
-      const kept = typeof detail.kept === 'number' ? detail.kept : '?';
-      const stranded =
-        typeof detail.stranded === 'number' && detail.stranded > 0
-          ? ` STRANDED ${detail.stranded} — visit(s) left with NOBODY assigned, reassign by hand.`
-          : '';
-      for (const m of await listManagersWithTelegram(tenantId)) {
-        if (!m.telegram_user_id) continue;
-        out.push({
-          userId: m.telegram_user_id,
-          text: `Re-solve ran (by ${ev.actor_ref ?? 'a manager'}): moved ${moved}, placed ${placed}, kept ${kept} — see the board.${stranded}`,
-        });
-      }
-      break;
-    }
-    case 'undo_committed': {
-      // The undo's manager summary (plan 2026-07-30 Phase 5). Its per-row
-      // events stay unkinded on purpose (no undoRun header), so technicians
-      // see them under the generic digest header. Stranded counts ride along
-      // — same multi-manager honesty rule as the resolve summary.
-      const restored = typeof detail.restored === 'number' ? detail.restored : '?';
-      const skipped = typeof detail.skipped === 'number' ? detail.skipped : '?';
-      const strandedBits = [
-        typeof detail.stranded === 'number' && detail.stranded > 0
-          ? `${detail.stranded} visit(s) left with NOBODY assigned`
-          : null,
-        typeof detail.strandedTbd === 'number' && detail.strandedTbd > 0
-          ? `${detail.strandedTbd} visit(s) dropped to the loose bucket un-rebooked`
-          : null,
-      ].filter((s): s is string => s !== null);
-      const strandedTail =
-        strandedBits.length > 0 ? ` STRANDED: ${strandedBits.join('; ')} — fix by hand.` : '';
-      for (const m of await listManagersWithTelegram(tenantId)) {
-        if (!m.telegram_user_id) continue;
-        out.push({
-          userId: m.telegram_user_id,
-          text: `Undo ran (by ${ev.actor_ref ?? 'a manager'}): restored ${restored}, skipped ${skipped} — see the board.${strandedTail}`,
         });
       }
       break;

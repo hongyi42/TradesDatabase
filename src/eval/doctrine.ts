@@ -62,7 +62,17 @@ function nameOf(heading: string): string {
  * those are prompt text.
  */
 export function extractDoctrine(bootstrapScript: string): DoctrineSection[] {
-  const lines = bootstrapScript.split('\n');
+  // CRLF-tolerant. bootstrap-box.sh is LF in git but CRLF in a Windows working
+  // copy, and the heredoc terminator below is an EXACT comparison: `'EOF\r'`
+  // never equals `'EOF'`, so on Windows every heredoc opened and none closed,
+  // and extractDoctrine returned nothing at all. That reads as "the doctrine is
+  // empty" rather than "the parse failed" — the fingerprint quietly became
+  // sha256(""), which is what the tests were asserting against.
+  //
+  // Splitting here is enough: chunks are re-joined with '\n' below, so every
+  // downstream comparison sees clean lines. On an LF checkout this is identical
+  // to split('\n').
+  const lines = bootstrapScript.split(/\r?\n/);
   const chunks: string[] = [];
   let collecting = false;
   let current: string[] = [];

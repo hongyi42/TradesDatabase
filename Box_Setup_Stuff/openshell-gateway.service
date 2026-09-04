@@ -1,0 +1,66 @@
+[Unit]
+# The sandbox control plane. ONE per box, and every sandbox is pointed at it by
+# construction: each container carries OPENSHELL_ENDPOINT=https://host.openshell
+# .internal:8080/, and its /etc/hosts maps that name to the openshell-docker
+# bridge gateway (172.18.0.1), which is where this process binds. It also backs
+# the ssh-proxy tunnels the host CLI uses to reach into sandboxes.
+#
+# WHY THIS FILE EXISTS. Until it did, the gateway had no unit at all
+# (LoadState=not-found) and ran orphaned to PID 1, started as a side effect of
+# nemoclaw-boot.service -> `nemoclaw s8 doctor` and left behind when that
+# oneshot exited. So it came back after a REBOOT but nothing restarted it after
+# a mid-life crash, and every seat on the box depends on it.
+#
+# It was also invisible: absent from BOX_UNITS in box-report.sh. Through a
+# gateway death the containers keep running, the nemoclaw-agent-* units stay
+# active, doorman/disk/memory/docker all report ok — the monitor stays fully
+# green while every seat is broken.
+#
+# ORDER MATTERS WHEN ADOPTING THIS. unit_status() in box-report.sh returns
+# `skip` for anything whose LoadState is not `loaded`, and check_units logs
+# "not installed — skipping". So the unit must be installed FIRST and the name
+# added to BOX_UNITS second; reversed, the check reads as configured and covers
+# nothing.
+Description=OpenShell gateway (sandbox control plane; serves every seat on this box)
+Documentation=https://github.com/hongyi42/TradesDatabase/blob/main/thoughts/shared/plans/2026-08-31-the-box-keeps-its-numbers.md
+# The docker bridge must exist before this binds to its gateway address, and the
+# driver talks to the daemon on startup.
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu
+
+# The gateway takes NO command-line flags — the running process's argv is bare.
+# Its entire configuration arrives through the environment, and a unit that
+# omitted it would start a gateway with no driver, no database, no TLS material
+# and no supervisor image, then bind somewhere else. That would cut off every
+# sandbox at once, which is the exact outage this unit exists to prevent.
+#
+# Generate the file with capture-gateway-env.sh, which reads it from the running
+# process rather than hardcoding paths — the state directory is per-install and
+# differs between boxes.
+EnvironmentFile=/etc/nemoclaw/openshell-gateway.env
+ExecStart=/home/ubuntu/.local/bin/openshell-gateway
+
+# THE POINT OF THE FILE.
+Restart=always
+RestartSec=10
+
+# Under memory pressure the kernel should take a SANDBOX — recoverable in ~30 s
+# by the nemoclaw-agent-revive.sh supervision loop — never the shared process
+# that would take every seat down at once. dockerd already sits at -500; this
+# was at 0. Same treatment belongs on doorman.service.
+OOMScoreAdjust=-500
+
+# The gateway logs to stdout. Left to itself it wrote a 2.9 GB unrotated file at
+# ~/.local/state/nemoclaw/openshell-docker-gateway/openshell-gateway.log;
+# journald applies the system's normal rotation and retention instead.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

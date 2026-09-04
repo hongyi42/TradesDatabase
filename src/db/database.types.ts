@@ -518,6 +518,65 @@ export type Database = {
           },
         ]
       }
+      host_metrics: {
+        Row: {
+          cpu_cores: number | null
+          cpu_usage_usec: number | null
+          disk_used_pct: number | null
+          host_id: string
+          load5: number | null
+          mem_avail_mb: number | null
+          mem_total_mb: number | null
+          observed_at: string
+          oom_kills: number | null
+          psi_cpu_some_us: number | null
+          psi_mem_full_us: number | null
+          psi_mem_some_us: number | null
+          sandboxes: Json
+          seats: number | null
+        }
+        Insert: {
+          cpu_cores?: number | null
+          cpu_usage_usec?: number | null
+          disk_used_pct?: number | null
+          host_id: string
+          load5?: number | null
+          mem_avail_mb?: number | null
+          mem_total_mb?: number | null
+          observed_at: string
+          oom_kills?: number | null
+          psi_cpu_some_us?: number | null
+          psi_mem_full_us?: number | null
+          psi_mem_some_us?: number | null
+          sandboxes?: Json
+          seats?: number | null
+        }
+        Update: {
+          cpu_cores?: number | null
+          cpu_usage_usec?: number | null
+          disk_used_pct?: number | null
+          host_id?: string
+          load5?: number | null
+          mem_avail_mb?: number | null
+          mem_total_mb?: number | null
+          observed_at?: string
+          oom_kills?: number | null
+          psi_cpu_some_us?: number | null
+          psi_mem_full_us?: number | null
+          psi_mem_some_us?: number | null
+          sandboxes?: Json
+          seats?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "host_metrics_host_id_fkey"
+            columns: ["host_id"]
+            isOneToOne: false
+            referencedRelation: "hosts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       hosts: {
         Row: {
           created_at: string

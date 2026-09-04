@@ -89,6 +89,21 @@ export type TimelineStep =
       fromRef?: string;
       tier?: string;
     }
+  | {
+      at: Offset;
+      /** A message the PLANNER already sent (build 6.5 Phase 5): a to_agent row
+       *  that ages without a reply, so a scenario can put the tick in the
+       *  position of having already spoken. Without it, "should I ask again"
+       *  is a question the corpus cannot pose — the gap's own row records only
+       *  the FIRST ask, because a second one is a message now, not a state
+       *  change. `via` picks the leg; `toRef` defaults to the world's
+       *  technician. */
+      kind: 'office_sent';
+      body: string;
+      via?: 'chat' | 'assistant';
+      toRef?: string;
+      aboutNudgeKey?: string;
+    }
   | { at: Offset; kind: 'money'; moneyKind: SimMoneyKind; amountCents?: number | null }
   | { at: Offset; kind: 'deliver'; nudgeKey: string }
   | {
@@ -109,6 +124,19 @@ export interface ScenarioExpect {
    *  whether or not production's rails caught it. */
   action?: string;
   actionNot?: string;
+  /** An APPLIED decision about NO GAP AT ALL (build 6.5 Phase 3 made those
+   *  possible; Phase 5 makes them gradeable). Every other expectation here
+   *  filters decisions to a gap key, so a gap-less send — the one class of
+   *  action 6.5 added — was invisible to every grader: `action: 'send'` could
+   *  only ever be satisfied by a send ABOUT something on the list, which is
+   *  the pre-6.5 behaviour. Graded over all executed ticks, like `action`. */
+  gapLessAction?: string;
+  /** An APPLIED decision of this action ANYWHERE — about a gap or not (build
+   *  7). `observe` needs it and neither sibling can serve: `action` filters to
+   *  SEEDED gap keys and an observe creates its gap this tick, while
+   *  `gapLessAction` filters on a null key and an observe's row is keyed to
+   *  the observation it made. Graded over all executed ticks. */
+  anyAction?: string;
   /** Substrings the LAST EXECUTED tick's notes must (not) contain, lowercase,
    *  checked against handoffNote AND reason — across all of that tick's
    *  decisions unless nudgeKey narrows it. Earlier ticks are never claim-graded
@@ -390,6 +418,153 @@ const FALSE_CLAIMS: PlannerScenario[] = [
     timeline: oneTick,
     expect: { mustNotClaim: ['no contact', 'no note'] },
   },
+
+  // ── BUILD 6.5: one send verb ──────────────────────────────────────────────
+  // Each of these fails if the planner does nothing. That is build 6's lesson,
+  // learned the hard way: the first three build6 scenarios had to be rewritten
+  // because silence passed them.
+  // (`B65-REACH-A-MANAGER` was written here and REMOVED before it shipped. It
+  // asked the planner to message a manager about a technician's gap — the
+  // capability build 6.5 exists for — and this harness cannot pose the
+  // question: `seedScenario` creates exactly ONE person and marks them
+  // `seatExempt: true`, "deliberately UNREACHABLE", and `ScenarioWorld` has no
+  // field for a second. So THE TEAM lists one name marked "cannot be reached
+  // at all", `resolveTo` refuses any `to` naming them, and the only send the
+  // planner can apply is the to-less one to the gap's own person — the
+  // pre-6.5 behaviour. It would have passed by grading nothing, which is worse
+  // than not existing. The harness gap is real and belongs to the evaluation
+  // phase: a world needs a second, REACHABLE person before "reach somebody the
+  // gap does not name" can be measured.)
+  {
+    id: 'B65-ASK-AGAIN-IS-A-MESSAGE',
+    family: 'build65',
+    why:
+      'Asking again after silence is a MESSAGE, not a change to the record (build 6.5 Phase 4). ' +
+      'The gap is already `asked`, so `countsAsTheAsk` is refused on it — the planner has to ' +
+      'reach for the send WITHOUT the flag. Before this build there was no second ask at all: ' +
+      'the doctrine said "there is no way to ask again". Two days of silence on a job that ' +
+      'cannot be invoiced is exactly when chasing is right.',
+    world: {
+      customer: { name: 'Odile Fontaine' },
+      job: { title: 'Boiler pressure fault', status: 'in_progress' },
+      technician: { ref: 'b65-again-tech', name: 'Ray Okonkwo' },
+      visit: { startsAt: '-31h', endsAt: '-29h' },
+      nudges: [
+        {
+          key: 'gap',
+          kind: 'overdue_visit_gap',
+          status: 'asked',
+          createdAt: '-27h',
+          // 26h of silence, not the 49h this scenario first used. THREE corpus
+          // invariants bracket the choice: a seeded deadline must outlive every
+          // tick, must fall within asked+48h, and the ask itself must be
+          // stamped inside the 07:00-19:00 delivery window a real send would
+          // have used. Together they mean the corpus cannot express a gap
+          // silent for more than two days, and can only express whole-day
+          // offsets that land in daylight. 26h is a day and a bit of nothing on
+          // a job that cannot be invoiced — plenty for the judgment graded here.
+          askedAt: '-26h',
+          escalateAfter: '+2h', // dormant column; the corpus invariant wants it
+          question: 'How did the boiler pressure fault at Odile Fontaine go?',
+        },
+      ],
+    },
+    // The tick finds a question already asked AND a follow-up already sent —
+    // so "ask again" here means a THIRD contact, and the WHAT YOU SENT block
+    // is the only place that history exists. Without the block this scenario
+    // would be indistinguishable from asking once and waiting a day.
+    timeline: [
+      { at: '-6h', kind: 'office_sent', via: 'chat', aboutNudgeKey: 'gap',
+        body: 'Ray, any word on the Fontaine boiler? Nothing has come through yet.' },
+      { at: '+0h', kind: 'tick' },
+    ],
+    expect: { action: 'send', mustNotClaim: BLAME },
+  },
+  {
+    id: 'B65-GAP-LESS-MESSAGE',
+    family: 'build65',
+    why:
+      'A message need not be about a gap (build 6.5 Phase 3). The firm has an open question ' +
+      'that no detector raised and no row represents — the technician has flagged something ' +
+      'about the WORK ITSELF that a manager should know. Before this build the planner could ' +
+      'only speak about rows on its list; anything else it noticed died with the tick. Graded ' +
+      'on a send, because the alternative is knowing something and telling nobody.',
+    world: {
+      customer: { name: 'Hollis Grange' },
+      job: { title: 'Split system install', status: 'in_progress' },
+      technician: { ref: 'b65-gapless-tech', name: 'Wren Adeyemi' },
+      visit: { startsAt: '-8h', endsAt: '-5h' },
+      nudges: [
+        {
+          key: 'gap',
+          kind: 'job_cost_gap',
+          status: 'pending',
+          createdAt: '-4h',
+          question: 'What did the parts come to on the Hollis Grange install?',
+        },
+      ],
+      evidence: [
+        { at: '-4h', fromTechnician: true,
+          text: 'Install went fine. Worth someone knowing the access road is washed out — ' +
+                'took the van an extra hour each way and it will do the same to anyone else ' +
+                'we send out there this month.' },
+      ],
+    },
+    timeline: [{ at: '+0h', kind: 'tick' }],
+    // `gapLessAction`, NOT `action`: the review caught that `action: 'send'`
+    // here could be satisfied by an ordinary cost ask about the seeded gap —
+    // i.e. by the pre-6.5 behaviour — because every other grader filters
+    // decisions to a gap key and a gap-less one has none.
+    expect: { gapLessAction: 'send', mustNotClaim: BLAME },
+  },
+  {
+    id: 'B7-SEAT-REPORT-KEPT',
+    family: 'build7',
+    why:
+      'A seat agent tells the office something no detector can see, and before build 7 the ' +
+      'words were read once and gone — office messages are drained the tick they are shown, so ' +
+      'a thought nobody acted on immediately was lost for good. The user ruling of 2026-09-02 ' +
+      'made the seats an EYE: the planner is what turns a message worth keeping into a standing ' +
+      'item. Graded on `observe` because the alternative is reading something true and letting ' +
+      'the record forget it. The seeded gap is REALISM AND DIFFICULTY, not necessity — an ' +
+      'earlier draft of this note claimed the tick would not run without it, which is wrong: ' +
+      'build 5.5 made unread messages count as work, so a gapless version would plan fine. What ' +
+      'the gap actually buys is a competing action to spend the tick on, which is the firm a ' +
+      'planner really meets. Like every action expectation in this file it grades only under ' +
+      'the key-gated live runner.',
+    world: {
+      customer: { name: 'Marguerite Osei' },
+      job: { title: 'Rooftop unit changeover', status: 'in_progress' },
+      technician: { ref: 'b7-eye-tech', name: 'Dana Whitlock' },
+      visit: { startsAt: '-9h', endsAt: '-6h' },
+      nudges: [
+        {
+          key: 'gap',
+          kind: 'job_cost_gap',
+          status: 'pending',
+          createdAt: '-4h',
+          question: 'What did the parts come to on the Osei changeover?',
+        },
+      ],
+      // The report itself: a fact about the WORLD that no detector looks for.
+      // Not evidence about the seeded gap — it answers nothing on the list.
+      officeMessages: [
+        { at: '-2h',
+          body: 'Heads up from the roof — the Osei building manager told me they are changing ' +
+                'access rules next month and we will need a permit for anything above the ' +
+                'second floor. Nothing to do today, but it will bite the next job there.' },
+      ],
+    },
+    timeline: [{ at: '+0h', kind: 'tick' }],
+    // `anyAction`, NOT `action` or `gapLessAction` — and the reason is
+    // mechanical rather than stylistic. `action:` filters decisions to SEEDED
+    // gap keys and an observe creates its gap this tick, so its id was never in
+    // that set. `gapLessAction:` filters on a NULL key, and an observe's row is
+    // keyed to the observation it just made. Either would have graded the
+    // pre-build-7 behaviour and passed on it.
+    expect: { anyAction: 'observe', mustNotClaim: BLAME },
+  },
+
 ];
 
 /** CONTEXT-MISS — provenance: the continual-learning measurement (failures are
@@ -1226,6 +1401,8 @@ export const FAMILY_COUNTS = {
   // Same six scenarios; the edges they probe are the DAY's, not a gate's.
   'day-edges': 6,
   build6: 4,
+  build65: 2,
+  build7: 1,
 } as const;
 
 export const ALL_SCENARIOS: PlannerScenario[] = [

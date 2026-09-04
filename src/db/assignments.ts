@@ -42,10 +42,6 @@ export interface CreateAssignmentInput {
   // promisedDay whenever promiseLevel is not 'none'.
   promiseLevel?: PromiseLevel;
   promisedDay?: string | null; // YYYY-MM-DD
-  // PINNED by a manager (plan 4b-3): auto-scheduling must never place, move,
-  // or consider the visit. A HUMAN privilege — no verb auto-stamps it; the
-  // default is false and only set_visit_locks / the board toggle flip it.
-  locked?: boolean;
 }
 
 // Insert one assignment row. Inserting as 'confirmed' can raise the DB's
@@ -80,7 +76,6 @@ export async function createAssignment(input: CreateAssignmentInput): Promise<As
       source_capture_id: input.sourceCaptureId ?? null,
       promise_level: input.promiseLevel ?? 'none',
       promised_day: input.promisedDay ?? null,
-      locked: input.locked ?? false,
     })
     .select()
     .single();
@@ -164,7 +159,6 @@ export interface RescheduleInput {
   status?: AssignmentStatus;
   promiseLevel?: PromiseLevel;
   promisedDay?: string | null;
-  locked?: boolean;
 }
 
 // The reschedule primitive: cancel the old row (reason kept) + insert a fresh
@@ -200,66 +194,8 @@ export async function rescheduleAssignment(
     status: input.status,
     promiseLevel: input.promiseLevel ?? old.promise_level,
     promisedDay: input.promisedDay !== undefined ? input.promisedDay : old.promised_day,
-    locked: input.locked ?? old.locked,
   });
   return { cancelled, created };
-}
-
-// Flip PIN flags in ONE statement (plan 4b-3; final-review hardening: the
-// original per-row loop could half-apply a batch on a transient fault — rows
-// pinned, no ledger event, error reported — and stamp a row that went
-// terminal between check and write). Locking is a human privilege, so this
-// writer — not the booking verbs — is the only place `locked` changes after
-// insert (reschedules CARRY the flag). The status predicate makes the
-// live-rows-only rule enforcement, not advisory; returns exactly the rows
-// that changed.
-export async function updateAssignmentsLocked(
-  tenantId: string,
-  assignmentIds: string[],
-  locked: boolean,
-): Promise<Assignment[]> {
-  if (assignmentIds.length === 0) return [];
-  const { data, error } = await getClient()
-    .from('assignments')
-    .update({ locked })
-    .eq('tenant_id', tenantId)
-    .in('id', assignmentIds)
-    .in('status', ['confirmed', 'proposed'])
-    .select();
-  if (error) throw new Error(`updateAssignmentsLocked failed: ${error.message}`);
-  return data ?? [];
-}
-
-// The lock verbs' range read (plan 4b-3): every CONFIRMED visit whose day
-// intersects [fromDate, toDate] — placed rows by their start DAY (a lock pins
-// a day's plan, so start-day membership is the natural key, not overlap),
-// unplaced rows by fence overlap. Person-less rows included: "I'll place this
-// myself" applies to a parked visit too.
-export async function listAssignmentsForLockRange(
-  tenantId: string,
-  fromDate: string, // YYYY-MM-DD inclusive
-  toDate: string, // YYYY-MM-DD inclusive
-  technicianId?: string,
-): Promise<Assignment[]> {
-  const dayAfterTo = new Date(Date.parse(`${toDate}T00:00:00Z`) + 86_400_000)
-    .toISOString()
-    .slice(0, 10);
-  let query = getClient()
-    .from('assignments')
-    .select()
-    .eq('tenant_id', tenantId)
-    .eq('status', 'confirmed')
-    .or(
-      `and(starts_at.gte.${fromDate}T00:00:00.000Z,starts_at.lt.${dayAfterTo}T00:00:00.000Z),` +
-        `and(starts_at.is.null,earliest_date.lte.${toDate},latest_date.gte.${fromDate})`,
-    );
-  if (technicianId) query = query.eq('technician_id', technicianId);
-  const { data, error } = await query.order('starts_at', {
-    ascending: true,
-    nullsFirst: false,
-  });
-  if (error) throw new Error(`listAssignmentsForLockRange failed: ${error.message}`);
-  return data ?? [];
 }
 
 // Tenant-guarded point read for tool/module surfaces: a cross-tenant or

@@ -189,27 +189,16 @@ try {
     `select count(*)::int n from assignments where tenant_id=$1 and starts_at is null and earliest_date is not null`,
     [main.id],
   );
-  const [{ n: pins }] = await q(`select count(*)::int n from assignments where tenant_id=$1 and locked`, [main.id]);
   const [{ n: personless }] = await q(
     `select count(*)::int n from assignments where tenant_id=$1 and technician_id is null`,
     [main.id],
   );
   check(
     `the loose queue and its edges exist`,
-    queue >= 4 && tbd >= 3 && pins >= 1 && personless >= 1,
-    `queue ${queue}, time-TBD ${tbd}, pins ${pins}, person-less ${personless}`,
+    queue >= 4 && tbd >= 3 && personless >= 1,
+    `queue ${queue}, time-TBD ${tbd}, person-less ${personless}`,
   );
 
-  for (const name of ['Eval Freeze', 'Eval Resolve']) {
-    const t = w.tenants.find((x) => x.name === name);
-    const [{ n: pinned }] = await q(`select count(*)::int n from assignments where tenant_id=$1 and locked`, [t.id]);
-    const [{ n: draining }] = await q(
-      `select count(*)::int n from jobs j where j.tenant_id=$1
-         and not exists (select 1 from assignments a where a.job_id = j.id)`,
-      [t.id],
-    );
-    check(`${name}: exactly one pin, ${draining} jobs to place`, pinned === 1 && draining >= 2);
-  }
 
   const seats = w.tenants.find((x) => x.name === 'Eval Seats');
   const [seatRow] = await q('select technician_seats from tenants where id=$1', [seats.id]);

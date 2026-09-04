@@ -546,7 +546,7 @@ describe('promise ladder + schedule events (Plan 1, schedule core)', () => {
     return createJob({ tenantId, customerId: customer.id, title, status: 'open' });
   }
 
-  test('promise columns round-trip; defaults are none/null/false', async () => {
+  test('promise columns round-trip; defaults are none/null', async () => {
     const job = await makeJob('promise-roundtrip');
     const bare = await createAssignment({
       tenantId,
@@ -557,7 +557,6 @@ describe('promise ladder + schedule events (Plan 1, schedule core)', () => {
     });
     expect(bare.promise_level).toBe('none');
     expect(bare.promised_day).toBeNull();
-    expect(bare.locked).toBe(false);
 
     const promised = await createAssignment({
       tenantId,
@@ -567,11 +566,9 @@ describe('promise ladder + schedule events (Plan 1, schedule core)', () => {
       endsAt: '2026-10-02T11:00:00.000Z',
       promiseLevel: 'day',
       promisedDay: '2026-10-02',
-      locked: true,
     });
     expect(promised.promise_level).toBe('day');
     expect(promised.promised_day).toBe('2026-10-02');
-    expect(promised.locked).toBe(true);
   });
 
   test('DB check rejects a promise without a promised day', async () => {
@@ -599,7 +596,6 @@ describe('promise ladder + schedule events (Plan 1, schedule core)', () => {
       status: 'confirmed',
       promiseLevel: 'day',
       promisedDay: '2026-10-06',
-      locked: true,
     });
     // Default: promise fields carry, status falls back to 'proposed'.
     const first = await rescheduleAssignment(original.id, {
@@ -610,7 +606,6 @@ describe('promise ladder + schedule events (Plan 1, schedule core)', () => {
     expect(first.created.status).toBe('proposed');
     expect(first.created.promise_level).toBe('day');
     expect(first.created.promised_day).toBe('2026-10-06');
-    expect(first.created.locked).toBe(true);
     // Overrides: status 'confirmed' + a new promised day (the manual-move shape).
     const second = await rescheduleAssignment(first.created.id, {
       startsAt: '2026-10-07T09:00:00.000Z',

@@ -673,7 +673,7 @@ EOF
     fi
     docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17, updated 2026-08-14)
+## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17, updated 2026-09-04 — the pinning clause went with the solver, rung 8)
 
 The rule, in general: confirm only what is irreversible or externally visible (a customer
 promise at stake). Everything reversible — just do it, then SAY WHAT YOU DID (day, time,
@@ -701,12 +701,7 @@ change.
    NO times. timeTbd is NEVER your own choice when a time was stated. A time-TBD visit
    shows as "time not set" — never invent a time for it; placing it later is a normal
    move_visit with real times.
-5. Pinning (set_visit_locks) is one-shot and reversible: pin/unpin immediately, then say
-   what changed (count + days). A PINNED visit is the manager's "hands off" mark —
-   automatic scheduling never places, moves, or considers it (on a time-TBD visit it means
-   "I'll place this myself"). NOTHING pins automatically: a fresh booking is NOT pinned,
-   and you pin only when the manager says so ("pin it", "lock next week").
-6. Options with a recommendation: when you have laid out choices and marked one as your
+5. Options with a recommendation: when you have laid out choices and marked one as your
    pick, and the person assents without naming one ("yes", "go ahead", "sounds good"),
    TAKE YOUR RECOMMENDATION and act on it — never answer an assent with "which one?".
    Ask which only when you made no recommendation, or when the choice itself is
@@ -909,8 +904,8 @@ EOF
   # piece worth keeping and now lives in §0f as rule 5, since that trap has nothing
   # to do with tool search. If tool search is ever revisited, both blocks are in
   # git history at the commit that reverted it.
-  # Cron block — REFRESHED on every run (delete-then-append, same idiom as the
-  # freeze ritual below): this text now carries the isolated-vs-main rule, and an
+  # Cron block — REFRESHED on every run (delete-then-append, the confirmation
+  # doctrine's idiom): this text now carries the isolated-vs-main rule, and an
   # append-once grep would pin already-wired boxes to the version that lacks it
   # (template-drift trap).
   log "cron/scheduling block (§0g — cron for scheduled work; ISOLATED jobs only, main-session needs the heartbeat we disable; refreshed per run)"
@@ -952,59 +947,20 @@ EOF
     echo "    WARN: no running container for ${agent} — append the §0g block manually once it's up"
   fi
 
-  # Freeze ritual — REFRESHED on every run (delete-then-append, the
-  # confirmation-doctrine idiom): the ritual's TEXT will evolve with the
-  # freeze, and an append-once grep would pin boxes to the first version
-  # (template-drift trap). Plan 4b-3 Phase 5.
-  log "freeze-ritual block (§0h — run_freeze/run_resolve propose + undo_run restores, the manager decides; refreshed per run)"
+  # Freeze ritual — REMOVED, rung 8 (2026-09-03). The solver it taught
+  # (run_freeze / run_resolve / undo_run) is deleted, so the block is no longer
+  # appended. The DELETE half below STAYS and is the whole point: a box wired
+  # before rung 8 still carries §0h in its AGENTS.md, and only a later run of
+  # this script strips it. Removing these lines along with the heredoc would
+  # have left every existing box teaching a ritual for verbs that are gone.
+  log "freeze-ritual block (§0h — REMOVED if present; the solver is gone, rung 8)"
   if [ -n "$cid" ]; then
     if docker exec "$cid" grep -q "The freeze ritual" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
       docker exec -u sandbox "$cid" sh -c 'awk '\''/^## The freeze ritual/{skip=1; next} skip && /^## /{skip=0} !skip'\'' /sandbox/.openclaw/workspace/AGENTS.md > /tmp/agents-md.tmp && cat /tmp/agents-md.tmp > /sandbox/.openclaw/workspace/AGENTS.md && rm -f /tmp/agents-md.tmp'
     fi
-    docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
-
-## The freeze ritual — propose, never autopilot (covers run_freeze, run_resolve, undo_run; host-managed; refreshed; updated 2026-07-30)
-
-run_freeze auto-places the loose work (open jobs with no visit, visits with nobody attached,
-time-TBD visits) by proposing a WHOLE plan. run_resolve is its sibling re-optimizer: the same
-proposal ritual, but already-placed UNPINNED visits may also MOVE (promises limit movement —
-a promised day is kept, a promised time never moves; technicianRef/onDate narrow who/what may
-move). Both are always two-step, and the second step is always a HUMAN's yes:
-
-1. When a manager asks to run the freeze or the re-solve, call the tool and give a SHORT
-   summary: the counts (for a freeze: placed / skipped / pinned untouched; for a re-solve:
-   moves / placed / kept / skipped / pinned untouched), the one or two most consequential
-   changes or skips, the pin line ("pin it" / set_visit_locks is how the manager protects a
-   visit from automatic scheduling), and ALWAYS end with the result's proposal board link
-   line — the full plan (every move from→to, every placement, every skip with its reason,
-   capacity) lives on the board, not in chat. ONLY if the result carries no proposalLink
-   field, show the ENTIRE proposal in chat instead (moves with from→to/weekday/who,
-   placements with weekday/date/time/who/customer, skips with reasons,
-   committed-vs-available minutes).
-2. NEVER confirm a freeze or re-solve without the manager's explicit yes IN THE
-   CONVERSATION. A scheduled firing is a PROPOSAL + reminder, never an unattended commit:
-   when a cron job runs one, present the proposal and STOP — the manager reads it,
-   pins/unpins anything they want protected, then says yes (confirm with ONLY confirmId) or
-   ignores it (the proposal expires in 12 hours; a later run supersedes it).
-3. After EITHER commit, the reply tells you to OFFER pinning what the run just scheduled —
-   ask once ("want these pinned so future re-plans leave them alone?"); on yes call
-   set_visit_locks with exactly the assignmentIds listed in the commit reply (they are the
-   MINTED ids — never re-use ids from the earlier proposal).
-4. undo_run is the safety net, same two-step shape, tighter clock: it restores the LATEST
-   committed freeze/re-solve from its own records (no solver — moved visits return to their
-   pre-run slot and person, run placements return to the loose bucket; anything the manager
-   changed or pinned since is skipped and listed, never force-reverted). The staged undo
-   expires in 15 MINUTES and only the latest run is reachable. Present the restore list,
-   get the explicit yes, confirm with ONLY confirmId. Never run it unasked.
-5. A recurring freeze ("run the freeze every Friday morning") rides the normal cron rules
-   (§ Scheduled / recurring work): explicit ask, one named task, sane cadence — that phrase
-   is the canonical legitimate recurring job. Recurring RE-SOLVES follow the same rules.
-   NOTE: cron jobs are wiped by sandbox rebuilds — after a rebuild, re-create the firm's
-   schedule jobs once the manager confirms they are still wanted.
-EOF
-    ok "freeze-ritual block refreshed in ${agent}'s AGENTS.md"
+    ok "freeze-ritual block absent from ${agent}'s AGENTS.md (removed if it was there)"
   else
-    echo "    WARN: no running container for ${agent} — append the §0h freeze-ritual block manually once it's up"
+    echo "    WARN: no running container for ${agent} — §0h will be stripped on the next run once it is up"
   fi
 
   # Office-questions block — REFRESHED on every run (delete-then-append, the

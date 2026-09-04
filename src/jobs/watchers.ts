@@ -145,11 +145,13 @@ export const PLANNER_JUDGMENT_ACTIONS: ReadonlySet<string> = new Set([
   'close',
   'dismiss',
   'recover',
-  // The office verbs (build 5.5 Phase 3): an applied ask_agent/inform_agent
-  // is the planner attending to the gap — the alarm pass must count it as
-  // attention, or asking an agent about a gap would read as neglecting it.
-  'ask_agent',
-  'inform_agent',
+  // BUILD 7. Opening an observation is a real judgment about the record — the
+  // planner looked at something and decided it was worth keeping — so a tick
+  // that only observed must not read as neglect.
+  'observe',
+  // (`ask_agent`/`inform_agent` stood here — deleted with the verbs in build
+  // 6.5 Phase 4, where one `send` absorbed them. They live on in
+  // `attentionActions` below, which is about HISTORIC rows.)
 ]);
 
 // UTC offsets span −12h..+14h; subtracting 14h from a wall-clock instant is a
@@ -811,9 +813,18 @@ export async function runWatchers(
         // leave counts for.
         const attentionActions = new Set([
           ...PLANNER_JUDGMENT_ACTIONS,
+          // HISTORIC VERBS, and the list only grows. Each was a real decision
+          // when it was made, so a gap the planner extended, escalated, left
+          // or messaged an agent about was ATTENDED — reading those rows as
+          // neglect would make the alarm fire hardest on the firms the planner
+          // worked hardest on. `extend` went in build 5, `escalate`/`leave` in
+          // build 6, and `ask_agent`/`inform_agent` in build 6.5 Phase 4 when
+          // one `send` absorbed them.
           'extend',
           'escalate',
           'leave',
+          'ask_agent',
+          'inform_agent',
         ]);
         const attendedWithin = (id: string, windowHours: number, leaveCounts: boolean): boolean => {
           if (!decisionsReadable) return false;

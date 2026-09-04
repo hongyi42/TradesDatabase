@@ -3,7 +3,6 @@ import {
   getTechnicianById,
   isInactiveState,
   latestScheduleVersion,
-  listManagersWithTelegram,
   listScheduleEventsSince,
   listTenantIdsWithTelegramBindings,
   type Assignment,
@@ -29,12 +28,6 @@ import { sendBoardMessage } from './boardBot.js';
 interface Push {
   userId: string;
   text: string;
-  // Set when the source event was stamped by a batch run (freezeCommit stamps
-  // `freezeRun`, resolveCommit stamps `resolveRun`) — lets a burst digest say
-  // WHY the schedule just changed. Undo runs (`undoRun`) stay unkinded on
-  // purpose: their bursts read fine under the generic header.
-  runStamp?: string;
-  runKind?: 'freeze' | 'resolve';
 }
 
 // A recipient getting more than this many messages in one poll tick has hit a
@@ -52,22 +45,10 @@ function digestText(pushes: Push[]): string {
   const lines = pushes.slice(0, DIGEST_MAX_LINES).map((p) => `• ${p.text}`);
   const more = pushes.length - DIGEST_MAX_LINES;
   if (more > 0) lines.push(`…and ${more} more — open the board for the full list.`);
-  // Name the run only when EVERY line came from the same one — a mixed burst
-  // (run + a manual edit that raced in) keeps the generic header rather than
-  // mis-attributing the manual change. No count in the run headers: a slow
-  // commit can straddle two poll ticks, so this batch's count is NOT
-  // necessarily "what the run did" — the bullets speak for themselves. The
-  // generic header's count is a claim about the batch only, so it stays.
-  const stamp = pushes[0]?.runStamp;
-  const kind = pushes[0]?.runKind;
-  const uniform =
-    stamp !== undefined && pushes.every((p) => p.runStamp === stamp && p.runKind === kind);
-  const header =
-    uniform && kind === 'freeze'
-      ? 'The schedule freeze updated your schedule:'
-      : uniform && kind === 'resolve'
-        ? 'The schedule re-plan updated your schedule:'
-        : `Your schedule changed — ${pushes.length} updates:`;
+  // ONE header now. The batch runs that used to name themselves here
+  // (`freezeRun` / `resolveRun` stamps) died with the solver, rung 8 — every
+  // burst is manual edits, and the count is a claim about this batch only.
+  const header = `Your schedule changed — ${pushes.length} updates:`;
   return [header, ...lines].join('\n');
 }
 
@@ -166,79 +147,9 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
       }
       break;
     }
-    case 'freeze_committed': {
-      // The run summary goes to MANAGERS (plan 4b-3) — the first
-      // manager-directed push: in a multi-manager firm, everyone hears what a
-      // colleague committed. Technicians hear nothing extra here: each
-      // committed row already produced its own booked/moved push above.
-      const placed = typeof detail.placed === 'number' ? detail.placed : '?';
-      const skipped = typeof detail.skipped === 'number' ? detail.skipped : '?';
-      for (const m of await listManagersWithTelegram(tenantId)) {
-        if (!m.telegram_user_id) continue;
-        out.push({
-          userId: m.telegram_user_id,
-          text: `Freeze ran (by ${ev.actor_ref ?? 'a manager'}): placed ${placed}, skipped ${skipped} — see the board.`,
-        });
-      }
-      break;
-    }
-    case 'resolve_committed': {
-      // Same manager-directed summary for a re-solve run (plan 2026-07-30):
-      // each moved/placed row already pushed the affected technician above.
-      // Stranded counts ride along (final-review finding): in a multi-manager
-      // firm only the ACTING manager's chat sees the URGENT stranded copy —
-      // a colleague's push must not read as routine when a visit sits
-      // person-less.
-      const moved = typeof detail.moved === 'number' ? detail.moved : '?';
-      const placed = typeof detail.placed === 'number' ? detail.placed : '?';
-      const kept = typeof detail.kept === 'number' ? detail.kept : '?';
-      const stranded =
-        typeof detail.stranded === 'number' && detail.stranded > 0
-          ? ` STRANDED ${detail.stranded} — visit(s) left with NOBODY assigned, reassign by hand.`
-          : '';
-      for (const m of await listManagersWithTelegram(tenantId)) {
-        if (!m.telegram_user_id) continue;
-        out.push({
-          userId: m.telegram_user_id,
-          text: `Re-solve ran (by ${ev.actor_ref ?? 'a manager'}): moved ${moved}, placed ${placed}, kept ${kept} — see the board.${stranded}`,
-        });
-      }
-      break;
-    }
-    case 'undo_committed': {
-      // The undo's manager summary (plan 2026-07-30 Phase 5). Its per-row
-      // events stay unkinded on purpose (no undoRun header), so technicians
-      // see them under the generic digest header. Stranded counts ride along
-      // — same multi-manager honesty rule as the resolve summary.
-      const restored = typeof detail.restored === 'number' ? detail.restored : '?';
-      const skipped = typeof detail.skipped === 'number' ? detail.skipped : '?';
-      const strandedBits = [
-        typeof detail.stranded === 'number' && detail.stranded > 0
-          ? `${detail.stranded} visit(s) left with NOBODY assigned`
-          : null,
-        typeof detail.strandedTbd === 'number' && detail.strandedTbd > 0
-          ? `${detail.strandedTbd} visit(s) dropped to the loose bucket un-rebooked`
-          : null,
-      ].filter((s): s is string => s !== null);
-      const strandedTail =
-        strandedBits.length > 0 ? ` STRANDED: ${strandedBits.join('; ')} — fix by hand.` : '';
-      for (const m of await listManagersWithTelegram(tenantId)) {
-        if (!m.telegram_user_id) continue;
-        out.push({
-          userId: m.telegram_user_id,
-          text: `Undo ran (by ${ev.actor_ref ?? 'a manager'}): restored ${restored}, skipped ${skipped} — see the board.${strandedTail}`,
-        });
-      }
-      break;
-    }
     // completed/backfilled and future kinds: no push.
   }
-  const freezeRun = detailStr(detail, 'freezeRun');
-  const resolveRun = detailStr(detail, 'resolveRun');
-  const stamp = freezeRun ?? resolveRun;
-  if (!stamp) return out;
-  const kind = freezeRun !== null ? ('freeze' as const) : ('resolve' as const);
-  return out.map((p) => ({ ...p, runStamp: stamp, runKind: kind }));
+  return out;
 }
 
 // One poll pass over every tenant with live Telegram bindings. `lastSeen` is

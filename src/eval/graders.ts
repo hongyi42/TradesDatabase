@@ -73,9 +73,6 @@ export const STAGED_TOOLS = new Set([
   'add_technician_seat',
   'deactivate_technician_seat',
   'cancel_job',
-  'run_freeze',
-  'run_resolve',
-  'undo_run',
   // The scheduling verbs stage CONDITIONALLY: one-shot when nothing was
   // promised (no confirmId ever appears, so isCommit never fires), but any
   // promise-touching call returns needs_confirmation + confirmId — "call again

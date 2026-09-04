@@ -42,7 +42,6 @@ export type Database = {
           id: string
           job_id: string
           latest_date: string | null
-          locked: boolean
           promise_level: Database["public"]["Enums"]["promise_level"]
           promised_day: string | null
           reason: string | null
@@ -60,7 +59,6 @@ export type Database = {
           id?: string
           job_id: string
           latest_date?: string | null
-          locked?: boolean
           promise_level?: Database["public"]["Enums"]["promise_level"]
           promised_day?: string | null
           reason?: string | null
@@ -78,7 +76,6 @@ export type Database = {
           id?: string
           job_id?: string
           latest_date?: string | null
-          locked?: boolean
           promise_level?: Database["public"]["Enums"]["promise_level"]
           promised_day?: string | null
           reason?: string | null
@@ -1073,6 +1070,8 @@ export type Database = {
           question_draft: string | null
           reason: string
           tenant_id: string
+          to_ref: string | null
+          via: string | null
         }
         Insert: {
           action: string
@@ -1094,6 +1093,8 @@ export type Database = {
           question_draft?: string | null
           reason?: string
           tenant_id: string
+          to_ref?: string | null
+          via?: string | null
         }
         Update: {
           action?: string
@@ -1115,6 +1116,8 @@ export type Database = {
           question_draft?: string | null
           reason?: string
           tenant_id?: string
+          to_ref?: string | null
+          via?: string | null
         }
         Relationships: [
           {
@@ -1260,6 +1263,7 @@ export type Database = {
       }
       observations: {
         Row: {
+          author: string
           context: Json
           dismiss_reason: string | null
           dismissed_at: string | null
@@ -1274,6 +1278,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          author?: string
           context?: Json
           dismiss_reason?: string | null
           dismissed_at?: string | null
@@ -1288,6 +1293,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          author?: string
           context?: Json
           dismiss_reason?: string | null
           dismissed_at?: string | null
@@ -1329,6 +1335,7 @@ export type Database = {
           id: string
           in_reply_to: string | null
           kind: string
+          message_group_id: string | null
           nudge_id: string | null
           read_at: string | null
           serve_count: number
@@ -1338,6 +1345,7 @@ export type Database = {
           tier: string | null
           to_ref: string
           updated_at: string
+          via: string
         }
         Insert: {
           attempts?: number
@@ -1349,6 +1357,7 @@ export type Database = {
           id?: string
           in_reply_to?: string | null
           kind: string
+          message_group_id?: string | null
           nudge_id?: string | null
           read_at?: string | null
           serve_count?: number
@@ -1358,6 +1367,7 @@ export type Database = {
           tier?: string | null
           to_ref: string
           updated_at?: string
+          via?: string
         }
         Update: {
           attempts?: number
@@ -1369,6 +1379,7 @@ export type Database = {
           id?: string
           in_reply_to?: string | null
           kind?: string
+          message_group_id?: string | null
           nudge_id?: string | null
           read_at?: string | null
           serve_count?: number
@@ -1378,6 +1389,7 @@ export type Database = {
           tier?: string | null
           to_ref?: string
           updated_at?: string
+          via?: string
         }
         Relationships: [
           {
@@ -1385,6 +1397,13 @@ export type Database = {
             columns: ["in_reply_to"]
             isOneToOne: false
             referencedRelation: "office_messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "office_messages_in_reply_to_fkey"
+            columns: ["in_reply_to"]
+            isOneToOne: false
+            referencedRelation: "v_office_messages"
             referencedColumns: ["id"]
           },
           {
@@ -1772,6 +1791,54 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "review_items_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      roster_events: {
+        Row: {
+          actor_ref: string | null
+          from_state: Database["public"]["Enums"]["technician_state"] | null
+          id: string
+          occurred_at: string
+          reason: string | null
+          technician_id: string
+          tenant_id: string
+          to_state: Database["public"]["Enums"]["technician_state"]
+        }
+        Insert: {
+          actor_ref?: string | null
+          from_state?: Database["public"]["Enums"]["technician_state"] | null
+          id?: string
+          occurred_at?: string
+          reason?: string | null
+          technician_id: string
+          tenant_id: string
+          to_state: Database["public"]["Enums"]["technician_state"]
+        }
+        Update: {
+          actor_ref?: string | null
+          from_state?: Database["public"]["Enums"]["technician_state"] | null
+          id?: string
+          occurred_at?: string
+          reason?: string | null
+          technician_id?: string
+          tenant_id?: string
+          to_state?: Database["public"]["Enums"]["technician_state"]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "roster_events_technician_id_fkey"
+            columns: ["technician_id"]
+            isOneToOne: false
+            referencedRelation: "technicians"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "roster_events_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
             referencedRelation: "tenants"
@@ -2939,6 +3006,7 @@ export type Database = {
       }
       v_observations: {
         Row: {
+          author: string | null
           dismiss_reason: string | null
           dismissed_at: string | null
           id: string | null
@@ -2952,6 +3020,72 @@ export type Database = {
           technician_ref: string | null
         }
         Relationships: []
+      }
+      v_office_messages: {
+        Row: {
+          body: string | null
+          created_at: string | null
+          delivered_at: string | null
+          direction: string | null
+          from_ref: string | null
+          id: string | null
+          in_reply_to: string | null
+          kind: string | null
+          nudge_id: string | null
+          read_at: string | null
+          status: string | null
+          tier: string | null
+          to_ref: string | null
+          via: string | null
+        }
+        Insert: {
+          body?: string | null
+          created_at?: string | null
+          delivered_at?: string | null
+          direction?: string | null
+          from_ref?: string | null
+          id?: string | null
+          in_reply_to?: string | null
+          kind?: string | null
+          nudge_id?: string | null
+          read_at?: string | null
+          status?: string | null
+          tier?: string | null
+          to_ref?: string | null
+          via?: string | null
+        }
+        Update: {
+          body?: string | null
+          created_at?: string | null
+          delivered_at?: string | null
+          direction?: string | null
+          from_ref?: string | null
+          id?: string | null
+          in_reply_to?: string | null
+          kind?: string | null
+          nudge_id?: string | null
+          read_at?: string | null
+          status?: string | null
+          tier?: string | null
+          to_ref?: string | null
+          via?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "office_messages_in_reply_to_fkey"
+            columns: ["in_reply_to"]
+            isOneToOne: false
+            referencedRelation: "office_messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "office_messages_in_reply_to_fkey"
+            columns: ["in_reply_to"]
+            isOneToOne: false
+            referencedRelation: "v_office_messages"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       v_review_items: {
         Row: {
@@ -2995,6 +3129,18 @@ export type Database = {
         }
         Relationships: []
       }
+      v_roster_events: {
+        Row: {
+          from_state: Database["public"]["Enums"]["technician_state"] | null
+          id: string | null
+          occurred_at: string | null
+          technician_name: string | null
+          technician_ref: string | null
+          tier: Database["public"]["Enums"]["technician_tier"] | null
+          to_state: Database["public"]["Enums"]["technician_state"] | null
+        }
+        Relationships: []
+      }
       v_schedule: {
         Row: {
           assignment_id: string | null
@@ -3010,7 +3156,6 @@ export type Database = {
           latest_date: string | null
           local_day: string | null
           local_weekday: string | null
-          locked: boolean | null
           postal_code: string | null
           promise_level: Database["public"]["Enums"]["promise_level"] | null
           promised_day: string | null

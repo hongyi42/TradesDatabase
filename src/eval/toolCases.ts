@@ -19,6 +19,10 @@ import { captureId, customerId, customerName, jobId, visitId } from './worldMani
 import { addDays, naiveLocal, nextWorkday } from './clock.js';
 
 /** An external dependency a case needs. Cases carrying one are skipped LOUDLY. */
+// 'maps' has no case requiring it since the solver's cases died with rung 8.
+// KEPT deliberately: rung 10 brings route optimisation back as an advisory tool
+// the manager's agent may call, and that case needs this gate again. The
+// --with-maps flag simply enables nothing until then.
 export type Requirement = 'model' | 'network' | 'composio' | 'maps';
 
 export interface ToolOutcome {
@@ -369,8 +373,8 @@ export function buildToolCases(): ToolCase[] {
         args: () => ({}),
         check: (out) => {
           const names = (out.json as string[]) ?? [];
-          if (names.length !== 43) return `manager sees ${names.length} tools, expected 43`;
-          for (const need of ['book_visit', 'run_freeze', 'query_spine', 'add_technician_seat', 'record_money_event', 'set_firm_profile']) {
+          if (names.length !== 42) return `manager sees ${names.length} tools, expected 42`;
+          for (const need of ['book_visit', 'cancel_job', 'query_spine', 'add_technician_seat', 'record_money_event', 'set_firm_profile']) {
             if (!names.includes(need)) return `manager surface is missing ${need}`;
           }
           // get_schedule is deliberately withheld from managers (PR #54).
@@ -395,9 +399,9 @@ export function buildToolCases(): ToolCase[] {
         args: () => ({}),
         check: (out) => {
           const names = (out.json as string[]) ?? [];
-          if (names.length !== 14) return `technician sees ${names.length} tools, expected 14`;
+          if (names.length !== 17) return `technician sees ${names.length} tools, expected 17`;
           if (!names.includes('get_schedule')) return 'technician surface is missing get_schedule';
-          const leaked = ['book_visit', 'run_freeze', 'add_technician_seat', 'query_spine', 'get_team_schedule'].filter(
+          const leaked = ['book_visit', 'cancel_job', 'add_technician_seat', 'query_spine', 'get_team_schedule'].filter(
             (n) => names.includes(n),
           );
           return leaked.length ? `technician was OFFERED admin tools: ${leaked.join(', ')}` : null;
@@ -866,33 +870,6 @@ export function buildToolCases(): ToolCase[] {
     ],
   });
 
-  add({
-    id: 'W10',
-    family: 'writes',
-    title: 'set_visit_locks pins a visit as a human privilege',
-    tool: 'set_visit_locks',
-    tenant: 'main',
-    badge: 'manager-sam',
-    steps: [
-      {
-        label: 'pin one visit',
-        args: (ctx) => ({ locked: true, assignmentIds: [visitId(ctx.tenant, 'visit-t1-rs-06')] }),
-        check: ok,
-      },
-      { label: 'confirm if it staged', when: ifStaged, args: lastConfirmId, check: ok },
-      {
-        label: 'the pin is on the row',
-        tool: 'get_job',
-        args: (ctx) => ({ jobId: jobId(ctx.tenant, 'job-t1-rs-06') }),
-        check: dbCheck(
-          'the visit must be locked',
-          (ctx) => ({ text: 'select locked from assignments where id = $1', params: [visitId(ctx.tenant, 'visit-t1-rs-06')] }),
-          (rows) => rows[0]?.locked === true,
-        ),
-      },
-    ],
-  });
-
   one({
     id: 'W11',
     family: 'writes',
@@ -1306,18 +1283,6 @@ export function buildToolCases(): ToolCase[] {
 
   // ── graceful failure ────────────────────────────────────────────────────────
   one({
-    id: 'F01',
-    family: 'failure',
-    title: 'undo_run with nothing to undo says so instead of crashing',
-    tool: 'undo_run',
-    tenant: 'resolve',
-    badge: 'manager-sam',
-    args: () => ({}),
-    check: (out) =>
-      out.timedOut ? 'timed out' : /nothing|no run|no recent|not found/i.test(out.text) || out.isError ? null : `expected a clean "nothing to undo": ${out.text.slice(0, 200)}`,
-  });
-
-  one({
     id: 'F02',
     family: 'failure',
     title: 'resolve_review on an unknown id refuses cleanly',
@@ -1436,30 +1401,6 @@ export function buildToolCases(): ToolCase[] {
     requires: 'composio',
     args: () => ({ ref: 'cfg-tech-07' }),
     check: ok,
-  });
-
-  one({
-    id: 'X07',
-    family: 'external',
-    title: 'run_freeze proposes a plan and stops',
-    tool: 'run_freeze',
-    tenant: 'freeze',
-    badge: 'manager-sam',
-    requires: 'maps',
-    args: (ctx) => ({ throughDate: addDays(ctx.anchor, 7) }),
-    check: all(staged, mentions('pinned')),
-  });
-
-  one({
-    id: 'X08',
-    family: 'external',
-    title: 'run_resolve proposes a re-plan and stops',
-    tool: 'run_resolve',
-    tenant: 'resolve',
-    badge: 'manager-sam',
-    requires: 'maps',
-    args: (ctx) => ({ throughDate: addDays(ctx.anchor, 7) }),
-    check: staged,
   });
 
   one({

@@ -37,7 +37,18 @@ export interface CreateOfficeMessageInput {
   nudgeId?: string | null;
   inReplyTo?: string | null;
   status?: OfficeMessageStatus;
+  // WHICH PULL SERVES THIS ROW (build 6.5 Phase 4): 'assistant' is a silent
+  // injected agent turn through the office pull; 'chat' is verbatim to the
+  // person's phone through the NUDGE pull, which needs no box-side change
+  // because the runner never asks what table an id came from. Defaults to
+  // 'assistant' at the column, which is what every pre-6.5 row is.
+  via?: OfficeMessageVia;
 }
+
+// Reserved for build 8 (one message, several people) and deliberately NOT on
+// the input type: nothing writes `message_group_id` in 6.5, and an optional
+// field nobody sets is an invitation to set it wrongly.
+export type OfficeMessageVia = 'assistant' | 'chat';
 
 export async function createOfficeMessage(
   input: CreateOfficeMessageInput,
@@ -60,6 +71,7 @@ export async function createOfficeMessage(
       tier: input.tier ?? null,
       nudge_id: input.nudgeId ?? null,
       in_reply_to: input.inReplyTo ?? null,
+      ...(input.via ? { via: input.via } : {}),
       ...(input.status ? { status: input.status } : {}),
     })
     .select()
@@ -74,6 +86,90 @@ export async function createOfficeMessage(
 // informs are unbounded by design — the tick drains them, but a dead planner
 // accumulates, and an unpaged read would silently hide the newest.
 const PAGE = 1000;
+
+/**
+ * ONE SENDER'S recent outbound messages (build 6.5 Phase 5).
+ *
+ * `fromRef` IS NOT OPTIONAL, and that is the fix for a real defect: the planner
+ * is NOT the only writer of `to_agent` rows. `inform_teammate` writes them too,
+ * with the calling seat's own ref (mcp/server.ts) — so a read filtered on
+ * direction alone hands the planner a technician's private note to a teammate
+ * under a header that says "your own messages". It would then read somebody
+ * else's words as its own history, and (because those rows carry no `via` and
+ * default to 'assistant') be told it was awaiting a reply to a message it
+ * never sent.
+ *
+ * BOUNDED BY A WINDOW, and PAGED within it rather than capped. A delivered
+ * message stays delivered forever, so an unwindowed read grows for the life of
+ * a firm — but capping the read makes the CALLER's "N older not shown" count a
+ * lie, since it can never exceed the cap. The window is the bound; the caller
+ * slices what it shows and can then subtract honestly.
+ */
+export async function listRecentOutboundMessages(
+  tenantId: string,
+  fromRef: string,
+  sinceIso: string,
+): Promise<OfficeMessage[]> {
+  const out: OfficeMessage[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await getClient()
+      .from('office_messages')
+      .select()
+      .eq('tenant_id', tenantId)
+      .eq('direction', 'to_agent')
+      .eq('from_ref', fromRef)
+      .gte('created_at', sinceIso)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true }) // deterministic paging tiebreak
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`listRecentOutboundMessages failed: ${error.message}`);
+    out.push(...((data ?? []) as OfficeMessage[]));
+    if (!data || data.length < PAGE) break;
+  }
+  return out;
+}
+
+/**
+ * Which of those were replied to.
+ *
+ * ONLY AN ASSISTANT CAN REPLY THIS WAY. `in_reply_to` has two writers —
+ * `inform_team_lead`'s reply branch and the Q&A desk (teamLead/desk.ts) — but
+ * only the first can ever point at a `to_agent` row: the desk answers a
+ * `to_planner` ask it created moments earlier, so a desk row's `in_reply_to`
+ * is never one of the ids passed here. (An earlier draft of this comment said
+ * `inform_team_lead` was the only writer at all, which is false and would have
+ * been trusted.)
+ *
+ * A person answering a CHAT message answers their own assistant, which files a
+ * record_field_note and no office row at all — so the absence of a reply here
+ * means "nobody used this channel", never "nobody answered". The caller must
+ * not turn it into the second thing.
+ *
+ * PAGED: one ask can carry several replies (`inform_team_lead` is not
+ * once-only), so the id list is bounded but the row count is not.
+ */
+export async function listAnsweredOutboundIds(
+  tenantId: string,
+  ids: string[],
+): Promise<string[]> {
+  if (ids.length === 0) return []; // PostgREST `in.()` with zero values errors
+  const out: string[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await getClient()
+      .from('office_messages')
+      .select('in_reply_to')
+      .eq('tenant_id', tenantId)
+      .in('in_reply_to', ids)
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`listAnsweredOutboundIds failed: ${error.message}`);
+    out.push(...(data ?? []).map((r) => r.in_reply_to).filter((v): v is string => !!v));
+    if (!data || data.length < PAGE) break;
+  }
+  return out;
+}
+
+
 
 export async function listOfficeMessagesByStatus(
   tenantId: string,
@@ -141,6 +237,11 @@ const HOST_QUEUE_SELECT =
 
 export async function listQueuedOfficeMessagesForHost(
   hostId: string,
+  // WHICH LEG IS ASKING (build 6.5 Phase 4). The two pulls share this read and
+  // must not serve each other's rows: an unfiltered office pull would inject a
+  // chat message as an agent turn AS WELL AS texting it, and an unfiltered
+  // nudge pull would text a message meant to land silently.
+  via: OfficeMessageVia = 'assistant',
 ): Promise<QueuedOfficeMessageForHost[]> {
   // PAGED (final review): frozen rows deliberately KEEP status 'queued' and
   // sort first (oldest-first), so an unpaged read under PostgREST's silent
@@ -155,6 +256,7 @@ export async function listQueuedOfficeMessagesForHost(
       .select(HOST_QUEUE_SELECT)
       .eq('status', 'queued')
       .eq('direction', 'to_agent')
+      .eq('via', via)
       .eq('technicians.host_id', hostId)
       .order('created_at', { ascending: true })
       .order('id', { ascending: true }) // deterministic paging tiebreak

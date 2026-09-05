@@ -1,11 +1,11 @@
 # /etc/systemd/system/nemoclaw-inference-medic.service
-# Assert the production Fireworks/GLM-5.2-fast gateway inference route,
-# self-healing the drift that onboard/rebuild introduces (resets to the
-# rate-limited NVIDIA default). Runs as the gateway owner. Triggered on boot +
-# every 5 min by nemoclaw-inference-medic.timer. See
-# nemoclaw-inference-medic.sh for the why.
+# Assert the OpenRouter preset route (@preset/trades-seats: Muse Spark 1.3 →
+# Gemini Flash, chained by OpenRouter per request) and verify it is serving —
+# a free balance check every tick, a turn-shaped tool-call probe hourly. Runs
+# as the gateway owner. Triggered on boot + every 5 min by
+# nemoclaw-inference-medic.timer. See nemoclaw-inference-medic.sh for the why.
 [Unit]
-Description=Assert Fireworks/GLM-5.2-fast gateway inference route (self-heal onboard/reboot drift)
+Description=Assert the OpenRouter preset route (Gemini 3.8 Flash → Muse Spark 1.3) and verify it is serving
 After=docker.service nemoclaw-boot.service
 Wants=docker.service
 # Carry the verdict off the box. The medic reports honestly to the journal, and
@@ -20,6 +20,20 @@ Type=oneshot
 User=ubuntu
 Group=ubuntu
 Environment=HOME=/home/ubuntu
+# The OpenRouter key for the balance check and the daily fallback probe. systemd
+# reads this as ROOT (0600 root:root) and injects it into a process that then
+# drops to `ubuntu`. The leading `-` makes a missing file a warning inside the
+# script (NO BALANCE WATCH), not a unit that refuses to start — a rebuilt box
+# must not page "down" every 5 minutes because one file is not there yet.
+EnvironmentFile=-/etc/nemoclaw/openrouter.env
+# Cadence stamps (last passed probe, last passed fallback probe) live under
+# /var/lib. StateDirectory= persists; RuntimeDirectory= is wiped every time a
+# oneshot stops, which would silently restore the 5-minute probe cadence.
+StateDirectory=nemoclaw-inference-medic
+# Outer backstop. Worst honest tick ≈ 140 s (two 10 s balance calls, two 40 s
+# probe attempts, one 40 s fallback probe); a hung curl must not hold the unit
+# in `activating` forever with neither OnSuccess nor OnFailure ever firing.
+TimeoutStartSec=300
 ExecStart=/usr/local/sbin/nemoclaw-inference-medic.sh
 
 [Install]

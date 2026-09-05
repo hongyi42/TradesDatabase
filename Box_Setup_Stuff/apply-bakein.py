@@ -15,7 +15,7 @@ heredoc; the Brev-era guide describes the OLD layout):
   NEW: scripts/generate-openclaw-config.mts + replacement_patterns heredoc
 
 The edits (see the guide for full rationale):
-  (1)  toolSearch:false manifests (nemotron + z-ai/glm-5.2)
+  (1)  toolSearch:false manifests (nemotron + z-ai/glm-5.2 + meta/muse-spark-1.3)
   (2)  config generator — bake the trades-spine MCP block
   (3)  nemoclaw-start.sh — runtime badge fallback (harmless no-op normally)
   (3b) nemoclaw-start.sh — placeholder self-heal (the versioning-trap fix:
@@ -96,6 +96,20 @@ def edit1_manifests():
                 "verified working for GLM-5.2, this manifest can be deleted."
             ),
             "match": {"modelIds": ["z-ai/glm-5.2"]},
+            "effects": {"openclawTools": {"toolSearch": False}},
+        },
+        "muse-spark-1-3-toolsearch-off.json": {
+            "$schema": "../schema.json",
+            "id": "muse-spark-1-3-toolsearch-off",
+            "agent": "openclaw",
+            "description": (
+                "meta/muse-spark-1.3 — the fleet's primary since 2026-09-05 (OpenRouter preset "
+                "@preset/trades-seats). Direct function calls are the verified-working path; tool "
+                "search was measured slower AND costlier on this stack (bootstrap-box.sh wire "
+                "phase, 2026-08-04). The wire phase pins toolSearch:false anyway; this manifest "
+                "keeps a rebuild honest before wire runs."
+            ),
+            "match": {"modelIds": ["meta/muse-spark-1.3"]},
             "effects": {"openclawTools": {"toolSearch": False}},
         },
     }

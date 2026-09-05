@@ -161,24 +161,24 @@ try {
     // exactly this instant for this tenant, or every question mis-grades.
     anchor: anchorIso,
     timezone: tz,
-    // Fireworks' id spelling, because that is what production routes to
-    // (since 2026-08-15). The old default here was `z-ai/glm-5.2` — NVIDIA's
-    // spelling of the SAME model — so run.mjs's expected-model gate refused
-    // every run until someone set DATE_EVAL_EXPECT_MODEL, and the refusal
-    // looked like a fleet problem rather than a stale default. nvidia-prod was
-    // retired as a fallback on 2026-08-12; its id spelling should not be the
-    // default anywhere.
-    // The 2026-08-15 switch: Fireworks' fast router is the fleet's canonical
-    // route. Override with DATE_EVAL_EXPECT_MODEL for trial runs on other
-    // providers — the gate compares EXACT strings, and every provider spells
-    // the same model differently (DeepInfra 'zai-org/GLM-5.2', NVIDIA
-    // 'z-ai/glm-5.2' — both have bitten us).
-    // DELIBERATELY STILL FIREWORKS/GLM-5.2. This asserts what the SEAT AGENTS
-    // are routed to, and the fleet did NOT move with the spine on 2026-08-28 —
-    // the seat half of that plan is deferred. Change this WITH the boxes, not
-    // before: the comment below records that a stale value here refuses every
-    // run and the refusal looks like a fleet problem.
-    expectedModel: process.env.DATE_EVAL_EXPECT_MODEL || 'accounts/fireworks/routers/glm-5p2-fast',
+    // History of this default: NVIDIA's `z-ai/glm-5.2` (stale after the
+    // 2026-08-15 Fireworks switch — run.mjs's exact-string gate then refused
+    // every run, and the refusal looked like a fleet problem), then Fireworks'
+    // `accounts/fireworks/routers/glm-5p2-fast` (2026-08-15 → 2026-09-05).
+    // Every provider spells the same model differently (DeepInfra
+    // 'zai-org/GLM-5.2', NVIDIA 'z-ai/glm-5.2'), and the gate compares EXACT
+    // strings — override with DATE_EVAL_EXPECT_MODEL for trial runs.
+    // 2026-09-05: the fleet moved to OpenRouter (thoughts/shared/plans/
+    // 2026-09-05-fleet-to-openrouter-muse-spark.md). Its everyday route is the
+    // PRESET `@preset/trades-seats` — Gemini 3.8 Flash → Muse Spark 1.3 since the
+    // 2026-09-05 evening flip (Muse → Gemini that morning), chained by
+    // OpenRouter per request — under which a fallback event is INVISIBLE to this
+    // harness: the route string never changes and trajectories record the
+    // declared id, not the served one. So the eval runs on a SINGLE-MODEL route
+    // with the medic timer stopped (plan Phase 5), and this default names that
+    // model. Change it WITH the boxes: a stale value refuses every run, and the
+    // refusal looks like a fleet problem.
+    expectedModel: process.env.DATE_EVAL_EXPECT_MODEL || 'google/gemini-3.8-flash',
     sandbox: process.env.DATE_EVAL_SANDBOX || 's2',
     facts: { dayCounts, techDayCounts, timeOff, untimedJobs },
     questions: corpus,
@@ -206,14 +206,15 @@ try {
   console.log(`\n  ${n} questions   ${Object.entries(byCat).map(([k, v]) => `${k} ${v}`).join('   ')}`);
   console.log(`  phase coverage:  ${Object.entries(byPhase).map(([k, v]) => `${k} ${v}`).join('   ')}`);
   console.log(`\n  estimated wall clock: ~${mins} min   (~${secsEach}s per turn, run serially)`);
-  // A RANGE, not a point estimate. At ~35k tokens/turn on Fireworks-fast
-  // ($2.10/M input, $0.21/M cached, $6.60/M output) the bill is dominated by how
-  // much of the doctrine prefix hits cache — and FLEET-side that is replica luck,
-  // because the gateway cannot inject prompt_cache_key. ~$0.013/turn at a 95% hit
-  // rate, ~$0.076 at zero. Quoting only the optimistic figure would understate a
-  // full run by 6x, which is how an eval quietly becomes expensive.
-  console.log(`  estimated spend:      ~${(n * 0.013).toFixed(2)}–${(n * 0.076).toFixed(2)} USD at GLM-5.2 Fireworks-fast rates`);
-  console.log(`                        (~35k tokens/turn; the spread is cache-hit luck — see engineering-memory)`);
+  // A RANGE, not a point estimate — and MEASURED, not modelled (2026-09-05, both
+  // runs summed from OpenRouter's generation records): Gemini 3.8 Flash
+  // $3.40 / 82 questions = median $0.038, min $0.013, max $0.105 per question
+  // (3.6 calls/question, 61% of prompt tokens cached — Gemini's implicit cache
+  // is session-sticky, so every fresh session's first call is uncached);
+  // Muse Spark 1.3 was $5.33 = median $0.064 (3.1 calls, 68% cached). Unit
+  // costs of a driven run — never multiply by this suite's volume.
+  console.log(`  estimated spend:      ~${(n * 0.02).toFixed(2)}–${(n * 0.06).toFixed(2)} USD at Gemini 3.8 Flash OpenRouter rates (measured median $0.038/question)`);
+  console.log(`                        (Muse Spark 1.3, the fallback lane: ~${(n * 0.04).toFixed(2)}–${(n * 0.10).toFixed(2)}, measured median $0.064)`);
   console.log(`\n  manifest → ${join(OUT_DIR, 'manifest.json')}`);
   console.log(`\n  TO RUN (this is the step that spends money):`);
   console.log(`    npm run date-eval:run -- --dir ${OUT_DIR} --yes\n`);

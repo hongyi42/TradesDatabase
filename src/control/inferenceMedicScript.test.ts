@@ -4,39 +4,42 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-// Locks in Box_Setup_Stuff/nemoclaw-inference-medic.sh's decision table.
+// Locks in Box_Setup_Stuff/nemoclaw-inference-medic.sh's decision table (v6).
 //
-// Three generations of blind spot, each pinned here so it cannot come back:
+// Four generations of blind spot, each pinned here so it cannot come back:
 //  - v2 probed with `openshell inference set`, which validates endpoint
 //    REGISTRATION, not a completion. It reported "route OK" through a 12-minute
 //    stall (2026-07-28).
 //  - v3 added a completion gate but asked for `"hi"` with max_tokens:1. A
-//    provider that 400s every real turn served that happily, so the medic logged
-//    "FAILOVER active — COMPLETION-VERIFIED" over a hard outage (2026-08-06,
-//    and six more times on 2026-08-12).
-//  - v5 removed the fallback entirely. It was never a product decision: nvidia
-//    was the ORIGINAL provider, kept as a manual rollback at the 07-06 DeepInfra
-//    swap, then wired up as an automatic failover target by v2 on 07-11 without
-//    anyone verifying it still served. An unverified fallback is worse than
-//    none — it fails exactly when depended on, and reports success doing it.
+//    provider that 400s every real turn served that happily (2026-08-06, and
+//    six more times on 2026-08-12).
+//  - v5 removed the automatic failover — it was never a decision, and its
+//    target had never been verified. An unverified fallback is worse than none.
+//  - v6 (2026-09-05, the OpenRouter switch): the second lane moved to an
+//    OpenRouter PRESET, chained per request by the vendor. The medic still
+//    NEVER reroutes; it now also (a) checks the key's balance every tick for
+//    free — money is what actually killed the fleet, and no fallback survives
+//    it; (b) probes hourly, stamping the cadence ONLY on a pass, so a "skipped"
+//    tick can never exit 0 and close an open incident while the fleet is down;
+//    (c) logs which lane served, and never mistakes a stripped field for an
+//    outage; (d) probes the fallback lane directly, daily, so it stays verified.
 //
-// 2026-08-15: the primary flipped to fireworks-prod (GLM-5.2 fast router);
-// deepinfra-prod is now the lingering MANUAL rollback, exactly the position
-// nvidia-prod held in July — so the no-fallback test below bans it from the
-// medic's output the same way.
-//
-//   registration ok + completion ok       -> serving (exit 0)
-//   registration ok + completion FAIL     -> exit 1 LOUD, route HELD on primary
-//   registration FAIL                     -> exit 1 LOUD
-//   no container to probe from            -> registration only, exit 0 + WARN
+//   balance low / key 401            -> route held, exit 1 LOUD
+//   registration fails               -> exit 1 LOUD
+//   probe due, misses twice          -> route held, exit 1 LOUD
+//   probe passes (any lane)          -> exit 0 (+ LOUD warn off the primary)
+//   probe not due                    -> exit 0, "probe skipped"
+//   no container to probe from       -> registration only, exit 0 + WARN
+//   fallback probe misses            -> WARN only
 //   ...and the route is NEVER set to anything but the primary.
 //
 // The shims keep route state in a file: `openshell inference set` records the
-// provider (mirroring the real switch), and the fake `docker exec curl` answers
-// according to per-provider health flags in env — so the probe genuinely tests
-// "whatever route is currently set", exactly like inference.local does.
+// provider, the fake `docker exec curl` answers according to that route and
+// per-lane health flags in env, and the fake host `curl` answers the OpenRouter
+// account calls and the direct fallback probe.
 
 const SCRIPT = join(process.cwd(), 'Box_Setup_Stuff', 'nemoclaw-inference-medic.sh');
+const FAKE_KEY = 'sk-or-v1-test-key-that-must-never-appear-in-argv';
 
 const haveBash = (() => {
   try {
@@ -53,26 +56,26 @@ interface RunResult {
   stderr: string;
 }
 
-describe.skipIf(!haveBash)('nemoclaw-inference-medic.sh decision table', () => {
+describe.skipIf(!haveBash)('nemoclaw-inference-medic.sh decision table (v6)', () => {
   let dir: string;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'medic-'));
 
-    // openshell shim: `inference set` succeeds/fails per REG_<PROVIDER> env and
+    // openshell shim: `inference set` succeeds/fails per REG_OPENROUTER and
     // records the active route — the completion shim keys off that record.
+    // Every argv is appended to a file so the test can prove --no-verify rides.
     await writeFile(
       join(dir, 'openshell'),
       `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "\${MEDIC_TEST_STATE}.openshell-args"
 provider=""
 while [ $# -gt 0 ]; do
   if [ "$1" = "--provider" ]; then provider="$2"; shift; fi
   shift
 done
 case "$provider" in
-  fireworks-prod) ok="\${REG_FIREWORKS:-1}" ;;
-  deepinfra-prod) ok="\${REG_DEEPINFRA:-1}" ;;
-  nvidia-prod)    ok="\${REG_NVIDIA:-1}" ;;
+  openrouter-prod) ok="\${REG_OPENROUTER:-1}" ;;
   *) ok=1 ;;
 esac
 [ "$ok" = "1" ] || exit 1
@@ -82,12 +85,10 @@ exit 0
     );
 
     // docker shim: `ps` lists a container (or none); `exec ... curl` answers
-    // for whichever provider the openshell shim recorded as current — but ONLY
-    // when invoked as `-u sandbox` with a LOGIN shell. On the real box the
-    // sandbox's egress env is assembled in the sandbox user's login profile;
-    // a bare root `docker exec curl` gets an empty reply from a healthy
-    // provider (medic v3's first live run declared a false BOTH-DEAD this way,
-    // 2026-08-11). The shim reproduces that so the invocation shape is pinned.
+    // for the route the openshell shim recorded — but ONLY when invoked as
+    // `-u sandbox` with a LOGIN shell (the real container's egress env is
+    // assembled in the sandbox user's login profile; medic v3's first live
+    // run declared a false both-dead this way, 2026-08-11).
     await writeFile(
       join(dir, 'docker'),
       `#!/usr/bin/env bash
@@ -95,68 +96,78 @@ if [ "$1" = "ps" ]; then
   [ "\${HAVE_CONTAINER:-1}" = "1" ] && echo "openshell-s6-test"
   exit 0
 fi
-# docker exec ... — refuse to answer unless run as the sandbox user with a
-# login shell, exactly like the real container's egress environment does.
 args="$*"
-case "$args" in
-  *"-u sandbox"*) : ;;
-  *) exit 0 ;;   # empty reply, like root's curl on the real box
-esac
-case "$args" in
-  *"sh -lc"*) : ;;
-  *) exit 0 ;;   # non-login shell: no egress env, empty reply
-esac
+case "$args" in *"-u sandbox"*) : ;; *) exit 0 ;; esac
+case "$args" in *"sh -lc"*) : ;; *) exit 0 ;; esac
+case "$args" in *"@-"*) cat >/dev/null 2>&1 || true ;; esac
 current="$(cat "\${MEDIC_TEST_STATE}" 2>/dev/null)"
-case "$current" in
-  fireworks-prod) healthy="\${COMPLETION_FIREWORKS:-1}" ;;
-  deepinfra-prod) healthy="\${COMPLETION_DEEPINFRA:-1}" ;;
-  nvidia-prod)    healthy="\${COMPLETION_NVIDIA:-1}" ;;
-  *) healthy=0 ;;
-esac
+[ "$current" = "openrouter-prod" ] && healthy="\${COMPLETION_PRIMARY:-1}" || healthy=0
 
-# "flaky" = miss once, then serve. Proves the v4 retry absorbs a single slow
-# probe instead of flapping the whole fleet to the fallback.
+# "flaky" = miss once, then serve.
 if [ "$healthy" = "flaky" ]; then
-  n="\${MEDIC_TEST_STATE}.attempts-$current"
+  n="\${MEDIC_TEST_STATE}.attempts"
   count="$(cat "$n" 2>/dev/null || echo 0)"
   echo $((count + 1)) > "$n"
   [ "$count" = "0" ] && { echo '400 (no body)'; exit 0; }
   healthy=1
 fi
 
-if [ "$healthy" = "1" ]; then
-  # v4 shape: a streamed completion that ENDS IN A TOOL CALL. Anything less is
-  # not evidence the provider can serve an agent turn.
-  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}'
-  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"id":"c1","type":"function","function":{"name":"resolve_date","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}'
+emit_tool_call() { # model-json-fragment ("" for none)
+  printf '%s\\n' "data: {$1\\"choices\\":[{\\"index\\":0,\\"delta\\":{\\"role\\":\\"assistant\\"},\\"finish_reason\\":null}]}"
+  printf '%s\\n' "data: {$1\\"choices\\":[{\\"index\\":0,\\"delta\\":{\\"tool_calls\\":[{\\"id\\":\\"c1\\",\\"type\\":\\"function\\",\\"function\\":{\\"name\\":\\"resolve_date\\",\\"arguments\\":\\"{}\\"}}]},\\"finish_reason\\":\\"tool_calls\\"}]}"
   printf '%s\\n' 'data: [DONE]'
-  exit 0
-fi
-
-# "prose" = a perfectly valid completion that never calls a tool. This is the
-# v3 blind spot: "choices" is present, so v3 called it healthy. A provider whose
-# model will not emit tool calls cannot serve this product.
-if [ "$healthy" = "prose" ]; then
-  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{"content":"This coming Friday is the 14th."},"finish_reason":null}]}'
-  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
-  printf '%s\\n' 'data: [DONE]'
-  exit 0
-fi
-
-# "truncated" = the stream dies mid-flight: tool call started, no [DONE].
-if [ "$healthy" = "truncated" ]; then
-  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}'
-  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}'
-  exit 0
-fi
-
-# The 2026-08-06 shape: a body with no "choices" (e.g. "400 (no body)").
+}
+case "$healthy" in
+  1)          emit_tool_call "\\"model\\":\\"google/gemini-3.8-flash\\","; exit 0 ;;
+  fallback)   emit_tool_call "\\"model\\":\\"meta/muse-spark-1.3\\","; exit 0 ;;
+  nomodel)    emit_tool_call ""; exit 0 ;;
+  presetslug) emit_tool_call "\\"model\\":\\"@preset/trades-seats\\","; exit 0 ;;
+  prose)
+    printf '%s\\n' 'data: {"model":"google/gemini-3.8-flash","choices":[{"index":0,"delta":{"content":"This coming Friday is the 14th."},"finish_reason":null}]}'
+    printf '%s\\n' 'data: {"model":"google/gemini-3.8-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
+    printf '%s\\n' 'data: [DONE]'; exit 0 ;;
+  truncated)
+    printf '%s\\n' 'data: {"model":"google/gemini-3.8-flash","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}'
+    printf '%s\\n' 'data: {"model":"google/gemini-3.8-flash","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}'
+    exit 0 ;;
+esac
 echo '400 (no body)'
 exit 0
 `,
     );
-    await chmod(join(dir, 'openshell'), 0o755);
-    await chmod(join(dir, 'docker'), 0o755);
+
+    // host curl shim: the OpenRouter account calls and the direct fallback
+    // probe. Records argv so the test can prove the key never appears in it
+    // (the real script passes the Authorization header via -K on a fd).
+    await writeFile(
+      join(dir, 'curl'),
+      `#!/usr/bin/env bash
+args="$*"
+printf '%s\\n' "$args" >> "\${MEDIC_TEST_STATE}.curl-args"
+# Read stdin ONLY when the script pipes a body; the account calls pipe nothing,
+# and the test runner's stdin never closes.
+case "$args" in *"@-"*) cat >/dev/null 2>&1 || true ;; esac
+url=""; for a in "$@"; do case "$a" in http*://*) url="$a" ;; esac; done
+want_code=0; case "$args" in *" -w "*) want_code=1 ;; esac
+emit() { printf '%s' "$1"; [ "$want_code" = 1 ] && printf '\\n%s' "$2"; echo; }
+case "$url" in
+  */api/v1/key)
+    lr="\${KEY_REMAINING-25}"; [ "$lr" = "null" ] && v=null || v="$lr"
+    emit "{\\"data\\":{\\"limit\\":30,\\"limit_remaining\\":$v}}" "\${KEY_HTTP:-200}" ;;
+  */api/v1/credits)
+    emit "{\\"data\\":{\\"total_credits\\":\${CREDITS_REMAINING:-30},\\"total_usage\\":0}}" "\${CREDITS_HTTP:-200}" ;;
+  */chat/completions)
+    case "\${COMPLETION_FALLBACK:-1}" in
+      1) printf '%s\\n' 'data: {"model":"meta/muse-spark-1.3","choices":[{"index":0,"delta":{"tool_calls":[{"id":"c1","type":"function","function":{"name":"resolve_date","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}'
+         printf '%s\\n' 'data: [DONE]' ;;
+      *) echo '400 (no body)' ;;
+    esac ;;
+  *) exit 1 ;;
+esac
+exit 0
+`,
+    );
+    for (const f of ['openshell', 'docker', 'curl']) await chmod(join(dir, f), 0o755);
   });
 
   afterEach(async () => {
@@ -173,8 +184,12 @@ exit 0
             ...process.env,
             PATH: `${dir}:${process.env.PATH ?? ''}`,
             MEDIC_TEST_STATE: join(dir, 'route-state'),
+            MEDIC_STATE_DIR: join(dir, 'state'),
+            MEDIC_PROBE_INTERVAL: '0',
+            MEDIC_FALLBACK_INTERVAL: '0',
             MEDIC_PROBE_TIMEOUT: '2',
-            MEDIC_RETRY_SLEEP: '0', // the retry's real 2s pause would just slow the suite
+            MEDIC_RETRY_SLEEP: '0',
+            OPENROUTER_API_KEY: FAKE_KEY,
             ...env,
           },
         },
@@ -189,94 +204,178 @@ exit 0
     return (await readFile(join(dir, 'route-state'), 'utf8')).trim();
   }
 
-  it('healthy primary: registration + completion both pass -> verified, exit 0', async () => {
+  it('healthy: balance ok + registration + tool call from the primary -> verified, exit 0', async () => {
     const r = await run({});
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain('route OK on fireworks-prod');
+    // The balance line names BOTH sources, so a half-missing watch is visible.
+    expect(r.stdout).toMatch(/balance ok — 25\.00 USD remaining \(floor 2\.00; key:25\.00 credits:30\.00\)/);
+    expect(r.stdout).toContain('route OK on openrouter-prod / @preset/trades-seats');
     expect(r.stdout).toContain('serving verified');
-    expect(await activeRoute()).toBe('fireworks-prod');
+    expect(r.stdout).toContain('served=google/gemini-3.8-flash');
+    expect(r.stderr).not.toContain('PRIMARY NOT SERVING');
+    expect(await activeRoute()).toBe('openrouter-prod');
+    // --no-verify rides every assertion: a @preset/ id is not a listed model.
+    const args = await readFile(join(dir, 'route-state.openshell-args'), 'utf8');
+    expect(args).toContain('--no-verify');
   });
 
-  it('THE 07-28 STALL: registers but completions fail -> exit 1 LOUD (v2 said "route OK")', async () => {
-    const r = await run({ COMPLETION_FIREWORKS: '0' });
+  it('the fallback lane is serving -> agents answer (exit 0) but it is said LOUDLY', async () => {
+    const r = await run({ COMPLETION_PRIMARY: 'fallback' });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('served=meta/muse-spark-1.3');
+    expect(r.stderr).toContain('PRIMARY NOT SERVING');
+    expect(await activeRoute()).toBe('openrouter-prod');
+  });
+
+  it('a stripped model field, or the literal preset slug, is unknown — never an alarm', async () => {
+    for (const variant of ['nomodel', 'presetslug']) {
+      const r = await run({ COMPLETION_PRIMARY: variant });
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('served=unknown');
+      expect(r.stdout).toContain('serving verified');
+      expect(r.stderr).not.toContain('PRIMARY NOT SERVING');
+    }
+  }, 20_000);
+
+  it('THE 09-04 SHAPE: balance below the floor -> exit 1 LOUD, route held, no paid probe', async () => {
+    const r = await run({ KEY_REMAINING: 'null', CREDITS_REMAINING: '1' });
     expect(r.code).toBe(1);
-    expect(r.stderr).toContain('failed the tool-call completion probe TWICE');
-    expect(r.stderr).toContain('IS NOT SERVING');
+    expect(r.stderr).toContain('BALANCE');
     expect(r.stderr).toContain('AGENTS ARE DOWN');
-    // The route is HELD, not moved — a recovery is then picked up immediately.
-    expect(await activeRoute()).toBe('fireworks-prod');
+    expect(r.stdout).not.toContain('serving verified');
+    expect(await activeRoute()).toBe('openrouter-prod');
   });
 
-  it('402/outage class: registration itself fails -> exit 1 LOUD', async () => {
-    const r = await run({ REG_FIREWORKS: '0' });
+  it('key limit lifted (null) and the credits call unavailable -> NO BALANCE WATCH, loud, but not an outage', async () => {
+    const r = await run({ KEY_REMAINING: 'null', CREDITS_HTTP: '403' });
+    expect(r.code).toBe(0);
+    expect(r.stderr).toContain('NO BALANCE WATCH');
+    expect(r.stderr).toContain('key:null credits:http403');
+    expect(r.stdout).toContain('serving verified');
+  });
+
+  it('half a watch is said out loud: credits 403 but the key limit answers -> ok, sources named', async () => {
+    const r = await run({ CREDITS_HTTP: '403' });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('balance ok — 25.00 USD remaining (floor 2.00; key:25.00 credits:http403)');
+  });
+
+  it('key rejected (401) -> exit 1 LOUD', async () => {
+    const r = await run({ KEY_HTTP: '401' });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('KEY REJECTED');
+    expect(r.stderr).toContain('AGENTS ARE DOWN');
+  });
+
+  it('registration fails -> exit 1 LOUD', async () => {
+    const r = await run({ REG_OPENROUTER: '0' });
     expect(r.code).toBe(1);
     expect(r.stderr).toContain('failed REGISTRATION');
     expect(r.stderr).toContain('AGENTS ARE DOWN');
   });
 
-  // The v5 invariant. nvidia-prod became a failover target by accident, not by
-  // decision, and 400'd every real turn for days while the medic logged success.
-  // If a fallback is ever added back it must be a deliberate change that also
-  // changes this test — never something that quietly reappears.
-  it('NEVER routes anywhere but the primary, whatever fails', async () => {
-    const cases: Record<string, string>[] = [
-      { COMPLETION_FIREWORKS: '0' },
-      { COMPLETION_FIREWORKS: 'prose' },
-      { COMPLETION_FIREWORKS: 'truncated' },
-      {}, // healthy
-    ];
-    for (const env of cases) {
-      await run(env);
-      expect(await activeRoute()).toBe('fireworks-prod');
-    }
-  });
-
-  it('never claims a failover happened, and never mentions a fallback provider', async () => {
-    const r = await run({ COMPLETION_FIREWORKS: '0' });
-    expect(r.stderr).not.toContain('FAILOVER');
-    expect(r.stderr).not.toContain('COMPLETION-VERIFIED');
-    // Both lingering rollback providers: nvidia (July's trap) and now deepinfra
-    // (the 08-15 swap's manual rollback). Neither may appear in medic output.
-    expect(`${r.stdout}${r.stderr}`).not.toContain('nvidia');
-    expect(`${r.stdout}${r.stderr}`).not.toContain('deepinfra');
-  });
-
-  // ── v4: the probe has to look like a TURN ──────────────────────────────────
-  // v3 probed `"hi"` with max_tokens:1 and passed on any body containing
-  // "choices". nvidia-prod served that while 400-ing every real turn, so the
-  // medic logged "FAILOVER active — COMPLETION-VERIFIED" over a hard outage
-  // (six events on 2026-08-12). These pin the stronger gate.
-
-  it('THE v3 BLIND SPOT: returns prose and never emits a tool call -> NOT serving', async () => {
-    const r = await run({ COMPLETION_FIREWORKS: 'prose' });
+  it('THE 07-28 STALL: registers but completions fail twice -> exit 1 LOUD, route HELD', async () => {
+    const r = await run({ COMPLETION_PRIMARY: '0' });
     expect(r.code).toBe(1);
-    // v3's gate ("choices" present) would have called this healthy and green.
-    expect(r.stdout).not.toContain('serving verified');
     expect(r.stderr).toContain('failed the tool-call completion probe TWICE');
+    expect(r.stderr).toContain('IS NOT SERVING');
+    expect(r.stderr).toContain('AGENTS ARE DOWN');
+    expect(await activeRoute()).toBe('openrouter-prod');
+  });
+
+  it('a MISS is never stamped: the next tick inside the interval probes again (and stays down)', async () => {
+    const first = await run({ COMPLETION_PRIMARY: '0', MEDIC_PROBE_INTERVAL: '3600' });
+    expect(first.code).toBe(1);
+    const second = await run({ COMPLETION_PRIMARY: '0', MEDIC_PROBE_INTERVAL: '3600' });
+    expect(second.code).toBe(1);
+    expect(second.stdout).not.toContain('probe skipped');
+    expect(second.stderr).toContain('IS NOT SERVING');
+  }, 20_000);
+
+  it('a PASS is stamped: the next tick inside the interval skips the paid probe, exit 0', async () => {
+    const first = await run({ MEDIC_PROBE_INTERVAL: '3600' });
+    expect(first.code).toBe(0);
+    expect(first.stdout).toContain('serving verified');
+    const second = await run({ MEDIC_PROBE_INTERVAL: '3600' });
+    expect(second.code).toBe(0);
+    expect(second.stdout).toContain('probe skipped');
+    expect(second.stdout).not.toContain('serving verified');
+    expect(await activeRoute()).toBe('openrouter-prod');
+  }, 20_000);
+
+  it('THE v3 BLIND SPOT: prose with no tool call -> NOT serving', async () => {
+    const r = await run({ COMPLETION_PRIMARY: 'prose' });
+    expect(r.code).toBe(1);
+    expect(r.stdout).not.toContain('serving verified');
     expect(r.stderr).toContain('IS NOT SERVING');
   });
 
   it('stream dies mid-flight (tool call started, no [DONE]) -> NOT serving', async () => {
-    const r = await run({ COMPLETION_FIREWORKS: 'truncated' });
+    const r = await run({ COMPLETION_PRIMARY: 'truncated' });
     expect(r.code).toBe(1);
-    expect(r.stdout).not.toContain('serving verified');
     expect(r.stderr).toContain('IS NOT SERVING');
   });
 
   it('ONE slow probe does not raise a false alarm: miss then pass -> healthy', async () => {
-    const r = await run({ COMPLETION_FIREWORKS: 'flaky' });
+    const r = await run({ COMPLETION_PRIMARY: 'flaky' });
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('passed the completion probe on retry');
     expect(r.stdout).toContain('serving verified');
     expect(r.stderr).not.toContain('AGENTS ARE DOWN');
-    expect(await activeRoute()).toBe('fireworks-prod');
   });
 
-  it('no sandbox container: degrades to v2 semantics (registration only), exit 0 with a WARN', async () => {
+  it('no sandbox container: registration only, exit 0 with a WARN', async () => {
     const r = await run({ HAVE_CONTAINER: '0' });
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('REGISTRATION ONLY');
     expect(r.stderr).toContain('completion gate SKIPPED');
-    expect(await activeRoute()).toBe('fireworks-prod');
+    expect(await activeRoute()).toBe('openrouter-prod');
+  });
+
+  it('the fallback lane failing its own probe is a WARN, never an outage', async () => {
+    const r = await run({ COMPLETION_FALLBACK: '0' });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('serving verified');
+    expect(r.stderr).toContain('FALLBACK');
+    expect(r.stderr).toContain('no verified second lane');
+  });
+
+  it('the fallback lane passing is logged with its served model', async () => {
+    const r = await run({});
+    expect(r.stdout).toContain('fallback lane verified');
+    expect(r.stdout).toContain('served=meta/muse-spark-1.3');
+  });
+
+  // The v5 invariant, kept: whatever fails, the route is only ever the primary.
+  it('NEVER routes anywhere but openrouter-prod, whatever fails', async () => {
+    const cases: Record<string, string>[] = [
+      { COMPLETION_PRIMARY: '0' },
+      { COMPLETION_PRIMARY: 'prose' },
+      { COMPLETION_PRIMARY: 'fallback' },
+      { KEY_REMAINING: 'null', CREDITS_REMAINING: '1' },
+      {},
+    ];
+    for (const env of cases) {
+      await run(env);
+      expect(await activeRoute()).toBe('openrouter-prod');
+    }
+  }, 40_000);
+
+  it('never mentions a retired provider or a failover', async () => {
+    const cases: Record<string, string>[] = [{}, { COMPLETION_PRIMARY: '0' }, { COMPLETION_PRIMARY: 'fallback' }];
+    for (const env of cases) {
+      const r = await run(env);
+      expect(`${r.stdout}${r.stderr}`).not.toMatch(/fireworks|deepinfra|nvidia|FAILOVER/i);
+    }
+  }, 30_000);
+
+  it('the key never appears in any argv or in the journal: the Authorization header rides via -K', async () => {
+    const r = await run({});
+    expect(`${r.stdout}${r.stderr}`).not.toContain(FAKE_KEY);
+    const curlArgs = await readFile(join(dir, 'route-state.curl-args'), 'utf8');
+    expect(curlArgs).not.toContain(FAKE_KEY);
+    expect(curlArgs).toContain('-K');
+    const openshellArgs = await readFile(join(dir, 'route-state.openshell-args'), 'utf8');
+    expect(openshellArgs).not.toContain(FAKE_KEY);
   });
 });

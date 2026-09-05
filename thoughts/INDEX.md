@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 209 documents · 202 live · 7 superseded.
+Regenerate with `npm run decisions:index`. 210 documents · 203 live · 7 superseded.
 
 ## Superseded — do not build on these
 
@@ -46,6 +46,7 @@ Regenerate with `npm run decisions:index`. 209 documents · 202 live · 7 supers
 
 ## Live
 
+- `2026-09-05` `plan` [2026-09-05-the-rails-come-out](shared/plans/2026-09-05-the-rails-come-out.md) · _draft_ — "Rung 9, part A — delete the promise ladder and the stored window; no schema rail restricts the agent"
 - `2026-09-05` `research` [2026-09-05-the-visit-is-one-object](shared/research/2026-09-05-the-visit-is-one-object.md) `landed` — "Rung 9 — the visit is one object: the full footprint of retiring `assignments` into `visits`, collapsing the…
 - `2026-09-03` `plan` [2026-09-03-the-schedule-is-the-managers](shared/plans/2026-09-03-the-schedule-is-the-managers.md) `drift 17` — "Rung 8 — the schedule is the manager's: delete the autonomous solver and pinning"
 - `2026-09-03` `research` [2026-09-03-the-schedule-is-the-managers](shared/research/2026-09-03-the-schedule-is-the-managers.md) `not landed` `describes 7 deleted files` — "Rung 8 — the schedule is the manager's: the demolition footprint of the autonomous solver"

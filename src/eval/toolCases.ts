@@ -685,7 +685,7 @@ export function buildToolCases(): ToolCase[] {
     steps: [
       {
         label: 'move a visit',
-        // so doctrine says one-shot: act, then say what you did.
+        // Doctrine: a move is one-shot — act, then say what you did.
         args: (ctx) => ({
           assignmentId: visitId(ctx.tenant, 'visit-t1-rs-01'),
           date: nextWorkday(addDays(ctx.anchor, 9)),

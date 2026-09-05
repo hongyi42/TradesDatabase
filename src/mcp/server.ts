@@ -1028,19 +1028,18 @@ const ADMIN_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        customerId: { type: 'string', description: 'Exactly one of customerId/jobId. First call only.' },
-        jobId: { type: 'string', description: 'Exactly one of customerId/jobId. First call only.' },
-        technicianRef: { type: 'string', description: 'Roster ref of the technician. OPTIONAL — omit to book unassigned ("assign later"). First call only.' },
-        title: { type: 'string', description: 'Job title when booking by customerId (a new job is created). First call only.' },
-        date: { type: 'string', description: 'YYYY-MM-DD, firm-local. First call only.' },
+        customerId: { type: 'string', description: 'Exactly one of customerId/jobId.' },
+        jobId: { type: 'string', description: 'Exactly one of customerId/jobId.' },
+        technicianRef: { type: 'string', description: 'Roster ref of the technician. OPTIONAL — omit to book unassigned ("assign later").' },
+        title: { type: 'string', description: 'Job title when booking by customerId (a new job is created).' },
+        date: { type: 'string', description: 'YYYY-MM-DD, firm-local.' },
         startTime: { type: 'string', description: 'HH:MM 24h. REQUIRED on first call — no default; ask the manager if unstated.' },
         endTime: { type: 'string', description: 'HH:MM 24h. REQUIRED on first call — no default length; ask the manager if unstated.' },
-        timeTbd: { type: 'boolean', description: 'true ONLY when the manager explicitly said the time is unsettled — books an UNPLACED visit (day known, no times). Requires NO startTime/endTime. Never your own inference. First call only.' },
-        earliestDate: { type: 'string', description: 'With timeTbd: the day (YYYY-MM-DD), or the range start. Defaults to date. First call only.' },
-        latestDate: { type: 'string', description: 'With timeTbd: range end (YYYY-MM-DD), for "sometime that week". Defaults to earliestDate. First call only.' },
-        priority: { type: 'string', enum: ['emergency', 'urgent', 'routine', 'maintenance'], description: 'Triage tier for the NEW job when booking by customerId (default "routine"). Rejected with jobId — an existing job keeps its recorded priority. First call only.' },
-        forceNewJob: { type: 'boolean', description: 'customerId path only: override the open-work guard and mint a new job even though the customer has open work on file. ONLY when the work is genuinely different from every listed job — never to skip the jobId lookup. First call only.' },
-        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
+        timeTbd: { type: 'boolean', description: 'true ONLY when the manager explicitly said the time is unsettled — books an UNPLACED visit (day known, no times). Requires NO startTime/endTime. Never your own inference.' },
+        earliestDate: { type: 'string', description: 'With timeTbd: the day (YYYY-MM-DD), or the range start. Defaults to date.' },
+        latestDate: { type: 'string', description: 'With timeTbd: range end (YYYY-MM-DD), for "sometime that week". Defaults to earliestDate.' },
+        priority: { type: 'string', enum: ['emergency', 'urgent', 'routine', 'maintenance'], description: 'Triage tier for the NEW job when booking by customerId (default "routine"). Rejected with jobId — an existing job keeps its recorded priority.' },
+        forceNewJob: { type: 'boolean', description: 'customerId path only: override the open-work guard and mint a new job even though the customer has open work on file. ONLY when the work is genuinely different from every listed job — never to skip the jobId lookup.' },
       },
       required: [],
     },
@@ -1064,14 +1063,13 @@ const ADMIN_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        assignmentId: { type: 'string', description: 'The visit to move (from get_team_schedule). First call only.' },
-        date: { type: 'string', description: 'New YYYY-MM-DD. First call only.' },
-        startTime: { type: 'string', description: 'New HH:MM. First call only.' },
-        endTime: { type: 'string', description: 'New HH:MM (default: keep the old duration). First call only.' },
-        technicianRef: { type: 'string', description: 'Reassign to this roster ref (default: same technician). First call only. Mutually exclusive with unassign.' },
-        unassign: { type: 'boolean', description: 'true = park the visit: pull the person off, keep day/time (the reverse of attaching). Mutually exclusive with technicianRef. First call only.' },
-        reason: { type: 'string', description: 'Why it is moving (kept on the record). First call only.' },
-        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
+        assignmentId: { type: 'string', description: 'The visit to move (from get_team_schedule).' },
+        date: { type: 'string', description: 'New YYYY-MM-DD.' },
+        startTime: { type: 'string', description: 'New HH:MM.' },
+        endTime: { type: 'string', description: 'New HH:MM (default: keep the old duration).' },
+        technicianRef: { type: 'string', description: 'Reassign to this roster ref (default: same technician). Mutually exclusive with unassign.' },
+        unassign: { type: 'boolean', description: 'true = park the visit: pull the person off, keep day/time (the reverse of attaching). Mutually exclusive with technicianRef.' },
+        reason: { type: 'string', description: 'Why it is moving (kept on the record).' },
       },
       required: [],
     },
@@ -4442,10 +4440,11 @@ async function dispatch(
           reason,
           actorRef: subjectRef,
         });
-        // Doctrine (2026-07-17, verdict computed in booking.ts): no promise
-        // breaking = internal + reversible → move in ONE step and report. A
-        // promise-breaking move stages below (the customer heard a different
-        // day/time — someone must own telling them before it changes).
+        // Doctrine (2026-07-17, re-cut by rung 9a): a move is internal and
+        // reversible, so it happens in ONE step and is reported. Nothing in
+        // the schema records what a customer was told any more — the agent is
+        // expected to have READ the job's record for promises BEFORE moving,
+        // and this tool cannot and must not claim none existed.
           const moved = await moveVisit({
             tenantId,
             assignmentId,
@@ -4471,8 +4470,9 @@ async function dispatch(
               ? 'Parked in one step — the person was taken off; the visit keeps its slot and ' +
                 'now shows under Unassigned (board) / unassignedOnly (get_team_schedule). ' +
                 'Tell the manager exactly what happened.'
-              : 'Moved in one step — no customer promise was affected, so no confirmation was ' +
-                'needed. Tell the manager exactly what moved.',
+              : 'Moved in one step. Tell the manager exactly what moved. If the customer was ' +
+                'told a day or time for this visit, THEY still need telling — check the job\'s ' +
+                'record (calls, emails, notes) before you move a visit, not after.',
           };
     }
     case 'unschedule_visit': {
@@ -4502,9 +4502,9 @@ async function dispatch(
             // Placed day, else the unplaced range's day (plan 4b-2).
             day: cancelledRow.starts_at?.slice(0, 10) ?? cancelledRow.earliest_date ?? null,
             note:
-              'Unscheduled in one step — nothing was promised to the customer, so no ' +
-              'confirmation was needed. The WORK is not cancelled: the job is back in the ' +
-              'loose bucket for rebooking; tell the manager exactly that.',
+              'Unscheduled in one step — this visit had no time set, so nobody was holding an ' +
+              'appointment for it. The WORK is not cancelled: the job is back in the loose ' +
+              'bucket for rebooking; tell the manager exactly that.',
           };
         }
         // Staging replaces any prior staged cancel; one-shot cancels above

@@ -1155,7 +1155,6 @@
                   ? 'Assigned to ' + rosterName(ref) + ' — time still to be set'
                   : 'Now unassigned — back in the loose bucket, time still to be set';
               },
-              null,
             );
             return;
           }
@@ -1173,7 +1172,6 @@
             function () {
               return ref ? 'Assigned to ' + rosterName(ref) : 'Now unassigned — nobody on it';
             },
-            hhmm(d.start),
           );
         },
       });
@@ -1226,7 +1224,6 @@
                 body.date + ' ' + body.startTime + '–' + body.endTime
               );
             },
-            d.start ? hhmm(d.start) : null,
           );
         },
       );
@@ -1566,7 +1563,6 @@
               : '')
         );
       },
-      card.getAttribute('data-start'),
     );
   }
 

@@ -6994,6 +6994,9 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     // list the model is SHOWN, so a stale name here would have it write SQL
     // against a column that no longer exists.
     expect(desc).not.toContain('locked');
+    // Rung 9a: same rule for the promise ladder's two columns.
+    expect(desc).not.toContain('promise_level');
+    expect(desc).not.toContain('promised_day');
     expect(desc).toContain('v_observations');
     expect(desc).toContain('v_roster_events');
     // BOTH dismissed sets since build 6 Phase 3 — a question can be dismissed

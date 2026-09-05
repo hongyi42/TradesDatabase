@@ -230,13 +230,21 @@ DROP+CREATE, never `CREATE OR REPLACE` — 42P16 bites on column removal (preced
 | `src/db/schema.test.ts` (:133-141) | Asserts `earliest_date`/`latest_date` **exist** — Phase 3's own `db reset && npm test` gate fails without this. Delete those two assertions; keep the `starts_at`/`ends_at` nullability half |
 | `Box_Setup_Stuff/bootstrap-box.sh` | Remove promise/window doctrine; keep a `grep -q` + `awk` strip half so already-wired boxes lose it on their next `wire` (rung 8's pattern). `bash -n` must pass |
 | `docs/nemoclaw-tech-agent.md` (:134, :187, :195-196) | Documents `set_promise`, the four levels, the confirmation rule and the `timeTbd` booking shape. **The standing sync rule pairs this file with `Box_Setup_Stuff` in the same change** |
-| `docs/getting-started-for-firms.md` · `docs/engineering-memory.md` | Remove promise/window teaching (rung 8 found the firm guide still taught the freeze after the code was gone) |
+| `docs/getting-started-for-firms.md` · `docs/engineering-memory.md` | Remove promise/window teaching (rung 8 found the firm guide still taught the freeze after the code was gone). `getting-started-for-firms.md:253-272` is a whole section, *"Promises: the most important idea in the schedule"* |
+| **ADDED after the Phase 1 review** — the ladder is taught in five more places the plan missed: `docs/onboarding.md` (:233-240 the four-level table, :622 the glossary row), `docs/customer-onboarding-runbook.md` (:249 the "manager moves a promised visit" row), `docs/doorman-runbook.md` (:383), `Box_Setup_Stuff/doorman-nemoclaw-setup-guide.md` (:24 — the checklist a box operator runs to verify a seat), `Box_Setup_Stuff/doorman-architecture-memory.md` (:315, which also still pins *"Manager badge — 35"*). **Phase 1's completeness grep cannot pass until these land.** `docs/eval-baselines/*.jsonl` are historical run records — evidence, not documentation. Leave them. |
 
 ### Automated verification
 - [ ] `npm run typecheck` · `lint` · `test` · `build` pass
 - [ ] `npx supabase db reset` then `npm test` — proves the migration applies clean
 - [ ] `bash -n Box_Setup_Stuff/bootstrap-box.sh`
 - [ ] `git diff --stat src/db/database.types.ts` shows deletions only
+
+**Deploy-order note (Phase 1 review finding 5).** Phase 1 deleted the `pending_booking` and
+`pending_visit_move` staged kinds. Any such review_item still OPEN in the pilot when the code
+deploys no longer hits the "confirm it via book_visit" refusal — `resolve_review` just closes it
+and reports success. That outcome is *correct* (the staged intent is void; book_visit is one-shot
+now and would not honour it), but the success wording is misleading. Tokens expire in 15 minutes,
+so the window is small: check for open rows of those two kinds before deploying, and dismiss them.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP (connected), Render MCP (connected)

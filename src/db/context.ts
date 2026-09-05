@@ -22,8 +22,9 @@ import { factSourceIds, foldRetractedFacts } from './standingFacts.js';
 
 // One upcoming stop, in the schedule's display conventions: date + HH:MM
 // slices of the naive-local timestamps (never timezone-converted — the wire's
-// '+00' is a lie, see get_team_schedule's startTime note), or timeTbd + the
-// scheduling window for unplaced rows.
+// '+00' is a lie, see get_team_schedule's startTime note). An UNTIMED visit
+// (rung 9a) carries no date at all — every date field is null and the phrase
+// says so.
 export interface UpcomingVisit {
   assignmentId: string;
   jobId: string;
@@ -31,12 +32,10 @@ export interface UpcomingVisit {
   technicianRef: string | null;
   technicianName: string | null;
   unassigned: boolean;
-  date: string | null; // YYYY-MM-DD (null = time-TBD, see the window)
+  date: string | null; // YYYY-MM-DD — null = no time set yet
   startTime: string | null; // HH:MM wall clock
   endTime: string | null;
-  timeTbd?: true;
-  earliestDate?: string | null; // the scheduling window, unplaced rows only
-  latestDate?: string | null;
+  untimed?: true;
   /**
    * Server-composed day label — "Tuesday 2026-08-18", or for a window
    * "between Monday 2026-08-24 and Friday 2026-08-28". The resolve_date
@@ -104,9 +103,7 @@ export async function getCustomerContext(
       .filter((r) => r.jobs?.tenant_id === customer.tenant_id)
       .map((r) => {
         const date = r.starts_at?.slice(0, 10) ?? null;
-        const phrase = date
-          ? `${weekdayFull(date)} ${date}`
-          : `between ${weekdayFull(r.earliest_date as string)} ${r.earliest_date} and ${weekdayFull(r.latest_date as string)} ${r.latest_date}`;
+        const phrase = date ? `${weekdayFull(date)} ${date}` : 'no time set yet';
         return {
           assignmentId: r.id,
           jobId: r.job_id,
@@ -117,9 +114,7 @@ export async function getCustomerContext(
           date,
           startTime: r.starts_at?.slice(11, 16) ?? null,
           endTime: r.ends_at?.slice(11, 16) ?? null,
-          ...(r.starts_at === null
-            ? { timeTbd: true as const, earliestDate: r.earliest_date, latestDate: r.latest_date }
-            : {}),
+          ...(r.starts_at === null ? { untimed: true as const } : {}),
           phrase,
         };
       });

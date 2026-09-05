@@ -206,10 +206,10 @@ describe('bookVisit', () => {
         actorRef: 'manager-test',
         // endTime deliberately omitted (cast: the untyped MCP boundary —
         // e.g. a malformed staged detail — can still produce this shape).
-        // Message updated by plan 4b-2: the required-check now names the ONE
-        // legal omission (an explicit timeTbd booking).
+        // Rung 9a: the required-check now names the ONE legal omission —
+        // ALL THREE of date/startTime/endTime absent (an untimed visit).
       } as Parameters<typeof bookVisit>[0]),
-    ).rejects.toThrow(/endTime are all required/);
+    ).rejects.toThrow(/date AND both times, or none of the three/);
     expect((await listUnassignedOpenJobs(tenantId)).length).toBe(before);
   });
 
@@ -809,96 +809,82 @@ describe('detach (unassign) — plan 4a.5', () => {
 
 });
 
-describe('unplaced (timeTbd) bookings + placing them — plan 4b-2', () => {
+describe('untimed bookings + placing them — plan 4b-2, rung 9a', () => {
   async function mkCustomer(name: string) {
     return createCustomer({ tenantId, name });
   }
 
-  test('a timeTbd booking creates NULL times + the day range; the shell stays duration-less', async () => {
+  test('an UNTIMED booking stores no date at all; the shell stays duration-less', async () => {
     const customer = await mkCustomer('TBD Tina');
+    // Rung 9a: omitting date AND both times is the whole shape. Nothing
+    // records when it should happen — that lives in the conversation.
     const r = await bookVisit({
       tenantId,
       customerId: customer.id,
-      title: 'tbd single day',
-      timeTbd: true,
-      earliestDate: '2026-11-19',
+      title: 'untimed single',
       actorRef: 'mgr',
     });
     expect(r.assignment.starts_at).toBeNull();
     expect(r.assignment.ends_at).toBeNull();
-    expect(r.assignment.earliest_date).toBe('2026-11-19');
-    expect(r.assignment.latest_date).toBe('2026-11-19'); // defaults to earliest
     expect(r.assignment.status).toBe('confirmed');
     // No span was measured — the never-guess rule holds for the shell too.
     expect(r.job.duration_minutes).toBeNull();
   });
 
-  test('timeTbd with a startTime is rejected; missing day is rejected', async () => {
+  test('PARTIAL time input is rejected — all three or none', async () => {
     const customer = await mkCustomer('TBD Mix');
+    // A date with no times: the accident the "all or none" rule catches.
+    await expect(
+      bookVisit({ tenantId, customerId: customer.id, date: '2026-11-19', actorRef: 'mgr' }),
+    ).rejects.toThrow(/date AND both times, or none of the three/);
+    // A start with no end, and times with no day.
     await expect(
       bookVisit({
-        tenantId, customerId: customer.id, timeTbd: true,
-        earliestDate: '2026-11-19', startTime: '09:00', actorRef: 'mgr',
+        tenantId, customerId: customer.id, date: '2026-11-19', startTime: '09:00', actorRef: 'mgr',
       }),
-    ).rejects.toThrow(/timeTbd means NO times/);
-    await expect(
-      bookVisit({ tenantId, customerId: customer.id, timeTbd: true, actorRef: 'mgr' }),
-    ).rejects.toThrow(/needs the day/);
-  });
-
-  test('identical unplaced twins for one customer are refused (retry hazard)', async () => {
-    const customer = await mkCustomer('TBD Twin');
-    await bookVisit({
-      tenantId, customerId: customer.id, title: 'twin', timeTbd: true,
-      earliestDate: '2026-11-23', latestDate: '2026-11-25', actorRef: 'mgr',
-    });
+    ).rejects.toThrow(/date AND both times, or none of the three/);
     await expect(
       bookVisit({
-        tenantId, customerId: customer.id, title: 'twin again', timeTbd: true,
-        earliestDate: '2026-11-23', latestDate: '2026-11-25', actorRef: 'mgr',
+        tenantId, customerId: customer.id, startTime: '09:00', endTime: '10:00', actorRef: 'mgr',
       }),
-    ).rejects.toThrow(/identical time-TBD visit/);
+    ).rejects.toThrow(/date AND both times, or none of the three/);
   });
 
-  test('the twin key includes the technician: same range + DIFFERENT person books; same person retries refuse', async () => {
-    // Two trades, same customer, same week ("plumber Alice Aug 4–6, then
-    // electrician Bob Aug 4–6") is a legitimate pattern, not a duplicate —
-    // the twin key is person-or-nobody (final-review finding: the unkeyed
-    // guard refused the second trade while the placed path allowed it).
+  test('the twin key is the JOB + the person: a retry refuses, a second job books', async () => {
+    // The retry hazard the guard exists for: untimed rows are exempt from the
+    // DB overlap guard, so a transport retry would duplicate silently. Rung 9a
+    // re-keyed it from the date range (gone) onto the JOB — and it stays keyed
+    // on the person for the original final-review reason.
     const customer = await mkCustomer('TBD Two Trades');
-    await bookVisit({
-      tenantId, customerId: customer.id, title: 'first trade', timeTbd: true,
-      technicianRef: 'book-tech',
-      earliestDate: '2026-11-30', latestDate: '2026-12-02', actorRef: 'mgr',
+    const first = await bookVisit({
+      tenantId, customerId: customer.id, title: 'first trade',
+      technicianRef: 'book-tech', actorRef: 'mgr',
     });
-    // Different person, same range: books fine.
+    // The SAME job and the same person again: a retry.
+    await expect(
+      bookVisit({
+        tenantId, jobId: first.job.id, technicianRef: 'book-tech', actorRef: 'mgr',
+      }),
+    ).rejects.toThrow(/untimed visit for .* already exists on this job/);
+    // Two trades on one customer ("plumber then electrician") is legitimate
+    // work, not a duplicate — a DIFFERENT job books fine.
     const second = await bookVisit({
-      tenantId, customerId: customer.id, title: 'second trade', timeTbd: true,
-      technicianRef: 'helper-hank',
-      earliestDate: '2026-11-30', latestDate: '2026-12-02', actorRef: 'mgr',
+      tenantId, customerId: customer.id, title: 'second trade',
+      technicianRef: 'helper-hank', actorRef: 'mgr',
     });
     expect(second.assignment.starts_at).toBeNull();
-    // Same person, same range: the retry hazard the guard exists for.
-    await expect(
-      bookVisit({
-        tenantId, customerId: customer.id, title: 'retry', timeTbd: true,
-        technicianRef: 'book-tech',
-        earliestDate: '2026-11-30', latestDate: '2026-12-02', actorRef: 'mgr',
-      }),
-    ).rejects.toThrow(/identical time-TBD visit/);
-    // A person-less twin of an ASSIGNED visit is not a twin either.
-    const parked = await bookVisit({
-      tenantId, customerId: customer.id, title: 'parked too', timeTbd: true,
-      earliestDate: '2026-11-30', latestDate: '2026-12-02', actorRef: 'mgr',
+    expect(second.job.id).not.toBe(first.job.id);
+    // A DIFFERENT person on the same job is not a retry either.
+    const otherPerson = await bookVisit({
+      tenantId, jobId: first.job.id, technicianRef: 'helper-hank', actorRef: 'mgr',
     });
-    expect(parked.assignment.technician_id).toBeNull();
+    expect(otherPerson.assignment.technician_id).not.toBe(first.assignment.technician_id);
   });
 
-  test('moving an unplaced visit to real times PLACES it: times set, range cleared', async () => {
+  test('moving an untimed visit to real times PLACES it', async () => {
     const customer = await mkCustomer('TBD Place');
     const booked = await bookVisit({
-      tenantId, customerId: customer.id, title: 'place me', timeTbd: true,
-      earliestDate: '2026-11-30', actorRef: 'mgr',
+      tenantId, customerId: customer.id, title: 'place me', actorRef: 'mgr',
     });
     const moved = await moveVisit({
       tenantId,
@@ -912,16 +898,13 @@ describe('unplaced (timeTbd) bookings + placing them — plan 4b-2', () => {
     });
     expect(moved.created.starts_at).toBe('2026-11-30T09:00:00+00:00');
     expect(moved.created.ends_at).toBe('2026-11-30T10:30:00+00:00');
-    expect(moved.created.earliest_date).toBeNull();
-    expect(moved.created.latest_date).toBeNull();
     expect(moved.created.technician_id).toBe(tech.id);
   });
 
   test('placing without endTime uses the job length; errors when that is null too', async () => {
     const customer = await mkCustomer('TBD Length');
     const withLen = await bookVisit({
-      tenantId, customerId: customer.id, title: 'has length', timeTbd: true,
-      earliestDate: '2026-12-01', actorRef: 'mgr',
+      tenantId, customerId: customer.id, title: 'has length', actorRef: 'mgr',
     });
     await updateJobDetails(tenantId, withLen.job.id, { durationMinutes: 90 },
       (await getJob(withLen.job.id))!.updated_at);
@@ -933,8 +916,7 @@ describe('unplaced (timeTbd) bookings + placing them — plan 4b-2', () => {
     expect(moved.created.ends_at).toBe('2026-12-01T14:30:00+00:00'); // 13:00 + 90m
 
     const noLen = await bookVisit({
-      tenantId, customerId: customer.id, title: 'no length', timeTbd: true,
-      earliestDate: '2026-12-02', actorRef: 'mgr',
+      tenantId, customerId: customer.id, title: 'no length', actorRef: 'mgr',
     });
     await expect(
       moveVisit({
@@ -990,13 +972,11 @@ describe('unscheduleVisit', () => {
     expect(placedPreview.requiresConfirmation).toBe(true);
     expect(placedPreview.day).toBe('2026-11-17');
 
-    // Unplaced = nobody's appointment yet. Dropping it needs no ceremony.
+    // Untimed = nobody's appointment yet. Dropping it needs no ceremony.
     const unplaced = await bookVisit({
       tenantId,
       customerId: customer.id,
       title: 'not placed yet',
-      timeTbd: true,
-      earliestDate: '2026-11-24',
       actorRef: 'manager-test',
     });
     const unplacedPreview = await previewUnscheduleVisit(tenantId, unplaced.assignment.id);

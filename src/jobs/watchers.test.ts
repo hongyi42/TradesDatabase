@@ -46,8 +46,6 @@ function visit(over: Partial<PlacedAssignment>): PlacedAssignment {
     technician_id: null,
     starts_at: '2026-08-16T07:00:00.000Z',
     ends_at: '2026-08-16T08:00:00.000Z',
-    earliest_date: null,
-    latest_date: null,
     status: 'confirmed',
     source_capture_id: null,
     reason: null,

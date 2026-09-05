@@ -179,7 +179,7 @@ try {
     [main.id],
   );
   const [{ n: tbd }] = await q(
-    `select count(*)::int n from assignments where tenant_id=$1 and starts_at is null and earliest_date is not null`,
+    `select count(*)::int n from assignments where tenant_id=$1 and starts_at is null`,
     [main.id],
   );
   const [{ n: personless }] = await q(

@@ -3743,7 +3743,7 @@ describe('record_standing_fact (staged two-step)', () => {
 });
 
 describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', () => {
-  test('timeTbd books unplaced, then recall + find_slots — plan 4b-2', { timeout: 30_000 }, async () => {
+  test('an UNTIMED booking, then recall + find_slots — plan 4b-2, rung 9a', { timeout: 30_000 }, async () => {
     const customer = await createCustomer({
       tenantId,
       name: 'TBD Ursula',
@@ -3757,77 +3757,50 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       technicianRef: 'mgr-test',
     });
     try {
-      // timeTbd + times together is an agent error, refused loudly.
+      // Partial time input is an agent error, refused loudly.
       const mixed = await callWith('book_visit', {
-        customerId: customer.id, title: 'tbd mixed', timeTbd: true,
-        earliestDate: '2026-12-14', startTime: '09:00',
+        customerId: customer.id, title: 'tbd mixed',
+        date: '2026-12-14', startTime: '09:00',
       });
       expect(mixed.isError).toBe(true);
-      expect(mixed.text).toContain('NOT settled');
+      expect(mixed.text).toContain('required TOGETHER');
 
-      // An unplaced booking lands in ONE call (rung 9a: nothing stages it) and
-      // the row keeps the unplaced shape — null times, the range set.
+      // An UNTIMED booking lands in ONE call (rung 9a: nothing stages it, and
+      // nothing records when it should happen).
       const booked = await callWith('book_visit', {
         customerId: customer.id,
         title: 'tbd install',
-        timeTbd: true,
-        earliestDate: '2026-12-14',
       });
       expect(booked.data.status).toBe('booked');
-      expect(booked.data.timeTbd).toBe(true);
+      expect(booked.data.untimed).toBe(true);
+      expect(booked.data.date).toBeNull();
       expect(booked.data.startTime).toBeNull();
       const assignmentId = booked.data.assignmentId as string;
       const { rows } = await pg.query(
-        'select starts_at, ends_at, earliest_date::text, latest_date::text from assignments where id = $1',
+        'select starts_at, ends_at from assignments where id = $1',
         [assignmentId],
       );
       expect(rows[0].starts_at).toBeNull();
       expect(rows[0].ends_at).toBeNull();
-      expect(rows[0].earliest_date).toBe('2026-12-14');
-
-      // A RANGE that straddles `from` is still-live work and must not be
-      // clamped out of recall (review finding: only a fully-past range drops).
-      const straddle = await callWith('book_visit', {
-        customerId: customer.id, title: 'tbd straddle', timeTbd: true,
-        earliestDate: '2026-12-10', latestDate: '2026-12-20',
-      });
-      const recallStraddle = await callWith('get_team_schedule', {
-        unassignedOnly: true, from: '2026-12-15',
-      });
-      const straddleDays = recallStraddle.data.days as Array<{
-        date: string;
-        stops: Array<Record<string, unknown>>;
-      }>;
-      const straddleDay = straddleDays.find((d) =>
-        d.stops.some((st) => st.assignmentId === straddle.data.assignmentId),
-      );
-      expect(straddleDay).toBeDefined();
-      // …and its day group is CLAMPED to `from` (final-review finding: the
-      // unclamped earliest_date emitted a group dated before the requested
-      // window — the agent relayed live Dec 15–20 work as five days past).
-      expect(straddleDay?.date).toBe('2026-12-15');
-      const straddleStop = straddleDay?.stops.find(
-        (st) => st.assignmentId === straddle.data.assignmentId,
-      );
-      // The true range still rides the stop — the clamp adjusts the group
-      // key, never the data.
-      expect(straddleStop?.earliestDate).toBe('2026-12-10');
-      expect(straddleStop?.latestDate).toBe('2026-12-20');
-
-      // The recall view lists it with its day and NO invented time.
+      // The recall view still reaches it — an untimed visit sits on NO day, so
+      // it rides the `untimed` list rather than a day group. The straddling-
+      // range clamp it used to need is gone with the range itself: there is no
+      // date to clamp, and therefore no way to mis-date it.
       const recall = await callWith('get_team_schedule', { unassignedOnly: true });
-      const allStops: Array<Record<string, unknown>> = (
-        recall.data.days as Array<{ date: string; stops: Array<Record<string, unknown>> }>
-      ).flatMap((d) => d.stops.map((st) => ({ ...st, date: d.date })));
-      const mine = allStops.find((st) => st.assignmentId === assignmentId);
+      const untimed = recall.data.untimed as Array<Record<string, unknown>>;
+      const mine = untimed.find((st) => st.assignmentId === assignmentId);
       expect(mine).toBeDefined();
-      expect(mine?.date).toBe('2026-12-14');
-      expect(mine?.startTime).toBeNull();
-      expect(mine?.timeTbd).toBe(true);
+      expect(mine?.unassigned).toBe(true);
+      // …and it appears on no day group at all.
+      const dayStops = (
+        recall.data.days as Array<{ date: string; stops: Array<Record<string, unknown>> }>
+      ).flatMap((d) => d.stops);
+      expect(dayStops.some((st) => st.assignmentId === assignmentId)).toBe(false);
 
-      // find_slots on the unplaced visit: duration from the JOB's recorded
-      // length; the search window defaults to the visit's own day. Give
-      // tech-mcp a working pattern so 2026-12-14 (a Monday) has real gaps.
+      // find_slots on the untimed visit: duration from the JOB's recorded
+      // length. The search window no longer defaults to the visit's own days
+      // (it has none) — it is today-forward like every other subject. Give
+      // tech-mcp a working pattern so the window has real gaps.
       const techRow = await pg.query('select id from technicians where tenant_id = $1 and ref = $2', [tenantId, 'tech-mcp']);
       await setTechnicianAvailability(techRow.rows[0].id as string, {
         mon: [['08:00', '17:00']], tue: [['08:00', '17:00']], wed: [['08:00', '17:00']],
@@ -3838,11 +3811,13 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(noLen.isError).toBe(true); // fail-closed: no length anywhere yet
       const upd = await callWith('update_job', { jobId, durationMinutes: 120 });
       expect(upd.data.status).toBe('ok');
-      const slots = await callWith('find_slots', { assignmentId });
+      // find_slots' OWN earliestDate/latestDate survive rung 9a — they are a
+      // SEARCH RANGE ("look between these dates"), never a commitment.
+      const slots = await callWith('find_slots', {
+        assignmentId, earliestDate: '2026-12-14', latestDate: '2026-12-14',
+      });
       expect(slots.data.status).toBe('ok');
       expect(slots.data.durationAssumption).toContain("job's recorded length");
-      // The window defaulted to the visit's OWN day: every candidate must sit
-      // on 2026-12-14 (a one-day search space proves the range default).
       const cands = slots.data.candidates as Array<{ date: string; endTime: string; startTime: string }>;
       expect(cands.length).toBeGreaterThan(0);
       expect(cands.every((c) => c.date === '2026-12-14')).toBe(true);
@@ -3866,7 +3841,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
     }
   });
 
-  test('assigned time-TBD visits: windowed visibility + clamped day, wide-range find_slots, row-derived echo — final-review fixes', { timeout: 30_000 }, async () => {
+  test('assigned UNTIMED visits: reachable via the untimed list, never on a day; counts stay honest', { timeout: 30_000 }, async () => {
     const customer = await createCustomer({
       tenantId,
       name: 'TBD Wanda',
@@ -3886,43 +3861,29 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       // was invisible to every chat surface — the agent denied it existed and
       // could never fetch its id to place, move, or cancel it).
       const booked = await callWith('book_visit', {
-        customerId: customer.id, title: 'assigned tbd', timeTbd: true,
+        customerId: customer.id, title: 'assigned tbd',
         technicianRef: 'tech-mcp',
-        earliestDate: '2026-12-21', latestDate: '2026-12-23',
       });
       expect(booked.data.status).toBe('booked');
       const assignmentId = booked.data.assignmentId as string;
-      // Full-window read: lands on its own earliest day, person attached.
+      // INVERTED (rung 9a): it used to land on its stored range's earliest day
+      // and be re-clamped into every window that touched the range. There is
+      // no range, so it lands on NO day — and rides the top-level `untimed`
+      // list instead, which is what keeps it reachable.
       const full = await callWith('get_team_schedule', {
         from: '2026-12-20', to: '2026-12-24',
       });
-      const fullDays = full.data.days as Array<{
-        date: string;
-        stops: Array<Record<string, unknown>>;
-      }>;
-      const fullDay = fullDays.find((d) => d.stops.some((st) => st.assignmentId === assignmentId));
-      expect(fullDay?.date).toBe('2026-12-21');
-      const stop = fullDay?.stops.find((st) => st.assignmentId === assignmentId);
-      expect(stop).toMatchObject({
-        timeTbd: true,
+      const fullStops = (
+        full.data.days as Array<{ date: string; stops: Array<Record<string, unknown>> }>
+      ).flatMap((d) => d.stops);
+      expect(fullStops.some((st) => st.assignmentId === assignmentId)).toBe(false);
+      const untimed = full.data.untimed as Array<Record<string, unknown>>;
+      expect(untimed.find((u) => u.assignmentId === assignmentId)).toMatchObject({
         technicianRef: 'tech-mcp',
         unassigned: false,
-        startTime: null,
-        endTime: null,
-        earliestDate: '2026-12-21',
-        latestDate: '2026-12-23',
       });
-      // Mid-range window: still visible, day group clamped to `from`.
-      const mid = await callWith('get_team_schedule', {
-        from: '2026-12-22', to: '2026-12-24',
-      });
-      const midDays = mid.data.days as Array<{
-        date: string;
-        stops: Array<Record<string, unknown>>;
-      }>;
-      const midDay = midDays.find((d) => d.stops.some((st) => st.assignmentId === assignmentId));
-      expect(midDay?.date).toBe('2026-12-22');
-      // A window the range never touches stays clean.
+      // Every window says the same thing: there is no date to make it appear
+      // in one window and not another.
       const outside = await callWith('get_team_schedule', {
         from: '2026-12-26', to: '2026-12-28',
       });
@@ -3930,14 +3891,17 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         outside.data.days as Array<{ stops: Array<Record<string, unknown>> }>
       ).flatMap((d) => d.stops);
       expect(outsideStops.some((st) => st.assignmentId === assignmentId)).toBe(false);
+      expect(
+        (outside.data.untimed as Array<Record<string, unknown>>).some(
+          (u) => u.assignmentId === assignmentId,
+        ),
+      ).toBe(true);
 
-      // find_slots on a subject whose range is WIDER than the 14-day cap:
-      // the subject-defaulted window CLAMPS instead of erroring (final-review
-      // finding: "sometime this month" booked fine, then a bare find_slots
-      // call died with invalid_range blaming args the agent never passed).
+      // find_slots still works on an untimed subject. The "range wider than
+      // the 14-day cap" clamp it needed is gone with the stored range: every
+      // subject now gets the same today-forward default.
       const wide = await callWith('book_visit', {
-        customerId: customer.id, title: 'whole month', timeTbd: true,
-        earliestDate: '2027-02-01', latestDate: '2027-02-28',
+        customerId: customer.id, title: 'whole month',
       });
       const wideId = wide.data.assignmentId as string;
       await callWith('update_job', { jobId: wide.data.jobId, durationMinutes: 60 });
@@ -3946,21 +3910,19 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       const searched = slots.data.searched as { days: number } | undefined;
       if (searched) expect(searched.days).toBeLessThanOrEqual(14);
 
-      // One-shot echo derives the day from the ROW: on a mixed
-      // date+earliestDate call the range day wins the booking, and the echo
-      // must report the day the row actually holds, not the ignored arg.
+      // The one-shot echo is ROW-derived: an untimed booking reports no day at
+      // all rather than echoing an argument the row does not hold.
       const mixed = await callWith('book_visit', {
-        customerId: customer.id, title: 'mixed args', timeTbd: true,
-        date: '2026-12-28', earliestDate: '2026-12-29',
+        customerId: customer.id, title: 'no day at all',
       });
       expect(mixed.data.status).toBe('booked');
-      expect(mixed.data.date).toBe('2026-12-29');
-      expect(mixed.data.earliestDate).toBe('2026-12-29');
+      expect(mixed.data.date).toBeNull();
+      expect(mixed.data.untimed).toBe(true);
 
       // Server-computed counts (date-eval W13: the model hand-counted stop
-      // rows and got both week totals wrong). Timed stops count on their day;
-      // timeTbd stops are LISTED (visible/actionable) but never counted — a
-      // windowed visit is not ON a day until placed.
+      // rows and got both week totals wrong). Only timed stops are in `days`
+      // at all now, so byDay/total need no exclusion rule — untimed work is
+      // counted once, separately, by counts.untimed.
       const timedA = await callWith('book_visit', {
         customerId: customer.id, title: 'count me', technicianRef: 'tech-mcp',
         date: '2026-12-21', startTime: '09:00', endTime: '10:00',
@@ -3976,25 +3938,20 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       });
       const counts = counted.data.counts as {
         byDay: Record<string, number>;
-        windowCoverByDay: Record<string, number>;
         total: number;
-        timeTbdListed: number;
+        untimed: number;
       };
-      expect(counts.byDay['2026-12-21']).toBe(1); // the timed stop, NOT the tbd listed that day
+      expect(counts.byDay['2026-12-21']).toBe(1);
       expect(counts.byDay['2026-12-22']).toBe(1);
       expect(counts.total).toBe(2);
-      expect(counts.timeTbdListed).toBeGreaterThanOrEqual(1); // 'assigned tbd' above
+      expect(counts.untimed).toBeGreaterThanOrEqual(1); // 'assigned tbd' above
       // Zero-days are DATA: every requested day appears, so "which days are
-      // free" is a read, not an inference from absence.
+      // free" is a read, not an inference from absence. And rung 9a made that
+      // answer unambiguous — no untimed visit half-occupies a day any more, so
+      // `windowCoverByDay` is gone and a byDay of 0 simply means free.
       expect(counts.byDay['2026-12-24']).toBe(0);
-      // Window coverage: the tbd visit (Dec 21–23) covers each day of its
-      // range — not just the day it is LISTED under — and not Dec 24.
-      expect(counts.windowCoverByDay['2026-12-21']).toBeGreaterThanOrEqual(1);
-      expect(counts.windowCoverByDay['2026-12-22']).toBeGreaterThanOrEqual(1);
-      expect(counts.windowCoverByDay['2026-12-23']).toBeGreaterThanOrEqual(1);
-      expect(counts.windowCoverByDay['2026-12-24']).toBe(0);
-      // Counts cover the REQUESTED range only, even though out-of-window
-      // unplaced day groups may be listed for actionability.
+      expect((counts as Record<string, unknown>).windowCoverByDay).toBeUndefined();
+      // Counts cover the REQUESTED range only.
       const total = Object.values(counts.byDay).reduce((a, b) => a + b, 0);
       expect(total).toBe(counts.total);
       for (const d of Object.keys(counts.byDay)) {
@@ -4236,13 +4193,11 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(cancelled.data.status).toBe('unscheduled');
       expect(cancelled.data.note).toContain('loose bucket');
 
-      // …and an UNPLACED visit is nobody's appointment yet, so it drops in one
+      // …and an UNTIMED visit is nobody's appointment yet, so it drops in one
       // call — the other side of the same gate.
       const unplaced = await callWith('book_visit', {
         customerId: customer.id,
         title: 'nothing promised, no time',
-        timeTbd: true,
-        earliestDate: '2026-12-18',
       });
       expect(unplaced.data.status).toBe('booked');
       const dropped = await callWith('unschedule_visit', {

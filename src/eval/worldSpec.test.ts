@@ -120,14 +120,17 @@ describe('buildWorldSpec — referential integrity', () => {
 });
 
 describe('buildWorldSpec — every visit is a legal row', () => {
-  it('is placed XOR unplaced (the createAssignment contract)', () => {
+  it('is fully placed or fully untimed (the createAssignment contract)', () => {
     eachTenant((t, _w, anchor) => {
       for (const v of t.visits) {
-        const placed = v.date !== undefined && v.startTime !== undefined && v.durationMinutes !== undefined;
-        const windowed = v.earliestDate !== undefined && v.latestDate !== undefined;
-        // createAssignment throws on a mix, and the DB check backstops it.
-        expect(placed !== windowed, `${t.name} @ ${anchor} visit ${v.key}`).toBe(true);
-        if (windowed) expect(v.latestDate! >= v.earliestDate!).toBe(true);
+        // Rung 9a: a visit has a time or it does not — there is no third
+        // (windowed) shape, so the rule is that the time fields arrive
+        // together or not at all. createAssignment throws on a half-timed row.
+        const parts = [v.date, v.startTime, v.durationMinutes].filter((x) => x !== undefined);
+        expect(
+          parts.length === 3 || parts.length === 0,
+          `${t.name} @ ${anchor} visit ${v.key}`,
+        ).toBe(true);
       }
     });
   });
@@ -341,7 +344,7 @@ describe('buildWorldSpec — isolation and density', () => {
   it('reports a span that actually covers its rows', () => {
     eachWorld((w, anchor) => {
       const dated = w.tenants
-        .flatMap((t) => t.visits.flatMap((v) => [v.date, v.earliestDate, v.latestDate]))
+        .flatMap((t) => t.visits.flatMap((v) => [v.date]))
         .filter((d): d is string => typeof d === 'string');
       for (const d of dated) {
         expect(d >= w.span.from, `${d} before span.from @ ${anchor}`).toBe(true);

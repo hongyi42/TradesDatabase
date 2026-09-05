@@ -85,8 +85,6 @@ describe('getCustomerContext', () => {
       technicianId: null,
       startsAt: null,
       endsAt: null,
-      earliestDate: '2027-03-08',
-      latestDate: '2027-03-12',
       status: 'confirmed',
     });
     // Noise that must NOT surface: a cancelled row and a long-past visit.
@@ -126,13 +124,14 @@ describe('getCustomerContext', () => {
     });
 
     const windowRow = ctx.upcomingVisits.find((u) => u.assignmentId === unplaced.id);
-    // The scheduling window IS the answer to "when could this land?"
+    // INVERTED (rung 9a): this used to carry a stored range, and the phrase
+    // read "between Monday … and Friday …". Nothing records when an untimed
+    // visit should happen, so the ONLY honest phrase says so — the brief must
+    // never hand the model a date to relay for a visit that has none.
     expect(windowRow).toMatchObject({
-      timeTbd: true,
-      earliestDate: '2027-03-08',
-      latestDate: '2027-03-12',
+      untimed: true,
       date: null,
-      phrase: 'between Monday 2027-03-08 and Friday 2027-03-12',
+      phrase: 'no time set yet',
     });
   });
 

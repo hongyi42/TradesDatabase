@@ -27,7 +27,7 @@ import {
   listTimeOffForTechnician,
   listAssignmentsForJob,
   listIdenticalUnassignedVisits,
-  listIdenticalUnplacedVisits,
+  listUntimedVisitsForJob,
   listOpenJobsForCustomer,
   rescheduleAssignment,
   updateAssignmentStatus,
@@ -53,16 +53,16 @@ export function naiveLocalISO(date: string, hhmm: string): string {
   return `${date}T${hhmm}:00.000Z`;
 }
 
-// The day a visit belongs to, for replies and ledger events: the placed
-// start's day, else the unplaced range's earliest day (plan 4b-2 — an unplaced
-// row HAS a day, just no time).
+// The day a visit belongs to, for replies and ledger events.
 //
-// The `promised_day` arm is GONE (rung 9a): the promise ladder is deleted, so
-// what the customer was TOLD is no longer a column — it lives in L1, where the
-// agent reads it. 'no time set' is the honest label for a row with no day at
-// all; it degrades a label, never a booking.
+// Rung 9a took both fallbacks away. The `promised_day` arm went with the
+// promise ladder — what the customer was TOLD is no longer a column, it lives
+// in L1 where the agent reads it — and the unplaced range went with the stored
+// window. A visit HAS A TIME OR IT DOES NOT, so a row with no start has no day
+// to name, and 'no time set' is the honest label. It degrades a label, never a
+// booking.
 export function visitDay(row: Assignment): string {
-  return row.starts_at ? row.starts_at.slice(0, 10) : (row.earliest_date ?? 'no time set');
+  return row.starts_at ? row.starts_at.slice(0, 10) : 'no time set';
 }
 
 // eventDetailExtra → a spreadable record. Non-object values (arrays/scalars —
@@ -159,15 +159,13 @@ export interface BookVisitInput {
   // stated; when a time wasn't stated, the agent asks instead of the server
   // inventing one). Moves differ: preserving the OLD duration there carries a
   // real value forward, not an invented one.
-  // RECORDED EXCEPTION (plan 4b-2): under timeTbd:true — the manager
-  // EXPLICITLY said the time is unsettled — times are absent and the visit
-  // books UNPLACED, holding a day (or day range) until placed. Omitting times
-  // is never an accident: without the flag they stay required.
+  // RECORDED EXCEPTION (plan 4b-2, re-cut by rung 9a): omit date AND both
+  // times and the visit books UNTIMED — no day, no range, nothing stored about
+  // when it should happen. "Sometime next week" is a conversation with the
+  // manager's agent, not a column (user ruling 2026-09-05). Partial input is
+  // still refused: a date or one time alone is an accident, not an intention.
   startTime?: string; // HH:MM
   endTime?: string; // HH:MM
-  timeTbd?: boolean; // true = book UNPLACED (day known, time not yet)
-  earliestDate?: string; // YYYY-MM-DD — the unplaced day / range start (default: date)
-  latestDate?: string; // YYYY-MM-DD — range end (default: earliestDate)
   // Triage tier for the job SHELL minted on the customerId path (default
   // 'routine'). Ignored on the jobId path — the MCP layer rejects the
   // combination outright so an unstored urgency is never reported as stored.
@@ -203,14 +201,11 @@ interface ResolvedBooking {
   technician: Technician | null; // null = unassigned booking
   customer: Customer;
   existingJob: Job | null;
-  // PLACED: all four set, range null. UNPLACED (timeTbd): all four null,
-  // range set — the same one-shape-only rule the DB enforces.
+  // PLACED: all four set. UNTIMED: all four null. There is no third shape.
   startTime: string | null;
   endTime: string | null;
   startISO: string | null;
   endISO: string | null;
-  earliestDate: string | null;
-  latestDate: string | null;
   warning?: string;
 }
 
@@ -285,53 +280,30 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
     }
   }
 
-  // ---- UNPLACED arm (plan 4b-2): the manager explicitly said the time is
-  // unsettled. The visit holds a day (or range) and NO times; no overlap
-  // pre-check (it claims no slot) and no pattern-based availability advisory
-  // (there is no time to check a window against) — but full-day time off on
-  // the range is still meaningful, so that half of the advisory stays.
-  if (input.timeTbd) {
-    if (input.startTime !== undefined || input.endTime !== undefined) {
-      throw new Error(
-        'timeTbd means NO times — drop startTime/endTime, or book normally with both',
+  // ---- UNTIMED arm (plan 4b-2, re-cut by rung 9a): NO date and NO times means
+  // the visit is committed but not scheduled. Nothing is stored about when it
+  // should happen — no day, no range — because a commitment frozen in a column
+  // is stale the moment the customer calls back (user ruling 2026-09-05).
+  // No overlap pre-check (it claims no slot) and no availability advisory
+  // (there is no date to check anything against).
+  if (input.date === undefined && input.startTime === undefined && input.endTime === undefined) {
+    // Same duplicate hazard as person-less placed rows: untimed rows are ALSO
+    // exempt from the DB overlap guard, so a transport retry would silently
+    // duplicate without this. Keyed on the JOB (the range that used to key it
+    // is gone) and on the technician — a retry carries the same
+    // person-or-nobody, while a second untimed visit on a DIFFERENT job for
+    // one customer is legitimate work, not a twin.
+    if (existingJob) {
+      const twins = await listUntimedVisitsForJob(
+        tenantId,
+        existingJob.id,
+        technician?.id ?? null,
       );
-    }
-    const earliestDate = input.earliestDate ?? input.date;
-    if (!earliestDate) {
-      throw new Error('a timeTbd booking needs the day: pass earliestDate (or date)');
-    }
-    const latestDate = input.latestDate ?? earliestDate;
-    if (!DATE_RE.test(earliestDate) || !DATE_RE.test(latestDate)) {
-      throw new Error('earliestDate/latestDate must be YYYY-MM-DD');
-    }
-    if (earliestDate > latestDate) {
-      throw new Error('earliestDate must be on or before latestDate');
-    }
-    // Same duplicate hazard as person-less placed rows, range-keyed: unplaced
-    // rows are ALSO exempt from the DB guard, so a transport retry would
-    // silently duplicate without this. Technician-keyed — a retry carries the
-    // same person-or-nobody, and a DIFFERENT technician on the same range is
-    // a legitimate second visit (two trades, same week), not a twin.
-    const twins = await listIdenticalUnplacedVisits(
-      tenantId,
-      earliestDate,
-      latestDate,
-      technician?.id ?? null,
-    );
-    if (twins.some((t) => t.customerId === customer.id)) {
-      throw new Error(
-        `an identical time-TBD visit for ${customer.name} already exists for ` +
-          `${earliestDate}${latestDate !== earliestDate ? `–${latestDate}` : ''} — likely a ` +
-          'duplicate; place that one, move it, or change its day',
-      );
-    }
-    let warning: string | undefined;
-    if (technician) {
-      const timeOff = await listTimeOffForTechnician(technician.id, earliestDate, latestDate);
-      if (timeOff.length > 0) {
-        warning = `${technician.display_name} has time off booked in ${earliestDate}–${latestDate}${
-          timeOff[0].reason ? ` (${timeOff[0].reason})` : ''
-        }`;
+      if (twins.length > 0) {
+        throw new Error(
+          `an untimed visit for ${customer.name} already exists on this job — likely a ` +
+            'duplicate; place that one, or say what makes this a second visit',
+        );
       }
     }
     return {
@@ -342,16 +314,14 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
       endTime: null,
       startISO: null,
       endISO: null,
-      earliestDate,
-      latestDate,
-      ...(warning ? { warning } : {}),
     };
   }
 
   const { startTime, endTime } = input;
   if (!input.date || startTime === undefined || endTime === undefined) {
     throw new Error(
-      'date, startTime, and endTime are all required — only an explicit timeTbd booking omits times',
+      'a booking needs the date AND both times, or none of the three (an untimed visit) — ' +
+        'never some of them. Ask the manager for the missing piece rather than inventing it',
     );
   }
   validateDayAndTimes(input.date, startTime, endTime);
@@ -394,8 +364,6 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
     endTime,
     startISO,
     endISO,
-    earliestDate: null,
-    latestDate: null,
     ...(warning ? { warning } : {}),
   };
 }
@@ -407,14 +375,11 @@ export interface BookVisitPreview {
   customerName: string;
   newJob: boolean; // true = confirming will mint a job shell
   jobTitle: string | null;
-  // PLACED: date + both times set, range null. UNPLACED (timeTbd): times
-  // null, range set, date = the range start (the day the manager named).
-  date: string;
+  // PLACED: date + both times set. UNTIMED: all three null — the visit is
+  // committed, and nothing is recorded about when it should happen.
+  date: string | null;
   startTime: string | null; // as the manager stated — store these on the stage
   endTime: string | null;
-  timeTbd: boolean;
-  earliestDate: string | null;
-  latestDate: string | null;
   // What the job's priority will be after commit: the existing job's recorded
   // tier, or the stated/default tier of the shell about to be minted — shown
   // so the manager confirms exactly what commit writes (preview == commit).
@@ -438,12 +403,9 @@ export async function previewBookVisit(input: BookVisitInput): Promise<BookVisit
     customerName: r.customer.name,
     newJob: r.existingJob === null,
     jobTitle: r.existingJob?.title ?? input.title ?? null,
-    date: r.earliestDate ?? (input.date as string),
+    date: r.startISO ? (input.date as string) : null,
     startTime: r.startTime,
     endTime: r.endTime,
-    timeTbd: r.startISO === null,
-    earliestDate: r.earliestDate,
-    latestDate: r.latestDate,
     priority: r.existingJob ? r.existingJob.priority : (input.priority ?? 'routine'),
     jobDurationMinutes: r.existingJob
       ? r.existingJob.duration_minutes
@@ -502,7 +464,7 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       // the job duration-less if the visit is later cancelled, and the freeze
       // would re-ask a length we already knew. isValidDuration guards the
       // (today unreachable) over-24h span: store null, not a bound breach.
-      // A timeTbd booking measures nothing — the shell stays duration-less
+      // An UNTIMED booking measures nothing — the shell stays duration-less
       // (fail-closed, never invented; plan 4b-2).
       durationMinutes:
         r.startISO && r.endISO ? bookedSpanMinutes(r.startISO, r.endISO) : null,
@@ -516,9 +478,6 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       technicianId: r.technician?.id ?? null,
       startsAt: r.startISO,
       endsAt: r.endISO,
-      // The unplaced shape (plan 4b-2): range set exactly when times are null.
-      earliestDate: r.earliestDate,
-      latestDate: r.latestDate,
       status: 'confirmed',
     });
   } catch (err) {
@@ -553,11 +512,7 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       ...(input.reason?.trim() ? { reason: input.reason } : {}),
       ...(r.startISO
         ? { date: input.date, startTime: r.startTime, endTime: r.endTime }
-        : {
-            timeTbd: true,
-            earliestDate: r.earliestDate,
-            latestDate: r.latestDate,
-          }),
+        : { untimed: true }),
       technicianRef: r.technician?.ref ?? null,
       customerId: r.customer.id,
       jobId: job.id,
@@ -884,9 +839,6 @@ interface AttachUnplacedGuardInput {
   tenantId: string;
   assignmentId: string;
   technicianRef: string | null; // null = DETACH (park back unassigned)
-  // Board policy floor (passed by the board endpoint only — chat keeps its
-  // history-correction ability): refuse when the WHOLE range is already past.
-  notBeforeDate?: string;
 }
 
 // Shared front-half: every guard the commit enforces, writes NOTHING — the
@@ -905,12 +857,9 @@ async function resolveAttachUnplaced(
   if (isPlaced(old)) {
     throw new Error('this visit has times — attach a person with move_visit (same day/time)');
   }
-  if (input.notBeforeDate && (old.latest_date as string) < input.notBeforeDate) {
-    throw new Error(
-      'this visit\'s whole day range has passed — recovering it is a chat job ' +
-        '(board writes never target the past)',
-    );
-  }
+  // The board's past-date floor used to live here, comparing the stored range
+  // to today. Rung 9a deleted the range: an untimed visit holds no date, so
+  // there is nothing that can have passed and nothing to refuse.
   if (input.technicianRef === null && old.technician_id === null) {
     throw new Error('this visit is already unassigned');
   }
@@ -923,8 +872,6 @@ async function resolveAttachUnplaced(
 export interface AttachUnplacedPreview {
   assignmentId: string;
   technicianRef: string | null; // resolved target; null = detach
-  earliestDate: string;
-  latestDate: string;
   // An attach is reversible (unassign:true parks it back) — never
   // confirm-gated (the confirmation doctrine).
   requiresConfirmation: false;
@@ -937,8 +884,6 @@ export async function previewAttachUnplacedVisit(
   return {
     assignmentId: old.id,
     technicianRef: technician?.ref ?? null,
-    earliestDate: old.earliest_date as string,
-    latestDate: old.latest_date as string,
     requiresConfirmation: false,
   };
 }
@@ -961,9 +906,8 @@ export async function attachUnplacedVisit(
       technicianId: technician?.id ?? null,
       startsAt: null,
       endsAt: null,
-      earliestDate: old.earliest_date,
-      latestDate: old.latest_date,
       status: 'confirmed',
+      createdAt: old.created_at, // an attach keeps the visit's original age
     });
   } catch (err) {
     // Cancel-first means ANY insert failure leaves the visit gone from every

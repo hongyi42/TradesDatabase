@@ -20,7 +20,8 @@
 //   - visits = assignments, status confirmed|completed, timed unless the
 //     question is about windows
 //   - times/dates are NAIVE-LOCAL (render raw slices; the '+00' is a lie)
-//   - unplaced windows live on assignments.earliest_date/latest_date
+//   - an UNTIMED visit has starts_at null and NO date of any kind (rung 9a
+//     deleted the stored window) — the only true answer is "no time set yet"
 import { readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import pg from 'pg';
@@ -59,9 +60,9 @@ const nextVisitFor = async (customerLike) => {
   );
   return r[0] ?? null;
 };
-const windowFor = async (customerLike, titleLike) => {
+const untimedFor = async (customerLike, titleLike) => {
   const r = await one(
-    `select a.earliest_date::text as earliest, a.latest_date::text as latest
+    `select a.id::text as id
      from assignments a join jobs j on j.id=a.job_id join customers c on c.id=j.customer_id
      where a.tenant_id=$1 and c.name ilike $2 and j.title ilike $3
        and a.status='confirmed' and a.starts_at is null limit 1`,
@@ -73,7 +74,7 @@ const windowFor = async (customerLike, titleLike) => {
 // ── which adjudication a question shape needs ─────────────────────────────
 // Parsed from the question text — the corpus phrasings are stable.
 const NEXT_VISIT = /^When is (.+?)'s next visit\?$/;
-const WINDOW = /^What's the scheduling window for (.+?)'s (.+?)\?$/;
+const WINDOW = /^When is (.+?)'s (.+?) scheduled\?$/;
 
 const human = (iso) =>
   new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' });
@@ -98,20 +99,17 @@ for (const r of rows) {
       verdict = /no visits|nothing scheduled|none/.test(reply) ? 'correct' : 'human';
     }
   } else if (win) {
-    const truth = await windowFor(win[1], win[2]);
+    const truth = await untimedFor(win[1], win[2]);
     if (truth) {
-      evidence = `DB: window ${truth.earliest} → ${truth.latest}`;
-      const naming = (iso) => {
-        const d = new Date(`${iso}T12:00:00Z`);
-        const monthDay = d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' }).toLowerCase();
-        return reply.includes(iso) || reply.includes(monthDay) ||
-          reply.includes(monthDay.replace(/^(\w{3})\w*/, '$1'));
-      };
-      verdict = naming(truth.earliest) && naming(truth.latest) ? 'correct'
-        : /can'?t (compute|pull|find)|no duration|not set/.test(reply) ? 'wrong'
-          : 'human';
+      // Rung 9a: the visit is real but carries NO date. Saying so is the only
+      // correct answer, and naming ANY date is a fabrication — the exact
+      // failure the stored window used to invite.
+      evidence = 'DB: the visit exists with no time set';
+      const saysUntimed = /no (time|date)|not (yet )?(set|scheduled|placed)|time.{0,4}tbd|unscheduled/.test(reply);
+      const namesADate = /\b20\d\d-\d\d-\d\d\b|\b(january|february|march|april|may|june|july|august|september|october|november|december)\b/.test(reply);
+      verdict = saysUntimed && !namesADate ? 'correct' : namesADate ? 'wrong' : 'human';
     } else {
-      evidence = 'DB: no unplaced window row';
+      evidence = 'DB: no untimed visit for that customer/job';
       verdict = 'human';
     }
   }

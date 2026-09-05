@@ -138,7 +138,7 @@ const q = (id, cat, phases, text, expect) => ({ id, cat, phases, q: text, expect
  *   f.techDayCounts    {ISO: {techRef: n}}
  *   f.firstOfDay       {ISO: {techRef: {customer, title, startLocal}}}
  *   f.timeOff          [{tech, startsOn, endsOn}]
- *   f.windowJobs       [{customer, title, tech, earliest, latest}]
+ *   f.untimedJobs      [{customer, title, tech}] — booked, NO date at all
  *   f.nextVisit        {customerName: {date, tech, title}}
  */
 export function buildCorpus(f) {
@@ -335,10 +335,13 @@ export function buildCorpus(f) {
       dates: [v.date], window: null, answer: { kind: 'text', value: `${titleWeekday(v.date)} ${v.date}${v.tech ? ` (${v.tech})` : ''}` }, requireWeekday: true,
     }));
   }
-  for (const wj of f.windowJobs.slice(0, 4)) {
-    out.push(q(`S${String(sIdx++).padStart(2, '0')}`, 'specifics', ['use', 'speak'], `What's the scheduling window for ${wj.customer}'s ${wj.title}?`, {
-      dates: [wj.earliest, wj.latest], window: { from: wj.earliest, to: wj.latest },
-      answer: { kind: 'text', value: `${wj.earliest} to ${wj.latest}` }, requireWeekday: true,
+  // Rung 9a: these visits carry NO date, so the ONLY correct answer is that
+  // no time is set. Naming any date is a fabrication — which is precisely the
+  // failure mode the stored window used to invite, now testable directly.
+  for (const uj of f.untimedJobs.slice(0, 4)) {
+    out.push(q(`S${String(sIdx++).padStart(2, '0')}`, 'specifics', ['use', 'speak'], `When is ${uj.customer}'s ${uj.title} scheduled?`, {
+      dates: [], window: null,
+      answer: { kind: 'text', value: 'no time set yet' }, requireWeekday: false,
     }));
   }
   for (const to of f.timeOff.slice(0, 2)) {
@@ -385,22 +388,20 @@ export function buildCorpus(f) {
   out.push(q('T06', 'trap', ['resolve', 'speak'], `If we wanted to add a visit a week from Friday, what date would that be? Don't book anything.`, {
     dates: [addDays(comingOcc(T, 'friday'), 7)], window: null, answer: { kind: 'date' }, requireWeekday: true, forbidWrites: true,
   }));
-  // "Free" is window-aware and the QUESTION says so (08-13 run: with "no
-  // visits at all" unqualified, the truth counted only timed visits while the
-  // agent half-counted unplaced windows — inconsistently — and both readings
-  // were defensible; an ambiguous ground truth grades nobody fairly). A day a
-  // time-TBD visit may still land on is not "completely free", so the truth
-  // skips every day inside any unplaced window.
-  out.push(q('T07', 'trap', ['resolve', 'use', 'speak'], `When is our next completely free weekday — no visits at all, not even the flexible-window ones?`, {
+  // The 08-13 ambiguity is GONE with the stored window (rung 9a). "Free" used
+  // to be contestable because an unplaced visit's range half-occupied every
+  // day it might land on, and truth and agent counted it differently. An
+  // untimed visit now occupies NO day, so a day with no timed visits is
+  // simply free and the ground truth is unambiguous again.
+  out.push(q('T07', 'trap', ['resolve', 'use', 'speak'], `When is our next completely free weekday — no visits booked at all?`, {
     dates: (() => {
-      const covered = (x) => f.windowJobs.some((w) => w.earliest <= x && x <= w.latest);
       const d = Array.from({ length: 45 }, (_, k) => addDays(T, k + 1)).find(
-        (x) => dow(x) >= 1 && dow(x) <= 5 && count(x) === 0 && !covered(x),
+        (x) => dow(x) >= 1 && dow(x) <= 5 && count(x) === 0,
       );
       return d ? [d] : [];
     })(),
     window: null, answer: { kind: 'date' }, requireWeekday: true,
-    note: 'First weekday with zero timed visits that no unplaced window covers.',
+    note: 'First weekday with zero timed visits. Untimed work sits on no day.',
   }));
   const f1 = comingOcc(T, 'friday'), f2 = addDays(f1, 7);
   out.push(q('T08', 'trap', ['resolve', 'use', 'speak'], `Which Friday is busier, this one or next?`, {

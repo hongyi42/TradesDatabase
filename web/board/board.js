@@ -164,32 +164,10 @@
   // the visit — moveVisit's unassign detach); its data-lane is ''. Flat
   // layout (technician view, manager's Mine tab): a plain time-ordered list,
   // no lanes.
-  // One "no time yet" strip card (plan 4b-2): an assigned visit holding this
-  // day (or a range covering it) with no time. Tappable into the normal
-  // detail sheet; a multi-day range is labelled in full so it reads as ONE
-  // visit appearing on each covered day, never as three visits.
-  function tbdCard(u) {
-    var range =
-      u.earliestDate === u.latestDate
-        ? ''
-        : ' · ' + u.earliestDate + ' – ' + u.latestDate;
-    return (
-      '<div class="tbd-card" data-id="' + esc(u.assignmentId) + '">' +
-      '<div class="tbd-main">' + esc(u.customer || 'Unknown customer') +
-      (u.jobTitle ? ' — ' + esc(u.jobTitle) : '') +
-      '</div>' +
-      '<div class="tbd-sub">' +
-      esc(
-        (u.technicianName || 'Unassigned') +
-          ' · ' +
-          (u.jobDurationMinutes != null ? fmtDur(u.jobDurationMinutes) : 'length not set') +
-          range,
-      ) +
-      '</div></div>'
-    );
-  }
-
-  function renderDay(date, stops, teamLayout, unplaced) {
+  // The per-day "no time yet" strip card is GONE (rung 9a). It drew an
+  // unplaced visit on every day of its stored range; with no range there is no
+  // day to draw it on. Untimed visits live in the Unscheduled tray only.
+  function renderDay(date, stops, teamLayout) {
     // Per-DAY write gate: the calendar week 0 contains already-past days, and
     // those are as read-only as past weeks (a live drop target on yesterday
     // is a one-mis-drag history rewrite). state.today is the firm-local
@@ -203,14 +181,8 @@
       '<section class="day' + (isToday ? ' today' : '') + '" data-date="' + esc(date) + '">' +
       '<h2>' + esc(dayName(date)) + ' · ' + esc(date) +
       (isToday ? ' <span class="today-tag">Today</span>' : '') + '</h2>';
-    if (unplaced && unplaced.length) {
-      html +=
-        '<div class="tbd-strip"><div class="tbd-strip-title">No time yet</div>' +
-        unplaced.map(tbdCard).join('') +
-        '</div>';
-    }
     if (!stops.length) {
-      if (!unplaced || !unplaced.length) html += '<div class="day-empty">No visits</div>';
+      html += '<div class="day-empty">No visits</div>';
     } else if (!teamLayout) {
       html += stops
         .map(function (s) {
@@ -287,10 +259,8 @@
     if (isManager && data.view) state.view = data.view;
     var teamLayout = isManager && data.view !== 'mine';
     var byDate = {};
-    var unplacedByDate = {};
     data.days.forEach(function (d) {
       byDate[d.date] = d.stops;
-      unplacedByDate[d.date] = d.unplaced || [];
     });
     // The picker's busy hints read from what the board just painted — but
     // ONLY the team layout shows the whole team; a Mine-tab payload holds one
@@ -334,7 +304,7 @@
     } else {
       var date = data.from;
       while (date <= data.to) {
-        html += renderDay(date, byDate[date] || [], teamLayout, unplacedByDate[date] || []);
+        html += renderDay(date, byDate[date] || [], teamLayout);
         date = addDays(date, 1);
       }
       if (data.horizonNote) html += '<div class="range">' + esc(data.horizonNote) + '</div>';
@@ -499,12 +469,11 @@
     // math. Tappable: opens the visit's normal detail sheet; the Assign
     // button opens the picker (plan 4a.5 — the tray is manager-only, so the
     // affordance needs no tier gate here).
-    // A time-TBD row (plan 4b-2) has no times — its main line says so and
-    // carries the range; Assign posts an attach that KEEPS it unplaced.
-    var whenTxt = v.timeTbd
-      ? v.weekday + ' ' + v.date +
-        (v.latestDate && v.latestDate !== v.date ? ' – ' + v.latestDate : '') +
-        ' · no time yet'
+    // An UNTIMED row (rung 9a) has no date and no times — say exactly that.
+    // Assign posts an attach that KEEPS it untimed.
+    var untimed = !v.date;
+    var whenTxt = untimed
+      ? 'No time set yet'
       : v.weekday + ' ' + v.date + ' · ' + v.startTime + '–' + v.endTime;
     return (
       '<div class="bucket-row bucket-visit" data-id="' + esc(v.assignmentId) + '">' +
@@ -529,10 +498,10 @@
       (v.overdue
         ? ''
         : '<button type="button" class="bucket-assign" data-id="' + esc(v.assignmentId) + '"' +
-          ' data-date="' + esc(v.date) + '"' +
-          (v.timeTbd
+          (untimed
             ? ' data-tbd="1"'
-            : ' data-start="' + esc(v.startTime) + '" data-end="' + esc(v.endTime) + '"') +
+            : ' data-date="' + esc(v.date) + '"' +
+              ' data-start="' + esc(v.startTime) + '" data-end="' + esc(v.endTime) + '"') +
           '>Assign</button>') +
       '</div>'
     );
@@ -707,16 +676,17 @@
     // visit may be edited; it only described which list you happened to be
     // looking at. (Drag/✕ keep their own tab gate in actionable(): those act
     // on the RENDERED lane layout, which really is Team-tab-only.)
-    // The visit's anchor day: placed start, else the range start (unplaced,
-    // plan 4b-2). The date floor and the read-only reason both key on it.
-    var anchorDay = d.start ? d.start.slice(0, 10) : d.earliestDate;
+    // The visit's anchor day — only a PLACED visit has one. The date floor and
+    // the read-only reason both key on it.
+    var anchorDay = d.start ? d.start.slice(0, 10) : null;
     var isTbd = !d.start;
     var canEdit =
       state.isManager &&
       d.status === 'confirmed' &&
       state.today !== null &&
-      // An unplaced visit stays editable while ANY of its range is ahead.
-      (isTbd ? d.latestDate >= state.today : anchorDay >= state.today);
+      // An untimed visit holds no date, so no day of it can have passed — it
+      // stays editable until someone places it (rung 9a).
+      (isTbd || anchorDay >= state.today);
     var pencil = function (kind) {
       return canEdit
         ? ' <button type="button" class="edit-btn" data-edit="' + kind + '" aria-label="Edit">✎</button>'
@@ -737,15 +707,12 @@
       );
     }
     if (isTbd) {
-      // "Place" is the same When editor — it opens with the range day
-      // prefilled and empty times, and saving books real times (a move).
+      // "Place" is the same When editor — it opens empty and saving books a
+      // real day and times (a move).
       rows += detailRow(
         'When',
-        esc(
-          dayName(d.earliestDate) + ' · ' + d.earliestDate +
-            (d.latestDate !== d.earliestDate ? ' – ' + d.latestDate : '') +
-            ' · no time yet',
-        ) + (canEdit ? ' <button type="button" class="edit-btn" data-edit="when" aria-label="Place">Place</button>' : ''),
+        esc('No time set yet') +
+          (canEdit ? ' <button type="button" class="edit-btn" data-edit="when" aria-label="Place">Place</button>' : ''),
       );
     } else {
       rows += detailRow(
@@ -794,7 +761,7 @@
       why =
         d.status !== 'confirmed'
           ? 'Read-only — this visit is ' + d.status + '.'
-          : state.today !== null && (isTbd ? d.latestDate < state.today : anchorDay < state.today)
+          : state.today !== null && !isTbd && anchorDay < state.today
             ? 'Read-only — the day has passed. Ask the assistant in chat to correct past visits.'
             : 'Read-only — reopen the board and try again.';
     }
@@ -1123,9 +1090,9 @@
   // the same shared verbs chat drives. NOTE: /job is a ONE-SHOT endpoint;
   // never send it ?preview=1 (it is ignored and would commit).
   function openEditor(kind, d) {
-    // Unplaced visits (plan 4b-2): the editors prefill from the range day and
-    // EMPTY times — placing means typing real ones.
-    var vDate = d.start ? d.start.slice(0, 10) : d.earliestDate;
+    // Untimed visits (rung 9a): nothing to prefill from — the editors open
+    // with today and EMPTY times, and placing means typing real ones.
+    var vDate = d.start ? d.start.slice(0, 10) : state.today;
     if (kind === 'tech') {
       openPicker({
         title: 'Assign technician',
@@ -1406,36 +1373,34 @@
       openSheet(
         sheetShell(
           'Book: ' + (title || 'Untitled job'),
-          fieldRow(
-            'Day',
-            '<input type="date" id="qe-date"' +
-              (state.today ? ' min="' + esc(state.today) + '"' : '') + '>',
-          ) +
-            '<label class="field-row tbd-toggle"><span>Time not settled yet</span>' +
+          '<label class="field-row tbd-toggle"><span>No time yet</span>' +
             '<input type="checkbox" id="qe-tbd"></label>' +
             '<div id="qe-times">' +
+            fieldRow(
+              'Day',
+              '<input type="date" id="qe-date"' +
+                (state.today ? ' min="' + esc(state.today) + '"' : '') + '>',
+            ) +
             fieldRow('Start', '<input type="time" id="qe-start">') +
             fieldRow('End', '<input type="time" id="qe-end">') +
             '</div>' +
-            '<div id="qe-until" style="display:none">' +
-            fieldRow(
-              'Until (optional)',
-              '<input type="date" id="qe-latest"' +
-                (state.today ? ' min="' + esc(state.today) + '"' : '') + '>',
-            ) +
-            '<div class="field-note">Leave empty for a single day; set it for "sometime that week".</div>' +
+            '<div id="qe-untimed-note" style="display:none" class="field-note">' +
+            'The visit is booked with no day or time and waits in Unscheduled. ' +
+            'To pin down "sometime next week", ask your assistant in chat — it can ' +
+            'suggest a slot from the job\'s history and the week ahead.' +
             '</div>' +
             fieldRow('Technician', selectHtml('qe-tech', techOptions, '')) +
             formButtons('Book visit'),
         ),
         function (e, ov) {
-          // The toggle hides the time inputs and books UNPLACED (plan 4b-2).
+          // The toggle hides the day AND time inputs: an untimed booking
+          // carries neither (rung 9a).
           var tbdBox = e.target.id === 'qe-tbd' ? e.target : null;
           if (tbdBox) {
             var times = ov.querySelector('#qe-times');
-            var until = ov.querySelector('#qe-until');
+            var note = ov.querySelector('#qe-untimed-note');
             if (times) times.style.display = tbdBox.checked ? 'none' : '';
-            if (until) until.style.display = tbdBox.checked ? '' : 'none';
+            if (note) note.style.display = tbdBox.checked ? '' : 'none';
             return;
           }
           var btn = e.target.closest && e.target.closest('[data-form]');
@@ -1448,18 +1413,9 @@
           var isTbd = !!(tbdEl && tbdEl.checked);
           var body;
           if (isTbd) {
-            body = { jobId: jobId, timeTbd: true, earliestDate: val(ov, 'qe-date') };
-            var latest = val(ov, 'qe-latest');
-            if (latest) body.latestDate = latest;
-            if (!body.earliestDate) {
-              toast('Pick the day (or the range start).', true);
-              return;
-            }
-            if (body.latestDate && body.latestDate < body.earliestDate) {
-              toast('"Until" must be on or after the day.', true);
-              return;
-            }
-            body.date = body.earliestDate; // the past-date belt below reuses it
+            // Rung 9a: an untimed booking carries NO date at all. "Sometime
+            // next week" is a conversation with the assistant, not a field.
+            body = { jobId: jobId };
           } else {
             body = {
               jobId: jobId,
@@ -1498,10 +1454,10 @@
                     }
                     closeDetail();
                     toast(
-                      'Booked — ' + body.date +
+                      'Booked — ' +
                         (isTbd
-                          ? (body.latestDate ? ' – ' + body.latestDate : '') + ', time to be set'
-                          : ' ' + body.startTime + '–' + body.endTime) +
+                          ? 'no time set yet'
+                          : body.date + ' ' + body.startTime + '–' + body.endTime) +
                         (ref ? ' with ' + rosterName(ref) : ', unassigned') +
                         (r.body.warning ? '. ' + r.body.warning : ''),
                     );

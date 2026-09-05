@@ -426,75 +426,61 @@ describe('unplaced visits (Plan 4b-2): shapes + the narrowed overlap guard)', ()
     return createJob({ tenantId, customerId: customer.id, title, status: 'open' });
   }
 
-  test('an UNPLACED row inserts: null times, day range, confirmed', async () => {
-    const job = await makeJob('unplaced-insert');
+  test('an UNTIMED row inserts: both times null, confirmed (rung 9a)', async () => {
+    const job = await makeJob('untimed-insert');
+    // INVERTED by rung 9a: this all-null row used to be REFUSED by both the
+    // typed layer and `assignment_placed_or_windowed`, because a visit had to
+    // hold either times or a date range. The range is gone, so "no time set"
+    // is now the legal shape for committed-but-unscheduled work.
     const a = await createAssignment({
       tenantId,
       jobId: job.id,
       technicianId: null,
       startsAt: null,
       endsAt: null,
-      earliestDate: '2026-10-01',
-      latestDate: '2026-10-03',
       status: 'confirmed',
     });
     expect(a.starts_at).toBeNull();
     expect(a.ends_at).toBeNull();
-    expect(a.earliest_date).toBe('2026-10-01');
-    expect(a.latest_date).toBe('2026-10-03');
+    expect(a.status).toBe('confirmed');
   });
 
-  test('half-filled shapes are rejected: typed layer XOR + the DB check itself', async () => {
+  test('HALF-timed rows are rejected; the all-null row is now legal (rung 9a)', async () => {
     const job = await makeJob('half-filled');
-    // Typed layer: neither shape.
-    await expect(
-      createAssignment({ tenantId, jobId: job.id, technicianId: null, startsAt: null, endsAt: null }),
-    ).rejects.toThrow(/BOTH times .* or BOTH range dates/);
-    // Typed layer: a complete shape mixed with HALF of the other (the
-    // cross-shape the plain XOR missed — review finding).
+    // A start with no end, and an end with no start: still a half-filled row
+    // that would read as placed to some surfaces and untimed to others.
     await expect(
       createAssignment({
         tenantId, jobId: job.id, technicianId: null,
-        startsAt: '2026-10-05T09:00:00.000Z', endsAt: '2026-10-05T10:00:00.000Z',
-        earliestDate: '2026-10-05',
+        startsAt: '2026-10-05T09:00:00.000Z', endsAt: null,
       }),
-    ).rejects.toThrow(/BOTH times .* or BOTH range dates/);
-    // Typed layer: both shapes at once.
+    ).rejects.toThrow(/BOTH times, or neither/);
     await expect(
       createAssignment({
         tenantId, jobId: job.id, technicianId: null,
-        startsAt: '2026-10-05T09:00:00.000Z', endsAt: '2026-10-05T10:00:00.000Z',
-        earliestDate: '2026-10-05', latestDate: '2026-10-05',
+        startsAt: null, endsAt: '2026-10-05T10:00:00.000Z',
       }),
-    ).rejects.toThrow(/BOTH times .* or BOTH range dates/);
-    // The DB check is the backstop — prove it fires on a RAW half-filled
-    // insert the typed layer never sees (times + range mixed).
-    await expect(
-      pg.query(
-        `insert into assignments (tenant_id, job_id, starts_at, ends_at, earliest_date, latest_date)
-         values ($1, $2, '2026-10-05T09:00:00Z', '2026-10-05T10:00:00Z', '2026-10-05', '2026-10-05')`,
-        [tenantId, job.id],
-      ),
-    ).rejects.toThrow(/assignment_placed_or_windowed/);
-    // The all-null "neither" row must be rejected by the CONSTRAINT itself,
-    // not only the typed layer (review nit — both arms demand non-nulls).
-    await expect(
-      pg.query(
-        `insert into assignments (tenant_id, job_id) values ($1, $2)`,
-        [tenantId, job.id],
-      ),
-    ).rejects.toThrow(/assignment_placed_or_windowed/);
-    // And on an inverted range.
-    await expect(
-      pg.query(
-        `insert into assignments (tenant_id, job_id, earliest_date, latest_date)
-         values ($1, $2, '2026-10-06', '2026-10-05')`,
-        [tenantId, job.id],
-      ),
-    ).rejects.toThrow(/assignment_placed_or_windowed/);
+    ).rejects.toThrow(/BOTH times, or neither/);
+    // INVERTED: the raw all-null insert used to raise
+    // assignment_placed_or_windowed. That CHECK is dropped, and the surviving
+    // `assignments_check (ends_at > starts_at)` passes because a CHECK is
+    // satisfied when it evaluates to NULL — so the row lands.
+    const { rows } = await pg.query(
+      `insert into assignments (tenant_id, job_id) values ($1, $2)
+       returning starts_at, ends_at`,
+      [tenantId, job.id],
+    );
+    expect(rows[0].starts_at).toBeNull();
+    expect(rows[0].ends_at).toBeNull();
+    // The constraint really is gone, not merely unreached.
+    const { rows: cons } = await pg.query(
+      `select 1 from pg_constraint where conrelid = 'assignments'::regclass
+        and conname = 'assignment_placed_or_windowed'`,
+    );
+    expect(cons).toHaveLength(0);
   });
 
-  test('the narrowed guard: placed overlaps still raise 23P01; unplaced twins both insert', async () => {
+  test('the narrowed guard: placed overlaps still raise 23P01; untimed twins both insert', async () => {
     const job = await makeJob('narrowed-guard');
     const D = (h: number) => `2026-10-12T${String(h).padStart(2, '0')}:00:00.000Z`;
     // Placed protection is EXACTLY as before.
@@ -511,18 +497,18 @@ describe('unplaced visits (Plan 4b-2): shapes + the narrowed overlap guard)', ()
     } catch (err) {
       expect(isOverlapViolation(err)).toBe(true);
     }
-    // Two UNPLACED confirmed rows for the SAME technician both insert — an
-    // unplaced row is demand, not schedule; tstzrange(null,null) would have
-    // blocked the whole calendar without the starts_at predicate.
+    // Two UNTIMED confirmed rows for the SAME technician both insert — an
+    // untimed row is demand, not schedule; tstzrange(null,null) would have
+    // blocked the whole calendar without the starts_at predicate. This matters
+    // MORE after rung 9a, not less: untimed rows are now the normal way work
+    // waits, so there are many more of them per technician.
     const u1 = await createAssignment({
       tenantId, jobId: job.id, technicianId: tech.id,
-      startsAt: null, endsAt: null,
-      earliestDate: '2026-10-12', latestDate: '2026-10-12', status: 'confirmed',
+      startsAt: null, endsAt: null, status: 'confirmed',
     });
     const u2 = await createAssignment({
       tenantId, jobId: job.id, technicianId: tech.id,
-      startsAt: null, endsAt: null,
-      earliestDate: '2026-10-12', latestDate: '2026-10-14', status: 'confirmed',
+      startsAt: null, endsAt: null, status: 'confirmed',
     });
     expect(u1.id).not.toBe(u2.id);
   });
@@ -876,8 +862,6 @@ describe('listOverdueConfirmedAssignments', () => {
       technicianId: null,
       startsAt: null,
       endsAt: null,
-      earliestDate: '2026-08-10',
-      latestDate: '2026-08-10',
       status: 'confirmed',
     });
 

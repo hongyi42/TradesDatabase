@@ -1,0 +1,43 @@
+-- Rung 9a, Phase 2: the stored window dies, so its CHECK goes first.
+--
+-- `assignment_placed_or_windowed` (20260724130000_unplaced_visits.sql:13) said a
+-- row must be EITHER placed (both times, no range) OR windowed (a range, no
+-- times) — never neither. That "never neither" arm is what this rung removes.
+--
+-- The user ruling (2026-09-05): a visit HAS A TIME OR IT DOES NOT. An unplaced
+-- visit is simply untimed — no stored range, because a commitment frozen in a
+-- column is stale the moment the customer calls back. "Sometime next week" is a
+-- conversation with the seat agent, not a data structure, and the agent reads
+-- the promises where they actually live: the calls, emails and notes in L1.
+--
+-- The same ruling is why the ladder that this CHECK forced into existence is
+-- already gone. `promised_day` was never an independent fact — it was a SHADOW
+-- COPY of the window, taken at the moment placement destroyed it, precisely
+-- because this constraint forbade a row being placed and windowed at once. The
+-- ladder existed to smuggle a commitment past this line. Delete the line and
+-- the reason for the ladder goes with it.
+--
+-- DEPLOY ORDER: this one is SAFE TO APPLY BEFORE THE CODE DEPLOY — the opposite
+-- of Phase 3's column drops, and worth stating because the two arrive together.
+-- Dropping a CHECK only ever WIDENS what the table accepts. Every shape the
+-- currently-running pilot code writes was already legal, so it keeps working
+-- untouched; the new all-NULL shape simply becomes possible for the code that
+-- follows. (Phase 3 drops the columns themselves and MUST go after its deploy,
+-- because code still running would be writing them.)
+--
+-- Dropping a constraint UPDATES NO ROWS, so the append-only triggers on
+-- raw_captures / schedule_events / money_events never fire — the trap that
+-- `ON DELETE SET NULL` walks into.
+--
+-- The columns SURVIVE this migration on purpose: Phase 2 stops reading and
+-- writing them, Phase 3 removes them once no deployed code names them.
+--
+-- NOT TOUCHED, and easy to confuse with this:
+--   * `no_confirmed_overlap` — its `starts_at is not null` predicate already
+--     excludes untimed rows, which is exactly right when there are more of them.
+--   * `assignments_check (ends_at > starts_at)` — a CHECK passes when it
+--     evaluates to NULL, so an all-NULL row satisfies it unchanged.
+--   * `find_slots(earliestDate, latestDate)` — same words, different thing: a
+--     SEARCH RANGE ("look between these dates"), never a commitment. It stays.
+
+alter table assignments drop constraint if exists assignment_placed_or_windowed;

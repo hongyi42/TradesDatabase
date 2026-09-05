@@ -263,14 +263,14 @@ export function buildCorpus(): Scenario[] {
     badge: 'manager-sam',
     tier: 'manager',
     turns: (ctx) => [
-      `book ${customerName(ctx.tenant, 'fx-t2-bk-05')} in with cfg-tech-10 on ${addDays(ctx.anchor, 6)} — I don't know the time yet, just hold the day.`,
+      `book ${customerName(ctx.tenant, 'fx-t2-bk-05')} in with cfg-tech-10 — I don't know when yet, just get it on the list.`,
       'yes',
     ],
     endState: {
-      describe: 'the visit is held with a day but no time',
+      describe: 'the visit exists with no time set at all',
       query: (ctx) => ({
         text: `select count(*)::int n from assignments
-                where job_id = $1 and status = 'confirmed' and starts_at is null and earliest_date is not null`,
+                where job_id = $1 and status = 'confirmed' and starts_at is null`,
         params: [jobId(ctx.tenant, 'job-t2-bk-05')],
       }),
       predicate: (rows) => count(rows) >= 1,

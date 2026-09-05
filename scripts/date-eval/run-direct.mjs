@@ -77,14 +77,13 @@ const timeOff = await one(
   [tenantId, manifest.today],
 );
 const windows = await one(
-  `select c.name as customer, j.title as title, coalesce(t.ref, null) as tech,
-          a.earliest_date::text as earliest, a.latest_date::text as latest
+  `select c.name as customer, j.title as title, coalesce(t.ref, null) as tech
    from assignments a
    join jobs j on j.id = a.job_id
    join customers c on c.id = j.customer_id
    left join technicians t on t.id = a.technician_id
    where a.tenant_id = $1 and a.starts_at is null and a.status = 'confirmed'
-   order by a.earliest_date`,
+   order by a.created_at`,
   [tenantId],
 );
 await client.end();
@@ -101,9 +100,9 @@ const SYSTEM = [
   'BOOKED VISITS (one per line: date, start time, customer, job, technician):',
   ...visits.map((v) => `${v.day} ${v.start_local} — ${v.customer} — ${v.title} — tech: ${v.tech}`),
   '',
-  'UNPLACED WORK (booked into a date window, no day chosen yet — it is not ON any day until placed):',
+  'UNTIMED WORK (booked, but NO day or time chosen yet — it is not on ANY day; never name a date for these):',
   ...(windows.length
-    ? windows.map((w) => `window ${w.earliest}..${w.latest} — ${w.customer} — ${w.title} — tech: ${w.tech ?? 'UNASSIGNED'}`)
+    ? windows.map((w) => `untimed — ${w.customer} — ${w.title} — tech: ${w.tech ?? 'UNASSIGNED'}`)
     : ['(none)']),
   '',
   'TIME OFF:',
@@ -123,7 +122,7 @@ const TOOL = {
 
 const remaining = manifest.questions.filter((q) => !already.has(q.id));
 const todo = LIMIT > 0 ? remaining.slice(0, LIMIT) : remaining;
-console.log(`ARM D (planner-shaped, direct API): model ${MODEL}, system ≈${Math.round(SYSTEM.length / 4)} tokens (${visits.length} visits, ${windows.length} windows, ${timeOff.length} time-off)`);
+console.log(`ARM D (planner-shaped, direct API): model ${MODEL}, system ≈${Math.round(SYSTEM.length / 4)} tokens (${visits.length} visits, ${windows.length} untimed, ${timeOff.length} time-off)`);
 console.log(`${todo.length} questions to ask (${already.size} already answered)\n`);
 
 const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0 };

@@ -81,8 +81,6 @@ export interface VisitSpec {
   date?: string;
   startTime?: string;
   durationMinutes?: number;
-  earliestDate?: string;
-  latestDate?: string;
   status: 'proposed' | 'confirmed' | 'completed' | 'cancelled';
 }
 
@@ -418,7 +416,7 @@ export function buildWorldSpec({ anchor, seed = 7 }: BuildOptions): WorldSpec {
   // horizon-boundary edges deliberately sit past the base span, and a span that
   // excluded its own rows would understate coverage in every report.
   const days = tenants
-    .flatMap((t) => t.visits.flatMap((v) => [v.date, v.earliestDate, v.latestDate]))
+    .flatMap((t) => t.visits.flatMap((v) => [v.date]))
     .filter((d): d is string => typeof d === 'string')
     .sort();
 
@@ -770,14 +768,12 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
       durationMinutes: 60,
       facts: [],
     });
-    const from = nextWorkday(addDays(anchor, 2 + i));
     visits.push({
       key: `visit-tbd-${i}`,
       jobKey,
       // One of them has no technician either — person-less AND time-less.
       technicianRef: i === 3 ? null : 'tech-dee',
-      earliestDate: from,
-      latestDate: addDays(from, 2),
+      // No date at all (rung 9a): an untimed visit is the unscheduled queue.
       status: 'confirmed',
     });
   }

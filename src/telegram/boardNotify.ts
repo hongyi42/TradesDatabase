@@ -52,13 +52,18 @@ function digestText(pushes: Push[]): string {
   return [header, ...lines].join('\n');
 }
 
-// Unplaced rows (plan 4b-2) have a day range and no times — a push must say
-// so, never render 'undefined–undefined'.
-const day = (row: Assignment): string => row.starts_at?.slice(0, 10) ?? row.earliest_date ?? '?';
+// A push must never render 'undefined–undefined' at a technician. An UNTIMED
+// visit (rung 9a) has neither a day nor times, so `when` collapses to one
+// honest phrase instead of pairing two placeholders.
+const day = (row: Assignment): string => row.starts_at?.slice(0, 10) ?? 'no date yet';
 const span = (row: Assignment): string =>
   row.starts_at && row.ends_at
     ? `${row.starts_at.slice(11, 16)}–${row.ends_at.slice(11, 16)}`
     : 'time not set';
+// "2026-10-20, 09:00–10:00" for a placed visit; "no time set yet" when there
+// is nothing to say.
+const when = (row: Assignment): string =>
+  row.starts_at ? `${day(row)}, ${span(row)}` : 'no time set yet';
 
 const detailStr = (detail: Record<string, unknown>, key: string): string | null =>
   typeof detail[key] === 'string' ? (detail[key] as string) : null;
@@ -90,7 +95,7 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
       if (tech?.telegram_user_id && row) {
         out.push({
           userId: tech.telegram_user_id,
-          text: `New visit on your schedule: ${day(row)}, ${span(row)}.`,
+          text: `New visit on your schedule: ${when(row)}.`,
         });
       }
       break;

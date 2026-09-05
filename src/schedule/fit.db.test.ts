@@ -170,18 +170,16 @@ describe('assembleFitContext — who is in, who is out, always named', () => {
 });
 
 describe('assembleFitContext — assignment rows become day context', () => {
-  test('unplaced assigned rows fold into commitmentsByDate across their whole range, never into stops (plan 4b-2)', async () => {
+  test('INVERTED (rung 9a): an UNTIMED row weighs on NO day — it is not counted anywhere', async () => {
     const customer = await createCustomer({ tenantId, name: 'Fit tbd cust' });
     const job = await createJob({ tenantId, customerId: customer.id, title: 'fit tbd', status: 'open' });
-    // Tue–Thu unplaced range for sparky + one placed Wednesday visit.
+    // An untimed row for sparky + one placed Wednesday visit.
     const tbd = await createAssignment({
       tenantId,
       jobId: job.id,
       technicianId: sparky.id,
       startsAt: null,
       endsAt: null,
-      earliestDate: '2026-08-04',
-      latestDate: '2026-08-06',
       status: 'confirmed',
     });
     const placedWed = await makeVisit({
@@ -192,17 +190,17 @@ describe('assembleFitContext — assignment rows become day context', () => {
     try {
       const c = await ctx({ technicianRef: sparky.ref });
       const sp = c.technicians[0];
-      // Load on every covered day; the placed Wednesday visit stacks on top.
-      expect(sp.commitmentsByDate.get('2026-08-04')).toBe(1);
-      expect(sp.commitmentsByDate.get('2026-08-05')).toBe(2);
-      expect(sp.commitmentsByDate.get('2026-08-06')).toBe(1);
-      expect(sp.commitmentsByDate.get('2026-08-07')).toBeUndefined();
-      // Shape untouched: stops count ONLY the placed visit.
+      // It used to weigh on EVERY day of its stored range, because the range
+      // said which days it might land on. With no range there is no day it
+      // could be budgeted against, so ONLY the placed Wednesday visit counts.
+      expect(sp.commitmentsByDate.get('2026-08-04')).toBeUndefined();
+      expect(sp.commitmentsByDate.get('2026-08-05')).toBe(1);
+      expect(sp.commitmentsByDate.get('2026-08-06')).toBeUndefined();
+      // Shape untouched: stops count ONLY the placed visit, as before.
       expect(sp.stopsByDate.get('2026-08-04')).toBeUndefined();
       expect(sp.stopsByDate.get('2026-08-05')).toBe(1);
-      // The subject-exclusion also frees an unplaced subject's own load.
+      // Excluding the untimed subject changes nothing — it was never counted.
       const excluded = await ctx({ technicianRef: sparky.ref, excludeAssignmentId: tbd.id });
-      expect(excluded.technicians[0].commitmentsByDate.get('2026-08-04')).toBeUndefined();
       expect(excluded.technicians[0].commitmentsByDate.get('2026-08-05')).toBe(1);
     } finally {
       // Self-clean BOTH rows: the displacement suite shares this week and

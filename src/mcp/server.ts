@@ -174,7 +174,7 @@ import {
   latestScheduleVersion,
   listAssignmentsForTenant,
   listUnassignedAssignments,
-  listUnplacedForRange,
+  listUnplaced,
   listJobsWithCustomerByIds,
   listDecisionsForNudge,
   listDecisionsForJob,
@@ -322,9 +322,9 @@ const TOOLS = [
       "Brief on a customer: their jobs, UPCOMING scheduled visits, recent past visits, and recent " +
       "raw captures. upcomingVisits is the schedule ahead — use it for \"when is X's next visit?\" " +
       'and read each entry as-is: date + startTime are the visit as booked, and an entry with ' +
-      'timeTbd:true is a REAL booked visit whose exact day is not set yet — its earliestDate–' +
-      "latestDate range IS the answer to \"what's the scheduling window for X's job?\" (never say " +
-      'nothing is scheduled when a timeTbd entry exists, and never invent a time for one). ' +
+      'untimed:true is a REAL booked visit with NO time set yet — say exactly that (never say ' +
+      'nothing is scheduled when an untimed entry exists, and never invent a day or time for ' +
+      'one; nothing in the record says when it should happen). ' +
       "When you NAME a visit's day, SAY the entry's `phrase` VERBATIM (\"Tuesday 2026-08-18\") — " +
       'never re-derive the weekday or restate the date yourself; you are unreliable at both. ' +
       'recentVisits is past work evidence, not the schedule. When the result carries an ' +
@@ -732,12 +732,12 @@ const TOOLS = [
 const SPINE_VIEW_CATALOG =
   'It CANNOT write, and it can only read these fifteen views (nothing else exists to it): ' +
   'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, ' +
-  'earliest_date, latest_date, technician_ref, technician_name, job_id, ' +
+  'technician_ref, technician_name, job_id, ' +
   'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
   'schedule that STANDS: confirmed and completed visits only, so count(*) here is real ' +
   'bookings; cancelled visits are NOT in it — they live in ' +
   'v_cancelled_visits(assignment_id, local_day, local_weekday, starts_at, ends_at, reason, ' +
-  'updated_at, earliest_date, latest_date, technician_ref, ' +
+  'updated_at, technician_ref, ' +
   'technician_name, job_id, job_title, job_type, customer_id, customer_name, city, ' +
   'postal_code), which also says why (reason) and when (updated_at); ' +
   'v_team(ref, display_name, tier, state, seat_exempt, skills, service_cities, availability, ' +
@@ -969,9 +969,9 @@ const ADMIN_TOOLS = [
       'unassigned:true have NOBODY attached yet and need a person (attach with move_visit). ' +
       'Pass unassignedOnly:true to list ALL upcoming visits with nobody attached, however far ' +
       'out (no 14-day cap) — use it when the manager asks what still needs assigning. Stops ' +
-      'with timeTbd:true hold a day (or an earliestDate–latestDate range) and NO time yet — ' +
-      'say "time not set", never invent one; they appear in both views (windowed when a ' +
-      'person is attached, unassignedOnly when not). The windowed response carries counts ' +
+      'The windowed response also carries an `untimed` list: visits booked with NO time set, ' +
+      'sitting on no day at all — say "no time set yet", never place one on a date. ' +
+      'The windowed response carries counts ' +
       '(counts.byDay + counts.total, server-computed for the requested range) — for ANY ' +
       'how-many/busiest/lightest/compare question USE THOSE NUMBERS VERBATIM; you are ' +
       'unreliable at counting rows, so never tally the stops yourself. Also ' +
@@ -1013,11 +1013,11 @@ const ADMIN_TOOLS = [
       'startTime and endTime are REQUIRED ' +
       '— the server assumes NO default length. Pass exactly the times the manager stated ' +
       '(a range like "12-1pm" means startTime 12:00 AND endTime 13:00); if the manager did ' +
-      'not say when the visit starts or ends, ASK them — never guess. ONE exception: when ' +
-      'the manager EXPLICITLY says the time is not settled ("Thursday, time TBD"), pass ' +
-      'timeTbd:true with NO times — the visit books UNPLACED, holding the day (earliestDate, ' +
-      'or a range with latestDate) until someone places it. timeTbd is NEVER your own choice ' +
-      'when a time was stated. Omit technicianRef to ' +
+      'not say when the visit starts or ends, ASK them — never guess. ONE exception: when the ' +
+      'manager says the timing is not settled ("book them in, we will find a slot"), pass ' +
+      'NONE of date/startTime/endTime — the visit books UNTIMED and waits in the unscheduled ' +
+      'queue until someone places it with move_visit. Booking untimed is never your own ' +
+      'choice when a day or time was stated. Omit technicianRef to ' +
       'book WITHOUT a technician (put it on the calendar, assign later — attach someone with ' +
       'move_visit; find these via get_team_schedule unassignedOnly:true). ' +
       'When talking to customers, offer DAYS, not times. ' +
@@ -1032,12 +1032,9 @@ const ADMIN_TOOLS = [
         jobId: { type: 'string', description: 'Exactly one of customerId/jobId.' },
         technicianRef: { type: 'string', description: 'Roster ref of the technician. OPTIONAL — omit to book unassigned ("assign later").' },
         title: { type: 'string', description: 'Job title when booking by customerId (a new job is created).' },
-        date: { type: 'string', description: 'YYYY-MM-DD, firm-local.' },
-        startTime: { type: 'string', description: 'HH:MM 24h. REQUIRED on first call — no default; ask the manager if unstated.' },
-        endTime: { type: 'string', description: 'HH:MM 24h. REQUIRED on first call — no default length; ask the manager if unstated.' },
-        timeTbd: { type: 'boolean', description: 'true ONLY when the manager explicitly said the time is unsettled — books an UNPLACED visit (day known, no times). Requires NO startTime/endTime. Never your own inference.' },
-        earliestDate: { type: 'string', description: 'With timeTbd: the day (YYYY-MM-DD), or the range start. Defaults to date.' },
-        latestDate: { type: 'string', description: 'With timeTbd: range end (YYYY-MM-DD), for "sometime that week". Defaults to earliestDate.' },
+        date: { type: 'string', description: 'YYYY-MM-DD, firm-local. Required WITH both times — or omit all three to book an untimed visit.' },
+        startTime: { type: 'string', description: 'HH:MM 24h. Required with date and endTime — no default; ask the manager if unstated.' },
+        endTime: { type: 'string', description: 'HH:MM 24h. Required with date and startTime — no default length; ask the manager if unstated.' },
         priority: { type: 'string', enum: ['emergency', 'urgent', 'routine', 'maintenance'], description: 'Triage tier for the NEW job when booking by customerId (default "routine"). Rejected with jobId — an existing job keeps its recorded priority.' },
         forceNewJob: { type: 'boolean', description: 'customerId path only: override the open-work guard and mint a new job even though the customer has open work on file. ONLY when the work is genuinely different from every listed job — never to skip the jobId lookup.' },
       },
@@ -1175,11 +1172,9 @@ const ADMIN_TOOLS = [
         'DATE BOUNDS: your clock is UTC and names TOMORROW from late afternoon on — before writing ' +
         'any window that involves today ("so far this year", "through today", "last 30 days"), call ' +
         "resolve_date and bound the SQL with ITS returned date, never your clock's. ") +
-      'WINDOW ROWS: unplaced (time-TBD) visits have NULL starts_at/local_day, so a local_day or ' +
-      'starts_at range filter silently EXCLUDES them — a window job covers every day in ' +
-      'earliest_date..latest_date. A day is NOT free just because no row lands ON it; for ' +
-      'free/empty-day questions use get_team_schedule, or filter window rows by ' +
-      'earliest_date/latest_date. ' +
+      'UNTIMED ROWS: a visit booked with no time yet has NULL starts_at/local_day, so any ' +
+      'local_day or starts_at filter silently EXCLUDES it. Those visits sit on no day at all — ' +
+      'find them with `starts_at is null`, and never report one as scheduled for a date. ' +
       SPINE_VIEW_CATALOG +
       SPINE_DAY_RULES +
       SPINE_RESOLVE_DATE_RULE +
@@ -4084,30 +4079,29 @@ async function dispatch(
       // assignment, so listUnassignedOpenJobs skips it, and per-technician
       // readers never see a null technician). Same stop shape either way —
       // ONE builder below, so the two views can never drift.
-      // Windowed mode ALSO folds in ASSIGNED-and-unplaced rows (final-review
-      // finding): the placed reader is time-filtered, so without this read an
-      // attached time-TBD visit was invisible to every chat surface — the
-      // agent denied it existed and could never fetch its assignmentId to
-      // place, move, or cancel it. Independent reads, so they run in parallel.
-      // The unplaced read is the WIDE one (assigned or not): the windowed view
-      // still LISTS only person-attached rows (unassigned ones live in the
-      // recall view, by design), but window COVERAGE below must see both — an
-      // unassigned windowed visit occupies the calendar all the same.
-      let allUnplaced: Awaited<ReturnType<typeof listUnplacedForRange>> = [];
+      // Windowed mode reads untimed rows SEPARATELY (rung 9a). They used to be
+      // folded into the day groups under their range's earliest day, because
+      // the range said which days they might land on. With no range an untimed
+      // visit belongs to no day, and putting it on one would be the invention
+      // this rung exists to stop. It still must be REACHABLE — the
+      // final-review finding that forced the fold-in stands: without it an
+      // attached untimed visit was invisible to every chat surface and the
+      // agent denied it existed — so it rides its own top-level list instead.
+      let untimedRows: Awaited<ReturnType<typeof listUnplaced>> = [];
       const rows = unassignedOnly
         ? await listUnassignedAssignments(tenantId, `${from}T00:00:00.000Z`)
         : await (async () => {
-            const [placed, unplaced] = await Promise.all([
+            const [placed, untimed] = await Promise.all([
               listAssignmentsForTenant(
                 tenantId,
                 `${from}T00:00:00.000Z`,
                 new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
                 ['confirmed'],
               ),
-              listUnplacedForRange(tenantId, from, toDay as string),
+              listUnplaced(tenantId),
             ]);
-            allUnplaced = unplaced;
-            return [...placed, ...unplaced.filter((r) => r.technician_id !== null)];
+            untimedRows = untimed;
+            return placed;
           })();
       const jobs = await listJobsWithCustomerByIds(tenantId, [
         ...new Set(rows.map((r) => r.job_id)),
@@ -4124,22 +4118,15 @@ async function dispatch(
       for (const row of rows) {
         // Overlap semantics can pull in a row starting before `from` — clamp
         // to the requested days by start-day, the daySource precedent (the
-        // upper arm applies only in windowed mode). An UNPLACED row (null
-        // times, plan 4b-2 — both modes can see one now: recall shows the
-        // person-less, windowed shows the assigned) lands on its range's
-        // earliest day CLAMPED to `from` (final-review finding: an unclamped
-        // straddling range emitted a day group dated before the requested
-        // window — the one invariant every other read here keeps). It drops
-        // only when its WHOLE range is past (review finding: a Mon–Fri range
-        // asked about on Wednesday is live upcoming work).
-        const rangeDay = row.starts_at === null ? (row.earliest_date as string) : null;
-        const day =
-          row.starts_at?.slice(0, 10) ?? ((rangeDay as string) < from ? from : (rangeDay as string));
-        if (row.starts_at) {
-          if (day < from || (toDay !== null && day > toDay)) continue;
-        } else if ((row.latest_date as string) < from) {
+        // upper arm applies only in windowed mode). An UNTIMED row (recall
+        // mode can still return one) has no day at all, so it is collected
+        // separately rather than drawn on a day nobody chose.
+        if (row.starts_at === null) {
+          untimedRows.push(row as unknown as (typeof untimedRows)[number]);
           continue;
         }
+        const day = row.starts_at.slice(0, 10);
+        if (day < from || (toDay !== null && day > toDay)) continue;
         const customer = jobById.get(row.job_id)?.customers ?? null;
         // technician_id may be NULL (unassigned booking) — the ?? null echoes
         // below render that as a person-less stop in both modes.
@@ -4165,18 +4152,8 @@ async function dispatch(
           // agent will act on (live 2026-07-22: it relabeled a 4 PM visit
           // "4:00 PM UTC" and fabricated a "9 AM Pacific" conversion for the
           // manager). The date rides on the day group.
-          startTime: row.starts_at?.slice(11, 16) ?? null,
+          startTime: row.starts_at.slice(11, 16),
           endTime: row.ends_at?.slice(11, 16) ?? null,
-          // Time-TBD marker (plan 4b-2): null times are DATA, but the agent
-          // must say "time not set yet", never invent one — flag + range so
-          // the recall view reads honestly.
-          ...(row.starts_at === null
-            ? {
-                timeTbd: true,
-                earliestDate: row.earliest_date,
-                latestDate: row.latest_date,
-              }
-            : {}),
           status: row.status,
           jobId: row.job_id,
         });
@@ -4187,6 +4164,18 @@ async function dispatch(
         // weekday is server-computed everywhere a date is emitted (the
         // find_slots lesson: the agent is unreliable at calendar math).
         .map(([date, stops]) => ({ date, weekday: weekdayLabel(date), stops }));
+      // The untimed queue rides alongside the days in BOTH modes, never inside
+      // one: these visits are committed work with no time set, and the only
+      // honest answer to "which day is it on?" is that nobody has decided yet.
+      // Recall mode needs it just as much — that view is where a person-less
+      // untimed visit is reachable at all.
+      const untimed = untimedRows.map((r) => ({
+        assignmentId: r.id,
+        customer: jobById.get(r.job_id)?.customers?.name ?? null,
+        jobId: r.job_id,
+        technicianRef: r.technician_id ? (techById.get(r.technician_id)?.ref ?? null) : null,
+        unassigned: r.technician_id === null,
+      }));
       if (unassignedOnly) {
         // Agent parity with the board's loose-bucket tray (Plan 4a): the
         // recall view also names open jobs with NO visit at all — until now
@@ -4202,10 +4191,13 @@ async function dispatch(
           scheduleVersion,
           technicianHorizonDays,
           days,
+          untimed,
           unscheduledJobs,
           note:
             'unscheduledJobs are open jobs with NO visit at all — booking one takes it off ' +
-            'this list. days hold parked visits (booked, nobody attached).',
+            'this list. days hold parked visits that DO have a time (booked, nobody attached); ' +
+            'untimed holds parked visits with NO time set — say "no time set yet" for those, ' +
+            'never a date.',
         };
       }
       // Server-computed counts (date-eval 2026-08-13, W13): asked "this week
@@ -4214,23 +4206,15 @@ async function dispatch(
       // for the same Wednesday in two adjacent answers. Counting is
       // arithmetic, and the model is unreliable at arithmetic; the server
       // counts once so every count question reads a number instead of
-      // tallying rows. timeTbd stops sit OUTSIDE the day counts: a windowed
-      // visit is not ON a day until it is placed (it is listed under its
-      // earliest day only so it stays visible/actionable).
+      // tallying rows. Untimed visits are not in `days` at all, so nothing
+      // needs excluding from the count any more.
       const inWindow = days.filter((d) => d.date >= from && (toDay === null || d.date <= toDay));
-      const dayCount = (stops: unknown[]) =>
-        stops.filter((s) => (s as { timeTbd?: boolean }).timeTbd !== true).length;
-      // Window coverage per day (date-eval T07): a timeTbd visit is listed
-      // once under its earliest day, but it COVERS every day of its range —
-      // "is Thursday free?" needs range-intersection the model reliably gets
-      // wrong (it read the listing day as the only occupied day and called a
-      // covered Thursday free). Computed here from the same rows.
-      const tbdRanges = allUnplaced.map((r) => ({
-        lo: r.earliest_date as string,
-        hi: r.latest_date as string,
-      }));
-      const windowsCovering = (date: string) =>
-        tbdRanges.filter((w) => w.lo <= date && date <= w.hi).length;
+      const dayCount = (stops: unknown[]) => stops.length;
+      // `windowCoverByDay` died with the stored range (rung 9a). It answered
+      // "how many time-TBD visits could land on this day?" — a question that
+      // only had an answer while a visit carried a range of candidate days.
+      // An untimed visit could land on ANY day, so covering counts are all or
+      // nothing and the number told the model nothing true.
       // Every day of the requested range, including days with no stops at all
       // — "which days are free?" needs the zeros to be data, not absences.
       const rangeDays: string[] = [];
@@ -4246,12 +4230,8 @@ async function dispatch(
       const stopsByDate = new Map(inWindow.map((d) => [d.date, dayCount(d.stops)]));
       const counts = {
         byDay: Object.fromEntries(rangeDays.map((d) => [d, stopsByDate.get(d) ?? 0])),
-        windowCoverByDay: Object.fromEntries(rangeDays.map((d) => [d, windowsCovering(d)])),
         total: inWindow.reduce((n, d) => n + dayCount(d.stops), 0),
-        timeTbdListed: days.reduce(
-          (n, d) => n + d.stops.filter((s) => (s as { timeTbd?: boolean }).timeTbd === true).length,
-          0,
-        ),
+        untimed: untimedRows.length,
       };
       return {
         status: 'ok',
@@ -4266,13 +4246,13 @@ async function dispatch(
               countsNote:
                 'counts.byDay/total are the visit counts for the requested range, computed here — ' +
                 'ALWAYS use these for how-many/busiest/compare questions, never count the stop rows ' +
-                'yourself. timeTbdListed visits are booked but not yet placed on a day, so they are ' +
-                'listed under their earliest possible day WITHOUT being counted; ' +
-                'counts.windowCoverByDay[date] is how many of those COULD still land on that date — ' +
-                'a day is only completely free when byDay AND windowCoverByDay are both 0. The range ' +
-                'is capped at 14 days: to scan further ahead, call again starting where this range ended.',
+                'yourself. A day with byDay 0 is free. The `untimed` list is separate: those visits ' +
+                'are committed with NO time set, so they sit on no day and are counted only by ' +
+                'counts.untimed — never say one is "on" a date. The range is capped at 14 days: to ' +
+                'scan further ahead, call again starting where this range ended.',
             }),
         days,
+        untimed,
       };
     }
     case 'book_visit': {
@@ -4292,32 +4272,24 @@ async function dispatch(
             'technicianRef was empty — pass the roster ref, or omit the field entirely to book unassigned',
           );
         }
-        const timeTbd = args.timeTbd === true;
+
         const date = str('date');
-        const earliestDateArg = str('earliestDate');
-        const latestDateArg = str('latestDate');
+
         // No default times exist (user decision 2026-07-18): a booking carries
         // exactly the times the manager stated, or it doesn't happen yet. The
-        // ONE exception (plan 4b-2) is an explicit timeTbd, which must carry
-        // NO times at all — mixing the shapes is always an agent error.
+        // ONE exception (plan 4b-2, re-cut by rung 9a) is a booking with NO
+        // date and NO times — a visit that is committed but not scheduled.
+        // Mixing the shapes is always an agent error.
         const startTime = str('startTime');
         const endTime = str('endTime');
-        if (timeTbd && (startTime || endTime)) {
+        const untimed = !date && !startTime && !endTime;
+        if (!untimed && (!date || !startTime || !endTime)) {
           throw new Error(
-            'timeTbd means the time is NOT settled — drop startTime/endTime, or book ' +
-              'normally with both and no timeTbd',
+            'date, startTime and endTime are required TOGETHER — the server assumes no default ' +
+              'day or length. If the manager did not say when the visit starts or ends, ask ' +
+              'them, then book. (To book work with no time settled yet, pass none of the ' +
+              'three: the visit lands in the unscheduled queue.)',
           );
-        }
-        if (!timeTbd && (!startTime || !endTime)) {
-          throw new Error(
-            'startTime and endTime are required — the server assumes no default length. ' +
-              'If the manager did not say when the visit starts or ends, ask them, then book. ' +
-              '(Only an EXPLICIT "time not settled" from the manager books without times: timeTbd:true.)',
-          );
-        }
-        if (!timeTbd && !date) throw new Error('date is required');
-        if (timeTbd && !date && !earliestDateArg) {
-          throw new Error('a timeTbd booking needs the day: pass earliestDate (or date)');
         }
         const customerId = str('customerId');
         const jobId = str('jobId');
@@ -4343,13 +4315,6 @@ async function dispatch(
           ...(date ? { date } : {}),
           ...(startTime ? { startTime } : {}),
           ...(endTime ? { endTime } : {}),
-          ...(timeTbd
-            ? {
-                timeTbd: true,
-                ...(earliestDateArg ? { earliestDate: earliestDateArg } : {}),
-                ...(latestDateArg ? { latestDate: latestDateArg } : {}),
-              }
-            : {}),
           ...(priorityArg ? { priority: priorityArg as JobPriority } : {}),
           ...(args.forceNewJob === true ? { forceNewJob: true } : {}),
           actorRef: subjectRef,
@@ -4378,24 +4343,15 @@ async function dispatch(
               : {}),
             technicianRef: technicianRef ?? null,
             unassigned: booked.assignment.technician_id === null,
-            // Placed: the booked day. Unplaced: the range start (+ range echo
-            // below) — the reply must speak in days, never invent a time.
-            // ROW-derived, never the input: on a mixed date+earliestDate call
-            // resolveBooking books the RANGE day, so echoing the ignored
-            // `date` arg would report a day the row doesn't hold
-            // (final-review finding).
-            date: booked.assignment.starts_at?.slice(0, 10) ?? booked.assignment.earliest_date,
+            // ROW-derived, never the input, so the echo can never name a day
+            // the row does not hold (final-review finding). Null on an untimed
+            // booking — there is no day, and inventing one is the whole class
+            // of error this rung removes.
+            date: booked.assignment.starts_at?.slice(0, 10) ?? null,
             // Resolved times from the row itself (naive-local, exact slices).
-            // Null on a timeTbd booking (plan 4b-2).
             startTime: booked.assignment.starts_at?.slice(11, 16) ?? null,
             endTime: booked.assignment.ends_at?.slice(11, 16) ?? null,
-            ...(booked.assignment.starts_at === null
-              ? {
-                  timeTbd: true,
-                  earliestDate: booked.assignment.earliest_date,
-                  latestDate: booked.assignment.latest_date,
-                }
-              : {}),
+            ...(booked.assignment.starts_at === null ? { untimed: true } : {}),
             jobPriority: booked.job.priority,
             // Same silent-stored-value rule as jobTitle (final-review finding):
             // a customerId-path booking mints a shell that RECORDS the booked
@@ -4407,9 +4363,10 @@ async function dispatch(
               'Booked in one step (undo = move_visit / unschedule_visit). ' +
               'Tell the manager exactly what ' +
               'was booked: the JOB (jobTitle above — their words to object to if you assumed ' +
-              'it), customer, day, time, and who. A timeTbd result has NO time — say "time ' +
-              'not set yet" and the day (or range); placing it later is a move_visit with real ' +
-              'times. On a new job the booked span is stored as ' +
+              'it), customer, day, time, and who. An `untimed` result has NO day and NO time — ' +
+              'say exactly that ("booked, no time set yet"), never a guess; it waits in the ' +
+              'unscheduled queue and a move_visit with real times places it. ' +
+              'On a new job the booked span is stored as ' +
               "the job's length (jobDurationMinutes) — mention it; update_job corrects it.",
           };
     }
@@ -4500,7 +4457,7 @@ async function dispatch(
             status: 'unscheduled',
             assignmentId: cancelledRow.id,
             // Placed day, else the unplaced range's day (plan 4b-2).
-            day: cancelledRow.starts_at?.slice(0, 10) ?? cancelledRow.earliest_date ?? null,
+            day: cancelledRow.starts_at?.slice(0, 10) ?? null,
             note:
               'Unscheduled in one step — this visit had no time set, so nobody was holding an ' +
               'appointment for it. The WORK is not cancelled: the job is back in the loose ' +
@@ -4585,7 +4542,7 @@ async function dispatch(
         status: 'unscheduled',
         assignmentId: cancelledRow.id,
         // Placed day, else the unplaced range's day (plan 4b-2).
-        day: cancelledRow.starts_at?.slice(0, 10) ?? cancelledRow.earliest_date ?? null,
+        day: cancelledRow.starts_at?.slice(0, 10) ?? null,
         note: 'the work is not cancelled — the job is back in the loose bucket for rebooking',
       };
     }
@@ -4687,7 +4644,7 @@ async function dispatch(
         visitsCancelled: result.cancelledVisits.map((v) => ({
           assignmentId: v.id,
           // Placed day, else the unplaced range's day (plan 4b-2).
-          day: v.starts_at?.slice(0, 10) ?? v.earliest_date ?? null,
+          day: v.starts_at?.slice(0, 10) ?? null,
         })),
         note:
           'The WORK is cancelled — the job left the loose bucket and the visits above are ' +
@@ -5993,10 +5950,8 @@ async function dispatch(
       let job: Job | null = null;
       let subjectRow: {
         id: string;
-        starts_at: string | null; // null = UNPLACED (plan 4b-2)
+        starts_at: string | null; // null = UNTIMED (plan 4b-2, rung 9a)
         ends_at: string | null;
-        earliest_date: string | null; // the unplaced day range — defaults the search window
-        latest_date: string | null;
         technician_id: string | null;
         status: string;
       } | null = null;
@@ -6177,14 +6132,15 @@ async function dispatch(
       const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
       const nowISO = new Date().toISOString();
       const todayISO = localDateISO(nowISO, tz);
-      // An UNPLACED subject's own day range is the natural default window —
-      // "when can we fit this?" means within the days it already holds
-      // (plan 4b-2); explicit args still override, placed subjects keep the
-      // today-forward default.
+      // find_slots' earliestDate/latestDate are a SEARCH RANGE — "look between
+      // these dates" — never a commitment, which is why they survive rung 9a
+      // untouched while the stored window dies. An untimed subject no longer
+      // carries days of its own to default from, so every subject now gets the
+      // same today-forward default and explicit args still override.
       const earliestArg = str('earliestDate');
       const latestArg = str('latestDate');
-      let earliest = earliestArg ?? subjectRow?.earliest_date ?? todayISO;
-      let latest = latestArg ?? subjectRow?.latest_date ?? addDaysISO(todayISO, 13);
+      let earliest = earliestArg ?? todayISO;
+      let latest = latestArg ?? addDaysISO(todayISO, 13);
       // Non-string range args → invalid_range, not a silent default window
       // (mirrors get_team_schedule's guard).
       if (

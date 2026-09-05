@@ -2,7 +2,7 @@
 date: 2026-09-05
 task: "Rung 9, part A — delete the promise ladder and the stored window; no schema rail restricts the agent"
 research: thoughts/shared/research/2026-09-05-the-visit-is-one-object.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 

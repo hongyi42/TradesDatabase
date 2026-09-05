@@ -196,40 +196,40 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L4406 · The quiet-firm skip
 - L4409 · No v_office_messages
 - L4411 · B65-REACH-A-MANAGER
-- L4583 · A technician's seat agent has NO scheduling verb at any tier.
-- L4586 · Live specimen in the pilot _(2026-09-01)_
-- L4596 · Counting.
-- L4598 · Detection.
-- L4602 · Booking.
-- L4615 · Build 6 (vocabulary): _(2026-09-01)_
-- L4620 · Build 7 (detectors report):
-- L4626 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L4605 · A technician's seat agent has NO scheduling verb at any tier.
+- L4608 · Live specimen in the pilot _(2026-09-01)_
+- L4618 · Counting.
+- L4620 · Detection.
+- L4624 · Booking.
+- L4637 · Build 6 (vocabulary): _(2026-09-01)_
+- L4642 · Build 7 (detectors report):
+- L4648 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L5021 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L5044 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L5091 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L5128 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L5160 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L5165 · Every member row stores the FULL grouped message in question.
-- L5169 · The attribution stamp is an audit link, not a gate.
-- L5173 · The derived stamp requires a capture a badge-holder SPOKE
-- L5177 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L5183 · The follow-up loop has two halves and both had to be written down.
-- L5189 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L5263 · Batching works.
-- L5265 · The follow-up leg works, including the half that fails silently.
-- L5269 · Both attribution paths fired, each in its designed case.
-- L5273 · Escalation fired correctly
-- L5274 · The planner's group-aware pacing is the result worth keeping.
+- L5043 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L5066 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L5113 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L5150 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L5182 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L5187 · Every member row stores the FULL grouped message in question.
+- L5191 · The attribution stamp is an audit link, not a gate.
+- L5195 · The derived stamp requires a capture a badge-holder SPOKE
+- L5199 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L5205 · The follow-up loop has two halves and both had to be written down.
+- L5211 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L5285 · Batching works.
+- L5287 · The follow-up leg works, including the half that fails silently.
+- L5291 · Both attribution paths fired, each in its designed case.
+- L5295 · Escalation fired correctly
+- L5296 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L5455 · Evals:
-- L5462 · Runbooks:
-- L5467 · Decision history with citations:
-- L5471 · This file
+- L5477 · Evals:
+- L5484 · Runbooks:
+- L5489 · Decision history with citations:
+- L5493 · This file
 
 <!-- INDEX:END -->
 
@@ -4524,6 +4524,28 @@ the calls, emails and notes in L1 (`v_captures`, bridged to the job via
 `v_visits.source_capture_id`). That is build 6's "cite what you looked up" applied to scheduling.
 The agent is **reactive** — it edits only when asked and never initiates; the PLANNER recommending
 is rung 11, a different thing.
+
+**"Sometime next week" is a CONVERSATION, not a data structure (user, 2026-09-05).** Asked what
+replaces `book_visit`'s `timeTbd` + date range, the user chose *book with no time at all*: *"If a
+manager wants to book something sometime next week, they can ask the seat agent, who might ask the
+planner for suggestions also because the planner has the firm's full workflow memory/context. This
+way, the planner and seat agent are adaptive to different firms. And scheduling doesn't have to run
+with our imaginations… we want to encourage (or perhaps even train our users through the seat
+agents) behaviors that utilize AI."* The precedent the user named is the planner's gap-chasing,
+which already trains users this way. Note that the seat agent asking the planner is ALREADY BUILT —
+build 5.5/6.5's office channel (`office_messages`, direction `to_planner`, the
+`ask_agent`/`inform_agent` verbs) — so this leans on existing plumbing.
+
+**Confirmations re-gated, and a correction worth keeping (user, 2026-09-05).** The claim that the
+promise ladder powered ONE live behaviour was WRONG, and plan review caught it:
+`bookingRequiresConfirmation` (`src/schedule/booking.ts:217`) gates the two-step on `book_visit` AND
+`unschedule_visit`, while `promiseBroken` gates only `move_visit`. Deleting the ladder would have
+silently removed two confirmation gates and made the `pending_booking` / `pending_visit_cancel`
+staged flows unreachable. Ruling: **book and move go one-shot; `unschedule_visit` keeps its two-step,
+re-gated on the visit being PLACED** — a customer is expecting a placed visit, which is the
+externally-visible test the confirmation doctrine already uses. `pending_booking` is deleted;
+`pending_visit_cancel` survives.
+
 
 **Why the ladder existed at all, found while researching this** (`src/schedule/booking.ts:570`):
 `promised_day` was only ever a SHADOW COPY of the window, taken at the instant placement destroyed

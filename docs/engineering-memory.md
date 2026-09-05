@@ -196,44 +196,44 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L4428 · The quiet-firm skip
 - L4431 · No v_office_messages
 - L4433 · B65-REACH-A-MANAGER
-- L4620 · A green suite proves nothing when you mass-edit tests.
-- L4625 · A test can pin the bug.
-- L4628 · Reachability is not a compile error.
-- L4632 · created_at now means the VISIT's age, not the row's
-- L4685 · A technician's seat agent has NO scheduling verb at any tier.
-- L4688 · Live specimen in the pilot _(2026-09-01)_
-- L4698 · Counting.
-- L4700 · Detection.
-- L4704 · Booking.
-- L4717 · Build 6 (vocabulary): _(2026-09-01)_
-- L4722 · Build 7 (detectors report):
-- L4728 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L4644 · A green suite proves nothing when you mass-edit tests.
+- L4649 · A test can pin the bug.
+- L4652 · Reachability is not a compile error.
+- L4656 · created_at now means the VISIT's age, not the row's
+- L4709 · A technician's seat agent has NO scheduling verb at any tier.
+- L4712 · Live specimen in the pilot _(2026-09-01)_
+- L4722 · Counting.
+- L4724 · Detection.
+- L4728 · Booking.
+- L4741 · Build 6 (vocabulary): _(2026-09-01)_
+- L4746 · Build 7 (detectors report):
+- L4752 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L5123 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L5146 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L5193 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L5230 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L5262 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L5267 · Every member row stores the FULL grouped message in question.
-- L5271 · The attribution stamp is an audit link, not a gate.
-- L5275 · The derived stamp requires a capture a badge-holder SPOKE
-- L5279 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L5285 · The follow-up loop has two halves and both had to be written down.
-- L5291 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L5365 · Batching works.
-- L5367 · The follow-up leg works, including the half that fails silently.
-- L5371 · Both attribution paths fired, each in its designed case.
-- L5375 · Escalation fired correctly
-- L5376 · The planner's group-aware pacing is the result worth keeping.
+- L5147 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L5170 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L5217 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L5254 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L5286 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L5291 · Every member row stores the FULL grouped message in question.
+- L5295 · The attribution stamp is an audit link, not a gate.
+- L5299 · The derived stamp requires a capture a badge-holder SPOKE
+- L5303 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L5309 · The follow-up loop has two halves and both had to be written down.
+- L5315 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L5389 · Batching works.
+- L5391 · The follow-up leg works, including the half that fails silently.
+- L5395 · Both attribution paths fired, each in its designed case.
+- L5399 · Escalation fired correctly
+- L5400 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L5557 · Evals:
-- L5564 · Runbooks:
-- L5569 · Decision history with citations:
-- L5573 · This file
+- L5581 · Evals:
+- L5588 · Runbooks:
+- L5593 · Decision history with citations:
+- L5597 · This file
 
 <!-- INDEX:END -->
 
@@ -4578,7 +4578,31 @@ ladder was a workaround for that CHECK. Removing the CHECK removes the reason th
 because we are operating in a test suite and nothing is in production right now."* Destructive is
 permitted, consistent with the L1 waiver recorded above.
 
-### ✅ BUILT 2026-09-05 — rung 9a, "the rails come out" (branch `rung9a/the-rails-come-out`)
+### ✅ BUILT **AND DEPLOYED** 2026-09-05 — rung 9a, "the rails come out" (merged as `e89cf74`, PR #204)
+
+**Deploy done 06:38–06:53Z, in the order below. Evidence, not tool success lines:** the CHECK drop
+first; then all FIVE Render services verified live on `e89cf74`; then the column drop; then the six
+seats. Post-migration `lifecycle-heart` tick returned `"watchers":{"mode":"live","tenants":1,
+"gapsFound":2,"tenantErrors":0}, "ok":true`. Pilot schema md5 now equals local:
+`c2986e774ef6a837330a35ef665858a8`, 646 columns. Both views read as `spine_reader` (164 / 94 rows)
+with `anon` and `authenticated` false — which also CLOSED a pre-existing exposure: on the pilot
+`v_cancelled_visits` had carried full Data-API grants to anon/authenticated, and the drop+recreate
++revoke removed them.
+
+**Two deploy-path facts the plan did not know, both worth carrying:**
+1. **Render deploys from a FORK.** `Yu-C1/TradesDatabase` is a fork of `hongyi42/TradesDatabase`,
+   and every service points at *its* main. Merging the PR does nothing until the fork is synced.
+2. **There are FIVE services, and three have `autoDeploy: no`** — `TradesDatabase` (web),
+   `lifecycle-heart` (cron), `Board_Worker` (worker). Only `Calls-worker` and `Calls-purge`
+   auto-deploy. At the moment of the sync, `lifecycle-heart` was 2 commits behind and
+   `Board_Worker` **nine days** behind; both had to be deployed by hand. All five reach
+   `db/assignments` (verified by walking the built import graph), so all five gate the column drop.
+   Their quiet drift is a standing hazard independent of this rung.
+
+**Box note:** `nemoclaw` is only on the LOGIN-shell PATH (`/home/ubuntu/.local/bin`), so a wire pass
+over non-interactive ssh must use `bash -lc` or it dies at `nemoclaw: command not found`. The fleet
+is now **s2, s3, s5, s6, s7, s8** — not the s1–s6 older notes record.
+
 
 Three phases, all landed and gated (typecheck / lint / 2545 tests / build, and `supabase db reset`
 proving both migrations apply from scratch). Plan:

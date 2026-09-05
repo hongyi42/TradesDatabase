@@ -678,15 +678,14 @@ export function buildToolCases(): ToolCase[] {
   add({
     id: 'W05',
     family: 'writes',
-    title: 'move_visit on an unpromised visit moves it without ceremony',
+    title: 'move_visit moves a visit without ceremony',
     tool: 'move_visit',
     tenant: 'main',
     badge: 'manager-sam',
     steps: [
       {
-        label: 'move an unpromised visit',
-        // visit-rs-01 carries promiseLevel 'none' (odd fixtures are unpromised),
-        // so doctrine says one-shot: act, then say what you did.
+        label: 'move a visit',
+        // Doctrine: a move is one-shot — act, then say what you did.
         args: (ctx) => ({
           assignmentId: visitId(ctx.tenant, 'visit-t1-rs-01'),
           date: nextWorkday(addDays(ctx.anchor, 9)),
@@ -695,7 +694,7 @@ export function buildToolCases(): ToolCase[] {
           // with a sibling fixture. jane's book is clear from 15:45 to 17:00.
           startTime: '16:15',
           endTime: '16:45',
-          reason: 'eval: unpromised move',
+          reason: 'eval: move',
         }),
         check: ok,
       },
@@ -713,55 +712,6 @@ export function buildToolCases(): ToolCase[] {
             params: [ctx.tenant.id, naiveLocal(nextWorkday(addDays(ctx.anchor, 9)), '16:15')],
           }),
           (rows) => count(rows) >= 1,
-        ),
-      },
-    ],
-  });
-
-  add({
-    id: 'W06',
-    family: 'writes',
-    title: 'moving a DAY-PROMISED visit off its promised day demands a confirmation',
-    tool: 'move_visit',
-    tenant: 'main',
-    badge: 'manager-sam',
-    steps: [
-      {
-        label: 'try to move a promised visit',
-        // visit-rs-02 is promised at day level. Breaking a promise made to a
-        // customer is the case the ladder exists to gate.
-        args: (ctx) => ({
-          assignmentId: visitId(ctx.tenant, 'visit-t1-rs-02'),
-          date: nextWorkday(addDays(ctx.anchor, 11)),
-          // 06:00 — BEFORE every pattern's open (earliest 07:00) and every
-          // generated slot (earliest 07:30), so no anchor can ever place a
-          // colliding visit here. The first version used 16:15, inside working
-          // hours, and for anchor 2026-08-13 the generator happened to occupy
-          // that slot: the overlap pre-check fired before the promise gate and
-          // the case failed without ever testing what it exists to test. The
-          // scenario has to OWN its destination slot, same as its rows.
-          startTime: '06:00',
-          endTime: '06:30',
-          reason: 'eval: promised move',
-        }),
-        check: (out) =>
-          confirmIdOf(out) || /promis/i.test(out.text)
-            ? null
-            : `a promised day was moved with no gate: ${out.text.slice(0, 200)}`,
-      },
-      {
-        label: 'nothing moved before the yes',
-        when: (ctx) => confirmIdOf(ctx.prior[0]) !== null,
-        tool: 'get_job',
-        args: (ctx) => ({ jobId: jobId(ctx.tenant, 'job-t1-rs-02') }),
-        check: dbCheck(
-          'the visit must still be on its promised day until confirmed',
-          (ctx) => ({
-            text: `select count(*)::int n from assignments
-                    where id = $1 and status = 'confirmed' and (starts_at)::date = promised_day`,
-            params: [visitId(ctx.tenant, 'visit-t1-rs-02')],
-          }),
-          (rows) => count(rows) === 1,
         ),
       },
     ],
@@ -811,8 +761,7 @@ export function buildToolCases(): ToolCase[] {
       {
         label: 'stage the cancellation',
         args: (ctx) => ({ jobId: jobId(ctx.tenant, 'job-t1-rs-04'), reason: 'eval: cancel_job path' }),
-        // Terminal and irreversible, so it confirms unconditionally under the
-        // PR #48 doctrine — no promise level exempts it.
+        // Terminal and irreversible, so it confirms unconditionally.
         check: staged,
       },
       {
@@ -832,39 +781,6 @@ export function buildToolCases(): ToolCase[] {
             }),
             (rows) => rows[0]?.status === 'cancelled' && Number(rows[0]?.live ?? 1) === 0,
           ),
-        ),
-      },
-    ],
-  });
-
-  add({
-    id: 'W09',
-    family: 'writes',
-    title: 'set_promise records what the customer was told',
-    tool: 'set_promise',
-    tenant: 'main',
-    badge: 'manager-sam',
-    steps: [
-      {
-        label: 'promise the day',
-        args: (ctx) => ({ assignmentId: visitId(ctx.tenant, 'visit-t1-rs-05'), promiseLevel: 'day' }),
-        check: ok,
-      },
-      { label: 'confirm if it staged', when: ifStaged, args: lastConfirmId, check: ok },
-      {
-        label: 'the promised day is server-derived',
-        tool: 'get_job',
-        args: (ctx) => ({ jobId: jobId(ctx.tenant, 'job-t1-rs-05') }),
-        // promised_day is derived from the visit's OWN date — never from agent
-        // date arithmetic (the bookVisit precedent).
-        check: dbCheck(
-          'promise_level day with promised_day equal to the visit date',
-          (ctx) => ({
-            text: `select promise_level, promised_day::text = (starts_at)::date::text as agrees
-                     from assignments where id = $1`,
-            params: [visitId(ctx.tenant, 'visit-t1-rs-05')],
-          }),
-          (rows) => rows[0]?.promise_level === 'day' && rows[0]?.agrees === true,
         ),
       },
     ],

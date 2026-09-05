@@ -440,8 +440,6 @@ async function seed(tenantId, janeId) {
       startsAt: `${TODAY}T17:00:00.000Z`,
       endsAt: `${TODAY}T18:00:00.000Z`,
       status: 'confirmed',
-      promiseLevel: 'day',
-      promisedDay: TODAY,
       sourceCaptureId: bWeb.id,
     });
   }

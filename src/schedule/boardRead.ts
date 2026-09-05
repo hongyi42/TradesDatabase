@@ -7,7 +7,6 @@ import {
   isInactiveState,
   listAssignmentsWithRefsForTenant,
   listTeam,
-  listUnplacedAssignedForRange,
   listUnassignedAssignmentsWithRefs,
   listUnscheduledOpenJobsWithCustomer,
   isPlaced,
@@ -49,34 +48,16 @@ export interface BoardStop {
   address: string | null;
   start: string;
   end: string;
-  promiseLevel: Assignment['promise_level'];
-  promisedDay: string | null;
   status: Assignment['status'];
   // Null when the assignment references another tenant's job — the id is
   // withheld like every other nested field (see the tenant re-check below).
   jobId: string | null;
 }
 
-// One "no time yet" strip entry (plan 4b-2): an assigned visit holding a day
-// (or range) with no time. It appears on EVERY day its range covers, labelled
-// with the full range so a Tue–Thu visit reads as one visit, not three.
-export interface UnplacedStop {
-  assignmentId: string;
-  technicianRef: string | null;
-  technicianName: string | null;
-  customer: string | null;
-  jobId: string | null;
-  jobTitle: string | null;
-  jobDurationMinutes: number | null;
-  earliestDate: string;
-  latestDate: string;
-  promiseLevel: Assignment['promise_level'];
-}
-
 export interface BoardDays {
   from: string;
   to: string;
-  days: { date: string; stops: BoardStop[]; unplaced: UnplacedStop[] }[];
+  days: { date: string; stops: BoardStop[] }[];
   // Present when a technician-tier read was clamped at the visibility horizon
   // (Plan 4a): the payload explains the missing days itself. horizonEnd is
   // the STRUCTURED companion (the last visible day) — clients branch on data,
@@ -142,28 +123,18 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
 
   // ONE embedded read for the whole window (was: assignments + jobs-with-
   // customer + the full roster = three serial round-trips per board button).
-  // The unplaced strip read (plan 4b-2) is independent — run both in parallel.
-  // The strip is gated on TIER (clampToHorizon — the same tier signal
-  // documented above), never on the self-filter: the manager's Mine tab
-  // passes viewerTechnicianId too and must keep their own strip, while a
-  // technician's day view stays an operational document with no timeless work
-  // (plan decision). Final-review finding: keyed on the self-filter, the two
-  // manager tabs contradicted each other.
-  const [rows, allUnplaced] = await Promise.all([
-    listAssignmentsWithRefsForTenant(
-      tenantId,
-      `${from}T00:00:00.000Z`,
-      new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
-      ['confirmed'],
-    ),
-    input.clampToHorizon
-      ? Promise.resolve([])
-      : listUnplacedAssignedForRange(tenantId, from, toDay),
-  ]);
-  const unplacedRows =
-    input.viewerTechnicianId != null
-      ? allUnplaced.filter((r) => r.technician_id === input.viewerTechnicianId)
-      : allUnplaced;
+  //
+  // A second read used to bring the unplaced strip in (plan 4b-2), because a
+  // stored range said which days an unplaced visit might land on. Rung 9a
+  // deleted the range: an untimed visit belongs to no day, so the day view has
+  // nothing to draw and the read is gone. Those visits live in the flat
+  // unscheduled tray (readLooseBucket) instead.
+  const rows = await listAssignmentsWithRefsForTenant(
+    tenantId,
+    `${from}T00:00:00.000Z`,
+    new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
+    ['confirmed'],
+  );
   const visible =
     input.viewerTechnicianId != null
       ? rows.filter((r) => r.technician_id === input.viewerTechnicianId)
@@ -207,8 +178,6 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
         : null,
       start: row.starts_at,
       end: row.ends_at,
-      promiseLevel: row.promise_level,
-      promisedDay: row.promised_day,
       status: row.status,
       // Gated on the tenant-checked job, NOT the raw row.job_id: a stranded
       // cross-tenant assignment would otherwise disclose the other firm's job
@@ -218,49 +187,15 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
     });
     byDay.set(day, bucket);
   }
-  // The strip: each unplaced row lands on EVERY day of its range within the
-  // window. Seeded into ITS OWN map first, then unioned with the placed map —
-  // a day whose ONLY work is unplaced must still appear (plan finding: byDay
-  // entries were created only inside the placed-row loop, so a time-TBD visit
-  // on an otherwise-empty Thursday vanished entirely).
-  const unplacedByDay = new Map<string, UnplacedStop[]>();
-  for (const row of unplacedRows) {
-    const job = row.jobs && row.jobs.tenant_id === tenantId ? row.jobs : null;
-    const customer =
-      job && job.customers && job.customers.tenant_id === tenantId ? job.customers : null;
-    const technician =
-      row.technicians && row.technicians.tenant_id === tenantId ? row.technicians : null;
-    const stop: UnplacedStop = {
-      assignmentId: row.id,
-      technicianRef: technician?.ref ?? null,
-      technicianName: technician?.display_name ?? null,
-      customer: customer?.name ?? null,
-      jobId: job ? row.job_id : null,
-      jobTitle: job ? job.title : null,
-      jobDurationMinutes: job ? job.duration_minutes : null,
-      earliestDate: row.earliest_date as string,
-      latestDate: row.latest_date as string,
-      promiseLevel: row.promise_level,
-    };
-    const first = (row.earliest_date as string) < from ? from : (row.earliest_date as string);
-    const last = (row.latest_date as string) > toDay ? toDay : (row.latest_date as string);
-    for (
-      let t = Date.parse(`${first}T00:00:00Z`);
-      t <= Date.parse(`${last}T00:00:00Z`);
-      t += 86_400_000
-    ) {
-      const d = new Date(t).toISOString().slice(0, 10);
-      unplacedByDay.set(d, [...(unplacedByDay.get(d) ?? []), stop]);
-    }
-  }
-  const allDates = [...new Set([...byDay.keys(), ...unplacedByDay.keys()])];
-  const days = allDates
+  // The per-day strip is GONE (rung 9a). An unplaced row used to be smeared
+  // across every day of its stored range, because the range said which days it
+  // might land on. With no range, an untimed visit belongs to NO day and
+  // cannot honestly be drawn on one — it lives in the flat unscheduled tray
+  // (`parkedVisits` below), which is the whole point of the remodel: the queue
+  // is a queue, not a shadow booking on days nobody chose.
+  const days = [...byDay.keys()]
     .sort((a, b) => (a < b ? -1 : 1))
-    .map((date) => ({
-      date,
-      stops: byDay.get(date) ?? [],
-      unplaced: unplacedByDay.get(date) ?? [],
-    }));
+    .map((date) => ({ date, stops: byDay.get(date) ?? [] }));
   return {
     from,
     to: toDay,
@@ -294,19 +229,18 @@ export interface UnscheduledJob {
 export interface LooseBucket {
   parkedVisits: {
     assignmentId: string;
-    date: string;
-    weekday: string;
-    // Null on an UNPLACED (time-TBD) visit — date/latestDate carry the range.
+    date: string | null;
+    weekday: string | null;
+    // Null on an UNTIMED visit — there is no time, and no date either.
     startTime: string | null;
     endTime: string | null;
-    timeTbd: boolean;
-    latestDate: string | null;
     customer: string | null;
     jobTitle: string | null;
-    // The visit's day already slipped past with nobody attached — the most
-    // forgettable row of all (final-review finding: it used to vanish from
-    // the tray entirely, while its job stayed hidden by the live-assignment
-    // anti-join — invisible on every surface at once).
+    // A PLACED visit whose day already slipped past with nobody attached —
+    // the most forgettable row of all (final-review finding: it used to vanish
+    // from the tray entirely, while its job stayed hidden by the
+    // live-assignment anti-join — invisible on every surface at once).
+    // Always false for an untimed visit: with no date, nothing can be late.
     overdue: boolean;
   }[];
   unscheduledJobs: UnscheduledJob[];
@@ -343,11 +277,11 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
     listUnassignedAssignmentsWithRefs(tenantId, '1970-01-01T00:00:00.000Z'),
     jobsPromise,
   ]);
-  // Sorted by each visit's DAY after mapping, not by the SQL order: the query
-  // orders on starts_at with NULLs last, which shoved every time-TBD row to
-  // the bottom of the tray regardless of how soon its range is (final-review
-  // finding: a range starting tomorrow rendered below a placed visit weeks
-  // out). Stable sort keeps same-day relative order.
+  // Sorted after mapping, not by the SQL order. Dated rows (placed but with
+  // nobody attached) keep their day order; UNTIMED rows have no day to sort by
+  // at all, so they queue by AGE behind them — the user's 2026-09-05 choice,
+  // and the order that stops a hard-to-place visit sinking out of sight.
+  // Stable sort keeps same-day relative order.
   const parkedVisits = parked.map((row) => {
       // ID-only foreign keys: re-check each nested row's tenant before its
       // name/title reaches a screen (withhold the field, keep the row —
@@ -355,26 +289,42 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
       const job = row.jobs && row.jobs.tenant_id === tenantId ? row.jobs : null;
       const customer =
         job && job.customers && job.customers.tenant_id === tenantId ? job.customers : null;
-      // UNPLACED rows (plan 4b-2) live in the tray too: their day is the
-      // range start, their times read null, and overdue means the WHOLE
-      // range slipped past (latest_date < today), not just its first day.
+      // UNTIMED rows (rung 9a) live in the tray too, and are its whole point:
+      // every date field reads null, and nothing untimed can be overdue.
       const placedRow = isPlaced(row);
-      const date = placedRow ? row.starts_at.slice(0, 10) : (row.earliest_date as string);
+      const date = placedRow ? row.starts_at.slice(0, 10) : null;
       return {
         assignmentId: row.id,
         date,
-        weekday: weekdayLabel(date),
+        weekday: date ? weekdayLabel(date) : null,
         startTime: placedRow ? row.starts_at.slice(11, 16) : null,
         endTime: placedRow ? row.ends_at.slice(11, 16) : null,
-        timeTbd: !placedRow,
-        latestDate: row.latest_date,
         customer: customer?.name ?? null,
         jobTitle: job ? job.title : null,
-        overdue: placedRow ? date < today : (row.latest_date as string) < today,
+        overdue: placedRow ? (date as string) < today : false,
+        // Sort key only — stripped below so the endpoint serves exactly the
+        // declared LooseBucket shape.
+        _createdAt: row.created_at,
       };
     });
-  parkedVisits.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  return { parkedVisits, unscheduledJobs };
+  // OLDEST FIRST (user choice 2026-09-05). Placed-but-overdue rows still sort
+  // by their day; untimed rows have none, so age is the only order they can
+  // justify — and it is the order that stops a hard-to-place visit sinking.
+  parkedVisits.sort((a, b) => {
+    if (a.date && b.date) return a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+    if (a.date) return -1; // dated rows first
+    if (b.date) return 1;
+    return a._createdAt < b._createdAt ? -1 : a._createdAt > b._createdAt ? 1 : 0;
+  });
+  return {
+    // Strip the sort key: the endpoint serves exactly the declared shape.
+    parkedVisits: parkedVisits.map((v) => {
+      const { _createdAt, ...rest } = v;
+      void _createdAt;
+      return rest;
+    }),
+    unscheduledJobs,
+  };
 }
 
 // The board picker's roster read (plan 4a.5): every name chat booking would
@@ -401,13 +351,9 @@ export async function readRosterForBoard(tenantId: string): Promise<BoardRosterE
 export interface VisitDetail {
   assignmentId: string;
   status: Assignment['status'];
-  // Null on an UNPLACED visit (plan 4b-2) — the range below carries the day.
+  // Null on an UNTIMED visit (rung 9a) — nothing records when it should be.
   start: string | null;
   end: string | null;
-  earliestDate: string | null;
-  latestDate: string | null;
-  promiseLevel: Assignment['promise_level'];
-  promisedDay: string | null;
   unassigned: boolean;
   technicianRef: string | null;
   technicianName: string | null;
@@ -488,10 +434,6 @@ export async function readVisitDetail(
     status: row.status,
     start: row.starts_at,
     end: row.ends_at,
-    earliestDate: row.earliest_date,
-    latestDate: row.latest_date,
-    promiseLevel: row.promise_level,
-    promisedDay: row.promised_day,
     unassigned: row.technician_id === null,
     technicianRef: technician?.ref ?? null,
     technicianName: technician?.display_name ?? null,

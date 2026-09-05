@@ -20,8 +20,6 @@ import {
   listJobsWithCustomerByIds,
   listTeam,
   listTimeOffForTechnician,
-  listUnplacedAssignedForRange,
-  type Assignment,
   type PlacedAssignment,
   type JobPriority,
   type Technician,
@@ -135,9 +133,15 @@ export interface FitTechnician {
   // PLACED stops only — feeds DENSE_DAY_STOPS, which asks whether the route
   // has SHAPE (gap-fill vs day-level candidates).
   stopsByDate: Map<string, number>;
-  // Placed + UNPLACED-assigned (plan 4b-2): how COMMITTED the day is. Load is
-  // weight without shape — it lowers a day's score but never flips it into
-  // gap-fill mode (timeless visits give weight, not shape).
+  // How COMMITTED the day is. Load is weight without shape — it lowers a day's
+  // score but never flips it into gap-fill mode.
+  //
+  // As of rung 9a this EQUALS stopsByDate: it used to add the unplaced-assigned
+  // rows whose stored range covered the day (plan 4b-2), and an untimed visit
+  // now covers no day at all. Kept as a distinct concept rather than collapsed,
+  // because it is the seam where a future non-stop commitment (a multi-person
+  // visit, a planner-held slot) would land — but nothing populates it today, so
+  // do not read a difference from the two maps that is not there.
   commitmentsByDate: Map<string, number>;
 }
 
@@ -368,22 +372,22 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
     eligible.push(t);
   }
 
-  // One tenant-wide visit read covers every technician's day context; the
-  // range-filtered read cannot see UNPLACED rows, so a second read brings the
-  // assigned time-TBD load in (plan 4b-2) — both run in parallel.
-  const [placedRows, unplacedRows] = await Promise.all([
-    listAssignmentsForTenant(
-      input.tenantId,
-      `${input.earliest}T00:00:00.000Z`,
-      addDaysISO(input.latest, 1) + 'T00:00:00.000Z',
-      ['confirmed'],
-    ),
-    listUnplacedAssignedForRange(input.tenantId, input.earliest, input.latest),
-  ]);
+  // One tenant-wide visit read covers every technician's day context.
+  //
+  // A second read used to bring the assigned time-TBD load in (plan 4b-2),
+  // because an unplaced visit held a date RANGE and therefore weighed on every
+  // day it could land on. Rung 9a deleted the range: an untimed visit belongs
+  // to no day at all, so it can be budgeted against none of them, and there is
+  // nothing to read.
+  const placedRows = await listAssignmentsForTenant(
+    input.tenantId,
+    `${input.earliest}T00:00:00.000Z`,
+    addDaysISO(input.latest, 1) + 'T00:00:00.000Z',
+    ['confirmed'],
+  );
   const rows = placedRows.filter(
     (r) => r.technician_id !== null && r.id !== input.excludeAssignmentId,
   );
-  const unplaced = unplacedRows.filter((r) => r.id !== input.excludeAssignmentId);
   const jobs = await listJobsWithCustomerByIds(input.tenantId, [
     ...new Set(rows.map((r) => r.job_id)),
   ]);
@@ -400,7 +404,6 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
     const stopsByDate = new Map<string, number>();
     const commitmentsByDate = new Map<string, number>();
     const mine = rows.filter((r) => r.technician_id === t.id);
-    const myUnplaced = unplaced.filter((r) => r.technician_id === t.id);
     const span = daysBetween(input.earliest, input.latest);
     for (let i = 0; i <= span; i++) {
       const date = addDaysISO(input.earliest, i);
@@ -412,13 +415,6 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
         commitmentsByDate.set(date, (commitmentsByDate.get(date) ?? 0) + 1);
         const city = cityByJob.get(row.job_id);
         if (city) citiesByDate.set(date, new Set([...(citiesByDate.get(date) ?? []), city]));
-      }
-      // Unplaced load: the visit weighs on EVERY day of its range — it will
-      // land on one of them, and until placed each day must budget for it.
-      for (const row of myUnplaced) {
-        if ((row.earliest_date as string) <= date && date <= (row.latest_date as string)) {
-          commitmentsByDate.set(date, (commitmentsByDate.get(date) ?? 0) + 1);
-        }
       }
     }
     technicians.push({
@@ -437,7 +433,6 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
 }
 
 // Displacement candidates for the no-fit block: what COULD move to make room.
-// Promise-free visits first (nothing was told to a customer), then by day.
 // (A pinned-last tiebreak sat in the middle until rung 8 — pinning bound only
 // AUTOMATIC scheduling, and there is none.)
 export interface DisplacementCandidate {
@@ -447,7 +442,6 @@ export interface DisplacementCandidate {
   day: string;
   weekday: string; // server-computed — same no-agent-calendar-math rule
   span: string;
-  promiseLevel: Assignment['promise_level'];
 }
 
 export async function findDisplacementCandidates(
@@ -471,11 +465,10 @@ export async function findDisplacementCandidates(
   const nameByJob = new Map(jobs.map((j) => [j.id, j.customers?.name ?? null]));
   const refCache = new Map<string, string | null>();
   const out: DisplacementCandidate[] = [];
-  const ordered = [...rows].sort((a, b) => {
-    const ap = a.promise_level === 'none' ? 0 : 1;
-    const bp = b.promise_level === 'none' ? 0 : 1;
-    return ap - bp || (a.starts_at < b.starts_at ? -1 : 1);
-  });
+  // Earliest first. The promise-graded tiebreak died with the ladder
+  // (rung 9a) — what a customer was told is no longer a column, so start time
+  // is the only ordering the row itself can justify.
+  const ordered = [...rows].sort((a, b) => (a.starts_at < b.starts_at ? -1 : 1));
   for (const row of ordered.slice(0, limit)) {
     let ref: string | null = null;
     if (row.technician_id) {
@@ -492,7 +485,6 @@ export async function findDisplacementCandidates(
       day: row.starts_at.slice(0, 10),
       weekday: weekdayLabel(row.starts_at.slice(0, 10)),
       span: `${row.starts_at.slice(11, 16)}–${row.ends_at.slice(11, 16)}`,
-      promiseLevel: row.promise_level,
     });
   }
   return out;

@@ -6,7 +6,6 @@ import type { Technician } from './technicians.js';
 
 export type Assignment = Database['public']['Tables']['assignments']['Row'];
 export type AssignmentStatus = Database['public']['Enums']['assignment_status'];
-export type PromiseLevel = Database['public']['Enums']['promise_level'];
 
 // Rows that HAVE times (plan 4b-2). Every reader whose query filters on
 // starts_at/ends_at returns these by construction: a SQL comparison against
@@ -30,36 +29,32 @@ export interface CreateAssignmentInput {
   tenantId: string;
   jobId: string;
   technicianId: string | null; // null = unassigned ("book now, assign later")
-  // PLACED shape: both times, no range. UNPLACED shape (plan 4b-2): both range
-  // dates, no times. Exactly one shape — enforced below, DB check backstops.
-  startsAt: string | null; // ISO timestamptz (naive-local convention — see the promise-ladder migration)
+  // A visit HAS A TIME OR IT DOES NOT (rung 9a). Both timestamps together, or
+  // both null for an untimed visit — the stored date range is gone, so there is
+  // no third shape to police.
+  startsAt: string | null; // ISO timestamptz (naive-local convention)
   endsAt: string | null; // ISO timestamptz, exclusive
-  earliestDate?: string | null; // YYYY-MM-DD — the unplaced day (or range start)
-  latestDate?: string | null; // YYYY-MM-DD — range end (= earliestDate for one day)
   status?: AssignmentStatus;
   sourceCaptureId?: string | null;
-  // Commitment ladder: what the customer was told. The DB check requires
-  // promisedDay whenever promiseLevel is not 'none'.
-  promiseLevel?: PromiseLevel;
-  promisedDay?: string | null; // YYYY-MM-DD
+  // Carry the ORIGINAL row's age forward. Every move / park / attach is a
+  // cancel-plus-insert, so without this the successor row is born "now" and an
+  // oldest-first unscheduled queue silently degrades into least-recently-
+  // touched — the visit nobody can place would drift to the back every time
+  // someone tried (reviewer finding, rung 9a).
+  createdAt?: string;
 }
 
 // Insert one assignment row. Inserting as 'confirmed' can raise the DB's
 // no_confirmed_overlap exclusion constraint — preserve the SQLSTATE so callers
 // can detect it via isOverlapViolation (Object.assign idiom, insertTechnician).
 export async function createAssignment(input: CreateAssignmentInput): Promise<Assignment> {
-  const placed = input.startsAt !== null && input.endsAt !== null;
-  const windowed = input.earliestDate != null && input.latestDate != null;
-  const anyTime = input.startsAt !== null || input.endsAt !== null;
-  const anyRange = input.earliestDate != null || input.latestDate != null;
-  // Times XOR range — a half-filled row would read as placed to some surfaces
-  // and unplaced to others; catch it before the DB check does, with a message
-  // that names the shapes. The anyTime/anyRange term closes the mixed
-  // cross-shapes (a complete shape PLUS half of the other — review finding):
-  // the DB check rejects those too, but with a raw 23514 instead of this.
-  if (placed === windowed || (anyTime && anyRange)) {
+  // Both times or neither. A half-timed row would read as placed to some
+  // surfaces and untimed to others; catch it here rather than letting the DB
+  // return a raw 23514. (The old XOR guard also required a date range on an
+  // untimed row — rung 9a deleted the range, and its CHECK with it.)
+  if ((input.startsAt === null) !== (input.endsAt === null)) {
     throw new Error(
-      'createAssignment: provide BOTH times (placed) or BOTH range dates (unplaced) — never a mix',
+      'createAssignment: provide BOTH times, or neither (an untimed visit) — never one',
     );
   }
   const { data, error } = await getClient()
@@ -70,12 +65,9 @@ export async function createAssignment(input: CreateAssignmentInput): Promise<As
       technician_id: input.technicianId,
       starts_at: input.startsAt,
       ends_at: input.endsAt,
-      earliest_date: input.earliestDate ?? null,
-      latest_date: input.latestDate ?? null,
       status: input.status ?? 'proposed',
       source_capture_id: input.sourceCaptureId ?? null,
-      promise_level: input.promiseLevel ?? 'none',
-      promised_day: input.promisedDay ?? null,
+      ...(input.createdAt ? { created_at: input.createdAt } : {}),
     })
     .select()
     .single();
@@ -152,13 +144,10 @@ export interface RescheduleInput {
   endsAt: string;
   technicianId?: string | null; // omit = same technician; null = DETACH (park unassigned)
   reason: string; // why the old booking was undone (kept on the cancelled row)
-  // Omitted → the new row keeps the old row's promise fields (a move carries
-  // the promise). status keeps its 'proposed' default for existing callers;
-  // manual moves pass 'confirmed' — a default-'proposed' replacement would
-  // vanish from every ['confirmed']-filtered reader and escape the DB guard.
+  // status keeps its 'proposed' default for existing callers; manual moves
+  // pass 'confirmed' — a default-'proposed' replacement would vanish from
+  // every ['confirmed']-filtered reader and escape the DB guard.
   status?: AssignmentStatus;
-  promiseLevel?: PromiseLevel;
-  promisedDay?: string | null;
 }
 
 // The reschedule primitive: cancel the old row (reason kept) + insert a fresh
@@ -186,14 +175,13 @@ export async function rescheduleAssignment(
   const created = await createAssignment({
     tenantId: old.tenant_id,
     jobId: old.job_id,
-    // The promisedDay idiom below, not `??`: an explicit null means DETACH,
-    // and `??` would silently resurrect the old technician (plan 4a.5).
+    // `!== undefined`, not `??`: an explicit null means DETACH, and `??`
+    // would silently resurrect the old technician (plan 4a.5).
     technicianId: input.technicianId !== undefined ? input.technicianId : old.technician_id,
     startsAt: input.startsAt,
     endsAt: input.endsAt,
     status: input.status,
-    promiseLevel: input.promiseLevel ?? old.promise_level,
-    promisedDay: input.promisedDay !== undefined ? input.promisedDay : old.promised_day,
+    createdAt: old.created_at, // a reschedule keeps the visit's original age
   });
   return { cancelled, created };
 }
@@ -248,43 +236,6 @@ export async function listAssignmentsByIds(
     }
   }
   return out;
-}
-
-// Correct a visit's PROMISE record — what the customer was actually told —
-// after booking. Born from a live E2E finding (2026-07-22): a manager's "I
-// told Marcus we're coming Thursday" never became promiseLevel on the call,
-// the visit landed unprotected ('none'), and no tool could fix it — so a
-// genuinely promised visit would move SILENTLY, the exact harm the promise
-// ladder exists to prevent. Promise fields only: times are immutable here
-// (reschedule = cancel + insert) and status has its own machine above.
-// promisedDay is the CALLER's derivation from the row (bookVisit precedent:
-// the promise is about THIS visit, so its day comes from the row, never from
-// agent date math); the DB check constraint backstops the pairing.
-export async function updateAssignmentPromise(
-  tenantId: string,
-  assignmentId: string,
-  promiseLevel: PromiseLevel,
-  promisedDay: string | null,
-  // CAS: the caller's snapshot of updated_at — the old→new echo the tool
-  // returns is only honest if nothing moved between read and write
-  // (updateJobDetails precedent).
-  expectedUpdatedAt: string,
-): Promise<Assignment> {
-  const { data, error } = await getClient()
-    .from('assignments')
-    .update({ promise_level: promiseLevel, promised_day: promisedDay })
-    .eq('id', assignmentId)
-    .eq('tenant_id', tenantId) // tenant guard: a cross-tenant id matches no row
-    .eq('updated_at', expectedUpdatedAt)
-    .select()
-    .maybeSingle();
-  if (error) throw new Error(`updateAssignmentPromise failed: ${error.message}`);
-  if (!data) {
-    throw new Error(
-      'visit changed while updating (or not found) — re-read it and try again so the old→new report stays honest',
-    );
-  }
-  return data;
 }
 
 // Rows overlapping the [fromISO, toISO) window for the WHOLE tenant — the
@@ -447,7 +398,13 @@ export async function listAssignmentsForJob(jobId: string): Promise<Assignment[]
     .from('assignments')
     .select()
     .eq('job_id', jobId)
-    .order('created_at', { ascending: false });
+    // Newest first. `updated_at` is the tiebreak because rung 9a made
+    // `created_at` the VISIT's age rather than the ROW's: a move/park/attach is
+    // a cancel-plus-insert that carries the original age onto the successor, so
+    // both links of a chain now share a created_at and only updated_at
+    // separates them (the cancel UPDATE, then the INSERT).
+    .order('created_at', { ascending: false })
+    .order('updated_at', { ascending: false });
   if (error) throw new Error(`listAssignmentsForJob failed: ${error.message}`);
   return data ?? [];
 }
@@ -472,7 +429,11 @@ export async function listUnassignedAssignments(
     .is('technician_id', null)
     .eq('status', 'confirmed')
     .or(`starts_at.gte.${fromISO},starts_at.is.null`)
-    .order('starts_at', { ascending: true, nullsFirst: false });
+    // Timed rows in time order, then untimed OLDEST FIRST (rung 9a) — with no
+    // stored range there is no date to sort them by, and age is what stops a
+    // hard-to-place visit sinking to the bottom forever.
+    .order('starts_at', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: true });
   if (error) throw new Error(`listUnassignedAssignments failed: ${error.message}`);
   return data ?? [];
 }
@@ -508,8 +469,8 @@ export async function listOverdueConfirmedAssignments(
 // windows sitting on unplaced rows were equally invisible (S09–S12). This is
 // their lister: every confirmed assignment for the customer that is still
 // upcoming — placed rows from `todayLocal` forward (day-granular, the
-// get_schedule precedent), plus unplaced (time-TBD) rows whose window has not
-// wholly passed.
+// get_schedule precedent), plus every UNTIMED row, which has no date to have
+// passed (rung 9a deleted the stored window).
 //
 // jobs is an INNER embed used as the customer filter; it carries tenant_id so
 // the caller can re-check the unenforced "job shares its customer's tenant"
@@ -542,8 +503,12 @@ export async function listUpcomingAssignmentsForCustomer(
     .eq('status', 'confirmed')
     // Times are stored naive-local (the '+00' is a lie — see startTime in
     // server.ts), so "upcoming" compares against local midnight, not real UTC.
-    .or(`starts_at.gte.${todayLocal}T00:00:00.000Z,and(starts_at.is.null,latest_date.gte.${todayLocal})`)
-    .order('starts_at', { ascending: true, nullsFirst: false });
+    // A visit with no time set has no day to compare against and no way to go
+    // stale (rung 9a deleted the stored range), so every live untimed visit is
+    // upcoming. Timed rows first in time order, then untimed oldest-first.
+    .or(`starts_at.gte.${todayLocal}T00:00:00.000Z,starts_at.is.null`)
+    .order('starts_at', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: true });
   if (error) throw new Error(`listUpcomingAssignmentsForCustomer failed: ${error.message}`);
   return (data ?? []) as CustomerUpcomingRow[];
 }
@@ -603,60 +568,32 @@ export type UnplacedStripRow = Assignment & {
   technicians: Pick<Technician, 'id' | 'ref' | 'display_name' | 'tenant_id'> | null;
 };
 
-export async function listUnplacedAssignedForRange(
-  tenantId: string,
-  fromDate: string, // YYYY-MM-DD inclusive
-  toDate: string, // YYYY-MM-DD inclusive
-): Promise<UnplacedStripRow[]> {
-  const { data, error } = await getClient()
-    .from('assignments')
-    .select(UNPLACED_STRIP_SELECT)
-    .eq('tenant_id', tenantId)
-    .eq('status', 'confirmed')
-    .not('technician_id', 'is', null)
-    .is('starts_at', null)
-    .lte('earliest_date', toDate)
-    .gte('latest_date', fromDate)
-    .order('earliest_date', { ascending: true });
-  if (error) throw new Error(`listUnplacedAssignedForRange failed: ${error.message}`);
-  return (data ?? []) as UnplacedStripRow[];
-}
-
-// EVERY unplaced row intersecting the range — assigned or not. The strip
-// reader above deliberately shows only person-attached rows in the windowed
-// view (unassigned ones live in the unassignedOnly recall view), but window
-// COVERAGE ("is Thursday actually free?") must count both: an unassigned
-// windowed visit occupies the calendar exactly as much as an assigned one.
-// Same shape so the handler can reuse one row type.
-export async function listUnplacedForRange(
-  tenantId: string,
-  fromDate: string, // YYYY-MM-DD inclusive
-  toDate: string, // YYYY-MM-DD inclusive
-): Promise<UnplacedStripRow[]> {
+// EVERY untimed row — assigned or not. The reader above deliberately shows only
+// person-attached rows (unassigned ones live in the unassignedOnly recall view);
+// this one is the complete queue. Same shape so handlers can reuse one row type,
+// and the same oldest-first order.
+export async function listUnplaced(tenantId: string): Promise<UnplacedStripRow[]> {
   const { data, error } = await getClient()
     .from('assignments')
     .select(UNPLACED_STRIP_SELECT)
     .eq('tenant_id', tenantId)
     .eq('status', 'confirmed')
     .is('starts_at', null)
-    .lte('earliest_date', toDate)
-    .gte('latest_date', fromDate)
-    .order('earliest_date', { ascending: true });
-  if (error) throw new Error(`listUnplacedForRange failed: ${error.message}`);
+    .order('created_at', { ascending: true });
+  if (error) throw new Error(`listUnplaced failed: ${error.message}`);
   return (data ?? []) as UnplacedStripRow[];
 }
 
-// Range-keyed sibling of the guard above (plan 4b-2): unplaced rows are ALSO
-// exempt from the DB overlap guard, so a retried one-shot timeTbd booking
-// would silently duplicate without this exact-range check. Keyed on the
-// TECHNICIAN too (final-review finding): a retry duplicates with the SAME
-// person-or-nobody, so that is the twin key — without it a legitimate second
-// same-range visit for one customer with a DIFFERENT technician (two trades,
-// same week) was refused as a duplicate.
-export async function listIdenticalUnplacedVisits(
+// Sibling of the guard above (plan 4b-2): untimed rows are ALSO exempt from the
+// DB overlap guard, so a retried one-shot untimed booking would silently
+// duplicate without this check. It used to key on the exact date range; rung 9a
+// deleted the range, so the key is now the JOB — two untimed visits on one job
+// with the same person is a retry, while two untimed visits on DIFFERENT jobs
+// for one customer are legitimate (two trades). Keyed on the technician for the
+// same final-review reason: a retry carries the same person-or-nobody.
+export async function listUntimedVisitsForJob(
   tenantId: string,
-  earliestDate: string,
-  latestDate: string,
+  jobId: string,
   technicianId: string | null,
 ): Promise<IdenticalUnassignedRow[]> {
   let query = getClient()
@@ -665,12 +602,11 @@ export async function listIdenticalUnplacedVisits(
     .eq('tenant_id', tenantId)
     .eq('status', 'confirmed')
     .is('starts_at', null)
-    .eq('earliest_date', earliestDate)
-    .eq('latest_date', latestDate);
+    .eq('job_id', jobId);
   query =
     technicianId === null ? query.is('technician_id', null) : query.eq('technician_id', technicianId);
   const { data, error } = await query;
-  if (error) throw new Error(`listIdenticalUnplacedVisits failed: ${error.message}`);
+  if (error) throw new Error(`listUntimedVisitsForJob failed: ${error.message}`);
   return (
     (data ?? []) as Array<{ id: string; jobs: { customer_id: string; tenant_id: string } | null }>
   ).map((row) => ({
@@ -704,14 +640,22 @@ export async function listUnassignedAssignmentsWithRefs(
   tenantId: string,
   fromISO: string,
 ): Promise<AssignmentBucketRow[]> {
-  // DELIBERATELY WIDE — same rule as listUnassignedAssignments above.
+  // DELIBERATELY WIDE, on BOTH axes:
+  //   * no person attached — the original "assign later" recall surface, and
+  //   * NO TIME SET — added by rung 9a, and the reason this reader was widened.
+  // An untimed visit WITH a person on it is still unscheduled work: it sits on
+  // no day (there is no stored range any more), so the day view cannot show it
+  // and the tray is the only place it can appear. Keyed on technician alone,
+  // tapping Assign on a tray row made the visit vanish from the whole board
+  // with no way back except chat (review finding, rung 9a phase 2).
   const { data, error } = await getClient()
     .from('assignments')
     .select(BUCKET_SELECT)
     .eq('tenant_id', tenantId)
-    .is('technician_id', null)
     .eq('status', 'confirmed')
-    .or(`starts_at.gte.${fromISO},starts_at.is.null`)
+    .or(
+      `and(technician_id.is.null,or(starts_at.gte.${fromISO},starts_at.is.null)),starts_at.is.null`,
+    )
     .order('starts_at', { ascending: true, nullsFirst: false });
   if (error) throw new Error(`listUnassignedAssignmentsWithRefs failed: ${error.message}`);
   return (data ?? []) as AssignmentBucketRow[];

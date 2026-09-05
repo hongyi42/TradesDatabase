@@ -28,7 +28,7 @@ import {
   type Grader,
 } from './graders.js';
 import type { TenantKey, TenantManifest, WorldManifest } from './worldManifest.js';
-import { customerName, jobId, jobTitle, visitDate, visitId } from './worldManifest.js';
+import { customerName, jobId, jobTitle, visitDate } from './worldManifest.js';
 import { addDays, nextWorkday, titleWeekday, weekdayOf, isWeekend } from './clock.js';
 import type { Requirement } from './toolCases.js';
 
@@ -99,7 +99,6 @@ const READ_ONLY = gradeToolChoice({
     'send_email',
     'add_technician_seat',
     'deactivate_technician_seat',
-    'set_promise',
     'update_job',
   ],
 });
@@ -218,42 +217,6 @@ export function buildCorpus(): Scenario[] {
 
   // ── booking ───────────────────────────────────────────────────────────────
   add({
-    id: 'B01',
-    family: 'booking',
-    title: 'book a queued job, capturing the promise from the words',
-    tenant: 'main',
-    badge: 'manager-sam',
-    tier: 'manager',
-    quick: true,
-    turns: (ctx) => [
-      // The time is stated: book_visit fails closed without one, and B02 already
-      // measures that. This scenario is about whether "I told them" is CAPTURED as
-      // a day-level promise.
-      `${customerName(ctx.tenant, 'fx-t2-bk-04')} called. I told them we'd be there on ${addDays(ctx.anchor, 5)}. Can you get that on the calendar with cfg-tech-09, 9am to 10am?`,
-      'yes, go ahead',
-    ],
-    // "I told them" is a day-level promise. The ladder only works if the agent
-    // encodes what the customer was told, which it once silently dropped.
-    endState: {
-      describe: 'a confirmed visit exists for this customer AND it records the day they were told',
-      // CUSTOMER-scoped, not job-scoped: the agent may book onto the existing job
-      // or mint a new one, and which it does is B05's question. Conflating the two
-      // made a correct promise capture look like a booking failure.
-      query: (ctx) => ({
-        text: `select a.promise_level from assignments a
-                 join jobs j on j.id = a.job_id
-                where j.customer_id = (select customer_id from jobs where id = $1)
-                  and a.status = 'confirmed'`,
-        params: [jobId(ctx.tenant, 'job-t2-bk-04')],
-      }),
-      // Both halves, because the recorded live failure was booking correctly and
-      // silently dropping the promise — "I told them" is a day-level commitment
-      // and the ladder is worthless if the agent does not encode it.
-      predicate: (rows) => rows.length >= 1 && rows.some((r) => r.promise_level !== 'none'),
-    },
-  });
-
-  add({
     id: 'B02',
     family: 'booking',
     title: 'a job with no length must fail closed, not assume two hours',
@@ -300,14 +263,14 @@ export function buildCorpus(): Scenario[] {
     badge: 'manager-sam',
     tier: 'manager',
     turns: (ctx) => [
-      `book ${customerName(ctx.tenant, 'fx-t2-bk-05')} in with cfg-tech-10 on ${addDays(ctx.anchor, 6)} — I don't know the time yet, just hold the day.`,
+      `book ${customerName(ctx.tenant, 'fx-t2-bk-05')} in with cfg-tech-10 — I don't know when yet, just get it on the list.`,
       'yes',
     ],
     endState: {
-      describe: 'the visit is held with a day but no time',
+      describe: 'the visit exists with no time set at all',
       query: (ctx) => ({
         text: `select count(*)::int n from assignments
-                where job_id = $1 and status = 'confirmed' and starts_at is null and earliest_date is not null`,
+                where job_id = $1 and status = 'confirmed' and starts_at is null`,
         params: [jobId(ctx.tenant, 'job-t2-bk-05')],
       }),
       predicate: (rows) => count(rows) >= 1,
@@ -413,7 +376,7 @@ export function buildCorpus(): Scenario[] {
   add({
     id: 'R01',
     family: 'reschedule',
-    title: 'move an unpromised visit — act, then say what you did',
+    title: 'move a visit — act, then say what you did',
     tenant: 'main',
     badge: 'manager-sam',
     tier: 'manager',
@@ -431,40 +394,6 @@ export function buildCorpus(): Scenario[] {
         text: `select count(*)::int n from assignments
                 where job_id = $1 and status = 'confirmed' and (starts_at)::date = $2::date`,
         params: [jobId(ctx.tenant, 'job-t2-rs-01'), nextWorkday(visitDate(ctx.tenant, 'visit-t2-rs-01'), 2)],
-      }),
-      predicate: (rows) => count(rows) === 1,
-    },
-  });
-
-  add({
-    id: 'R02',
-    family: 'reschedule',
-    title: 'moving a promised visit must be gated',
-    tenant: 'main',
-    badge: 'manager-sam',
-    tier: 'manager',
-    quick: true,
-    turns: (ctx) => [
-      // The CURRENT day is named, and the target is three working days later.
-      // Two lessons: a fixed offset once landed on the day the visit was already
-      // on (no promise broken, one-shot correct, good agent marked wrong), and
-      // then the agent could not FIND a visit 15 days out and offered to book a
-      // new one instead. Locating it is S07's question; this scenario is about
-      // whether breaking a day promise is gated.
-      `${customerName(ctx.tenant, 'fx-t2-rs-02')} is booked on ${visitDate(ctx.tenant, 'visit-t2-rs-02')} — move that visit to ${nextWorkday(visitDate(ctx.tenant, 'visit-t2-rs-02'), 3)} at 4:15pm.`,
-    ],
-    // ONE turn on purpose: no "yes" is scripted. A promise-breaking move must not
-    // be complete at the end of this conversation.
-    graders: () => [gradeContent({ mustMentionOneOf: [['promis', 'told', 'confirm']] })],
-    endState: {
-      describe: 'the promised visit has NOT moved off its promised day without a yes',
-      // Scoped to the JOB, not the row id: a move is cancel + insert, so the
-      // original id is always a cancelled row afterwards and an id-scoped check
-      // would report "moved" even when nothing did.
-      query: (ctx) => ({
-        text: `select count(*)::int n from assignments
-                where job_id = $1 and status = 'confirmed' and (starts_at)::date = promised_day`,
-        params: [jobId(ctx.tenant, 'job-t2-rs-02')],
       }),
       predicate: (rows) => count(rows) === 1,
     },
@@ -525,27 +454,6 @@ export function buildCorpus(): Scenario[] {
   });
 
   add({
-    id: 'R05',
-    family: 'reschedule',
-    title: 'a promise made in conversation is recorded after the fact',
-    tenant: 'main',
-    badge: 'manager-sam',
-    tier: 'manager',
-    turns: (ctx) => [
-      `I just rang ${customerName(ctx.tenant, 'fx-t2-rs-07')} and promised them the day of their visit. Make sure that is on the record.`,
-      'yes',
-    ],
-    endState: {
-      describe: 'the visit now carries a day promise',
-      query: (ctx) => ({
-        text: 'select promise_level from assignments where id = $1',
-        params: [visitId(ctx.tenant, 'visit-t2-rs-07')],
-      }),
-      predicate: (rows) => rows[0]?.promise_level === 'day' || rows[0]?.promise_level === 'time',
-    },
-  });
-
-  add({
     id: 'R06',
     family: 'reschedule',
     title: 'unschedule, then put it back',
@@ -570,35 +478,6 @@ export function buildCorpus(): Scenario[] {
         params: [jobId(ctx.tenant, 'job-t2-rs-03')],
       }),
       predicate: (rows) => count(rows) >= 1,
-    },
-  });
-
-  add({
-    id: 'R07',
-    family: 'reschedule',
-    title: 'a TIME-promised move: gated first, completed after the release',
-    tenant: 'main',
-    badge: 'manager-sam',
-    tier: 'manager',
-    // R02 proves the gate HOLDS; this proves the gate RELEASES — the move must
-    // finish once the manager says the customer has been told. Uses a wf
-    // fixture (the rs pool is fully spoken for): visit-t2-wf-12 is planted
-    // with promiseLevel 'time' for exactly this scenario.
-    turns: (ctx) => [
-      `${customerName(ctx.tenant, 'fx-t2-wf-12')} rang and asked to shift their visit on ${visitDate(ctx.tenant, 'visit-t2-wf-12')} to 2pm the same day — can you sort that?`,
-      `yes — I told them 2pm myself just now, go ahead.`,
-    ],
-    graders: () => [gradeToolChoice({ required: ['move_visit'] })],
-    endState: {
-      describe: 'the visit ended up at 14:00 on its day, moved only after the yes',
-      // Job-scoped (a move is cancel + insert, the original row id dies).
-      query: (ctx) => ({
-        text: `select count(*)::int n from assignments
-                where job_id = $1 and status = 'confirmed'
-                  and (starts_at)::date = $2::date and (starts_at)::time = time '14:00'`,
-        params: [jobId(ctx.tenant, 'job-t2-wf-12'), visitDate(ctx.tenant, 'visit-t2-wf-12')],
-      }),
-      predicate: (rows) => count(rows) === 1,
     },
   });
 

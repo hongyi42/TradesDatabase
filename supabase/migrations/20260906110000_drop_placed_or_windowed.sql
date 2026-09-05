@@ -1,0 +1,51 @@
+-- Rung 9a, Phase 2: the stored window dies, so its CHECK goes first.
+--
+-- `assignment_placed_or_windowed` (20260724130000_unplaced_visits.sql:13) said a
+-- row must be EITHER placed (both times, no range) OR windowed (a range, no
+-- times) — never neither. That "never neither" arm is what this rung removes.
+--
+-- The user ruling (2026-09-05): a visit HAS A TIME OR IT DOES NOT. An unplaced
+-- visit is simply untimed — no stored range, because a commitment frozen in a
+-- column is stale the moment the customer calls back. "Sometime next week" is a
+-- conversation with the seat agent, not a data structure, and the agent reads
+-- the promises where they actually live: the calls, emails and notes in L1.
+--
+-- The same ruling is why the ladder that this CHECK forced into existence is
+-- already gone. `promised_day` was never an independent fact — it was a SHADOW
+-- COPY of the window, taken at the moment placement destroyed it, precisely
+-- because this constraint forbade a row being placed and windowed at once. The
+-- ladder existed to smuggle a commitment past this line. Delete the line and
+-- the reason for the ladder goes with it.
+--
+-- DEPLOY ORDER: apply this BEFORE the code deploy, or with it — never after.
+--
+-- Dropping a CHECK only ever WIDENS what the table accepts, so the currently
+-- running pilot code keeps working untouched either way. But the code that
+-- FOLLOWS needs this gone: createAssignment writes an untimed visit as
+-- starts_at/ends_at NULL with no range, and `assignment_placed_or_windowed`
+-- rejects exactly that with 23514. Leave this until after the deploy and every
+-- untimed booking — rung 9a's headline feature — errors until it lands.
+--
+--   20260906110000  BEFORE the deploy (or with it)   ← this file
+--   20260906120000  AFTER the deploy
+--
+-- The two are opposites, which is why both headers spell it out: 120000 drops
+-- the COLUMNS, and code still running writes them, so applying it early breaks
+-- every booking.
+--
+-- Dropping a constraint UPDATES NO ROWS, so the append-only triggers on
+-- raw_captures / schedule_events / money_events never fire — the trap that
+-- `ON DELETE SET NULL` walks into.
+--
+-- The columns SURVIVE this migration on purpose: Phase 2 stops reading and
+-- writing them, Phase 3 removes them once no deployed code names them.
+--
+-- NOT TOUCHED, and easy to confuse with this:
+--   * `no_confirmed_overlap` — its `starts_at is not null` predicate already
+--     excludes untimed rows, which is exactly right when there are more of them.
+--   * `assignments_check (ends_at > starts_at)` — a CHECK passes when it
+--     evaluates to NULL, so an all-NULL row satisfies it unchanged.
+--   * `find_slots(earliestDate, latestDate)` — same words, different thing: a
+--     SEARCH RANGE ("look between these dates"), never a commitment. It stays.
+
+alter table assignments drop constraint if exists assignment_placed_or_windowed;

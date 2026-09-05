@@ -87,13 +87,6 @@ try {
   );
   check('nobody is booked during their own time off', onLeave === 0, `${onLeave} found`);
 
-  const [{ n: badPromise }] = await q(
-    `select count(*)::int n from assignments
-      where tenant_id=$1 and promise_level <> 'none' and promised_day is null`,
-    [main.id],
-  );
-  check('every promise carries its promised day', badPromise === 0, `${badPromise} bad`);
-
   // Naive-local storage: the stored HH:MM must BE a slot wall-clock. A UTC-shifted
   // write would render as the wrong time in every schedule answer.
   const [{ st: firstStart }] = await q(
@@ -186,7 +179,7 @@ try {
     [main.id],
   );
   const [{ n: tbd }] = await q(
-    `select count(*)::int n from assignments where tenant_id=$1 and starts_at is null and earliest_date is not null`,
+    `select count(*)::int n from assignments where tenant_id=$1 and starts_at is null`,
     [main.id],
   );
   const [{ n: personless }] = await q(

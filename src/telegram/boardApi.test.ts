@@ -194,8 +194,6 @@ interface DayResponse {
       address: string | null;
       start: string;
       end: string;
-      promiseLevel: string;
-      promisedDay: string | null;
       status: string;
       jobId: string | null;
     }>;
@@ -273,8 +271,6 @@ describe('GET /board/api/day', () => {
         'customer',
         'end',
         'jobId',
-        'promiseLevel',
-        'promisedDay',
         'start',
         'status',
         'technicianName',
@@ -288,8 +284,6 @@ describe('GET /board/api/day', () => {
       unassigned: false,
       customer: 'Board Casa',
       address: '12 Board St, Springfield, OR, 97477',
-      promiseLevel: 'none',
-      promisedDay: null,
       status: 'confirmed',
     });
     expect(typeof stop.jobId).toBe('string');
@@ -450,8 +444,6 @@ describe('GET /board/api/visit (tap-into-a-visit detail)', () => {
       technicianRef: 'board-t1',
       technicianName: 'Tess One',
       jobTitle: 'AC tune-up',
-      promiseLevel: 'none',
-      promisedDay: null,
       customer: {
         name: 'Board Casa',
         phone: '555-014-2000',
@@ -503,8 +495,8 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     d3 = relDate(23);
     const casaId = (await pg.query("select id from customers where name = 'Board Casa'"))
       .rows[0].id as string;
-    // An ASSIGNED unplaced visit spanning three days, booked via the board
-    // endpoint itself (timeTbd + range + technician).
+    // An ASSIGNED UNTIMED visit, booked via the board endpoint itself with no
+    // date and no times at all (rung 9a).
     const resp = await fetch(`${base}/board/api/book`, {
       method: 'POST',
       headers: { ...tma(900000001), 'content-type': 'application/json' },
@@ -516,14 +508,11 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
             [tenantId, casaId],
           )
         ).rows[0].id,
-        timeTbd: true,
-        earliestDate: d1,
-        latestDate: d3,
         technicianRef: 'board-t1',
       }),
     });
     expect(resp.status).toBe(200);
-    const body = (await resp.json()) as { assignmentId: string; jobId: string; timeTbd?: boolean };
+    const body = (await resp.json()) as { assignmentId: string; jobId: string; untimed?: boolean };
     stripAssignmentId = body.assignmentId;
     stripJobId = body.jobId;
   });
@@ -533,94 +522,51 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     await pg.query("update jobs set status = 'cancelled' where id = $1", [stripJobId]);
   });
 
-  test('the manager day view carries it under `unplaced` on EVERY covered day, never on the grid', async () => {
+  test('INVERTED (rung 9a): an untimed visit appears on NO day of the board', async () => {
+    // It used to be smeared across every day of its stored range, labelled
+    // with the full range. With no range there is no day it belongs to, and
+    // drawing it on one would be the invention this rung removes. It lives in
+    // the flat Unscheduled tray instead (asserted in the tray tests below).
     const resp = await fetch(`${base}/board/api/day?from=${d1}&to=${d3}`, {
       headers: tma(900000001),
     });
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as {
-      days: Array<{
-        date: string;
-        stops: Array<{ assignmentId: string }>;
-        unplaced: Array<Record<string, unknown>>;
-      }>;
+      days: Array<{ date: string; stops: Array<{ assignmentId: string }>; unplaced?: unknown[] }>;
     };
-    // A day whose ONLY work is unplaced still appears — all three days do.
-    expect(body.days.map((d) => d.date)).toEqual([d1, d2, d3]);
+    // The `unplaced` key is gone from the payload entirely.
     for (const day of body.days) {
-      const mine = day.unplaced.find((u) => u.assignmentId === stripAssignmentId);
-      expect(mine, `day ${day.date} must carry the strip entry`).toBeDefined();
-      // Labelled with the FULL range so it reads as one visit, not three.
-      expect(mine?.earliestDate).toBe(d1);
-      expect(mine?.latestDate).toBe(d3);
-      expect(mine?.technicianRef).toBe('board-t1');
-      expect(mine?.jobTitle).toBe('Strip ranged job');
-      // Never on the time grid.
+      expect(day.unplaced).toBeUndefined();
+      // And it is not on the time grid either — that half never changed.
       expect(day.stops.some((st) => st.assignmentId === stripAssignmentId)).toBe(false);
     }
+    // A day whose ONLY work was this visit no longer appears at all.
+    expect(body.days.map((d) => d.date)).not.toContain(d2);
   });
 
-  test('a technician-tier day view gets NO unplaced strip at all', async () => {
-    const resp = await fetch(`${base}/board/api/day?from=${d1}&to=${d3}`, {
-      headers: tma(900000002), // board-t1's own view — the visit is THEIRS, still hidden
-    });
+  test('…and it IS in the Unscheduled tray, even though a person is attached', async () => {
+    // The other half of the sentence above, and the review finding that made
+    // it necessary: the tray used to key on "nobody attached", so an ASSIGNED
+    // untimed visit was on no day AND not in the tray — invisible on the whole
+    // board, reachable only through chat. Worse, the board's own Assign button
+    // put it there: tap it on a tray row and the row vanished.
+    const resp = await fetch(`${base}/board/api/bucket`, { headers: tma(900000001) });
     expect(resp.status).toBe(200);
-    const body = (await resp.json()) as { days: Array<{ unplaced?: unknown[] }> };
-    for (const day of body.days) {
-      expect(day.unplaced ?? []).toEqual([]);
-    }
+    const body = (await resp.json()) as {
+      parkedVisits: Array<{ assignmentId: string; date: string | null }>;
+    };
+    const mine = body.parkedVisits.find((v) => v.assignmentId === stripAssignmentId);
+    expect(mine, 'an assigned untimed visit must still be reachable').toBeDefined();
+    expect(mine?.date).toBeNull();
   });
 
-  test("the manager's Mine tab keeps their OWN strip — TIER gates it, never the self-filter", async () => {
-    // Final-review finding: gated on viewerTechnicianId, the Mine tab lost
-    // the strip entirely and the two manager tabs contradicted each other.
-    const casaId = (await pg.query("select id from customers where name = 'Board Casa'"))
-      .rows[0].id as string;
-    const mgrJob = (
-      await pg.query(
-        `insert into jobs (tenant_id, customer_id, title, status)
-         values ($1, $2, 'Mine strip job', 'open') returning id`,
-        [tenantId, casaId],
-      )
-    ).rows[0].id as string;
-    const resp = await fetch(`${base}/board/api/book`, {
-      method: 'POST',
-      headers: { ...tma(900000001), 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jobId: mgrJob,
-        timeTbd: true,
-        earliestDate: d1,
-        technicianRef: 'board-mgr',
-      }),
-    });
-    expect(resp.status).toBe(200);
-    const mgrVisit = ((await resp.json()) as { assignmentId: string }).assignmentId;
-    try {
-      const mine = await fetch(`${base}/board/api/day?from=${d1}&to=${d3}&view=mine`, {
-        headers: tma(900000001),
-      });
-      expect(mine.status).toBe(200);
-      const body = (await mine.json()) as {
-        view: string;
-        days: Array<{ date: string; unplaced: Array<{ assignmentId: string }> }>;
-      };
-      expect(body.view).toBe('mine');
-      const stripIds = body.days.flatMap((d) => d.unplaced.map((u) => u.assignmentId));
-      // Their own unplaced visit is there; board-t1's is filtered out — the
-      // self-filter applies WITHIN the strip, it doesn't remove the strip.
-      expect(stripIds).toContain(mgrVisit);
-      expect(stripIds).not.toContain(stripAssignmentId);
-    } finally {
-      await pg.query("update assignments set status = 'cancelled' where id = $1", [mgrVisit]);
-      await pg.query("update jobs set status = 'cancelled' where id = $1", [mgrJob]);
-    }
-  });
-
-  test('timeTbd + times is a 400; attachUnplaced re-attaches keeping the range', async () => {
+  test('partial times are a 400; attachUnplaced re-attaches keeping it untimed', async () => {
+    // Rung 9a: all three of date/startTime/endTime, or none. A lone startTime
+    // is the accident the rule catches.
     const bad = await fetch(`${base}/board/api/book`, {
       method: 'POST',
       headers: { ...tma(900000001), 'content-type': 'application/json' },
-      body: JSON.stringify({ jobId: stripJobId, timeTbd: true, earliestDate: d1, startTime: '09:00' }),
+      body: JSON.stringify({ jobId: stripJobId, date: d1, startTime: '09:00' }),
     });
     expect(bad.status).toBe(400);
 
@@ -637,18 +583,14 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     expect(attach.status).toBe(200);
     const body = (await attach.json()) as Record<string, unknown>;
     expect(body.status).toBe('moved');
-    expect(body.timeTbd).toBe(true);
-    expect(body.earliestDate).toBe(d1);
-    expect(body.latestDate).toBe(d3);
-    // The row: new id, still unplaced, new person; the old row cancelled.
+    expect(body.untimed).toBe(true);
+    // The row: new id, still untimed, new person; the old row cancelled.
     const { rows } = await pg.query(
-      `select id, starts_at, earliest_date::text, latest_date::text, technician_id
-         from assignments where id = $1`,
+      `select id, starts_at, technician_id from assignments where id = $1`,
       [body.assignmentId],
     );
     expect(rows[0].starts_at).toBeNull();
-    expect(rows[0].earliest_date).toBe(d1);
-    expect(rows[0].latest_date).toBe(d3);
+    expect(rows[0].technician_id).not.toBeNull();
     stripAssignmentId = rows[0].id as string; // afterAll cancels the live row
   });
 
@@ -668,7 +610,7 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     });
     expect(mixed.status).toBe(400);
 
-    // Detach (unassign:true) parks it back — still unplaced, nobody attached.
+    // Detach (unassign:true) parks it back — still untimed, nobody attached.
     const detach = await fetch(`${base}/board/api/move`, {
       method: 'POST',
       headers: { ...tma(900000001), 'content-type': 'application/json' },
@@ -691,45 +633,8 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     stripAssignmentId = rows[0].id as string;
   });
 
-  test('an attach to a fully-past unplaced range is refused (board floor)', async () => {
-    const casaId = (await pg.query("select id from customers where name = 'Board Casa'"))
-      .rows[0].id as string;
-    const pastJob = (
-      await pg.query(
-        `insert into jobs (tenant_id, customer_id, title, status)
-         values ($1, $2, 'Past tbd job', 'open') returning id`,
-        [tenantId, casaId],
-      )
-    ).rows[0].id as string;
-    const pastRow = (
-      await pg.query(
-        `insert into assignments (tenant_id, job_id, earliest_date, latest_date, status)
-         values ($1, $2, $3, $4, 'confirmed') returning id`,
-        [tenantId, pastJob, relDate(-10), relDate(-8)],
-      )
-    ).rows[0].id as string;
-    try {
-      const resp = await fetch(`${base}/board/api/move`, {
-        method: 'POST',
-        headers: { ...tma(900000001), 'content-type': 'application/json' },
-        body: JSON.stringify({
-          assignmentId: pastRow,
-          attachUnplaced: true,
-          technicianRef: 'board-t1',
-          reason: 'past attach',
-        }),
-      });
-      expect(resp.status).toBe(409);
-      const body = (await resp.json()) as { error: string };
-      expect(body.error).toContain('passed');
-    } finally {
-      await pg.query("update assignments set status = 'cancelled' where id = $1", [pastRow]);
-      await pg.query("update jobs set status = 'cancelled' where id = $1", [pastJob]);
-    }
-  });
-
   test('the attach PREVIEW runs the commit guards: valid → green light, placed subject → 409 (final-review fix)', async () => {
-    // Valid target: the detached strip row (unplaced, unassigned) previews
+    // Valid target: the detached strip row (untimed, unassigned) previews
     // clean and is NOT modified by the preview.
     const ok = await fetch(`${base}/board/api/move?preview=1`, {
       method: 'POST',
@@ -746,7 +651,6 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     expect(okBody.status).toBe('preview');
     expect(okBody.attach).toBe(true);
     expect(okBody.requiresConfirmation).toBe(false);
-    expect(okBody.earliestDate).toBe(d1);
     const after = await pg.query('select technician_id, status from assignments where id = $1', [
       stripAssignmentId,
     ]);
@@ -881,18 +785,13 @@ describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {
     expect(((await tech.json()) as { error: string }).error).toBe('managers only');
   });
 
-  test('an unassigned UNPLACED visit appears in the tray with timeTbd + null times (plan 4b-2)', async () => {
+  test('an unassigned UNTIMED visit appears in the tray with every date field null', async () => {
     const casaId = (await pg.query("select id from customers where name = 'Board Casa'"))
       .rows[0].id as string;
-    const tbdStart = relDate(15);
-    const tbdEnd = relDate(17);
     const booked = await bookVisit({
       tenantId,
       customerId: casaId,
-      title: 'Bucket time-TBD visit',
-      timeTbd: true,
-      earliestDate: tbdStart,
-      latestDate: tbdEnd,
+      title: 'Bucket untimed visit',
       actorRef: 'board-mgr',
     });
     try {
@@ -907,12 +806,13 @@ describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {
         (v) => v.assignmentId === booked.assignment.id,
       );
       expect(mine).toBeDefined();
-      expect(mine?.timeTbd).toBe(true);
-      expect(mine?.date).toBe(tbdStart);
-      expect(mine?.latestDate).toBe(tbdEnd);
+      // Rung 9a: nothing records when it should happen, so every date field
+      // reads null and NOTHING untimed can be overdue.
+      expect(mine?.date).toBeNull();
+      expect(mine?.weekday).toBeNull();
       expect(mine?.startTime).toBeNull();
       expect(mine?.endTime).toBeNull();
-      expect(mine?.overdue).toBe(false); // the range is in the future
+      expect(mine?.overdue).toBe(false);
     } finally {
       // Terminal flips, not deletes: a delete cascades toward append-only L1
       // territory; cancelled rows vanish from every bucket read regardless.
@@ -923,39 +823,81 @@ describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {
     }
   });
 
-  test('the tray is ordered by each visit\'s DAY — a soon time-TBD range outranks a far placed visit', async () => {
-    // Final-review finding: the SQL orders on starts_at with NULLs last, so
-    // every time-TBD row sank to the bottom regardless of how soon its range
-    // is — the most urgent parked work rendered below visits weeks out.
+  test('INVERTED (rung 9a): dated rows first, then UNTIMED rows OLDEST FIRST — and a reschedule does not reshuffle them', async () => {
+    // The old rule sorted every tray row by its day, and an unplaced visit had
+    // one (its range start). It has none now, so the user's choice governs:
+    // dated rows keep their day order, untimed rows queue by AGE. Age is what
+    // stops a hard-to-place visit sinking, and nothing stored can go stale
+    // because nothing is stored.
     const casaId = (await pg.query("select id from customers where name = 'Board Casa'"))
       .rows[0].id as string;
-    const soonTbd = await bookVisit({
-      tenantId,
-      customerId: casaId,
-      title: 'Bucket soon TBD',
-      timeTbd: true,
-      earliestDate: relDate(5), // BEFORE 'Bucket parked visit' at relDate(9)
-      latestDate: relDate(6),
-      actorRef: 'board-mgr',
+    const older = await bookVisit({
+      tenantId, customerId: casaId, title: 'Bucket untimed OLDER', actorRef: 'board-mgr',
     });
+    const newer = await bookVisit({
+      tenantId, customerId: casaId, title: 'Bucket untimed NEWER', actorRef: 'board-mgr',
+    });
+    const idxOf = (rows: Array<{ jobTitle: string | null }>, title: string) =>
+      rows.findIndex((v) => v.jobTitle === title);
     try {
-      const resp = await bucket(tma(900000001));
-      expect(resp.status).toBe(200);
-      const body = (await resp.json()) as {
-        parkedVisits: Array<{ jobTitle: string | null; date: string }>;
+      const read = async () => {
+        const resp = await bucket(tma(900000001));
+        expect(resp.status).toBe(200);
+        return ((await resp.json()) as {
+          parkedVisits: Array<{ jobTitle: string | null; date: string | null }>;
+        }).parkedVisits;
       };
-      const dates = body.parkedVisits.map((v) => v.date);
-      expect([...dates].sort()).toEqual(dates); // ascending by day, one rule for both shapes
-      const tbdIdx = body.parkedVisits.findIndex((v) => v.jobTitle === 'Bucket soon TBD');
-      const placedIdx = body.parkedVisits.findIndex((v) => v.jobTitle === 'Bucket parked visit');
-      expect(tbdIdx).toBeGreaterThanOrEqual(0);
-      expect(placedIdx).toBeGreaterThanOrEqual(0);
-      expect(tbdIdx).toBeLessThan(placedIdx);
+      const rows = await read();
+      // Dated rows all precede untimed ones, and the dated block is ascending.
+      const dated = rows.filter((v) => v.date !== null).map((v) => v.date as string);
+      expect(rows.slice(0, dated.length).every((v) => v.date !== null)).toBe(true);
+      expect([...dated].sort()).toEqual(dated);
+      // Among the untimed, oldest first.
+      expect(idxOf(rows, 'Bucket untimed OLDER')).toBeGreaterThanOrEqual(0);
+      expect(idxOf(rows, 'Bucket untimed OLDER')).toBeLessThan(idxOf(rows, 'Bucket untimed NEWER'));
+
+      // THE AGE-CARRY PIN (reviewer finding): every attach/park is a
+      // cancel-plus-insert, so without created_at carried onto the successor
+      // row the OLDER visit would be reborn "now" and sink below the newer one
+      // — "oldest first" would silently mean "least recently touched", and the
+      // visit nobody can place would drift down every time someone tried.
+      // The tray lists UNASSIGNED rows, so attach (it leaves) then detach (it
+      // returns) — two cancel-plus-inserts, and it must come back in place.
+      const attach = await fetch(`${base}/board/api/move`, {
+        method: 'POST',
+        headers: { ...tma(900000001), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          assignmentId: older.assignment.id,
+          attachUnplaced: true,
+          technicianRef: 'board-t1',
+          reason: 'touch the older row',
+        }),
+      });
+      expect(attach.status).toBe(200);
+      const attachedId = ((await attach.json()) as { assignmentId: string }).assignmentId;
+      const detach = await fetch(`${base}/board/api/move`, {
+        method: 'POST',
+        headers: { ...tma(900000001), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          assignmentId: attachedId,
+          attachUnplaced: true,
+          unassign: true,
+          reason: 'park it back',
+        }),
+      });
+      expect(detach.status).toBe(200);
+      const after = await read();
+      expect(idxOf(after, 'Bucket untimed OLDER')).toBeLessThan(
+        idxOf(after, 'Bucket untimed NEWER'),
+      );
     } finally {
-      await pg.query("update assignments set status = 'cancelled' where id = $1", [
-        soonTbd.assignment.id,
+      await pg.query(
+        "update assignments set status = 'cancelled' where job_id = any($1::uuid[])",
+        [[older.job.id, newer.job.id]],
+      );
+      await pg.query("update jobs set status = 'cancelled' where id = any($1::uuid[])", [
+        [older.job.id, newer.job.id],
       ]);
-      await pg.query("update jobs set status = 'cancelled' where id = $1", [soonTbd.job.id]);
     }
   });
 
@@ -1272,7 +1214,7 @@ describe('board write path (Phase 3)', () => {
     expect(resp.status).toBe(413);
   });
 
-  test('preview → requiresConfirmation false (unpromised), NO write; commit → moved row + moved event', async () => {
+  test('preview → requiresConfirmation false, NO write; commit → moved row + moved event', async () => {
     const [t1Row] = await assignmentRows(
       `t.ref = 'board-t1' and a.status = 'confirmed' and a.starts_at::date = '${DAY_A}'`,
     );
@@ -1285,8 +1227,8 @@ describe('board write path (Phase 3)', () => {
     };
     const preview = await post('/board/api/move', body, 900000001, true);
     expect(preview.status).toBe(200);
-    const p = (await preview.json()) as { requiresConfirmation: boolean; promiseBroken: boolean; toDay: string };
-    expect(p).toMatchObject({ requiresConfirmation: false, promiseBroken: false, toDay: DAY_MOVE });
+    const p = (await preview.json()) as { requiresConfirmation: boolean; toDay: string };
+    expect(p).toMatchObject({ requiresConfirmation: false, toDay: DAY_MOVE });
     // Preview wrote NOTHING: the row is untouched, still on DAY_A.
     const [after] = await assignmentRows('a.id = $1', [t1Row.id]);
     expect(after.status).toBe('confirmed');
@@ -1357,7 +1299,7 @@ describe('board write path (Phase 3)', () => {
     expect(parkedRows).toHaveLength(1);
   });
 
-  test('a promise-breaking move previews requiresConfirmation:true', async () => {
+  test('rung 9a: a date-changing move previews FALSE; cancelling that placed visit still confirms', async () => {
     const { assignment } = await bookVisit({
       tenantId,
       technicianRef: 'board-t2',
@@ -1366,7 +1308,6 @@ describe('board write path (Phase 3)', () => {
       date: DAY_PROM,
       startTime: '09:00',
       endTime: '10:00',
-      promiseLevel: 'day',
       actorRef: 'board-mgr',
     });
     const preview = await post(
@@ -1376,10 +1317,9 @@ describe('board write path (Phase 3)', () => {
       true,
     );
     expect(preview.status).toBe(200);
-    const p = (await preview.json()) as { requiresConfirmation: boolean; promiseBroken: boolean };
-    expect(p.requiresConfirmation).toBe(true);
-    expect(p.promiseBroken).toBe(true);
-    // Cancel two-mode on the same promised row: preview says confirm needed…
+    const p = (await preview.json()) as { requiresConfirmation: boolean };
+    expect(p.requiresConfirmation).toBe(false); // was true under the ladder
+    // Cancel two-mode on the same PLACED row: preview says confirm needed…
     const cp = await post('/board/api/cancel', { assignmentId: assignment.id }, 900000001, true);
     expect(((await cp.json()) as { requiresConfirmation: boolean }).requiresConfirmation).toBe(true);
     // …no reason → 400; with reason → cancelled + event.
@@ -1463,7 +1403,7 @@ describe('board write path (Phase 3)', () => {
   });
 });
 
-describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail additions', () => {
+describe('board quick-edit API (plan 4a.5): roster, book, job, detail additions', () => {
   const post = (path: string, body: unknown, userId: number, preview = false) =>
     fetch(`${base}${path}${preview ? '?preview=1' : ''}`, {
       method: 'POST',
@@ -1582,7 +1522,7 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
   test('tier gates: every quick-edit surface is managers-only', async () => {
     const roster = await fetch(`${base}/board/api/roster`, { headers: tma(900000002) });
     expect(roster.status).toBe(403);
-    for (const path of ['/board/api/book', '/board/api/promise', '/board/api/job']) {
+    for (const path of ['/board/api/book', '/board/api/job']) {
       const resp = await post(path, {}, 900000002);
       expect(resp.status).toBe(403);
       expect(((await resp.json()) as { error: string }).error).toBe('managers only');
@@ -1606,7 +1546,7 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
     });
   });
 
-  test('book: validation 400s; unpromised preview writes NOTHING; commit books; overlap → 409', async () => {
+  test('book: validation 400s; preview writes NOTHING; commit books; overlap → 409', async () => {
     expect(
       (await post('/board/api/book', { customerId: 'x', date: BOOK_DAY, startTime: '09:00', endTime: '10:00' }, 900000001)).status,
     ).toBe(400);
@@ -1614,9 +1554,6 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
     expect((await post('/board/api/book', { jobId: probeJobId, date: BOOK_DAY, startTime: '09:00' }, 900000001)).status).toBe(400);
     expect(
       (await post('/board/api/book', { jobId: probeJobId, date: BOOK_DAY, startTime: '09:00', endTime: '10:00', technicianRef: '' }, 900000001)).status,
-    ).toBe(400);
-    expect(
-      (await post('/board/api/book', { jobId: probeJobId, date: BOOK_DAY, startTime: '09:00', endTime: '10:00', promiseLevel: 'sworn' }, 900000001)).status,
     ).toBe(400);
 
     const body = { jobId: probeJobId, date: BOOK_DAY, startTime: '09:00', endTime: '10:00', technicianRef: 'board-t2' };
@@ -1633,9 +1570,8 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
 
     const commit = await post('/board/api/book', body, 900000001);
     expect(commit.status).toBe(200);
-    const c = (await commit.json()) as { status: string; assignmentId: string; promiseLevel: string };
+    const c = (await commit.json()) as { status: string; assignmentId: string };
     expect(c.status).toBe('booked');
-    expect(c.promiseLevel).toBe('none');
     // SQL read-back: confirmed row for the job, held by board-t2.
     const row = await pg.query(
       `select a.status, t.ref from assignments a join technicians t on t.id = a.technician_id
@@ -1649,37 +1585,8 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
     expect(((await clash.json()) as { error: string }).error).toContain('already has a confirmed visit');
   });
 
-  test('book with a promise: preview stages the one dialog; commit records it', async () => {
-    const body = {
-      jobId: probeJobId,
-      date: BOOK_DAY,
-      startTime: '13:00',
-      endTime: '14:00',
-      technicianRef: 'board-t2',
-      promiseLevel: 'day',
-    };
-    const preview = await post('/board/api/book', body, 900000001, true);
-    expect(((await preview.json()) as { requiresConfirmation: boolean }).requiresConfirmation).toBe(true);
-    const commit = await post('/board/api/book', body, 900000001);
-    expect(commit.status).toBe(200);
-    const c = (await commit.json()) as { assignmentId: string; promiseLevel: string };
-    expect(c.promiseLevel).toBe('day');
-    const row = await pg.query(
-      'select promise_level, promised_day::text as promised_day from assignments where id = $1',
-      [c.assignmentId],
-    );
-    expect(row.rows[0]).toEqual({ promise_level: 'day', promised_day: BOOK_DAY });
-  });
-
   test('final-review guards: one-shot verbs refuse ?preview=1; board writes refuse past dates; book refuses stray priority', async () => {
     // One-shot verbs 400 a preview request instead of silently committing.
-    const pv = await fetch(`${base}/board/api/promise?preview=1`, {
-      method: 'POST',
-      headers: { ...tma(900000001), 'content-type': 'application/json' },
-      body: JSON.stringify({ assignmentId: notesVisitId, promiseLevel: 'day' }),
-    });
-    expect(pv.status).toBe(400);
-    expect(((await pv.json()) as { error: string }).error).toContain('has no preview');
     const jv = await fetch(`${base}/board/api/job?preview=1`, {
       method: 'POST',
       headers: { ...tma(900000001), 'content-type': 'application/json' },
@@ -1712,37 +1619,6 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
     );
     expect(stray.status).toBe(400);
     expect(((await stray.json()) as { error: string }).error).toContain('priority is not set at booking');
-  });
-
-  test('promise: one-shot old→new + ledger event; unknown id → 409', async () => {
-    const resp = await post(
-      '/board/api/promise',
-      { assignmentId: notesVisitId, promiseLevel: 'time_only' },
-      900000001,
-    );
-    expect(resp.status).toBe(200);
-    expect(((await resp.json()) as { changes: unknown }).changes).toEqual({
-      promiseLevel: { from: 'none', to: 'time_only' },
-      promisedDay: { from: null, to: null }, // time_only carries no day
-    });
-    const row = await pg.query(
-      'select promise_level, promised_day from assignments where id = $1',
-      [notesVisitId],
-    );
-    expect(row.rows[0]).toEqual({ promise_level: 'time_only', promised_day: null });
-    const ev = await pg.query(
-      "select actor_ref from schedule_events where assignment_id = $1 and kind = 'promise_updated'",
-      [notesVisitId],
-    );
-    expect(ev.rows).toEqual([{ actor_ref: 'board-mgr' }]);
-    expect((await post('/board/api/promise', { assignmentId: notesVisitId, promiseLevel: 'oath' }, 900000001)).status).toBe(400);
-    const unknown = await post(
-      '/board/api/promise',
-      { assignmentId: '00000000-0000-0000-0000-000000000009', promiseLevel: 'day' },
-      900000001,
-    );
-    expect(unknown.status).toBe(409);
-    expect(((await unknown.json()) as { error: string }).error).toBe('visit not found');
   });
 
   test('job: title+priority old→new + SQL read-back; jobType and empty patches → 400', async () => {

@@ -140,13 +140,11 @@ describe('pollOnce', () => {
       customerId,
       title: 'Notify tbd visit',
       technicianRef: 'notify-n1',
-      timeTbd: true,
-      earliestDate: '2026-10-20',
       actorRef: 'notify-mgr',
     });
     expect(await pollOnce(lastSeen)).toBe(1);
     expect(sentTo()).toEqual([
-      { userId: '910000001', text: 'New visit on your schedule: 2026-10-20, time not set.' },
+      { userId: '910000001', text: 'New visit on your schedule: no time set yet.' },
     ]);
     expect(sentTo()[0].text).not.toContain('undefined');
   });

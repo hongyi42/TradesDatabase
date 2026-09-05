@@ -16,12 +16,10 @@ import {
   previewAttachUnplacedVisit,
   bookVisit,
   unscheduleVisit,
-  isPromiseLevel,
   moveVisit,
   previewBookVisit,
   previewUnscheduleVisit,
   previewMoveVisit,
-  setVisitPromise,
   updateJobIdentity,
 } from '../schedule/booking.js';
 import {
@@ -310,7 +308,6 @@ export async function handleBoardRequest(
       (pathname === '/board/api/move' ||
         pathname === '/board/api/cancel' ||
         pathname === '/board/api/book' ||
-        pathname === '/board/api/promise' ||
         pathname === '/board/api/job') &&
       req.method === 'POST'
     ) {
@@ -353,30 +350,20 @@ export async function handleBoardRequest(
             json(res, 400, { error: 'jobId is required' });
             return;
           }
-          const timeTbd = body.timeTbd === true;
           const date = str(body, 'date');
           const startTime = str(body, 'startTime');
           const endTime = str(body, 'endTime');
-          const earliestDate = str(body, 'earliestDate');
-          const latestDate = str(body, 'latestDate');
-          // The unplaced arm (plan 4b-2): the form's "time not settled" toggle
-          // posts timeTbd + the day (range optional) and NO times — the shape
-          // rules live in resolveBooking; here only the required fields gate.
-          if (timeTbd) {
-            if (startTime || endTime) {
-              json(res, 400, { error: 'timeTbd bookings carry no times — clear them' });
-              return;
-            }
-            if (!earliestDate && !date) {
-              json(res, 400, { error: 'a timeTbd booking needs the day (earliestDate or date)' });
-              return;
-            }
-          } else if (!date || !startTime || !endTime) {
-            json(res, 400, { error: 'date, startTime and endTime are required' });
+          // The UNTIMED arm (plan 4b-2, re-cut by rung 9a): the form's "no time
+          // yet" choice posts none of the three and the visit books with no
+          // date at all. The shape rules live in resolveBooking; here only the
+          // required fields gate — all three or none.
+          const untimed = !date && !startTime && !endTime;
+          if (!untimed && (!date || !startTime || !endTime)) {
+            json(res, 400, { error: 'date, startTime and endTime are required together' });
             return;
           }
-          const gateDate = timeTbd ? (earliestDate ?? date) : date;
-          if (!(await boardDateAllowed(auth.tenantId, gateDate as string))) {
+          // The past-date floor applies only to a booking that names a day.
+          if (!untimed && !(await boardDateAllowed(auth.tenantId, date as string))) {
             json(res, 400, { error: PAST_DATE_ERROR });
             return;
           }
@@ -386,31 +373,13 @@ export async function handleBoardRequest(
             });
             return;
           }
-          let promiseLevel;
-          if ('promiseLevel' in body) {
-            if (!isPromiseLevel(body.promiseLevel)) {
-              json(res, 400, {
-                error: 'invalid promiseLevel (use none, day, time, or time_only)',
-              });
-              return;
-            }
-            promiseLevel = body.promiseLevel;
-          }
           const input = {
             tenantId: auth.tenantId,
             jobId,
             ...(date ? { date } : {}),
             ...(startTime ? { startTime } : {}),
             ...(endTime ? { endTime } : {}),
-            ...(timeTbd
-              ? {
-                  timeTbd: true,
-                  ...(earliestDate ? { earliestDate } : {}),
-                  ...(latestDate ? { latestDate } : {}),
-                }
-              : {}),
             technicianRef: str(body, 'technicianRef'),
-            ...(promiseLevel ? { promiseLevel } : {}),
             actorRef: auth.technician.ref,
           };
           if (preview) {
@@ -425,7 +394,6 @@ export async function handleBoardRequest(
             date,
             startTime,
             endTime,
-            promiseLevel: booked.assignment.promise_level,
             ...(booked.warning ? { warning: booked.warning } : {}),
           });
           return;
@@ -520,36 +488,6 @@ export async function handleBoardRequest(
           json(res, 400, { error: 'assignmentId is required' });
           return;
         }
-        // One-shot promise correction (plan 4a.5): correcting the RECORD is
-        // reversible + internal — the doctrine gates the moves/cancels the
-        // record then arms, never the correction itself.
-        if (pathname === '/board/api/promise') {
-          // One-shot verbs REFUSE a preview request instead of silently
-          // committing on it (final-review finding — every sibling verb on
-          // this route honors ?preview=1, so ignoring it here was a trap).
-          if (preview) {
-            json(res, 400, { error: 'promise edits are one-shot — this verb has no preview' });
-            return;
-          }
-          if (!isPromiseLevel(body.promiseLevel)) {
-            json(res, 400, { error: 'invalid promiseLevel (use none, day, time, or time_only)' });
-            return;
-          }
-          const { previous, updated } = await setVisitPromise(
-            auth.tenantId,
-            assignmentId,
-            body.promiseLevel,
-            auth.technician.ref,
-          );
-          json(res, 200, {
-            status: 'ok',
-            changes: {
-              promiseLevel: { from: previous.promise_level, to: updated.promise_level },
-              promisedDay: { from: previous.promised_day, to: updated.promised_day },
-            },
-          });
-          return;
-        }
         if (pathname === '/board/api/cancel') {
           if (preview) {
             json(res, 200, await previewUnscheduleVisit(auth.tenantId, assignmentId));
@@ -565,28 +503,24 @@ export async function handleBoardRequest(
             reason,
             actorRef: auth.technician.ref,
           });
-          // promiseLevel rides along so the page can disclose a promise that
-          // appeared between preview and commit (same race class as move's
-          // promiseBroken — the cancel one-shots, so the toast must tell).
           json(res, 200, {
             status: 'cancelled',
-            // Placed day, else the unplaced range's day (plan 4b-2).
-            day: cancelled.starts_at?.slice(0, 10) ?? cancelled.earliest_date ?? null,
-            promiseLevel: cancelled.promise_level,
+            // Null when the visit had no time set (rung 9a: no stored day).
+            day: cancelled.starts_at?.slice(0, 10) ?? null,
           });
           return;
         }
-        // Attach a person to an UNPLACED visit, keeping it unplaced (plan
-        // 4b-2 Phase 3): the tray's Assign on a time-TBD row posts this
+        // Attach a person to an UNTIMED visit, keeping it untimed (plan
+        // 4b-2 Phase 3): the tray's Assign on an untimed row posts this
         // instead of inventing a time. Routed before the date/time gate —
         // an attach carries neither.
         if (body.attachUnplaced === true) {
           // Times alongside an attach are a caller bug — silently ignoring
           // them would let a buggy client believe it PLACED the visit (the
-          // route's own priority/timeTbd refusal standard; review finding).
+          // route's own priority refusal standard; review finding).
           if (str(body, 'date') || str(body, 'startTime') || str(body, 'endTime')) {
             json(res, 400, {
-              error: 'attachUnplaced keeps the visit time-TBD — drop date/times, or place it with a normal move',
+              error: 'attachUnplaced keeps the visit untimed — drop date/times, or place it with a normal move',
             });
             return;
           }
@@ -599,14 +533,11 @@ export async function handleBoardRequest(
             });
             return;
           }
-          const tz = (await getTenant(auth.tenantId))?.timezone ?? 'UTC';
-          // The board's past floor, on the RANGE END: a straddling range
-          // stays actionable; a fully-past one is a chat job (review
-          // finding — every other /move write already has this floor).
-          const notBeforeDate = localDateISO(new Date().toISOString(), tz);
+          // The board's past floor does NOT apply here (rung 9a): an untimed
+          // visit holds no date, so there is no day of it that can be past.
           // The client's move flow previews first — an attach is reversible
-          // (unassign:true parks it back) and keeps the promise untouched, so
-          // requiresConfirmation stays false, but the preview runs the SAME
+          // (unassign:true parks it back), so requiresConfirmation stays
+          // false, but the preview runs the SAME
           // guards the commit will (final-review finding: an unconditional
           // green light walked a stale tab through the picker + confirm into
           // a guaranteed 409; every sibling write validates at preview).
@@ -615,7 +546,6 @@ export async function handleBoardRequest(
               tenantId: auth.tenantId,
               assignmentId: attachId,
               technicianRef: detach ? null : (attachRef as string),
-              notBeforeDate,
             });
             json(res, 200, { status: 'preview', attach: true, ...attachPreview });
             return;
@@ -626,17 +556,13 @@ export async function handleBoardRequest(
             technicianRef: detach ? null : (attachRef as string),
             reason,
             actorRef: auth.technician.ref,
-            notBeforeDate,
           });
           json(res, 200, {
             status: 'moved',
             attach: !detach,
             unassigned: detach,
-            timeTbd: true,
+            untimed: true,
             assignmentId: attached.created.id,
-            earliestDate: attached.created.earliest_date,
-            latestDate: attached.created.latest_date,
-            promiseLevel: attached.created.promise_level,
           });
           return;
         }
@@ -690,7 +616,6 @@ export async function handleBoardRequest(
         const moved = await moveVisit(input);
         json(res, 200, {
           status: 'moved',
-          promiseBroken: moved.promiseBroken,
           // A move ALWAYS produces a placed row (rescheduleAssignment requires
           // times) — assert instead of widening the payload (plan 4b-2).
           start: moved.created.starts_at as string,

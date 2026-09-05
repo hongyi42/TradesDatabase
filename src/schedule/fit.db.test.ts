@@ -90,8 +90,6 @@ async function makeVisit(opts: {
   endsAt: string;
   city?: string;
   status?: 'proposed' | 'confirmed';
-  promiseLevel?: 'day';
-  promisedDay?: string;
 }) {
   const customer = await createCustomer({
     tenantId,
@@ -106,7 +104,6 @@ async function makeVisit(opts: {
     startsAt: opts.startsAt,
     endsAt: opts.endsAt,
     status: opts.status ?? 'confirmed',
-    ...(opts.promiseLevel ? { promiseLevel: opts.promiseLevel, promisedDay: opts.promisedDay } : {}),
   });
 }
 
@@ -173,18 +170,16 @@ describe('assembleFitContext — who is in, who is out, always named', () => {
 });
 
 describe('assembleFitContext — assignment rows become day context', () => {
-  test('unplaced assigned rows fold into commitmentsByDate across their whole range, never into stops (plan 4b-2)', async () => {
+  test('INVERTED (rung 9a): an UNTIMED row weighs on NO day — it is not counted anywhere', async () => {
     const customer = await createCustomer({ tenantId, name: 'Fit tbd cust' });
     const job = await createJob({ tenantId, customerId: customer.id, title: 'fit tbd', status: 'open' });
-    // Tue–Thu unplaced range for sparky + one placed Wednesday visit.
+    // An untimed row for sparky + one placed Wednesday visit.
     const tbd = await createAssignment({
       tenantId,
       jobId: job.id,
       technicianId: sparky.id,
       startsAt: null,
       endsAt: null,
-      earliestDate: '2026-08-04',
-      latestDate: '2026-08-06',
       status: 'confirmed',
     });
     const placedWed = await makeVisit({
@@ -195,17 +190,17 @@ describe('assembleFitContext — assignment rows become day context', () => {
     try {
       const c = await ctx({ technicianRef: sparky.ref });
       const sp = c.technicians[0];
-      // Load on every covered day; the placed Wednesday visit stacks on top.
-      expect(sp.commitmentsByDate.get('2026-08-04')).toBe(1);
-      expect(sp.commitmentsByDate.get('2026-08-05')).toBe(2);
-      expect(sp.commitmentsByDate.get('2026-08-06')).toBe(1);
-      expect(sp.commitmentsByDate.get('2026-08-07')).toBeUndefined();
-      // Shape untouched: stops count ONLY the placed visit.
+      // It used to weigh on EVERY day of its stored range, because the range
+      // said which days it might land on. With no range there is no day it
+      // could be budgeted against, so ONLY the placed Wednesday visit counts.
+      expect(sp.commitmentsByDate.get('2026-08-04')).toBeUndefined();
+      expect(sp.commitmentsByDate.get('2026-08-05')).toBe(1);
+      expect(sp.commitmentsByDate.get('2026-08-06')).toBeUndefined();
+      // Shape untouched: stops count ONLY the placed visit, as before.
       expect(sp.stopsByDate.get('2026-08-04')).toBeUndefined();
       expect(sp.stopsByDate.get('2026-08-05')).toBe(1);
-      // The subject-exclusion also frees an unplaced subject's own load.
+      // Excluding the untimed subject changes nothing — it was never counted.
       const excluded = await ctx({ technicianRef: sparky.ref, excludeAssignmentId: tbd.id });
-      expect(excluded.technicians[0].commitmentsByDate.get('2026-08-04')).toBeUndefined();
       expect(excluded.technicians[0].commitmentsByDate.get('2026-08-05')).toBe(1);
     } finally {
       // Self-clean BOTH rows: the displacement suite shares this week and
@@ -264,37 +259,35 @@ describe('assembleFitContext — assignment rows become day context', () => {
 });
 
 describe('findDisplacementCandidates', () => {
-  test('promise-free visits order first; promise + lock ride along', async () => {
-    const promised = await makeVisit({
+  test('displacement candidates order EARLIEST FIRST and never include the asker', async () => {
+    const earlier = await makeVisit({
       technicianId: sparky.id,
       startsAt: '2026-08-04T08:00:00.000Z',
       endsAt: '2026-08-04T10:00:00.000Z',
-      promiseLevel: 'day',
-      promisedDay: '2026-08-04',
     });
-    // Later in the week but promise-free → still listed FIRST.
-    const free = await makeVisit({
+    const later = await makeVisit({
       technicianId: sparky.id,
       startsAt: '2026-08-06T08:00:00.000Z',
       endsAt: '2026-08-06T10:00:00.000Z',
     });
 
+    // Rung 9a: the promise-graded tiebreak is gone, so start time is the whole
+    // rule — the Aug 4 row now sorts ahead of the Aug 6 one.
     const out = await findDisplacementCandidates(tenantId, WEEK_START, WEEK_END);
     const ids = out.map((d) => d.assignmentId);
-    expect(ids.indexOf(free.id)).toBeLessThan(ids.indexOf(promised.id));
+    expect(ids.indexOf(earlier.id)).toBeLessThan(ids.indexOf(later.id));
 
     // An assignmentId ask's own subject never appears — a visit cannot be
     // proposed as displacement to make room for itself.
-    const excluded = await findDisplacementCandidates(tenantId, WEEK_START, WEEK_END, 5, free.id);
-    expect(excluded.map((d) => d.assignmentId)).not.toContain(free.id);
-    expect(excluded.map((d) => d.assignmentId)).toContain(promised.id);
-    const p = out.find((d) => d.assignmentId === promised.id);
+    const excluded = await findDisplacementCandidates(tenantId, WEEK_START, WEEK_END, 5, later.id);
+    expect(excluded.map((d) => d.assignmentId)).not.toContain(later.id);
+    expect(excluded.map((d) => d.assignmentId)).toContain(earlier.id);
+    const p = out.find((d) => d.assignmentId === earlier.id);
     expect(p).toMatchObject({
       technicianRef: sparky.ref,
       day: '2026-08-04',
       weekday: 'Tue', // server-computed — the agent never does calendar math
       span: '08:00–10:00',
-      promiseLevel: 'day',
     });
     expect(p?.customer).toContain('Fit cust');
   });

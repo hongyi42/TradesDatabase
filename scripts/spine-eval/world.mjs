@@ -504,12 +504,7 @@ async function applyTenant(t, existing) {
       technicianId: v.technicianRef === null ? null : techIds[v.technicianRef],
       startsAt: placed ? naive(v.date, v.startTime) : null,
       endsAt: placed ? naive(v.date, addMin(v.startTime, v.durationMinutes)) : null,
-      ...(placed ? {} : { earliestDate: v.earliestDate, latestDate: v.latestDate }),
       status: v.status,
-      promiseLevel: v.promiseLevel,
-      // Server-derived from the visit's own day, exactly as bookVisit does — the
-      // spec never carries a promised day of its own to get out of step with.
-      promisedDay: v.promiseLevel === 'none' ? null : v.date,
     });
     visitIds[v.key] = row.id;
   }
@@ -534,7 +529,7 @@ async function applyTenant(t, existing) {
     // from the one this visit is on" cannot compute that from an offset, and
     // guessing produced a same-day move that made a correct agent look wrong.
     visits: Object.fromEntries(
-      t.visits.map((v) => [v.key, { id: visitIds[v.key], date: v.date ?? v.earliestDate ?? null }]),
+      t.visits.map((v) => [v.key, { id: visitIds[v.key], date: v.date ?? null }]),
     ),
     // Capture ids are needed by retract_capture and the citation checks — a
     // scenario must never have to go find one by LIKE-matching raw text.

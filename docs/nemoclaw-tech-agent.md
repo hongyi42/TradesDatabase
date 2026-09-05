@@ -131,7 +131,7 @@ schedule-input tools `set_availability`/`add_time_off`/`remove_time_off`/`set_jo
 `set_technician_skills` since 2026-07-20 — all one-shot, no confirm; `set_availability` is the
 step that makes a person schedulable, tracked by an `availability_setup` review item opened at
 seat confirm; `find_slots` since 2026-07-20 — the read-only ranked slot finder: feasibility is
-its verdict, it books nothing; like every schedule answer it carries the board link (originally excluded — the agent FABRICATED a URL to satisfy the every-answer doctrine, live 2026-07-21); `update_job` since 2026-07-21 — one-shot job-identity editor, title/jobType/priority with old→new echo; `set_promise` since 2026-07-22 — one-shot promise-record editor, assignmentId + promiseLevel none/day/time with old→new echo, the promised day derived server-side from the visit's own date — the chat-reachable fix for a promise that went unrecorded at booking, which would otherwise let a genuinely promised visit move with no confirmation; `set_technician_horizon` since 2026-07-22 — one-shot visibility dial: how far ahead TECHNICIANS see the schedule, whole weeks 1-12 stored per-tenant (default 4 weeks); technician-tier reads and board views beyond it answer "not published yet", managers never clamp; since 2026-07-23 (plan 4a.5, count unchanged): `move_visit` gained `unassign:true` — PARKS a visit (pulls the person off, keeps day/time; find it under `get_team_schedule unassignedOnly:true` or the board's loose bucket; mutually exclusive with `technicianRef`), and the promise ladder gained a fourth level `time_only` ("told a time but not the day" — the START TIME gates moves/cancels while the day moves freely; carries NO promised day) accepted by `book_visit`/`set_promise`; since 2026-07-25 (cancel-vocabulary change): `cancel_visit` RENAMED `unschedule_visit` — same behavior, and the name now says it: the visit comes OFF the calendar while the WORK survives, job back in the loose bucket — and +`cancel_job`, the TERMINAL verb: the job closes for good (no un-cancel), leaves the loose bucket, and its live visits are cancelled with it; ALWAYS two-step with the promises disclosed in the preview; ambiguous manager wording ("cancel the Hendersons") means ASK which; the four autonomous-solver tools added 2026-07-26 (`set_visit_locks`, `run_freeze`) and 2026-07-30 (`run_resolve`, `undo_run`) were REMOVED 2026-09-03, rung 8 — see the retirement note below: `add_technician_seat`
+its verdict, it books nothing; like every schedule answer it carries the board link (originally excluded — the agent FABRICATED a URL to satisfy the every-answer doctrine, live 2026-07-21); `update_job` since 2026-07-21 — one-shot job-identity editor, title/jobType/priority with old→new echo; `set_technician_horizon` since 2026-07-22 — one-shot visibility dial: how far ahead TECHNICIANS see the schedule, whole weeks 1-12 stored per-tenant (default 4 weeks); technician-tier reads and board views beyond it answer "not published yet", managers never clamp; since 2026-07-23 (plan 4a.5, count unchanged): `move_visit` gained `unassign:true` — PARKS a visit (pulls the person off, keeps day/time; find it under `get_team_schedule unassignedOnly:true` or the board's loose bucket; mutually exclusive with `technicianRef`); since 2026-07-25 (cancel-vocabulary change): `cancel_visit` RENAMED `unschedule_visit` — same behavior, and the name now says it: the visit comes OFF the calendar while the WORK survives, job back in the loose bucket — and +`cancel_job`, the TERMINAL verb: the job closes for good (no un-cancel), leaves the loose bucket, and its live visits are cancelled with it; ALWAYS two-step with every live visit disclosed in the preview; ambiguous manager wording ("cancel the Hendersons") means ASK which; the four autonomous-solver tools added 2026-07-26 (`set_visit_locks`, `run_freeze`) and 2026-07-30 (`run_resolve`, `undo_run`) were REMOVED 2026-09-03, rung 8, and `set_promise` was REMOVED 2026-09-05, rung 9a, with the promise ladder itself — see the retirement notes below: `add_technician_seat`
 (two-step confirm since 2026-07-17 — mints a permanent ref + burns a seat, not reversible;
 `seatExempt:true` since 2026-07-19 adds a SCHEDULE-ONLY person instead — no seat occupied,
 bookable on visits and visible on the board, but `bind_telegram`/`get_connect_link` refuse them:
@@ -181,21 +181,32 @@ updating `.config-hash`, so skipping `doctor --fix` leaves the next restart fail
 
 ## 5. Conversation contract (stage→confirm since 2026-07-06)
 
-**Confirmation doctrine (2026-07-17, user decision):** confirm only what is **irreversible or
-externally visible** (a customer promise at stake); everything reversible happens in ONE call
-and the agent reports what it did. Concretely: `book_visit`/`move_visit`/`unschedule_visit` act
-one-shot when no customer promise is affected (book with `promiseLevel:'none'`, move with
-`promiseBroken:false`, unschedule of an unpromised visit) and still stage→confirm when one is; `cancel_job` is the exception that never one-shots — terminal, always stage→confirm;
-`add_technician_seat` is now two-step (permanent ref + a seat — still two-step with
-`seatExempt:true`, where no seat burns but the ref mint stays permanent); `book_visit` has NO default
-times (2026-07-18, user decision — the 2h job-length default was removed after it overrode a
-stated "12–1pm" in the pilot): `startTime` and `endTime` are required, the agent passes
-exactly what the manager stated and asks when a time is missing. **One recorded exception
-(2026-07-25, plan 4b-2):** when the manager *explicitly* says the time is unsettled
-("sometime Thursday", "time TBD"), the agent books with `timeTbd:true` + `earliestDate`
-(/`latestDate` for a range) and NO times — `timeTbd` is never the agent's own choice when a
-time was stated, and a time-TBD visit can hold promise level `none` or `day` only. Placing it
-later is a normal `move_visit` with real times.
+**Confirmation doctrine (2026-07-17, RE-CUT 2026-09-05 by rung 9a):** confirm only what is
+**irreversible or externally visible**; everything reversible happens in ONE call and the agent
+reports what it did. The test used to be the promise ladder — one-shot when
+`promiseLevel:'none'`, stage→confirm when a promise was at stake. That ladder is DELETED, and
+the test is now PLACEMENT:
+
+- `book_visit` and `move_visit` are **always one-shot**. Nothing in the schema records what a
+  customer was told, so the agent must READ THE JOB'S RECORD (its calls, emails and notes) for
+  a promise BEFORE moving a visit or suggesting a time — and must never claim none was made,
+  because it cannot know that without looking.
+- `unschedule_visit` is the one scheduling verb that still stages, and only when the visit is
+  **PLACED** — it has a real time, so a customer is expecting it. A visit with no time set is
+  nobody's appointment yet and drops in one call.
+- `cancel_job` never one-shots — terminal, always stage→confirm.
+- `add_technician_seat` is two-step (permanent ref + a seat — still two-step with
+  `seatExempt:true`, where no seat burns but the ref mint stays permanent).
+
+`book_visit` has NO default times (2026-07-18, user decision — the 2h job-length default was
+removed after it overrode a stated "12–1pm" in the pilot): `date`, `startTime` and `endTime`
+arrive TOGETHER, the agent passes exactly what the manager stated, and asks when one is
+missing. **One recorded exception (2026-07-25, plan 4b-2, re-cut by rung 9a):** when the timing
+genuinely is not settled, the agent passes **none of the three** and the visit books UNTIMED —
+no day, no range, nothing stored about when it should happen. It waits in the unscheduled queue
+until a normal `move_visit` places it. There is no way to record "sometime next week": that is
+a conversation with the manager (and, through the office channel, with the planner that knows
+how this firm schedules), not a field.
 
 **Board link (2026-07-18):** scheduling results carry `boardLink` — the Telegram Mini App
 dispatch board (`t.me/<board-bot>?startapp`, decorated server-side from `BOARD_BOT_HANDLE`,
@@ -259,6 +270,23 @@ date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). Array
   `?startapp=freeze` deep link and the §0h AGENTS.md block. The manager makes the schedule;
   route optimization returns in rung 10 as an ADVISORY tool the manager's agent may choose
   to call. Reasoning and the full deletion footprint: `docs/engineering-memory.md` §6a/§8.
+- **The promise ladder and the stored window — RETIRED 2026-09-05 (rung 9a).** `set_promise`
+  is DELETED, along with the `promise_level` / `promised_day` columns, `book_visit`'s
+  `timeTbd` / `earliestDate` / `latestDate` arguments and the `earliest_date` /
+  `latest_date` columns behind them. **A visit has a time or it does not.**
+  - *Why:* a job's lifecycle stretches and shrinks as humans act, so a commitment frozen in a
+    column is stale the moment the customer calls back. Neither the promise level nor a
+    stored window should restrict the agent (user ruling 2026-09-05).
+  - *What replaces it is doctrine, not schema:* the agent looks for promises **in the
+    record** — the calls, emails and notes in L1 — before it edits the schedule or suggests a
+    time. It is REACTIVE: it edits the schedule only when asked.
+  - *Consequences:* `book_visit` / `move_visit` are unconditionally one-shot;
+    `unschedule_visit` stages only for a PLACED visit; an untimed visit sits on no day, so it
+    appears in the unscheduled queue and in `get_team_schedule`'s `untimed` list, never in a
+    day group. `find_slots(earliestDate, latestDate)` is UNAFFECTED — same words, different
+    thing: a search range, never a commitment.
+  - Reasoning and the full footprint: `docs/engineering-memory.md` §6a, and
+    `thoughts/shared/plans/2026-09-05-the-rails-come-out.md`.
 
 ## 6. Email ingestion (Phase 4 — separate from the chat channel)
 A second input channel pulls the technician's email and feeds **only work-related** mail through the

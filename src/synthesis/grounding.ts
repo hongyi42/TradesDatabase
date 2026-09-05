@@ -56,18 +56,17 @@ export function serializeContextForPrompt(context: CustomerContext): string {
 
   // The schedule ahead — the half "next visit" questions are answered from
   // (2026-08-13: briefs previously saw only past visits and answered "nothing
-  // scheduled" over four confirmed bookings). Unplaced rows say so explicitly:
-  // the model must relay the window, never invent a time.
+  // scheduled" over four confirmed bookings). Untimed rows say so explicitly:
+  // the model must relay that no time is set, never invent one.
   const upcomingLines = (upcomingVisits ?? []).length
     ? (upcomingVisits ?? [])
         .map(
           (u) =>
             `- [upcoming ${u.assignmentId}] ${u.jobTitle ?? '(untitled)'} ` +
-            (u.timeTbd
-              ? `day not set yet — will land ${u.phrase}`
+            (u.untimed
+              ? 'booked, but NO time set yet — say exactly that'
               : `${u.phrase} ${u.startTime ?? ''}${u.endTime ? `–${u.endTime}` : ''}`) +
-            ` tech=${u.technicianRef ?? (u.unassigned ? 'UNASSIGNED' : '—')}` +
-            `${u.promiseLevel && u.promiseLevel !== 'none' ? ` promised=${u.promiseLevel}:${u.promisedDay ?? '?'}` : ''}`,
+            ` tech=${u.technicianRef ?? (u.unassigned ? 'UNASSIGNED' : '—')}`,
         )
         .join('\n')
     : '- (none booked)';

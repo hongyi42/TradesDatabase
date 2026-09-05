@@ -120,15 +120,14 @@ try {
     )
   );
 
-  const windowJobs = await one(
-    `select c.name as customer, j.title as title, coalesce(t.ref, null) as tech,
-            a.earliest_date::text as earliest, a.latest_date::text as latest
+  const untimedJobs = await one(
+    `select c.name as customer, j.title as title, coalesce(t.ref, null) as tech
      from assignments a
      join jobs j on j.id = a.job_id
      join customers c on c.id = j.customer_id
      left join technicians t on t.id = a.technician_id
      where a.tenant_id = $1 and a.starts_at is null and a.status = 'confirmed'
-     order by a.earliest_date`,
+     order by a.created_at`,
     [tenantId],
   );
 
@@ -149,7 +148,7 @@ try {
   );
   const nextVisit = Object.fromEntries(nextRows.map((r) => [r.customer, { date: r.date, tech: r.tech, title: r.title }]));
 
-  const facts = { today, tz, dayCounts, techDayCounts, firstOfDay, timeOff, windowJobs, nextVisit };
+  const facts = { today, tz, dayCounts, techDayCounts, firstOfDay, timeOff, untimedJobs, nextVisit };
   const corpus = buildCorpus(facts);
 
   mkdirSync(OUT_DIR, { recursive: true });
@@ -181,7 +180,7 @@ try {
     // run and the refusal looks like a fleet problem.
     expectedModel: process.env.DATE_EVAL_EXPECT_MODEL || 'accounts/fireworks/routers/glm-5p2-fast',
     sandbox: process.env.DATE_EVAL_SANDBOX || 's2',
-    facts: { dayCounts, techDayCounts, timeOff, windowJobs },
+    facts: { dayCounts, techDayCounts, timeOff, untimedJobs },
     questions: corpus,
   };
   writeFileSync(join(OUT_DIR, 'manifest.json'), JSON.stringify(manifest, null, 2));

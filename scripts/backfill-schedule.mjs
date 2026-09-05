@@ -8,8 +8,7 @@
 //   customer:   the row's customer_id link if present, else an exact
 //     address_line1 match, else CREATE from the row's denormalized fields.
 //   booking:    an open job shell + a CONFIRMED assignment with the row's
-//     times (naive-local, exactly as the mirror stored them),
-//     promise_level='time', promisedDay = the start's UTC day.
+//     times (naive-local, exactly as the mirror stored them).
 //   ledger:     a 'backfilled' schedule_event carrying {externalRowKey} —
 //     ALSO the idempotency key: rows already backfilled are skipped.
 //   overlaps:   the DB's no_confirmed_overlap guard refusals are reported and
@@ -142,7 +141,6 @@ for (const row of rows) {
     row.scheduled_end && row.scheduled_end > startsAt
       ? row.scheduled_end
       : new Date(Date.parse(startsAt) + defaultMinutes * 60_000).toISOString();
-  const promisedDay = startsAt.slice(0, 10); // mirror rows are local-as-UTC
 
   // Overlap PRE-check BEFORE creating anything (booking.ts ordering): the
   // common rejection must leave no orphaned customer/job shell behind, and a
@@ -201,8 +199,6 @@ for (const row of rows) {
       startsAt,
       endsAt,
       status: 'confirmed',
-      promiseLevel: 'time',
-      promisedDay,
     });
     await appendScheduleEvent({
       tenantId,

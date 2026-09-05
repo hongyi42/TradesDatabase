@@ -75,12 +75,12 @@ normal and easy — it is not an admission of anything.
 
 ### Rule 2 — It asks permission for things it can't take back
 
-Sending an email. Recording a note permanently. Booking or moving a visit you already promised a
-customer. For these, the assistant shows you exactly what it is about to do and waits for you to say
-yes.
+Sending an email. Recording a note permanently. Cancelling a job for good. Taking a **booked** visit
+off the calendar, when a customer is expecting it. For these, the assistant shows you exactly what
+it is about to do and waits for you to say yes.
 
-For everything reversible — setting someone's hours, correcting a job title, looking something up —
-it just does it and tells you what it did.
+For everything reversible — booking a visit, moving one to another day, setting someone's hours,
+correcting a job title, looking something up — it just does it and tells you what it did.
 
 *Why:* if it asked about everything, you would start saying "yes" without reading, and then the one
 that mattered would slip through. Constant confirmation is a safety problem, not a safety feature.
@@ -250,26 +250,30 @@ so they can never disagree:
 >
 > **You:** Cancel the Miller job — he went with someone else.
 
-### Promises: the most important idea in the schedule
+### Work with no time yet
 
-The system tracks **what you told the customer**, separately from what's on the calendar. There are
-four levels:
+Not every job starts with a slot. Tell the assistant to book someone in without saying when, and
+the visit lands in your **unscheduled list** — real, committed work with no day and no time on it:
 
-| What you told them | What can still move |
-|---|---|
-| Nothing yet | Everything — day and time |
-| "Sometime Tuesday" | The time, but it stays on Tuesday |
-| "Sometime in the morning" | The day, but it stays a morning |
-| "Tuesday at 9" | Nothing. It's locked to the customer. |
+> **You:** Book the Millers in for the water heater — I'll find a slot later.
 
-Say it naturally and it records the right level: *"I told her Tuesday, no time"*, *"promised him 9am
-Tuesday"*, *"nothing promised yet."*
+The list is ordered **oldest first**, so the job nobody has managed to place drifts to the top
+rather than sinking out of sight. When you're ready, ask for a time and the assistant places it.
 
-**Why this matters:** when the assistant re-plans your week, it will freely shuffle unpromised work
-and will never break a promise you made. That is the difference between an optimizer you can trust
-with real customers and one you can't.
+**"Sometime next week" is a conversation, not a setting.** There's no field for a rough window —
+ask your assistant instead: *"when could we fit the Millers in next week?"* It knows your calendar,
+and it can ask the office assistant, which learns how your firm actually schedules. You'll get real
+options rather than a vague marker that goes stale the moment the customer calls back.
 
-If you got a promise wrong, fix it: *"actually I only promised the Millers a day, not a time."*
+### What you told the customer
+
+The assistant does **not** keep a separate record of promises, and it will never claim you made
+none. What you said lives where you said it — in the call, the text, the email — and the assistant
+reads the job's record before it moves anything or suggests a time.
+
+So when it moves a visit, it tells you plainly if the customer may be expecting the old slot. That
+judgement stays yours: *you* know whether the Millers need a phone call. What the system guarantees
+is that nothing gets moved behind your back, and that you're told what changed.
 
 
 ## Part 6 — Week 4: the channels that fill the record for you

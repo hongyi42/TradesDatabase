@@ -23,7 +23,7 @@ import {
   naiveLocalISO,
   previewBookVisit,
   previewMoveVisit,
-  setVisitPromise,
+  previewUnscheduleVisit,
 } from './booking.js';
 
 // Integration against the local stack, scheduling.test.ts truncate discipline.
@@ -74,7 +74,7 @@ describe('naiveLocalISO', () => {
 });
 
 describe('bookVisit', () => {
-  test('customerId path mints a job shell, books confirmed; promises NOTHING by default', async () => {
+  test('customerId path mints a job shell and books it confirmed', async () => {
     const customer = await createCustomer({ tenantId, name: 'Henderson' });
     const { assignment, job, warning } = await bookVisit({
       tenantId,
@@ -91,10 +91,6 @@ describe('bookVisit', () => {
     expect(job.status).toBe('open');
     expect(job.title).toBe('water heater replacement');
     expect(assignment.status).toBe('confirmed');
-    // Safe default: no promise was stated, so the record claims none — and
-    // stamps NO promised day (never invent a promise the manager didn't make).
-    expect(assignment.promise_level).toBe('none');
-    expect(assignment.promised_day).toBeNull();
     expect(assignment.starts_at).toContain('2026-11-02T09:00');
     // Event trail: a 'booked' event exists for this assignment.
     const events = await listScheduleEventsSince(tenantId, 0, 50);
@@ -171,22 +167,6 @@ describe('bookVisit', () => {
     expect(second.job.duration_minutes).toBe(80);
   });
 
-  test('an explicit day promise records the promised day', async () => {
-    const customer = await createCustomer({ tenantId, name: 'Promised Pat' });
-    const { assignment } = await bookVisit({
-      tenantId,
-      technicianRef: 'book-tech',
-      customerId: customer.id,
-      date: '2026-11-06',
-      startTime: '09:00',
-      endTime: '10:00',
-      promiseLevel: 'day', // the manager told the customer this day
-      actorRef: 'manager-test',
-    });
-    expect(assignment.promise_level).toBe('day');
-    expect(assignment.promised_day).toBe('2026-11-06');
-  });
-
   test('a seat-exempt person is bookable like any technician (assignability lock)', async () => {
     const helper = await insertTechnician({
       tenantId,
@@ -226,10 +206,10 @@ describe('bookVisit', () => {
         actorRef: 'manager-test',
         // endTime deliberately omitted (cast: the untyped MCP boundary —
         // e.g. a malformed staged detail — can still produce this shape).
-        // Message updated by plan 4b-2: the required-check now names the ONE
-        // legal omission (an explicit timeTbd booking).
+        // Rung 9a: the required-check now names the ONE legal omission —
+        // ALL THREE of date/startTime/endTime absent (an untimed visit).
       } as Parameters<typeof bookVisit>[0]),
-    ).rejects.toThrow(/endTime are all required/);
+    ).rejects.toThrow(/date AND both times, or none of the three/);
     expect((await listUnassignedOpenJobs(tenantId)).length).toBe(before);
   });
 
@@ -378,7 +358,7 @@ describe('bookVisit', () => {
 });
 
 describe('moveVisit', () => {
-  test('moved row lands confirmed, visible to confirmed-filtered reads; promise carried; promiseBroken flagged on a day change', async () => {
+  test('a DATE CHANGE moves the row one-shot: confirmed, visible, duration preserved (rung 9a)', async () => {
     const customer = await createCustomer({ tenantId, name: 'Mover Mel' });
     const { assignment } = await bookVisit({
       tenantId,
@@ -387,21 +367,19 @@ describe('moveVisit', () => {
       date: '2026-11-09',
       startTime: '09:00',
       endTime: '11:00',
-      promiseLevel: 'day', // customer was told this day → moving it breaks the promise
       actorRef: 'manager-test',
     });
+    // Rung 9a: no schema rail gates this. A date change is a plain move — the
+    // agent is expected to have READ the job's record for promises first.
     const moved = await moveVisit({
       tenantId,
       assignmentId: assignment.id,
-      date: '2026-11-10', // day change → promise break
+      date: '2026-11-10',
       startTime: '13:00',
       reason: 'customer asked for Tuesday',
       actorRef: 'manager-test',
     });
-    expect(moved.promiseBroken).toBe(true);
     expect(moved.created.status).toBe('confirmed'); // BLOCKER-#1 regression pin
-    expect(moved.created.promise_level).toBe('day'); // carried
-    expect(moved.created.promised_day).toBe('2026-11-10'); // recomputed
     // Duration preserved (09–11 was 2h → 13:00–15:00).
     expect(moved.created.ends_at).toContain('2026-11-10T15:00');
     // Visible to the ['confirmed']-filtered read every surface uses.
@@ -412,13 +390,13 @@ describe('moveVisit', () => {
       ['confirmed'],
     );
     expect(day.map((r) => r.id)).toContain(moved.created.id);
-    // Event trail carries the break flag.
+    // Event trail records where it landed.
     const events = await listScheduleEventsSince(tenantId, 0, 100);
     const movedEvent = events.find((e) => e.assignment_id === moved.created.id && e.kind === 'moved');
-    expect(movedEvent?.detail).toMatchObject({ promiseBroken: true, toDay: '2026-11-10' });
+    expect(movedEvent?.detail).toMatchObject({ toDay: '2026-11-10' });
   });
 
-  test('same-day time shuffle: pre-check excludes the moved row; promise NOT broken', async () => {
+  test('same-day time shuffle: the overlap pre-check excludes the moved row itself', async () => {
     const customer = await createCustomer({ tenantId, name: 'Shuffle Sam' });
     const { assignment } = await bookVisit({
       tenantId,
@@ -427,7 +405,6 @@ describe('moveVisit', () => {
       date: '2026-11-11',
       startTime: '09:00',
       endTime: '11:00',
-      promiseLevel: 'day', // day promised → a same-day TIME shift must NOT break it
       actorRef: 'manager-test',
     });
     const moved = await moveVisit({
@@ -438,29 +415,7 @@ describe('moveVisit', () => {
       reason: 'shift half an hour',
       actorRef: 'manager-test',
     });
-    expect(moved.promiseBroken).toBe(false);
     expect(moved.created.starts_at).toContain('2026-11-11T09:30');
-    // A TIME-level promise breaks on a same-day TIME change (the customer
-    // heard "9:30", not just "Wednesday") — day-level promises don't.
-    const timePromised = await bookVisit({
-      tenantId,
-      technicianRef: 'book-tech',
-      customerId: (await createCustomer({ tenantId, name: 'Time Promise Tia' })).id,
-      date: '2026-11-18',
-      startTime: '09:00',
-      endTime: '10:00',
-      promiseLevel: 'time',
-      actorRef: 'manager-test',
-    });
-    const timeShift = await moveVisit({
-      tenantId,
-      assignmentId: timePromised.assignment.id,
-      date: '2026-11-18', // same day…
-      startTime: '14:00', // …new time → the told-time promise breaks
-      reason: 'ran long',
-      actorRef: 'manager-test',
-    });
-    expect(timeShift.promiseBroken).toBe(true);
 
     // Same-technician move onto a SUNDAY warns too (no technicianRef passed).
     const sundayMove = await moveVisit({
@@ -725,8 +680,8 @@ describe('unassigned bookings (technician-optional)', () => {
   });
 });
 
-describe('detach (unassign) + time_only promise — plan 4a.5', () => {
-  test('moveVisit unassign parks the visit: technician_id NULL, moved event, promise intact', async () => {
+describe('detach (unassign) — plan 4a.5', () => {
+  test('moveVisit unassign parks the visit: technician_id NULL, moved event', async () => {
     const customer = await createCustomer({ tenantId, name: 'Detach Dana' });
     const { assignment } = await bookVisit({
       tenantId,
@@ -735,12 +690,10 @@ describe('detach (unassign) + time_only promise — plan 4a.5', () => {
       date: '2026-12-01',
       startTime: '09:00',
       endTime: '10:00',
-      promiseLevel: 'day',
       actorRef: 'manager-test',
     });
     expect(assignment.technician_id).toBe(tech.id);
-    // Preview first: a same-day/same-time park breaks NO promise (day-level
-    // promises gate the DAY; the person is not part of the promise).
+    // Preview first: a park is one-shot — nothing about it is confirm-gated.
     const preview = await previewMoveVisit({
       tenantId,
       assignmentId: assignment.id,
@@ -751,8 +704,6 @@ describe('detach (unassign) + time_only promise — plan 4a.5', () => {
       actorRef: 'manager-test',
     });
     expect(preview.unassign).toBe(true);
-    expect(preview.promiseLevel).toBe('day');
-    expect(preview.promiseBroken).toBe(false);
     expect(preview.requiresConfirmation).toBe(false);
     expect(preview.technicianName).toBeNull(); // the TARGET is nobody
 
@@ -768,10 +719,7 @@ describe('detach (unassign) + time_only promise — plan 4a.5', () => {
     });
     expect(moved.created.technician_id).toBeNull();
     expect(moved.created.status).toBe('confirmed');
-    expect(moved.created.promise_level).toBe('day'); // promise carries
-    expect(moved.created.promised_day).toBe('2026-12-01');
     expect(moved.cancelled.id).toBe(assignment.id);
-    expect(moved.promiseBroken).toBe(false);
     // The ledger records a plain 'moved' with the old row linked — exactly
     // what boardNotify resolves for the "moved off your schedule" push.
     const events = await listScheduleEventsSince(tenantId, before);
@@ -859,179 +807,84 @@ describe('detach (unassign) + time_only promise — plan 4a.5', () => {
     expect(moved.created.technician_id).toBeNull();
   });
 
-  test('time_only: promised_day NULL; day moves freely; a time change breaks', async () => {
-    const customer = await createCustomer({ tenantId, name: 'Nine AM Nia' });
-    const { assignment } = await bookVisit({
-      tenantId,
-      technicianRef: 'book-tech',
-      customerId: customer.id,
-      date: '2026-12-04',
-      startTime: '09:00',
-      endTime: '10:00',
-      promiseLevel: 'time_only',
-      actorRef: 'manager-test',
-    });
-    expect(assignment.promise_level).toBe('time_only');
-    expect(assignment.promised_day).toBeNull(); // the constraint accepts the pair
-    // Different DAY, same start time → one-shot (the day was never promised).
-    const dayMove = await previewMoveVisit({
-      tenantId,
-      assignmentId: assignment.id,
-      date: '2026-12-07',
-      startTime: '09:00',
-      reason: 'shift the day',
-      actorRef: 'manager-test',
-    });
-    expect(dayMove.promiseBroken).toBe(false);
-    expect(dayMove.requiresConfirmation).toBe(false);
-    // Same day, different START TIME → the promise breaks.
-    const timeMove = await previewMoveVisit({
-      tenantId,
-      assignmentId: assignment.id,
-      date: '2026-12-04',
-      startTime: '13:00',
-      reason: 'shift the time',
-      actorRef: 'manager-test',
-    });
-    expect(timeMove.promiseLevel).toBe('time_only');
-    expect(timeMove.promiseBroken).toBe(true);
-    expect(timeMove.requiresConfirmation).toBe(true);
-    // Committing the day move keeps promised_day NULL (carriesPromisedDay).
-    const moved = await moveVisit({
-      tenantId,
-      assignmentId: assignment.id,
-      date: '2026-12-07',
-      startTime: '09:00',
-      reason: 'shift the day',
-      actorRef: 'manager-test',
-    });
-    expect(moved.created.promise_level).toBe('time_only');
-    expect(moved.created.promised_day).toBeNull();
-    expect(moved.promiseBroken).toBe(false);
-  });
 });
 
-describe('unplaced (timeTbd) bookings + placing them — plan 4b-2', () => {
+describe('untimed bookings + placing them — plan 4b-2, rung 9a', () => {
   async function mkCustomer(name: string) {
     return createCustomer({ tenantId, name });
   }
 
-  test('a timeTbd booking creates NULL times + the day range; the shell stays duration-less', async () => {
+  test('an UNTIMED booking stores no date at all; the shell stays duration-less', async () => {
     const customer = await mkCustomer('TBD Tina');
+    // Rung 9a: omitting date AND both times is the whole shape. Nothing
+    // records when it should happen — that lives in the conversation.
     const r = await bookVisit({
       tenantId,
       customerId: customer.id,
-      title: 'tbd single day',
-      timeTbd: true,
-      earliestDate: '2026-11-19',
+      title: 'untimed single',
       actorRef: 'mgr',
     });
     expect(r.assignment.starts_at).toBeNull();
     expect(r.assignment.ends_at).toBeNull();
-    expect(r.assignment.earliest_date).toBe('2026-11-19');
-    expect(r.assignment.latest_date).toBe('2026-11-19'); // defaults to earliest
     expect(r.assignment.status).toBe('confirmed');
     // No span was measured — the never-guess rule holds for the shell too.
     expect(r.job.duration_minutes).toBeNull();
   });
 
-  test('timeTbd with a startTime is rejected; missing day is rejected', async () => {
+  test('PARTIAL time input is rejected — all three or none', async () => {
     const customer = await mkCustomer('TBD Mix');
+    // A date with no times: the accident the "all or none" rule catches.
+    await expect(
+      bookVisit({ tenantId, customerId: customer.id, date: '2026-11-19', actorRef: 'mgr' }),
+    ).rejects.toThrow(/date AND both times, or none of the three/);
+    // A start with no end, and times with no day.
     await expect(
       bookVisit({
-        tenantId, customerId: customer.id, timeTbd: true,
-        earliestDate: '2026-11-19', startTime: '09:00', actorRef: 'mgr',
+        tenantId, customerId: customer.id, date: '2026-11-19', startTime: '09:00', actorRef: 'mgr',
       }),
-    ).rejects.toThrow(/timeTbd means NO times/);
+    ).rejects.toThrow(/date AND both times, or none of the three/);
     await expect(
-      bookVisit({ tenantId, customerId: customer.id, timeTbd: true, actorRef: 'mgr' }),
-    ).rejects.toThrow(/needs the day/);
+      bookVisit({
+        tenantId, customerId: customer.id, startTime: '09:00', endTime: '10:00', actorRef: 'mgr',
+      }),
+    ).rejects.toThrow(/date AND both times, or none of the three/);
   });
 
-  test('time promises are refused on timeTbd; a day promise needs ONE day', async () => {
-    const customer = await mkCustomer('TBD Promise');
-    await expect(
-      bookVisit({
-        tenantId, customerId: customer.id, timeTbd: true,
-        earliestDate: '2026-11-19', promiseLevel: 'time', actorRef: 'mgr',
-      }),
-    ).rejects.toThrow(/needs a booked time/);
-    await expect(
-      bookVisit({
-        tenantId, customerId: customer.id, timeTbd: true,
-        earliestDate: '2026-11-19', promiseLevel: 'time_only', actorRef: 'mgr',
-      }),
-    ).rejects.toThrow(/needs a booked time/);
-    await expect(
-      bookVisit({
-        tenantId, customerId: customer.id, timeTbd: true,
-        earliestDate: '2026-11-19', latestDate: '2026-11-20',
-        promiseLevel: 'day', actorRef: 'mgr',
-      }),
-    ).rejects.toThrow(/ONE day/);
-    // Single-day + day promise is coherent and stamps the promised day.
-    const ok = await bookVisit({
-      tenantId, customerId: customer.id, title: 'tbd promised',
-      timeTbd: true, earliestDate: '2026-11-19',
-      promiseLevel: 'day', actorRef: 'mgr',
-    });
-    expect(ok.assignment.promise_level).toBe('day');
-    expect(ok.assignment.promised_day).toBe('2026-11-19');
-  });
-
-  test('identical unplaced twins for one customer are refused (retry hazard)', async () => {
-    const customer = await mkCustomer('TBD Twin');
-    await bookVisit({
-      tenantId, customerId: customer.id, title: 'twin', timeTbd: true,
-      earliestDate: '2026-11-23', latestDate: '2026-11-25', actorRef: 'mgr',
-    });
-    await expect(
-      bookVisit({
-        tenantId, customerId: customer.id, title: 'twin again', timeTbd: true,
-        earliestDate: '2026-11-23', latestDate: '2026-11-25', actorRef: 'mgr',
-      }),
-    ).rejects.toThrow(/identical time-TBD visit/);
-  });
-
-  test('the twin key includes the technician: same range + DIFFERENT person books; same person retries refuse', async () => {
-    // Two trades, same customer, same week ("plumber Alice Aug 4–6, then
-    // electrician Bob Aug 4–6") is a legitimate pattern, not a duplicate —
-    // the twin key is person-or-nobody (final-review finding: the unkeyed
-    // guard refused the second trade while the placed path allowed it).
+  test('the twin key is the JOB + the person: a retry refuses, a second job books', async () => {
+    // The retry hazard the guard exists for: untimed rows are exempt from the
+    // DB overlap guard, so a transport retry would duplicate silently. Rung 9a
+    // re-keyed it from the date range (gone) onto the JOB — and it stays keyed
+    // on the person for the original final-review reason.
     const customer = await mkCustomer('TBD Two Trades');
-    await bookVisit({
-      tenantId, customerId: customer.id, title: 'first trade', timeTbd: true,
-      technicianRef: 'book-tech',
-      earliestDate: '2026-11-30', latestDate: '2026-12-02', actorRef: 'mgr',
+    const first = await bookVisit({
+      tenantId, customerId: customer.id, title: 'first trade',
+      technicianRef: 'book-tech', actorRef: 'mgr',
     });
-    // Different person, same range: books fine.
+    // The SAME job and the same person again: a retry.
+    await expect(
+      bookVisit({
+        tenantId, jobId: first.job.id, technicianRef: 'book-tech', actorRef: 'mgr',
+      }),
+    ).rejects.toThrow(/untimed visit for .* already exists on this job/);
+    // Two trades on one customer ("plumber then electrician") is legitimate
+    // work, not a duplicate — a DIFFERENT job books fine.
     const second = await bookVisit({
-      tenantId, customerId: customer.id, title: 'second trade', timeTbd: true,
-      technicianRef: 'helper-hank',
-      earliestDate: '2026-11-30', latestDate: '2026-12-02', actorRef: 'mgr',
+      tenantId, customerId: customer.id, title: 'second trade',
+      technicianRef: 'helper-hank', actorRef: 'mgr',
     });
     expect(second.assignment.starts_at).toBeNull();
-    // Same person, same range: the retry hazard the guard exists for.
-    await expect(
-      bookVisit({
-        tenantId, customerId: customer.id, title: 'retry', timeTbd: true,
-        technicianRef: 'book-tech',
-        earliestDate: '2026-11-30', latestDate: '2026-12-02', actorRef: 'mgr',
-      }),
-    ).rejects.toThrow(/identical time-TBD visit/);
-    // A person-less twin of an ASSIGNED visit is not a twin either.
-    const parked = await bookVisit({
-      tenantId, customerId: customer.id, title: 'parked too', timeTbd: true,
-      earliestDate: '2026-11-30', latestDate: '2026-12-02', actorRef: 'mgr',
+    expect(second.job.id).not.toBe(first.job.id);
+    // A DIFFERENT person on the same job is not a retry either.
+    const otherPerson = await bookVisit({
+      tenantId, jobId: first.job.id, technicianRef: 'helper-hank', actorRef: 'mgr',
     });
-    expect(parked.assignment.technician_id).toBeNull();
+    expect(otherPerson.assignment.technician_id).not.toBe(first.assignment.technician_id);
   });
 
-  test('moving an unplaced visit to real times PLACES it: times set, range cleared', async () => {
+  test('moving an untimed visit to real times PLACES it', async () => {
     const customer = await mkCustomer('TBD Place');
     const booked = await bookVisit({
-      tenantId, customerId: customer.id, title: 'place me', timeTbd: true,
-      earliestDate: '2026-11-30', actorRef: 'mgr',
+      tenantId, customerId: customer.id, title: 'place me', actorRef: 'mgr',
     });
     const moved = await moveVisit({
       tenantId,
@@ -1045,18 +898,13 @@ describe('unplaced (timeTbd) bookings + placing them — plan 4b-2', () => {
     });
     expect(moved.created.starts_at).toBe('2026-11-30T09:00:00+00:00');
     expect(moved.created.ends_at).toBe('2026-11-30T10:30:00+00:00');
-    expect(moved.created.earliest_date).toBeNull();
-    expect(moved.created.latest_date).toBeNull();
     expect(moved.created.technician_id).toBe(tech.id);
-    // Placing is never a TIME break (there was no old time).
-    expect(moved.promiseBroken).toBe(false);
   });
 
   test('placing without endTime uses the job length; errors when that is null too', async () => {
     const customer = await mkCustomer('TBD Length');
     const withLen = await bookVisit({
-      tenantId, customerId: customer.id, title: 'has length', timeTbd: true,
-      earliestDate: '2026-12-01', actorRef: 'mgr',
+      tenantId, customerId: customer.id, title: 'has length', actorRef: 'mgr',
     });
     await updateJobDetails(tenantId, withLen.job.id, { durationMinutes: 90 },
       (await getJob(withLen.job.id))!.updated_at);
@@ -1068,8 +916,7 @@ describe('unplaced (timeTbd) bookings + placing them — plan 4b-2', () => {
     expect(moved.created.ends_at).toBe('2026-12-01T14:30:00+00:00'); // 13:00 + 90m
 
     const noLen = await bookVisit({
-      tenantId, customerId: customer.id, title: 'no length', timeTbd: true,
-      earliestDate: '2026-12-02', actorRef: 'mgr',
+      tenantId, customerId: customer.id, title: 'no length', actorRef: 'mgr',
     });
     await expect(
       moveVisit({
@@ -1080,67 +927,6 @@ describe('unplaced (timeTbd) bookings + placing them — plan 4b-2', () => {
     ).rejects.toThrow(/no recorded length/);
   });
 
-  test('placing a day-promised unplaced visit: same day keeps the promise, another day breaks it', async () => {
-    const customer = await mkCustomer('TBD DayPromise');
-    const mk = () =>
-      bookVisit({
-        tenantId, customerId: customer.id, title: `promised ${Math.random()}`,
-        timeTbd: true, earliestDate: '2026-12-16',
-        promiseLevel: 'day', actorRef: 'mgr',
-      });
-    const sameDay = await mk();
-    expect(sameDay.assignment.promised_day).toBe('2026-12-16'); // the RANGE day, always
-    const placedSame = await moveVisit({
-      tenantId, assignmentId: sameDay.assignment.id,
-      date: '2026-12-16', startTime: '09:00', endTime: '10:00',
-      reason: 'placing on the promised day', actorRef: 'mgr',
-    });
-    expect(placedSame.promiseBroken).toBe(false);
-
-    const otherDay = await mk();
-    const placedOther = await moveVisit({
-      tenantId, assignmentId: otherDay.assignment.id,
-      date: '2026-12-17', startTime: '09:00', endTime: '10:00',
-      reason: 'placing on a different day', actorRef: 'mgr',
-    });
-    expect(placedOther.promiseBroken).toBe(true); // the customer heard the 16th
-  });
-
-  test('a mixed date + earliestDate day-promise stamps the RANGE day, not date', async () => {
-    const customer = await mkCustomer('TBD MixedStamp');
-    const r = await bookVisit({
-      tenantId, customerId: customer.id, title: 'mixed stamp',
-      timeTbd: true, date: '2026-12-01', earliestDate: '2026-12-18',
-      promiseLevel: 'day', actorRef: 'mgr',
-    });
-    expect(r.assignment.earliest_date).toBe('2026-12-18');
-    expect(r.assignment.promised_day).toBe('2026-12-18'); // never the stray date arg
-  });
-
-  test('set promise on unplaced: day works on single-day, refused on a range; time refused', async () => {
-    const customer = await mkCustomer('TBD SetPromise');
-    const single = await bookVisit({
-      tenantId, customerId: customer.id, title: 'single', timeTbd: true,
-      earliestDate: '2026-12-07', actorRef: 'mgr',
-    });
-    const done = await setVisitPromise(tenantId, single.assignment.id, 'day', 'mgr');
-    expect(done.updated.promise_level).toBe('day');
-    expect(done.updated.promised_day).toBe('2026-12-07');
-    await expect(
-      setVisitPromise(tenantId, single.assignment.id, 'time', 'mgr'),
-    ).rejects.toThrow(/needs a booked time/);
-    await expect(
-      setVisitPromise(tenantId, single.assignment.id, 'time_only', 'mgr'),
-    ).rejects.toThrow(/needs a booked time/);
-
-    const ranged = await bookVisit({
-      tenantId, customerId: customer.id, title: 'ranged', timeTbd: true,
-      earliestDate: '2026-12-08', latestDate: '2026-12-10', actorRef: 'mgr',
-    });
-    await expect(
-      setVisitPromise(tenantId, ranged.assignment.id, 'day', 'mgr'),
-    ).rejects.toThrow(/ONE day/);
-  });
 });
 
 describe('unscheduleVisit', () => {
@@ -1167,6 +953,34 @@ describe('unscheduleVisit', () => {
     expect(await latestScheduleVersion(tenantId)).toBeGreaterThan(before);
     // The job survives a cancelled visit (rebooking is the job machine's business).
     expect((await getJob(job.id))?.status).toBe('open');
+  });
+
+  test('the ONE surviving gate: a PLACED visit confirms, an unplaced one is one-shot', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Gate Gale' });
+    // Placed = it has a real time, so a customer is expecting it. Rung 9a kept
+    // exactly this confirmation and dropped the other two (book and move).
+    const placed = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      date: '2026-11-17',
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+    const placedPreview = await previewUnscheduleVisit(tenantId, placed.assignment.id);
+    expect(placedPreview.requiresConfirmation).toBe(true);
+    expect(placedPreview.day).toBe('2026-11-17');
+
+    // Untimed = nobody's appointment yet. Dropping it needs no ceremony.
+    const unplaced = await bookVisit({
+      tenantId,
+      customerId: customer.id,
+      title: 'not placed yet',
+      actorRef: 'manager-test',
+    });
+    const unplacedPreview = await previewUnscheduleVisit(tenantId, unplaced.assignment.id);
+    expect(unplacedPreview.requiresConfirmation).toBe(false);
   });
 });
 
@@ -1202,7 +1016,6 @@ describe('cancelJob — the terminal verb (cancel-vocabulary plan, 2026-07-25)',
       date: '2027-01-05',
       startTime: '13:00',
       endTime: '14:00',
-      promiseLevel: 'day',
       actorRef: 'manager-test',
     });
     const completedRow = await updateAssignmentStatus(done.assignment.id, 'completed');

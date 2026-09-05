@@ -81,10 +81,7 @@ export interface VisitSpec {
   date?: string;
   startTime?: string;
   durationMinutes?: number;
-  earliestDate?: string;
-  latestDate?: string;
   status: 'proposed' | 'confirmed' | 'completed' | 'cancelled';
-  promiseLevel: 'none' | 'day' | 'time';
 }
 
 export interface TechnicianSpec {
@@ -381,7 +378,7 @@ export type FixtureTier = (typeof FIXTURE_TIERS)[number];
  *   day 0  09:00        wf-04  the visit a customer calls off (slot handover)
  *   day 1  09:00/13:00  wf-05+06  the day a time-off booking collides with
  *   day 2  10:00        wf-09  the blocker a same-time booking must dodge
- *   day 3  11:00        wf-12  a TIME-promised visit (gate, then release)
+ *   day 3  11:00        wf-12  a placed visit
  *   day 4  13:00/15:00  wf-07+08  the afternoon that gets cleared — LAST on
  *          purpose: M05's instruction is "push these to the next open slots
  *          AFTER that day", and on an earlier day those rehomed visits landed
@@ -390,14 +387,14 @@ export type FixtureTier = (typeof FIXTURE_TIERS)[number];
  *          that failed the end-state. Unconstrained moves must only ever
  *          spill PAST every other wf fixture.
  */
-export const WF_PLACED: Record<number, { day: number; start: string; promise: 'none' | 'time' }> = {
-  4: { day: 0, start: '09:00', promise: 'none' },
-  5: { day: 1, start: '09:00', promise: 'none' },
-  6: { day: 1, start: '13:00', promise: 'none' },
-  7: { day: 4, start: '13:00', promise: 'none' },
-  8: { day: 4, start: '15:00', promise: 'none' },
-  9: { day: 2, start: '10:00', promise: 'none' },
-  12: { day: 3, start: '11:00', promise: 'time' },
+export const WF_PLACED: Record<number, { day: number; start: string }> = {
+  4: { day: 0, start: '09:00' },
+  5: { day: 1, start: '09:00' },
+  6: { day: 1, start: '13:00' },
+  7: { day: 4, start: '13:00' },
+  8: { day: 4, start: '15:00' },
+  9: { day: 2, start: '10:00' },
+  12: { day: 3, start: '11:00' },
 };
 
 // ─────────────────────────────────────────────────────────────── the builder ──
@@ -419,7 +416,7 @@ export function buildWorldSpec({ anchor, seed = 7 }: BuildOptions): WorldSpec {
   // horizon-boundary edges deliberately sit past the base span, and a span that
   // excluded its own rows would understate coverage in every report.
   const days = tenants
-    .flatMap((t) => t.visits.flatMap((v) => [v.date, v.earliestDate, v.latestDate]))
+    .flatMap((t) => t.visits.flatMap((v) => [v.date]))
     .filter((d): d is string => typeof d === 'string')
     .sort();
 
@@ -620,7 +617,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
         startTime: '13:00',
         durationMinutes: w.minutes,
         status: 'completed',
-        promiseLevel: 'none',
       });
     }
   });
@@ -700,9 +696,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
           durationMinutes: w.minutes,
           facts: [],
         });
-        // A promise on roughly every third future visit, so the ladder is
-        // exercised without every move tripping a gate.
-        const promiseLevel = past || seq % 3 !== 0 ? 'none' : seq % 6 === 0 ? 'time' : 'day';
         visits.push({
           key: `visit-base-${seq}`,
           jobKey,
@@ -711,7 +704,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
           startTime: (tech.slots ?? ['08:00'])[i],
           durationMinutes: w.minutes,
           status: past ? 'completed' : 'confirmed',
-          promiseLevel,
         });
       }
     }
@@ -748,7 +740,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
       startTime: '16:00',
       durationMinutes: 60,
       status: 'confirmed',
-      promiseLevel: 'none',
     });
     edges[label] = day;
   }
@@ -777,16 +768,13 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
       durationMinutes: 60,
       facts: [],
     });
-    const from = nextWorkday(addDays(anchor, 2 + i));
     visits.push({
       key: `visit-tbd-${i}`,
       jobKey,
       // One of them has no technician either — person-less AND time-less.
       technicianRef: i === 3 ? null : 'tech-dee',
-      earliestDate: from,
-      latestDate: addDays(from, 2),
+      // No date at all (rung 9a): an untimed visit is the unscheduled queue.
       status: 'confirmed',
-      promiseLevel: 'none',
     });
   }
 
@@ -845,7 +833,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
           startTime: plant.start,
           durationMinutes: 60,
           status: 'confirmed',
-          promiseLevel: plant.promise,
         });
       }
       // Reschedule fixtures need something already on the calendar to move.
@@ -865,8 +852,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
           startTime: '15:15',
           durationMinutes: 30,
           status: 'confirmed',
-          // Half promised, half not: the move gate should fire on some and not others.
-          promiseLevel: i % 2 === 0 ? 'day' : 'none',
         });
       }
       }
@@ -1004,7 +989,6 @@ function buildOtherFirmTenant(anchor: string, edges: Record<EdgeKey, string>): T
         startTime: '09:00',
         durationMinutes: 120,
         status: 'confirmed',
-        promiseLevel: 'none',
       },
     ],
     timeOff: [],

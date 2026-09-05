@@ -230,19 +230,25 @@ reaches the reader.
 The database owns the schedule (`assignments` table). A Google Sheet used to be an input; it isn't
 anymore.
 
-**The promise ladder** is the central concept. It records *what the customer was told*:
+**A visit has a time or it does not** — that is the whole state model. A visit with both
+timestamps is *placed*; one with neither is *untimed*: committed work waiting in the unscheduled
+queue, ordered oldest-first. There is no third shape.
 
-| Level | Meaning | What may move |
-|---|---|---|
-| `none` | nothing promised | anything |
-| `day` | promised a day | the time, within that day |
-| `time_only` | promised a time but not the day | the day, keeping the time |
-| `time` | promised a day **and** time | nothing (immovable) |
+A **promise ladder** (`none`/`day`/`time_only`/`time`, plus a stored `earliest_date..latest_date`
+window) used to sit here and was the central concept. **Both were deleted in rung 9a
+(2026-09-05).** The reason is worth carrying: a job's lifecycle stretches and shrinks as humans
+act, so a commitment frozen in a column is stale the moment the customer calls back. What the
+customer was told now lives where it was said — the calls, emails and notes in L1 — and the agent
+READS the job's record before it edits the schedule. Doctrine, not schema.
 
-This is the human-facing constraint vocabulary and it drives the **confirmation doctrine**:
+That state model drives the **confirmation doctrine**:
 
 > Confirm only what's irreversible or externally visible; everything reversible, just do — and say
 > what you did.
+
+Concretely, since rung 9a: `book_visit` and `move_visit` are always one-shot;
+`unschedule_visit` stages only when the visit is PLACED (a customer is expecting it); `cancel_job`
+always stages.
 
 Over-confirming is treated as a *safety* problem, because it trains people to rubber-stamp. That
 rule is single-sourced as `requiresConfirmation` on tool previews in
@@ -619,7 +625,7 @@ discoverable from the code:
 | **NemoClaw / OpenClaw** | The agent runtime and sandbox manager on trades-box-1. |
 | **Composio** | Third-party connector platform (Gmail, Sheets…) with per-person sessions. |
 | **The board** | The Telegram Mini App dispatch board. |
-| **Promise ladder** | `none` / `day` / `time_only` / `time` — what the customer was told. |
+| **Untimed visit** | Committed work with no day or time. Waits in the unscheduled queue, oldest first. (Replaced the *promise ladder* and the stored date window, both deleted in rung 9a.) |
 | **Loose bucket / tray** | Work that exists but isn't scheduled yet. |
 | **Wire pass** | Re-running the box bootstrap so each sandbox's AGENTS.md contract text refreshes. |
 | **RPI** | Research → Plan → Implement, our feature workflow. |

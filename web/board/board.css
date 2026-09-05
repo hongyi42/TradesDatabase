@@ -276,16 +276,6 @@ body.dragging .stop.draggable { cursor: grabbing; }
 .detail-value { flex: 1; min-width: 0; overflow-wrap: break-word; }
 .detail-value a { color: var(--accent); text-decoration: none; }
 
-.stop-badges { display: flex; flex-direction: column; gap: 3px; align-items: flex-end; }
-.badge {
-  font-size: 11px;
-  border-radius: 6px;
-  padding: 1px 6px;
-  background: var(--accent);
-  color: var(--accent-fg);
-  white-space: nowrap;
-}
-
 /* ---- Quick-edit (plan 4a.5) ---- */
 .edit-btn {
   background: none;

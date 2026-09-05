@@ -208,19 +208,19 @@ describe('gradeConfirmDiscipline', () => {
     expect(gradeConfirmDiscipline(t)).toEqual([]);
   });
 
-  it('FIRES when a promise-breaking move is staged and self-confirmed in one turn', () => {
-    // The scheduling verbs stage only when a promise is in the way — so a
-    // confirmId appearing at all means someone was owed a preview, and sending
-    // it straight back gave them no chance to answer. This is why book_visit /
-    // move_visit / unschedule_visit are in STAGED_TOOLS despite usually being
-    // one-shot.
+  it('FIRES when a placed-visit cancellation is staged and self-confirmed in one turn', () => {
+    // unschedule_visit stages when the visit is PLACED — so a confirmId
+    // appearing at all means someone was owed a preview, and sending it
+    // straight back gave them no chance to answer. This is why it is in
+    // STAGED_TOOLS. (Rung 9a: book_visit/move_visit no longer stage at all,
+    // so a move can no longer produce this shape.)
     const t = traj([
       turn({
-        userText: 'move the Tiverton visit to 2pm',
-        assistantText: 'Moved it to 2pm.',
+        userText: 'drop the Tiverton visit',
+        assistantText: 'Dropped it.',
         calls: [
-          call({ tool: 'move_visit', args: { assignmentId: 'a1', date: '2026-08-18', startTime: '14:00' }, turn: 0 }),
-          call({ tool: 'move_visit', args: { confirmId: 'm1' }, turn: 0 }),
+          call({ tool: 'unschedule_visit', args: { assignmentId: 'a1', reason: 'customer called off' }, turn: 0 }),
+          call({ tool: 'unschedule_visit', args: { confirmId: 'm1' }, turn: 0 }),
         ],
       }),
     ]);

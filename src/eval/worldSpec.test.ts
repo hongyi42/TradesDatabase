@@ -120,14 +120,17 @@ describe('buildWorldSpec — referential integrity', () => {
 });
 
 describe('buildWorldSpec — every visit is a legal row', () => {
-  it('is placed XOR unplaced (the createAssignment contract)', () => {
+  it('is fully placed or fully untimed (the createAssignment contract)', () => {
     eachTenant((t, _w, anchor) => {
       for (const v of t.visits) {
-        const placed = v.date !== undefined && v.startTime !== undefined && v.durationMinutes !== undefined;
-        const windowed = v.earliestDate !== undefined && v.latestDate !== undefined;
-        // createAssignment throws on a mix, and the DB check backstops it.
-        expect(placed !== windowed, `${t.name} @ ${anchor} visit ${v.key}`).toBe(true);
-        if (windowed) expect(v.latestDate! >= v.earliestDate!).toBe(true);
+        // Rung 9a: a visit has a time or it does not — there is no third
+        // (windowed) shape, so the rule is that the time fields arrive
+        // together or not at all. createAssignment throws on a half-timed row.
+        const parts = [v.date, v.startTime, v.durationMinutes].filter((x) => x !== undefined);
+        expect(
+          parts.length === 3 || parts.length === 0,
+          `${t.name} @ ${anchor} visit ${v.key}`,
+        ).toBe(true);
       }
     });
   });
@@ -185,18 +188,6 @@ describe('buildWorldSpec — every visit is a legal row', () => {
             `${t.name} @ ${anchor}: ${ref} — ${lane[i - 1].key} (${lane[i - 1].startsAt}..${lane[i - 1].endsAt}) overlaps ${lane[i].key} (${lane[i].startsAt})`,
           ).toBe(true);
         }
-      }
-    });
-  });
-
-  it('carries a promised day whenever it promises anything', () => {
-    // The DB check requires promised_day for any promise_level != 'none'; the
-    // applier derives it from the visit's own day, so the spec only has to keep
-    // promises off unplaced rows, where there is no day to derive.
-    eachTenant((t, _w, anchor) => {
-      for (const v of t.visits) {
-        if (v.promiseLevel === 'none') continue;
-        expect(isPlacedSpec(v), `${t.name} @ ${anchor}: ${v.key} promises with no day`).toBe(true);
       }
     });
   });
@@ -343,10 +334,8 @@ describe('buildWorldSpec — isolation and density', () => {
       const queue = main.jobs.filter((j) => j.status === 'open' && !scheduled.has(j.key));
       expect(queue.length, `queue @ ${anchor}`).toBeGreaterThanOrEqual(4);
 
-      // The ladder, pins and time-TBD rows all have to exist or the scenarios
-      // that read them grade against an empty set.
-      expect(main.visits.some((v) => v.promiseLevel === 'day')).toBe(true);
-      expect(main.visits.some((v) => v.promiseLevel === 'time')).toBe(true);
+      // Time-TBD rows have to exist or the scenarios that read them grade
+      // against an empty set.
       expect(main.visits.some((v) => !isPlacedSpec(v))).toBe(true);
       expect(main.visits.some((v) => v.technicianRef === null)).toBe(true);
     });
@@ -355,7 +344,7 @@ describe('buildWorldSpec — isolation and density', () => {
   it('reports a span that actually covers its rows', () => {
     eachWorld((w, anchor) => {
       const dated = w.tenants
-        .flatMap((t) => t.visits.flatMap((v) => [v.date, v.earliestDate, v.latestDate]))
+        .flatMap((t) => t.visits.flatMap((v) => [v.date]))
         .filter((d): d is string => typeof d === 'string');
       for (const d of dated) {
         expect(d >= w.span.from, `${d} before span.from @ ${anchor}`).toBe(true);

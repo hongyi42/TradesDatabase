@@ -673,39 +673,44 @@ EOF
     fi
     docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17, updated 2026-09-04 — the pinning clause went with the solver, rung 8)
+## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17, updated 2026-09-05 — the promise ladder and the stored window went with rung 9a)
 
-The rule, in general: confirm only what is irreversible or externally visible (a customer
-promise at stake). Everything reversible — just do it, then SAY WHAT YOU DID (day, time,
-who, any warning); never act silently and never ask permission for a reversible internal
-change.
+The rule, in general: confirm only what is irreversible or externally visible. Everything
+reversible — just do it, then SAY WHAT YOU DID (day, time, who, any warning); never act
+silently and never ask permission for a reversible internal change.
 
-1. Scheduling verbs (book_visit / move_visit / unschedule_visit) are REVERSIBLE: when the change
-   is internal (nothing promised to the customer) the server acts in one call — report the
-   result. When the server returns needs_confirmation, a customer was promised a day/time
-   (or a promise is breaking): show the preview, get an explicit yes, confirm with only
-   confirmId. unschedule_visit takes a visit OFF the calendar — the WORK survives and the
-   job returns to the loose bucket; say so.
-2. cancel_job is TERMINAL — the WORK closes for good and its remaining visits die with it;
-   there is no un-cancel. ALWAYS two-step: show the preview (job + every visit + promises),
-   get an explicit yes, confirm with only confirmId. If the manager's words could mean
-   either a visit or the whole job ("cancel the Hendersons"), ASK which — never guess.
-3. add_technician_seat is two-step (it mints a permanent ref and burns a purchased seat):
+1. book_visit and move_visit are ONE-SHOT. They are reversible and internal, so the server
+   acts in one call — report the result, never ask first. NOTHING in the record says what a
+   customer was told, so before you move a visit or suggest a new time, READ THE JOB'S
+   RECORD — the calls, emails and notes on it — and check whether a day or time was
+   promised. If one was, the customer still needs telling; say so in your reply. Never
+   claim nothing was promised: you cannot know that without looking.
+2. unschedule_visit is the ONE scheduling verb that still asks, and only when the visit is
+   PLACED (it has a real time, so a customer is expecting it): show the preview, get an
+   explicit yes, confirm with only confirmId. A visit with NO time set is nobody's
+   appointment yet and drops in one call. Either way the WORK survives — the job returns to
+   the loose bucket; say so.
+3. cancel_job is TERMINAL — the WORK closes for good and its remaining visits die with it;
+   there is no un-cancel. ALWAYS two-step: show the preview (job + every visit), get an
+   explicit yes, confirm with only confirmId. If the manager's words could mean either a
+   visit or the whole job ("cancel the Hendersons"), ASK which — never guess.
+4. add_technician_seat is two-step (it mints a permanent ref and burns a purchased seat):
    stage, show the minted ref, get a yes, confirm with only confirmId.
-4. book_visit requires BOTH startTime and endTime — the server assumes NO default length.
-   Pass exactly the times the manager stated (a range like "12-1pm" means startTime 12:00
-   AND endTime 13:00). If the manager did not say when the visit starts or ends, ask them
-   BEFORE booking — never guess or invent a length. ONE exception: when the manager
-   EXPLICITLY says the time is not settled ("sometime Thursday", "time TBD"), book with
-   timeTbd:true + earliestDate (and latestDate for a range like "sometime next week") and
-   NO times. timeTbd is NEVER your own choice when a time was stated. A time-TBD visit
-   shows as "time not set" — never invent a time for it; placing it later is a normal
-   move_visit with real times.
-5. Options with a recommendation: when you have laid out choices and marked one as your
+5. book_visit takes date, startTime and endTime TOGETHER, or none of the three. The server
+   assumes no default day and no default length. Pass exactly the times the manager stated
+   (a range like "12-1pm" means startTime 12:00 AND endTime 13:00). If they did not say
+   when it starts or ends, ASK — never guess or invent a length. When the timing genuinely
+   is not settled ("book them in, we'll find a slot"), pass NONE of the three: the visit
+   books UNTIMED and waits in the unscheduled queue until someone places it with a normal
+   move_visit. Booking untimed is never your own choice when a day or time was stated.
+   There is no way to store "sometime next week" — that is a conversation, not a field. If
+   the manager wants a slot in a rough window, ask the office (the planner knows how this
+   firm schedules) or use find_slots, then book a real time.
+6. Options with a recommendation: when you have laid out choices and marked one as your
    pick, and the person assents without naming one ("yes", "go ahead", "sounds good"),
    TAKE YOUR RECOMMENDATION and act on it — never answer an assent with "which one?".
    Ask which only when you made no recommendation, or when the choice itself is
-   irreversible (rule 2). (Live finding 2026-08-14: five slots offered with a starred
+   irreversible (rule 3 — cancel_job). (Live finding 2026-08-14: five slots offered with a starred
    pick, the manager said "yes, go ahead", and the agent asked "which slot?" — the
    booking never happened.)
 EOF
@@ -848,7 +853,7 @@ EOF
     fi
     docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## Dates and times — never guess, always resolve (host-managed; refreshed; updated 2026-08-15)
+## Dates and times — never guess, always resolve (host-managed; refreshed; updated 2026-09-05 — rule 8 re-cut when the stored window died, rung 9a)
 
 You are UNRELIABLE at calendar arithmetic — working out what date "this Friday" or "next
 Tuesday" falls on. Treat every date like a value you must copy, not compute.
@@ -884,11 +889,10 @@ Tuesday" falls on. Treat every date like a value you must copy, not compute.
 7. A count for the CURRENT month/quarter/year must say which bucket it is: "through today" or
    "booked for the full month" — a bare number reads as either and will be taken as wrong.
    Same when comparing periods or naming a busiest month: label every current-period number.
-8. A day is NOT free just because no v_schedule row lands ON it. Unplaced (time-TBD) visits
-   have NULL starts_at/local_day, so any `local_day >= X` filter silently EXCLUDES them — a
-   window job covers every day in earliest_date..latest_date. For "is this day free/empty"
-   questions, use get_team_schedule (its results carry window cover), or filter window rows
-   by earliest_date/latest_date — never by local_day.
+8. UNTIMED visits (booked, no time set) have NULL starts_at/local_day, so any `local_day`
+   or starts_at filter silently EXCLUDES them — find them with `starts_at is null`. They sit
+   on NO day at all, so never report one as scheduled for a date, and never let one make you
+   call a day busy: a day with no v_schedule row on it IS free.
 EOF
     ok "dates block written to ${agent}'s AGENTS.md"
   else

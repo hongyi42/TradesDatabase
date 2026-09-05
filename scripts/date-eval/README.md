@@ -180,8 +180,10 @@ enough) is testable without touching the corpus. Setting `GROUNDING_LEAN=1`
 in the **spine's** environment (Render env var — read per call, no build)
 serves lean tool results for the window:
 
-- `get_team_schedule` loses `counts`/`windowCoverByDay`/`countsNote` — the
-  model must count stop rows itself.
+- `get_team_schedule` loses `counts`/`countsNote` — the model must count stop
+  rows itself. (`windowCoverByDay` is gone entirely as of rung 9a: it counted
+  how many time-TBD visits could still land on a day, and an untimed visit no
+  longer holds candidate days.)
 - `get_customer_context` loses `upcomingVisits` and `openWorkNote` — the
   schedule-ahead must come from schedule reads.
 

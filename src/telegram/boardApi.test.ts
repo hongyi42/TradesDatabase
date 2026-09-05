@@ -544,6 +544,22 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     expect(body.days.map((d) => d.date)).not.toContain(d2);
   });
 
+  test('…and it IS in the Unscheduled tray, even though a person is attached', async () => {
+    // The other half of the sentence above, and the review finding that made
+    // it necessary: the tray used to key on "nobody attached", so an ASSIGNED
+    // untimed visit was on no day AND not in the tray — invisible on the whole
+    // board, reachable only through chat. Worse, the board's own Assign button
+    // put it there: tap it on a tray row and the row vanished.
+    const resp = await fetch(`${base}/board/api/bucket`, { headers: tma(900000001) });
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as {
+      parkedVisits: Array<{ assignmentId: string; date: string | null }>;
+    };
+    const mine = body.parkedVisits.find((v) => v.assignmentId === stripAssignmentId);
+    expect(mine, 'an assigned untimed visit must still be reachable').toBeDefined();
+    expect(mine?.date).toBeNull();
+  });
+
   test('partial times are a 400; attachUnplaced re-attaches keeping it untimed', async () => {
     // Rung 9a: all three of date/startTime/endTime, or none. A lone startTime
     // is the accident the rule catches.

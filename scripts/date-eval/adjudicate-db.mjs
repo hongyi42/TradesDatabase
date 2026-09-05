@@ -106,7 +106,14 @@ for (const r of rows) {
       // failure the stored window used to invite.
       evidence = 'DB: the visit exists with no time set';
       const saysUntimed = /no (time|date)|not (yet )?(set|scheduled|placed)|time.{0,4}tbd|unscheduled/.test(reply);
-      const namesADate = /\b20\d\d-\d\d-\d\d\b|\b(january|february|march|april|may|june|july|august|september|october|november|december)\b/.test(reply);
+      // 'may' is deliberately ABSENT from the month list: it is also a modal
+      // verb, and "the visit may be scheduled once we have a slot" is the
+      // correct answer, not a fabricated date. A real May date almost always
+      // carries a day number, which the second alternation catches.
+      const namesADate =
+        /\b20\d\d-\d\d-\d\d\b/.test(reply) ||
+        /\b(january|february|march|april|june|july|august|september|october|november|december)\b/.test(reply) ||
+        /\bmay\s+\d{1,2}\b|\b\d{1,2}\s+may\b/.test(reply);
       verdict = saysUntimed && !namesADate ? 'correct' : namesADate ? 'wrong' : 'human';
     } else {
       evidence = 'DB: no untimed visit for that customer/job';

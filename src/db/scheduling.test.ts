@@ -723,9 +723,11 @@ describe('loose-bucket listers (Plan 4a)', () => {
   };
   let parkedFutureId: string;
   let bucketJobId: string;
+  let bucketCustomerId: string;
 
   beforeAll(async () => {
     const customer = await createCustomer({ tenantId, name: 'Bucket Casa' });
+    bucketCustomerId = customer.id;
     // Parked visit in the future (unassigned, confirmed).
     const parkedJob = await createJob({ tenantId, customerId: customer.id, title: 'Parked work' });
     parkedFutureId = (
@@ -774,7 +776,7 @@ describe('loose-bucket listers (Plan 4a)', () => {
     ).id;
   });
 
-  test('listUnassignedAssignmentsWithRefs embeds names; from bound excludes past rows', async () => {
+  test('listUnassignedAssignmentsWithRefs embeds names; past PLACED rows excluded; ASSIGNED UNTIMED rows included', async () => {
     const rows = await listUnassignedAssignmentsWithRefs(
       tenantId,
       `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`,
@@ -783,10 +785,32 @@ describe('loose-bucket listers (Plan 4a)', () => {
     expect(mine).toBeDefined();
     expect(mine?.jobs?.title).toBe('Parked work');
     expect(mine?.jobs?.customers?.name).toBe('Bucket Casa');
-    // Past and cancelled parked visits are out; nothing here is assigned.
+    // Past and cancelled parked visits are still out.
     expect(rows.some((r) => r.jobs?.title === 'Past parked')).toBe(false);
     expect(rows.some((r) => r.jobs?.title === 'Cancelled parked')).toBe(false);
-    expect(rows.every((r) => r.technician_id === null)).toBe(true);
+
+    // INVERTED (rung 9a, review finding): this reader used to be keyed on
+    // "nobody attached" alone, and `rows.every(technician_id === null)` was
+    // the pin. An untimed visit sits on NO day, so the day view cannot show
+    // it — keyed that way, attaching a person to one made it vanish from the
+    // entire board. It is unscheduled work either way, so the reader is now
+    // "no person OR no time".
+    const assignedJob = await createJob({
+      tenantId, customerId: bucketCustomerId, title: 'Assigned untimed',
+    });
+    const assignedUntimed = await createAssignment({
+      tenantId, jobId: assignedJob.id, technicianId: tech.id,
+      startsAt: null, endsAt: null, status: 'confirmed',
+    });
+    const after = await listUnassignedAssignmentsWithRefs(
+      tenantId,
+      `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`,
+    );
+    const found = after.find((r) => r.id === assignedUntimed.id);
+    expect(found, 'an assigned UNTIMED visit must be reachable here').toBeDefined();
+    expect(found?.technician_id).toBe(tech.id);
+    // A row with a person AND a time is still not this reader's business.
+    expect(after.some((r) => r.technician_id !== null && r.starts_at !== null)).toBe(false);
   });
 
   test('listUnscheduledOpenJobsWithCustomer: embeds the customer, keeps priority, anti-joins live rows', async () => {

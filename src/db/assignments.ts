@@ -469,8 +469,8 @@ export async function listOverdueConfirmedAssignments(
 // windows sitting on unplaced rows were equally invisible (S09–S12). This is
 // their lister: every confirmed assignment for the customer that is still
 // upcoming — placed rows from `todayLocal` forward (day-granular, the
-// get_schedule precedent), plus unplaced (time-TBD) rows whose window has not
-// wholly passed.
+// get_schedule precedent), plus every UNTIMED row, which has no date to have
+// passed (rung 9a deleted the stored window).
 //
 // jobs is an INNER embed used as the customer filter; it carries tenant_id so
 // the caller can re-check the unenforced "job shares its customer's tenant"
@@ -640,14 +640,22 @@ export async function listUnassignedAssignmentsWithRefs(
   tenantId: string,
   fromISO: string,
 ): Promise<AssignmentBucketRow[]> {
-  // DELIBERATELY WIDE — same rule as listUnassignedAssignments above.
+  // DELIBERATELY WIDE, on BOTH axes:
+  //   * no person attached — the original "assign later" recall surface, and
+  //   * NO TIME SET — added by rung 9a, and the reason this reader was widened.
+  // An untimed visit WITH a person on it is still unscheduled work: it sits on
+  // no day (there is no stored range any more), so the day view cannot show it
+  // and the tray is the only place it can appear. Keyed on technician alone,
+  // tapping Assign on a tray row made the visit vanish from the whole board
+  // with no way back except chat (review finding, rung 9a phase 2).
   const { data, error } = await getClient()
     .from('assignments')
     .select(BUCKET_SELECT)
     .eq('tenant_id', tenantId)
-    .is('technician_id', null)
     .eq('status', 'confirmed')
-    .or(`starts_at.gte.${fromISO},starts_at.is.null`)
+    .or(
+      `and(technician_id.is.null,or(starts_at.gte.${fromISO},starts_at.is.null)),starts_at.is.null`,
+    )
     .order('starts_at', { ascending: true, nullsFirst: false });
   if (error) throw new Error(`listUnassignedAssignmentsWithRefs failed: ${error.message}`);
   return (data ?? []) as AssignmentBucketRow[];

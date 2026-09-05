@@ -133,9 +133,15 @@ export interface FitTechnician {
   // PLACED stops only — feeds DENSE_DAY_STOPS, which asks whether the route
   // has SHAPE (gap-fill vs day-level candidates).
   stopsByDate: Map<string, number>;
-  // Placed + UNPLACED-assigned (plan 4b-2): how COMMITTED the day is. Load is
-  // weight without shape — it lowers a day's score but never flips it into
-  // gap-fill mode (timeless visits give weight, not shape).
+  // How COMMITTED the day is. Load is weight without shape — it lowers a day's
+  // score but never flips it into gap-fill mode.
+  //
+  // As of rung 9a this EQUALS stopsByDate: it used to add the unplaced-assigned
+  // rows whose stored range covered the day (plan 4b-2), and an untimed visit
+  // now covers no day at all. Kept as a distinct concept rather than collapsed,
+  // because it is the seam where a future non-stop commitment (a multi-person
+  // visit, a planner-held slot) would land — but nothing populates it today, so
+  // do not read a difference from the two maps that is not there.
   commitmentsByDate: Map<string, number>;
 }
 

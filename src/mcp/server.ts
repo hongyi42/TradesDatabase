@@ -4104,7 +4104,11 @@ async function dispatch(
             return placed;
           })();
       const jobs = await listJobsWithCustomerByIds(tenantId, [
-        ...new Set(rows.map((r) => r.job_id)),
+        // BOTH reads (review finding): in windowed mode the untimed rows come
+        // from their own query, so their jobs are absent from `rows` and every
+        // untimed visit came back with customer: null — an assignmentId the
+        // agent could not put a name to, which defeats the list's purpose.
+        ...new Set([...rows, ...untimedRows].map((r) => r.job_id)),
       ]);
       const jobById = new Map(jobs.map((j) => [j.id, j]));
       const techById = new Map((await listTeam(tenantId)).map((t) => [t.id, t]));
@@ -4257,10 +4261,10 @@ async function dispatch(
     }
     case 'book_visit': {
       const subjectRef = identity.technicianRef;
-        // STAGE. previewBookVisit runs every dry check (tenant guards,
-        // technician resolution, time validation, overlap pre-check) and
-        // throws on anything that would make the booking impossible — nothing
-        // is staged that cannot commit. Nothing is written here.
+        // resolveBooking runs every dry check (tenant guards, technician
+        // resolution, time validation, overlap pre-check) and throws on
+        // anything that would make the booking impossible, before anything is
+        // written; since rung 9a the booking then commits in the same call.
         // technicianRef is OPTIONAL: omitted = an unassigned booking ("on the
         // calendar, assign later" — attach someone later with move_visit).
         const technicianRef = str('technicianRef');
@@ -4282,6 +4286,15 @@ async function dispatch(
         // Mixing the shapes is always an agent error.
         const startTime = str('startTime');
         const endTime = str('endTime');
+        // Non-string args are refused BEFORE the untimed test (the
+        // get_team_schedule / find_slots guard idiom): `str()` maps a number
+        // to undefined, so {date: 20261119} would otherwise slip through as a
+        // deliberate untimed booking instead of failing loudly.
+        for (const key of ['date', 'startTime', 'endTime'] as const) {
+          if (args[key] !== undefined && typeof args[key] !== 'string') {
+            throw new Error(`${key} must be a string (YYYY-MM-DD or HH:MM), not ${typeof args[key]}`);
+          }
+        }
         const untimed = !date && !startTime && !endTime;
         if (!untimed && (!date || !startTime || !endTime)) {
           throw new Error(
@@ -6139,8 +6152,8 @@ async function dispatch(
       // same today-forward default and explicit args still override.
       const earliestArg = str('earliestDate');
       const latestArg = str('latestDate');
-      let earliest = earliestArg ?? todayISO;
-      let latest = latestArg ?? addDaysISO(todayISO, 13);
+      const earliest = earliestArg ?? todayISO;
+      const latest = latestArg ?? addDaysISO(todayISO, 13);
       // Non-string range args → invalid_range, not a silent default window
       // (mirrors get_team_schedule's guard).
       if (
@@ -6174,17 +6187,13 @@ async function dispatch(
           note: `the whole range is in the past (today is ${todayISO}) — slots can only be found from today onward`,
         };
       }
-      // Subject-DEFAULTED bounds are clamped, never thrown (final-review
-      // finding): the 14-day cap and the today floor are rules about the
-      // caller's ARGUMENTS, and erroring on values the caller never passed is
-      // a dead end — a "sometime this month" visit (a range chat happily
-      // books) must still answer a bare find_slots call. Explicit args keep
-      // the hard errors below.
-      if (earliestArg === undefined && earliest < todayISO) earliest = todayISO;
-      if (latestArg === undefined) {
-        const cap = addDaysISO(earliest, 13);
-        if (latest > cap) latest = cap;
-      }
+      // The subject-defaulted clamp is GONE with the stored window (rung 9a).
+      // It existed because an unplaced subject defaulted the search bounds from
+      // its OWN date range, which could be wider than the 14-day cap or start
+      // in the past — and erroring on values the caller never passed was a dead
+      // end. Every subject now defaults to today..today+13, which already
+      // satisfies both rules, so there is nothing left to clamp. Explicit args
+      // keep the hard errors above.
       const spanDays =
         (Date.parse(`${latest}T00:00:00Z`) - Date.parse(`${earliest}T00:00:00Z`)) / 86_400_000 + 1;
       if (spanDays > 14) {

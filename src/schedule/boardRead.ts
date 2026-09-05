@@ -277,11 +277,11 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
     listUnassignedAssignmentsWithRefs(tenantId, '1970-01-01T00:00:00.000Z'),
     jobsPromise,
   ]);
-  // Sorted by each visit's DAY after mapping, not by the SQL order: the query
-  // orders on starts_at with NULLs last, which shoved every time-TBD row to
-  // the bottom of the tray regardless of how soon its range is (final-review
-  // finding: a range starting tomorrow rendered below a placed visit weeks
-  // out). Stable sort keeps same-day relative order.
+  // Sorted after mapping, not by the SQL order. Dated rows (placed but with
+  // nobody attached) keep their day order; UNTIMED rows have no day to sort by
+  // at all, so they queue by AGE behind them — the user's 2026-09-05 choice,
+  // and the order that stops a hard-to-place visit sinking out of sight.
+  // Stable sort keeps same-day relative order.
   const parkedVisits = parked.map((row) => {
       // ID-only foreign keys: re-check each nested row's tenant before its
       // name/title reaches a screen (withhold the field, keep the row —
@@ -302,7 +302,9 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
         customer: customer?.name ?? null,
         jobTitle: job ? job.title : null,
         overdue: placedRow ? (date as string) < today : false,
-        createdAt: row.created_at,
+        // Sort key only — stripped below so the endpoint serves exactly the
+        // declared LooseBucket shape.
+        _createdAt: row.created_at,
       };
     });
   // OLDEST FIRST (user choice 2026-09-05). Placed-but-overdue rows still sort
@@ -312,9 +314,17 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
     if (a.date && b.date) return a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
     if (a.date) return -1; // dated rows first
     if (b.date) return 1;
-    return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+    return a._createdAt < b._createdAt ? -1 : a._createdAt > b._createdAt ? 1 : 0;
   });
-  return { parkedVisits, unscheduledJobs };
+  return {
+    // Strip the sort key: the endpoint serves exactly the declared shape.
+    parkedVisits: parkedVisits.map((v) => {
+      const { _createdAt, ...rest } = v;
+      void _createdAt;
+      return rest;
+    }),
+    unscheduledJobs,
+  };
 }
 
 // The board picker's roster read (plan 4a.5): every name chat booking would

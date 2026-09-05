@@ -3881,6 +3881,10 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(untimed.find((u) => u.assignmentId === assignmentId)).toMatchObject({
         technicianRef: 'tech-mcp',
         unassigned: false,
+        // The customer NAME must resolve. Untimed rows come from their own
+        // read, so their jobs have to be in the jobs fetch too — without that
+        // the agent gets an id it cannot put a name to (review finding).
+        customer: 'TBD Wanda',
       });
       // Every window says the same thing: there is no date to make it appear
       // in one window and not another.

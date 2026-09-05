@@ -111,7 +111,7 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
         if (tech.telegram_user_id && row) {
           out.push({
             userId: tech.telegram_user_id,
-            text: `Your visit moved: ${fromDay} → ${toDay}, now ${span(row)}.`,
+            text: `Your visit moved: ${fromDay} → ${row.starts_at ? `${toDay}, now ${span(row)}` : 'no time set yet'}.`,
           });
         }
         break;
@@ -119,7 +119,7 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
       if (tech?.telegram_user_id && row) {
         out.push({
           userId: tech.telegram_user_id,
-          text: `A visit landed on your schedule: ${toDay}, ${span(row)}.`,
+          text: `A visit landed on your schedule: ${when(row)}.`,
         });
       }
       if (oldTech?.telegram_user_id) {

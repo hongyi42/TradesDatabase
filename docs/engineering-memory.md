@@ -207,29 +207,29 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L4906 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L4929 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L4976 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L5013 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L5045 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L5050 · Every member row stores the FULL grouped message in question.
-- L5054 · The attribution stamp is an audit link, not a gate.
-- L5058 · The derived stamp requires a capture a badge-holder SPOKE
-- L5062 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L5068 · The follow-up loop has two halves and both had to be written down.
-- L5074 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L5148 · Batching works.
-- L5150 · The follow-up leg works, including the half that fails silently.
-- L5154 · Both attribution paths fired, each in its designed case.
-- L5158 · Escalation fired correctly
-- L5159 · The planner's group-aware pacing is the result worth keeping.
+- L4964 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L4987 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L5034 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L5071 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L5103 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L5108 · Every member row stores the FULL grouped message in question.
+- L5112 · The attribution stamp is an audit link, not a gate.
+- L5116 · The derived stamp requires a capture a badge-holder SPOKE
+- L5120 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L5126 · The follow-up loop has two halves and both had to be written down.
+- L5132 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L5206 · Batching works.
+- L5208 · The follow-up leg works, including the half that fails silently.
+- L5212 · Both attribution paths fired, each in its designed case.
+- L5216 · Escalation fired correctly
+- L5217 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L5340 · Evals:
-- L5347 · Runbooks:
-- L5352 · Decision history with citations:
-- L5356 · This file
+- L5398 · Evals:
+- L5405 · Runbooks:
+- L5410 · Decision history with citations:
+- L5414 · This file
 
 <!-- INDEX:END -->
 
@@ -4734,6 +4734,64 @@ that was working perfectly.
 `decisions 2 · dropped 0 · applied 2 · recorded 2 · tenantErrors 0`, `byAction {"leave": 2}`, both
 carrying substantive reasons; `watchers.nudgesAutoClosed: 0`. `recorded: 2` is the proof the
 constraint took — pre-migration that number is 0 with a loud error and no other symptom.
+
+#### It bit again — a 23-hour silent outage, and AUTO-DEPLOY is why (2026-09-04 → 09-05)
+
+The rule above was written down and still cost us a day, because nobody was at the keyboard.
+
+**What happened.** PR #201 was a one-line CRLF fix. It merged to `main` at 01:29Z and Render
+**auto-deployed** `48a9bd9` to `lifecycle-heart` at 01:33Z — carrying builds 4/5/5.5/6-era code onto
+a pilot database missing **14 migrations**. A trivial doc-shaped PR shipped a schema-dependent
+runtime. Last healthy tick `01:25:17Z` (`ok: true`, `tenantErrors: 0`); every tick after it
+`ok: false`, until the schema was applied at ~00:30Z the next day.
+
+**Cost: detection and the planner were dead for ~23 hours** (`planned: 0`, `tenantErrors: 1`) while
+pairing, sessions, logIngest and costRollup all stayed green — so the tick looked *partly* alive,
+which is the shape that hides things here (cf. the dead manager-push that ran 30 days).
+`20260901130000_observations.sql` had predicted it in its own header: *"apply this migration BEFORE
+deploying the code … a missing relation fails EVERY tenant's pass."*
+
+**Recognise the signature.** `Could not find the table 'public.X' in the schema cache` is PostgREST,
+and it nearly always means the relation was never created — not that a cache is stale. **Degrade-only
+reads hide the true scale:** `job_notes`, `planner_memory` and `planner_runs` logged
+`"… failed — running without"` and only `observations` threw, so the tick summary named ONE missing
+table when four were missing. Grep the whole log for `schema cache`, never just the summary.
+
+**The ledger is worse than "out of sync" — it is unusable for `db push`.** Its recorded versions do
+not correspond to this repo's filenames at all: `scheduling_foundation` is `20260707064740` in the
+ledger and `20260704210155` here, and most of the corpus is the same.
+
+> **NEVER run `supabase db push` against the pilot.** It diffs repo filenames against those versions
+> and would try to RE-APPLY nearly every migration in the repo. Apply individually with
+> `mcp__supabase-test__apply_migration`, after an `information_schema` audit.
+
+**Drift is RAGGED — never infer a cutoff date.** The audit killed a confident hypothesis:
+`host_metrics` (2026-09-01) *was* applied while both of its immediate neighbours were not. There is
+no "everything after date D is missing" rule. Diff the whole schema.
+
+**The cheap oracle — schema md5 against the local stack.** The local stack has every migration
+applied, so it settles the question in one query run on both sides:
+
+```sql
+select md5(string_agg(table_name||'.'||column_name||':'||data_type, ',' order by table_name, column_name)),
+       count(*)
+  from information_schema.columns where table_schema = 'public';
+```
+
+Equal md5 = in sync. Verified equal after the fix: `ff522a3004d8e9ed68dec96de552b732`, 658 columns.
+
+**Fix and proof.** 14 migrations applied in repo order; 20 object-level checks green; first good tick
+`2026-09-05 00:31:19Z` — `watchers.tenantErrors: 0`, `teamLeadPlanner planned 1 · decisions 1 ·
+applied 1 · recorded 1`, 2 turns / 3 tool calls / 9.7s. No deploy was involved; this was schema-only.
+
+**Auto-deploy is now OFF on both services** (`autoDeploy: no`, `autoDeployTrigger: off` on
+`srv-d8uqmdegvqtc73bfn83g` and `crn-d93iq7a8qa3s73ap6260`). **Keep it off.** A merge to `main` must
+never be able to ship code to an unmigrated database, and no PR is "too small" to do it.
+
+**One exception to migration-first: a DROP goes code-first.** See the header of
+`20260905100000_drop_assignment_locks.sql` — applying a column drop before the deploy breaks the
+code still running, which writes it.
+
 
 ### The Opus-5 date-scaffolding verdict — and what one night of evals cost (2026-08-23, overnight)
 

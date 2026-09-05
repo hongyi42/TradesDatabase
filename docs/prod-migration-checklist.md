@@ -254,8 +254,16 @@ if (isProd && process.env.INBOUND_DEBUG)       throw new Error('FATAL: INBOUND_D
 
 ### Tier 9 — Resilience, failure injection & DR
 - [ ] Deploy the **latest commit** (Render "Redeploy" re-runs the OLD commit) — confirm the live hash
+- [ ] **Auto-deploy stays OFF on both Render services** (`autoDeploy: no`, `autoDeployTrigger: off`).
+      A merge to `main` must never be able to ship code to an unmigrated database, and no PR is too
+      small to do it: a one-line CRLF fix (#201) auto-deployed build-4 code onto a pilot missing 14
+      migrations and killed detection + the planner for 23 hours (engineering-memory §6, 2026-09-04)
 - [ ] Deploy-before-migration: apply migration + `NOTIFY pgrst, 'reload schema'` before code needing
-      new columns
+      new columns — **except a DROP, which goes code-first** (the running code still writes the
+      column; see `20260905100000_drop_assignment_locks.sql`)
+- [ ] Pilot schema is in sync — `md5(string_agg(table_name||'.'||column_name||':'||data_type, ...))`
+      over `information_schema.columns` matches the local stack. **Never `supabase db push`**: the
+      pilot's ledger versions do not match this repo's filenames, so push re-applies almost everything
 - [ ] PostgREST 1000-row cap — every large scan paginates
 - [ ] DeepInfra stall recovery (~12 min self-clear) — no data loss, captures still land in L1
 - [ ] Box-reboot drill: openclaw respawned by in-container supervisor (not `docker restart`);

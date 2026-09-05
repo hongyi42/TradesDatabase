@@ -13,6 +13,31 @@ probed facts still hold and are cited, not re-derived) and the already-supersede
 `thoughts/shared/plans/2026-09-03-a-visit-is-not-a-person.md` (marked superseded by the remodel, and
 left that way).
 
+> ## ⚠ RULING LANDED AFTER THIS WAS WRITTEN (user, 2026-09-05)
+>
+> Read this before using the Decision Points below — three of them are now settled.
+>
+> **The stored window dies too, not just the promise ladder.** *"We're getting rid of the window
+> also… The promise level of a job shouldn't restrict the agent, nor should the window concept,
+> especially because the lifecycle of a job can be shortened and extended depending on how the
+> humans act."*
+>
+> - **DELETE** `promise_level`, `promised_day`, `set_promise`, `promised_day_when_promised`, and
+>   `promiseBroken` → `requiresConfirmation`.
+> - **DELETE** the stored window `earliest_date` / `latest_date` **and**
+>   `assignment_placed_or_windowed`. A visit has a time or it does not.
+> - **The unscheduled list orders by AGE** — nothing stored, so nothing can go stale.
+> - **KEEP** `find_slots(earliestDate, latestDate)` — that is a SEARCH RANGE, not a commitment.
+>   Same name, different thing. Do not delete it with the stored window.
+> - **NEW SCOPE — doctrine, not schema:** the agent must look for promises **in the record**
+>   (`v_captures`, bridged via `v_visits.source_capture_id`) before it edits the schedule or makes a
+>   suggestion. The agent is **reactive** — it edits only when asked, never initiates.
+> - **The migration is unblocked and may be destructive** — *"I am not afraid of a real data
+>   migration because we are operating in a test suite and nothing is in production right now."*
+>
+> Settles Decision Points **(f)**, **(g)**, and most of the window half of **(a)**.
+> Full ruling: memory `scheduling-remodel-direction.md`, and `docs/engineering-memory.md` §8.
+
 ## Summary
 
 The word **visit** names two different tables in this codebase, and they have never been linked.

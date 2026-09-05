@@ -196,40 +196,40 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L4406 · The quiet-firm skip
 - L4409 · No v_office_messages
 - L4411 · B65-REACH-A-MANAGER
-- L4548 · A technician's seat agent has NO scheduling verb at any tier.
-- L4551 · Live specimen in the pilot _(2026-09-01)_
-- L4561 · Counting.
-- L4563 · Detection.
-- L4567 · Booking.
-- L4580 · Build 6 (vocabulary): _(2026-09-01)_
-- L4585 · Build 7 (detectors report):
-- L4591 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L4583 · A technician's seat agent has NO scheduling verb at any tier.
+- L4586 · Live specimen in the pilot _(2026-09-01)_
+- L4596 · Counting.
+- L4598 · Detection.
+- L4602 · Booking.
+- L4615 · Build 6 (vocabulary): _(2026-09-01)_
+- L4620 · Build 7 (detectors report):
+- L4626 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L4986 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L5009 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L5056 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L5093 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L5125 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L5130 · Every member row stores the FULL grouped message in question.
-- L5134 · The attribution stamp is an audit link, not a gate.
-- L5138 · The derived stamp requires a capture a badge-holder SPOKE
-- L5142 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L5148 · The follow-up loop has two halves and both had to be written down.
-- L5154 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L5228 · Batching works.
-- L5230 · The follow-up leg works, including the half that fails silently.
-- L5234 · Both attribution paths fired, each in its designed case.
-- L5238 · Escalation fired correctly
-- L5239 · The planner's group-aware pacing is the result worth keeping.
+- L5021 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L5044 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L5091 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L5128 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L5160 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L5165 · Every member row stores the FULL grouped message in question.
+- L5169 · The attribution stamp is an audit link, not a gate.
+- L5173 · The derived stamp requires a capture a badge-holder SPOKE
+- L5177 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L5183 · The follow-up loop has two halves and both had to be written down.
+- L5189 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L5263 · Batching works.
+- L5265 · The follow-up leg works, including the half that fails silently.
+- L5269 · Both attribution paths fired, each in its designed case.
+- L5273 · Escalation fired correctly
+- L5274 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L5420 · Evals:
-- L5427 · Runbooks:
-- L5432 · Decision history with citations:
-- L5436 · This file
+- L5455 · Evals:
+- L5462 · Runbooks:
+- L5467 · Decision history with citations:
+- L5471 · This file
 
 <!-- INDEX:END -->
 
@@ -4499,6 +4499,41 @@ rung 9's research.
    technician column comes from.
 2. Reschedule is cancel + insert with a NEW id (`rescheduleAssignment`), so an assignment id can
    never name a visit across a move.
+
+**AMENDED 2026-09-05 (user) — the WINDOW dies too; no schema rail restricts the agent.** *"We're
+getting rid of the window also. I want the manager agent to simply be an assistant that has access
+to the schedule, who will initiate an edit of the schedule only when asked. The promise level of a
+job shouldn't restrict the agent, nor should the window concept, especially because the lifecycle of
+a job can be shortened and extended depending on how the humans act."*
+
+Deleted by this ruling: `promise_level`, `promised_day`, `set_promise`,
+`promised_day_when_promised`, and the single behaviour they powered — `promiseBroken` →
+`requiresConfirmation` on `move_visit` (`src/schedule/booking.ts:722`); **and** the stored window
+`assignments.earliest_date` / `latest_date` together with `assignment_placed_or_windowed`. **A visit
+has a time or it does not**; unplaced means no time, and the manager's unscheduled list orders by
+AGE (user choice, offered against a soft `target_date` sort key and a strip-enforcement-only
+option). Nothing stored can go stale because nothing is stored.
+
+**KEEP, despite the shared name:** `find_slots(earliestDate, latestDate)` is a SEARCH RANGE ("look
+between these dates, default today+13"), not a commitment — it survives untouched. Deleting it
+alongside the stored window is the obvious mistake here.
+
+**What replaces the rails is DOCTRINE, and it is real scope for rung 9** — not just deletions. The
+agent must look for promises **in the record** before it edits the schedule or makes a suggestion:
+the calls, emails and notes in L1 (`v_captures`, bridged to the job via
+`v_visits.source_capture_id`). That is build 6's "cite what you looked up" applied to scheduling.
+The agent is **reactive** — it edits only when asked and never initiates; the PLANNER recommending
+is rung 11, a different thing.
+
+**Why the ladder existed at all, found while researching this** (`src/schedule/booking.ts:570`):
+`promised_day` was only ever a SHADOW COPY of the window, taken at the instant placement destroyed
+it — because `assignment_placed_or_windowed` forbids a row being placed AND windowed at once. The
+ladder was a workaround for that CHECK. Removing the CHECK removes the reason the ladder existed.
+
+**The migration is unblocked** (user, 2026-09-05): *"I am not afraid of a real data migration
+because we are operating in a test suite and nothing is in production right now."* Destructive is
+permitted, consistent with the L1 waiver recorded above.
+
 
 **The remodel (user's model, 2026-09-03):** a call → the extractor judges the job and, if the firm
 committed to a visit, creates it UNPLACED (the accepted carve-out: never on a day, never with a

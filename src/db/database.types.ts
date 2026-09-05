@@ -37,13 +37,9 @@ export type Database = {
       assignments: {
         Row: {
           created_at: string
-          earliest_date: string | null
           ends_at: string | null
           id: string
           job_id: string
-          latest_date: string | null
-          promise_level: Database["public"]["Enums"]["promise_level"]
-          promised_day: string | null
           reason: string | null
           source_capture_id: string | null
           starts_at: string | null
@@ -54,13 +50,9 @@ export type Database = {
         }
         Insert: {
           created_at?: string
-          earliest_date?: string | null
           ends_at?: string | null
           id?: string
           job_id: string
-          latest_date?: string | null
-          promise_level?: Database["public"]["Enums"]["promise_level"]
-          promised_day?: string | null
           reason?: string | null
           source_capture_id?: string | null
           starts_at?: string | null
@@ -71,13 +63,9 @@ export type Database = {
         }
         Update: {
           created_at?: string
-          earliest_date?: string | null
           ends_at?: string | null
           id?: string
           job_id?: string
-          latest_date?: string | null
-          promise_level?: Database["public"]["Enums"]["promise_level"]
-          promised_day?: string | null
           reason?: string | null
           source_capture_id?: string | null
           starts_at?: string | null
@@ -2702,17 +2690,13 @@ export type Database = {
           city: string | null
           customer_id: string | null
           customer_name: string | null
-          earliest_date: string | null
           ends_at: string | null
           job_id: string | null
           job_title: string | null
           job_type: string | null
-          latest_date: string | null
           local_day: string | null
           local_weekday: string | null
           postal_code: string | null
-          promise_level: Database["public"]["Enums"]["promise_level"] | null
-          promised_day: string | null
           reason: string | null
           starts_at: string | null
           technician_name: string | null
@@ -3147,18 +3131,14 @@ export type Database = {
           city: string | null
           customer_id: string | null
           customer_name: string | null
-          earliest_date: string | null
           ends_at: string | null
           job_id: string | null
           job_status: Database["public"]["Enums"]["job_status"] | null
           job_title: string | null
           job_type: string | null
-          latest_date: string | null
           local_day: string | null
           local_weekday: string | null
           postal_code: string | null
-          promise_level: Database["public"]["Enums"]["promise_level"] | null
-          promised_day: string | null
           starts_at: string | null
           status: Database["public"]["Enums"]["assignment_status"] | null
           technician_name: string | null
@@ -3386,7 +3366,6 @@ export type Database = {
         | "write_off"
         | "correction"
         | "material_cost"
-      promise_level: "none" | "day" | "time" | "time_only"
       review_status: "open" | "resolved" | "dismissed"
       technician_state:
         | "invited"
@@ -3571,7 +3550,6 @@ export const Constants = {
         "correction",
         "material_cost",
       ],
-      promise_level: ["none", "day", "time", "time_only"],
       review_status: ["open", "resolved", "dismissed"],
       technician_state: [
         "invited",

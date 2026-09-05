@@ -246,7 +246,7 @@ tenant, per the `verifying-behavior` skill.
 | 1 | Technician sends a voice note about a real customer | An L1 capture exists, and the L2 customer/job it matched is correct |
 | 2 | Manager asks for a briefing on that customer | The briefing cites the capture — and the citation resolves |
 | 3 | Manager books a visit in chat | It appears on the board; the board and chat agree |
-| 4 | Manager moves a promised visit | The agent asks for confirmation *because* a promise is at stake |
+| 4 | Manager moves a visit, then unschedules a booked one | The move goes through in ONE step; the unschedule stops and asks, because a customer is expecting that slot |
 | 5 | Technician opens the board | Read-only day view; their own stops only |
 | 6 | An inbound work email arrives | It lands in L1; a personal email does **not** |
 | 7 | A test call to the phone line | Consent plays, call forwards, transcript lands as `channel:'phone_call'` |

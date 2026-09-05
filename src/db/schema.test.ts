@@ -131,13 +131,18 @@ describe('context spine schema', () => {
     ).toBe('YES');
   });
 
-  test('assignments: times NULLABLE + day-range columns exist (Plan 4b-2)', async () => {
+  test('assignments: times NULLABLE, and the rails are GONE (Plan 4b-2, rung 9a)', async () => {
     const cols = await columns('assignments');
-    // NULL times = an UNPLACED visit (day known, time not yet).
+    // NULL times = an UNTIMED visit: committed work with no time set.
     expect(cols.get('starts_at')?.is_nullable).toBe('YES');
     expect(cols.get('ends_at')?.is_nullable).toBe('YES');
-    expect(cols.get('earliest_date')?.data_type).toBe('date');
-    expect(cols.get('latest_date')?.data_type).toBe('date');
+    // INVERTED: these four asserted the promise ladder and the stored window
+    // EXIST. Rung 9a deleted both — a commitment frozen in a column is stale
+    // the moment the customer calls back, so promises live in L1 where the
+    // agent reads them, and a visit has a time or it does not.
+    for (const gone of ['promise_level', 'promised_day', 'earliest_date', 'latest_date']) {
+      expect(cols.get(gone), `${gone} must be dropped`).toBeUndefined();
+    }
   });
 
   test('the narrowed overlap guard carries the starts_at predicate (Plan 4b-2)', async () => {

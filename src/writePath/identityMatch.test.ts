@@ -5,7 +5,7 @@ import { setTenantSeats } from '../db/tenants.js';
 import { insertTechnician } from '../db/technicians.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
-import { createAssignment, updateAssignmentStatus } from '../db/assignments.js';
+import { createVisit, updateVisitStatus } from '../db/visits.js';
 import { matchIdentity } from './identityMatch.js';
 import type { ExtractedFields } from './extract.js';
 
@@ -26,7 +26,7 @@ const today = `${DAY}T10:00:00.000Z`;
 // matchIdentity consults since the sheet mirror retired.
 async function bookOn(technicianId: string, customerId: string, hour: string) {
   const job = await createJob({ tenantId, customerId, title: `visit ${hour}` });
-  const assignment = await createAssignment({
+  const assignment = await createVisit({
     tenantId,
     jobId: job.id,
     technicianId,
@@ -198,7 +198,7 @@ describe('matchIdentity — schedule branch (confirmed assignments)', () => {
     // with only an off-day visit, the schedule branch finds nothing.
     const tech3 = await insertTechnician({ tenantId, ref: 'tech-sched-3', displayName: 'S3' });
     const job = await createJob({ tenantId, customerId: cust.id, title: 'off-day' });
-    await createAssignment({
+    await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech3.id,
@@ -208,7 +208,7 @@ describe('matchIdentity — schedule branch (confirmed assignments)', () => {
     });
     // A CANCELLED visit ON the capture day must not suggest either — only
     // confirmed rows are the schedule.
-    const cancelled = await createAssignment({
+    const cancelled = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech3.id,
@@ -216,7 +216,7 @@ describe('matchIdentity — schedule branch (confirmed assignments)', () => {
       endsAt: `${DAY}T11:00:00.000Z`,
       status: 'confirmed',
     });
-    await updateAssignmentStatus(cancelled.id, 'cancelled', 'test');
+    await updateVisitStatus(cancelled.id, 'cancelled', 'test');
     const r = await matchIdentity({
       tenantId,
       technicianRef: 'tech-sched-3',

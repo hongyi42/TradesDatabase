@@ -111,7 +111,7 @@ export async function listTenantIdsWithTelegramBindings(): Promise<string[]> {
   }
 }
 
-// Point read by row id (FK joins from assignments etc.). Tenant-guarded: a
+// Point read by row id (FK joins from visits etc.). Tenant-guarded: a
 // cross-tenant or unknown id reads as null.
 export async function getTechnicianById(
   id: string,

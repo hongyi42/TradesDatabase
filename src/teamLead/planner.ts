@@ -3,7 +3,7 @@ import {
   createNudgeFromObservation,
   dismissNudge,
   getTenant,
-  listAssignmentsByIds,
+  listVisitsByIds,
   listDecisionsForNudges,
   listJobEvidenceSince,
   listJobIdsWithCostEvents,
@@ -632,7 +632,7 @@ export interface PlannerDeps {
   // no longer closes on a cancelled visit/job; these two batched status reads
   // are how the fact reaches the planner's view instead. Injected for the
   // standing 't1'-is-not-a-uuid reason.
-  listAssignments?: typeof listAssignmentsByIds;
+  listAssignments?: typeof listVisitsByIds;
   listJobs?: typeof listJobsWithCustomerByIds;
   // The roster and its trail (build 6.5 Phase 1). Injected for the standing
   // 't1'-is-not-a-uuid reason, and this one is not optional in practice: a
@@ -3457,7 +3457,7 @@ export async function runPlanner(
   const markQueued = deps.markQueued ?? markNudgeQueued;
   const markGroupQueued = deps.markGroupQueued ?? markNudgeGroupQueued;
   const stampAnswer = deps.stampAnswer ?? setNudgeAnsweredBy;
-  const listAssignments = deps.listAssignments ?? listAssignmentsByIds;
+  const listAssignments = deps.listAssignments ?? listVisitsByIds;
   const listJobs = deps.listJobs ?? listJobsWithCustomerByIds;
   const readTeam = deps.listTeam ?? listTeam;
   const readRosterEvents = deps.listRosterEvents ?? listRosterEvents;

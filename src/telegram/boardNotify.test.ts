@@ -15,8 +15,8 @@ vi.mock('../db/index.js', { spy: true });
 
 import { sendBoardMessage } from './boardBot.js';
 import { pollOnce } from './boardNotify.js';
-import { getAssignmentForTenant } from '../db/index.js';
-import { getAssignmentForTenant as realGetAssignmentForTenant } from '../db/assignments.js';
+import { getVisitForTenant } from '../db/index.js';
+import { getVisitForTenant as realGetAssignmentForTenant } from '../db/visits.js';
 import { getClient } from '../db/client.js';
 import { setTenantSeats } from '../db/tenants.js';
 import { insertTechnician, updateTechnician } from '../db/technicians.js';
@@ -337,7 +337,7 @@ describe('pollOnce', () => {
     await book({ technicianRef: 'notify-n1', date: '2026-11-09', startTime: '12:00', endTime: '13:00' });
     // The first event resolves for real; the SECOND event's row lookup dies (a
     // transient DB blip); the third is never reached this tick.
-    vi.mocked(getAssignmentForTenant)
+    vi.mocked(getVisitForTenant)
       .mockImplementationOnce(realGetAssignmentForTenant)
       .mockImplementationOnce(async () => {
         throw new Error('transient db blip');

@@ -1,5 +1,5 @@
 // One-time backfill: copy UPCOMING schedule_entries mirror rows (the retired
-// Google-Sheet pipeline) into real `assignments` bookings — the DB-owned
+// Google-Sheet pipeline) into real `visits` bookings — the DB-owned
 // schedule the Telegram-schedule series reads. Idempotent and re-runnable.
 //
 // Per row (scheduled_start >= today, UTC):
@@ -33,10 +33,10 @@ import {
   findCustomersByAddress,
   createCustomer,
   createJob,
-  createAssignment,
+  createVisit,
   appendScheduleEvent,
   getJobDurationMinutes,
-  listAssignmentsForTechnician,
+  listVisitsForTechnician,
 } from '../dist/db/index.js';
 
 const flag = (name) =>
@@ -145,12 +145,12 @@ for (const row of rows) {
   // Overlap PRE-check BEFORE creating anything (booking.ts ordering): the
   // common rejection must leave no orphaned customer/job shell behind, and a
   // re-run must not mint another one. Crash-window caveat: a crash between
-  // createAssignment and appendScheduleEvent leaves a real booking without its
+  // createVisit and appendScheduleEvent leaves a real booking without its
   // ledger event — the re-run then reports that row here as an overlap skip
   // (mislabeled, but nothing double-books and nothing orphans; resolve by
   // checking the reported row by hand).
   const clashes = (
-    await listAssignmentsForTechnician(technician.id, startsAt, endsAt, ['confirmed'])
+    await listVisitsForTechnician(technician.id, startsAt, endsAt, ['confirmed'])
   ).length;
   if (clashes > 0) {
     skip('overlaps an existing confirmed booking');
@@ -192,7 +192,7 @@ for (const row of rows) {
     (await createJob({ tenantId, customerId, title: row.customer_name ? `Visit — ${row.customer_name}` : null, status: 'open' })).id;
 
   try {
-    const assignment = await createAssignment({
+    const assignment = await createVisit({
       tenantId,
       jobId: job,
       technicianId: technician.id,

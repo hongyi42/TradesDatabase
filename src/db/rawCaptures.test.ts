@@ -4,7 +4,7 @@ import { getClient } from './client.js';
 import { listJobEvidenceSince } from './rawCaptures.js';
 import { createCustomer } from './customers.js';
 import { createJob } from './jobs.js';
-import { createVisit } from './visits.js';
+import { createVisit, insertVisitNote } from './visits.js';
 import { createTenant } from './tenants.js';
 
 // listJobEvidenceSince is what decides WHAT A CITATION MAY BE CHECKED AGAINST,
@@ -18,6 +18,25 @@ let jobB: string;
 let otherJob: string;
 
 const FLOOR = '2026-08-16T12:00:00.000Z';
+
+// A note that reported a trip: the visit row PLUS the visit_notes link, which
+// is what recordFieldNote writes and what the evidence reader now walks (rung
+// 9b — the row's own created_at stopped being the moment evidence landed once a
+// note could attach to a trip booked weeks earlier).
+async function reportedVisit(o: { tenantId: string; jobId: string; captureId: string }) {
+  const v = await createVisit({
+    tenantId: o.tenantId,
+    jobId: o.jobId,
+    technicianId: null,
+    startsAt: null,
+    endsAt: null,
+    status: 'completed',
+    completedAt: '2026-08-16T13:00:00.000Z',
+    sourceCaptureId: o.captureId,
+  });
+  await insertVisitNote({ tenantId: o.tenantId, visitId: v.id, captureId: o.captureId });
+  return v;
+}
 const before = '2026-08-16T11:00:00.000Z';
 const after = '2026-08-16T13:00:00.000Z';
 
@@ -104,7 +123,7 @@ describe('listJobEvidenceSince', () => {
     // minted from it. Reading job-stamped rows alone would miss exactly the
     // answers this function is for.
     const orphan = await capture({ tenantId, jobId: null, text: 'the answer nobody stamped', at: after });
-    await createVisit({ tenantId, jobId: jobB, sourceCaptureId: orphan.id });
+    await reportedVisit({ tenantId, jobId: jobB, captureId: orphan.id });
     const rows = await listJobEvidenceSince(tenantId, [jobB], FLOOR);
     const found = rows.find((r) => r.capture.id === orphan.id);
     expect(found).toBeDefined();
@@ -114,7 +133,7 @@ describe('listJobEvidenceSince', () => {
 
   test('a job-stamped capture keeps that provenance even when a visit also points at it', async () => {
     const stamped = await capture({ tenantId, jobId: jobA, text: 'stamped and visited', at: after });
-    await createVisit({ tenantId, jobId: jobA, sourceCaptureId: stamped.id });
+    await reportedVisit({ tenantId, jobId: jobA, captureId: stamped.id });
     const rows = await listJobEvidenceSince(tenantId, [jobA], FLOOR);
     const found = rows.filter((r) => r.capture.id === stamped.id);
     expect(found).toHaveLength(1); // deduped, not returned twice
@@ -136,7 +155,7 @@ describe('listJobEvidenceSince', () => {
       at: after,
       sensitivity: 'manager_only',
     });
-    await createVisit({ tenantId, jobId: jobA, sourceCaptureId: orphanSecret.id });
+    await reportedVisit({ tenantId, jobId: jobA, captureId: orphanSecret.id });
     const ids = (await listJobEvidenceSince(tenantId, [jobA], FLOOR)).map((r) => r.capture.id);
     expect(ids).not.toContain(stampedSecret.id);
     expect(ids).not.toContain(orphanSecret.id);
@@ -169,7 +188,7 @@ describe('listJobEvidenceSince', () => {
       text: 'other tenant, via visit',
       at: after,
     });
-    await createVisit({ tenantId: otherTenantId, jobId: otherJob, sourceCaptureId: orphan.id });
+    await reportedVisit({ tenantId: otherTenantId, jobId: otherJob, captureId: orphan.id });
     // A forged jobId in a nudge's context is exactly how this would be reached.
     const rows = await listJobEvidenceSince(tenantId, [otherJob], FLOOR);
     expect(rows).toEqual([]);
@@ -180,21 +199,30 @@ describe('listJobEvidenceSince', () => {
     expect(ids).not.toContain(orphan.id);
   });
 
-  test('a visit pointing at ANOTHER tenant\'s capture cannot pull it in', async () => {
-    // The one case that reaches the third query's tenant filter. visits.
-    // source_capture_id is a bare FK with no tenant constraint, so a row in OUR
-    // tenant can name a capture in another one — and the visit query that finds
-    // it is filtered by our tenant, so nothing upstream catches it. Without the
-    // filter on the capture fetch itself, that capture becomes citable evidence.
+  test('a note LINK pointing at ANOTHER tenant\'s capture cannot pull it in', async () => {
+    // The one case that reaches the third query's tenant filter.
+    // visit_notes.capture_id is a bare FK with no tenant constraint, so a link
+    // in OUR tenant can name a capture in another one — and the link query that
+    // finds it is filtered by our tenant, so nothing upstream catches it.
+    // Without the filter on the capture fetch itself, that capture becomes
+    // citable evidence. (Rung 9b: this used to be exercised through a visit's
+    // source_capture_id, which step 2 no longer reads at all — the link is what
+    // the reader walks now, so the fixture has to be a link or the assertion
+    // passes without touching the guard it names.)
     const foreign = await capture({
       tenantId: otherTenantId,
       jobId: null,
       text: 'another firm\'s words entirely',
       at: after,
     });
+    const ourVisit = await pg.query<{ id: string }>(
+      `insert into visits (tenant_id, job_id, status, completed_at)
+       values ($1, $2, 'completed', $3) returning id`,
+      [tenantId, jobB, after],
+    );
     await pg.query(
-      'insert into visits (tenant_id, job_id, source_capture_id) values ($1, $2, $3)',
-      [tenantId, jobB, foreign.id],
+      'insert into visit_notes (tenant_id, visit_id, capture_id) values ($1, $2, $3)',
+      [tenantId, ourVisit.rows[0].id, foreign.id],
     );
     const rows = await listJobEvidenceSince(tenantId, [jobB], FLOOR);
     expect(rows.map((r) => r.capture.id)).not.toContain(foreign.id);

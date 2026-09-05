@@ -4,7 +4,7 @@ import { getClient } from './client.js';
 import { createCustomer, getCustomer } from './customers.js';
 import { createJob, getJob, listJobsForCustomer, updateJobStatus } from './jobs.js';
 import { createTenant } from './tenants.js';
-import { createVisit, listVisitTimesForJobs, listVisitsForJob } from './visits.js';
+import { createVisit, insertVisitNote, listNoteTimesForJobs, listVisitsForJob } from './visits.js';
 import { appendRawCapture, listJobStampedCaptureTimes } from './rawCaptures.js';
 
 // Writes go through the app's own path (supabase-js / PostgREST). A direct pg
@@ -52,7 +52,15 @@ describe('context spine data-access layer', () => {
       sourceCaptureId: call.id,
     });
 
-    const visit = await createVisit({ tenantId, jobId: job.id, technicianName: 'Bob' });
+    const visit = await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianId: null,
+      startsAt: null,
+      endsAt: null,
+      status: 'completed',
+      completedAt: '2026-08-16T13:00:00.000Z',
+    });
 
     // The tech's on-site note (L1), linked to all three entities.
     const note = await appendRawCapture({
@@ -128,9 +136,10 @@ describe('context spine data-access layer', () => {
 });
 
 // The Stage-0 watcher's two activity homes (plan 2026-08-15 feature A):
-// job-stamped capture times + visit rows minted on the jobs. captured_at /
-// created_at are DB-stamped real UTC, so the floors below are derived from
-// the wall clock around the inserts.
+// job-stamped capture times + notes LINKED to a trip on those jobs (rung 9b —
+// the home was "visit rows minted", which only worked while every note minted
+// one). captured_at / created_at are DB-stamped real UTC, so the floors below
+// are derived from the wall clock around the inserts.
 describe('watcher activity listers', () => {
   test('both homes: floor respected, empty jobIds short-circuits, two-tenant isolation', async () => {
     const before = new Date(Date.now() - 60_000).toISOString();
@@ -142,40 +151,63 @@ describe('watcher activity listers', () => {
       rawText: 'Compressor swapped, running fine',
       jobId: job.id,
     });
-    const visit = await createVisit({ tenantId, jobId: job.id, technicianName: 'Ben' });
+    // The trip, and the note that reported it. The freshness reader walks the
+    // LINK now, not the row: a visit alone is a booking, and a booking is not
+    // activity — only a note filed against it is (rung 9b).
+    const visit = await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianId: null,
+      startsAt: null,
+      endsAt: null,
+      status: 'completed',
+      completedAt: '2026-08-16T13:00:00.000Z',
+    });
+    await insertVisitNote({ tenantId, visitId: visit.id, captureId: note.id });
 
     // Empty jobIds → [] without touching PostgREST (`in.()` would error).
     expect(await listJobStampedCaptureTimes(tenantId, [], before)).toEqual([]);
-    expect(await listVisitTimesForJobs(tenantId, [], before)).toEqual([]);
+    expect(await listNoteTimesForJobs(tenantId, [], before)).toEqual([]);
 
     // Floor respected: a past floor includes the rows, a future floor excludes.
     const captures = await listJobStampedCaptureTimes(tenantId, [job.id], before);
     expect(captures.map((c) => c.job_id)).toContain(job.id);
     expect(captures.length).toBeGreaterThanOrEqual(1);
-    const visits = await listVisitTimesForJobs(tenantId, [job.id], before);
+    const visits = await listNoteTimesForJobs(tenantId, [job.id], before);
     expect(visits.map((v) => v.job_id)).toContain(job.id);
     const future = new Date(Date.now() + 60_000).toISOString();
     expect(await listJobStampedCaptureTimes(tenantId, [job.id], future)).toEqual([]);
-    expect(await listVisitTimesForJobs(tenantId, [job.id], future)).toEqual([]);
+    expect(await listNoteTimesForJobs(tenantId, [job.id], future)).toEqual([]);
 
     // Two-tenant isolation: tenant-B rows stamped onto THE SAME job id (the
     // FKs are id-only, so nothing in the schema prevents this shape) must
     // never appear in tenant A's answer — the .eq tenant guard is the wall.
     tenantB = (await createTenant(`spine-tenant-b-${Date.now()}`)).id;
-    await appendRawCapture({
+    const bNote = await appendRawCapture({
       tenantId: tenantB,
       channel: 'technician_voice',
       rawText: 'cross-tenant stamp',
       jobId: job.id,
     });
-    await createVisit({ tenantId: tenantB, jobId: job.id, technicianName: 'Mallory' });
+    const bVisit = await createVisit({
+      tenantId: tenantB,
+      jobId: job.id,
+      technicianId: null,
+      startsAt: null,
+      endsAt: null,
+      status: 'completed',
+      completedAt: '2026-08-16T13:00:00.000Z',
+    });
+    await insertVisitNote({ tenantId: tenantB, visitId: bVisit.id, captureId: bNote.id });
 
     const aCaptures = await listJobStampedCaptureTimes(tenantId, [job.id], before);
     expect(aCaptures.map((c) => c.captured_at)).toEqual([note.captured_at]);
-    const aVisits = await listVisitTimesForJobs(tenantId, [job.id], before);
-    expect(aVisits.map((v) => v.created_at)).toEqual([visit.created_at]);
+    const aVisits = await listNoteTimesForJobs(tenantId, [job.id], before);
+    // One link, tenant A's own — tenant B's link on the SAME job id is walled
+    // off by the .eq tenant guard, which is what this asserts.
+    expect(aVisits.map((v) => v.job_id)).toEqual([job.id]);
     // …and tenant B sees only its own stamps on that job id.
     expect((await listJobStampedCaptureTimes(tenantB, [job.id], before)).length).toBe(1);
-    expect((await listVisitTimesForJobs(tenantB, [job.id], before)).length).toBe(1);
+    expect((await listNoteTimesForJobs(tenantB, [job.id], before)).length).toBe(1);
   });
 });

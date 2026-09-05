@@ -1,11 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from './client.js';
-import { createAssignment } from './assignments.js';
 import { createCustomer } from './customers.js';
 import { createJob } from './jobs.js';
 import { createTenant } from './tenants.js';
-import { createVisit } from './visits.js';
+import { createVisit, insertVisitNote } from './visits.js';
 import { appendRawCapture, listRawCapturesForCustomer } from './rawCaptures.js';
 import { getCustomerContext } from './context.js';
 
@@ -36,12 +35,18 @@ describe('getCustomerContext', () => {
       channel: 'technician_voice',
       rawText: 'tech said this',
     });
+    // A reported trip: the visit, plus the note link recordFieldNote writes.
     const visit = await createVisit({
       tenantId,
       jobId: job.id,
-      technicianName: 'tech-x',
+      technicianId: null,
+      startsAt: null,
+      endsAt: null,
+      status: 'completed',
+      completedAt: '2026-08-16T13:00:00.000Z',
       sourceCaptureId: techNote.id,
     });
+    await insertVisitNote({ tenantId, visitId: visit.id, captureId: techNote.id });
 
     // A capture stamped directly with the customer (e.g. an inbound call).
     const call = await appendRawCapture({
@@ -70,7 +75,7 @@ describe('getCustomerContext', () => {
     const job = await createJob({ tenantId, customerId: customer.id, title: 'Radiator bleed' });
 
     // Placed future visit (naive-local convention: display slices, no tz math).
-    const placed = await createAssignment({
+    const placed = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: null,
@@ -79,7 +84,7 @@ describe('getCustomerContext', () => {
       status: 'confirmed',
     });
     // Unplaced (time-TBD) visit holding only a scheduling window.
-    const unplaced = await createAssignment({
+    const unplaced = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: null,
@@ -88,7 +93,7 @@ describe('getCustomerContext', () => {
       status: 'confirmed',
     });
     // Noise that must NOT surface: a cancelled row and a long-past visit.
-    await createAssignment({
+    await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: null,
@@ -96,7 +101,7 @@ describe('getCustomerContext', () => {
       endsAt: '2027-03-06T09:00:00Z',
       status: 'cancelled',
     });
-    await createAssignment({
+    await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: null,
@@ -143,7 +148,7 @@ describe('getCustomerContext', () => {
     const theirs = await createCustomer({ tenantId: other.id, name: 'Leak Cust B' });
     const myJob = await createJob({ tenantId, customerId: mine.id, title: 'Mine' });
     const theirJob = await createJob({ tenantId: other.id, customerId: theirs.id, title: 'Theirs' });
-    await createAssignment({
+    await createVisit({
       tenantId,
       jobId: myJob.id,
       technicianId: null,
@@ -151,7 +156,7 @@ describe('getCustomerContext', () => {
       endsAt: '2027-04-01T10:00:00Z',
       status: 'confirmed',
     });
-    const theirRow = await createAssignment({
+    const theirRow = await createVisit({
       tenantId: other.id,
       jobId: theirJob.id,
       technicianId: null,

@@ -3,11 +3,11 @@ import { Client } from 'pg';
 import { createTenant } from './tenants.js';
 import { createCustomer } from './customers.js';
 import { createJob } from './jobs.js';
-import { createVisit } from './visits.js';
+import { createVisit, insertVisitNote } from './visits.js';
 import { createPendingNudge } from './nudges.js';
 import { upsertOpenReviewItem } from './reviewItems.js';
 
-// ④'s four views (plan 2026-08-23): v_captures, v_visits, v_nudges,
+// ④'s four views (plan 2026-08-23): v_captures, v_visit_notes, v_nudges,
 // v_review_items — asserted against the real database, the querySpine.test.ts
 // discipline. Isolation rests on the transaction-local GUC, sensitivity is NOT
 // filtered (user ruling: the planner reads everything), and retractions are a
@@ -25,7 +25,9 @@ let jobA: string;
 let capPlain: string; // job-stamped, NULL sensitivity
 let capSensitive: string; // manager_only
 let capRetracted: string; // has a retraction pointing at it
-let capUnstamped: string; // NO job_id — linked to jobA only via its visit
+let capUnstamped: string; // NO job_id — linked to jobA only via its visit note
+let visitA: string; // tenant A's reported trip — the isolation marker
+let visitB: string; // tenant B's reported trip — the isolation marker
 let nudgeMalformed: string; // context.jobId is not a uuid
 
 const run = (tenant: string, sql: string) =>
@@ -77,27 +79,41 @@ beforeAll(async () => {
   // NO job stamp — its only durable link to jobA is the visit's
   // source_capture_id (the two-home doctrine, rawCaptures.ts).
   capUnstamped = await capture(tenantA, 'came to eighty dollars in parts');
-  await createVisit({
-    tenantId: tenantA,
-    jobId: jobA,
-    technicianName: 'sv-visit-marker-a',
-    sourceCaptureId: capUnstamped,
-  });
+  visitA = (
+    await createVisit({
+      tenantId: tenantA,
+      jobId: jobA,
+      technicianId: null,
+      startsAt: null,
+      endsAt: null,
+      status: 'completed',
+      completedAt: '2026-08-16T13:00:00.000Z',
+      sourceCaptureId: capUnstamped,
+    })
+  ).id;
+  await insertVisitNote({ tenantId: tenantA, visitId: visitA, captureId: capUnstamped });
 
   // Tenant B: one of everything, so isolation tests have real data to leak.
   const customerB = await createCustomer({ tenantId: tenantB, name: 'SV Customer B' });
   const jobB = (await createJob({ tenantId: tenantB, customerId: customerB.id, title: 'SV Job B' })).id;
   const capB = await capture(tenantB, 'tenant B private note', { jobId: jobB });
-  // A visit on BOTH sides, each with a distinctive marker in technician_name —
-  // v_visits rows carry none of the other fixtures' marker strings, so without
-  // this the isolation case for it passes even with NO tenant filter (review
-  // finding: the one vacuous assertion in the first draft of this suite).
-  await createVisit({
-    tenantId: tenantB,
-    jobId: jobB,
-    technicianName: 'sv-visit-marker-b',
-    sourceCaptureId: capB,
-  });
+  // A reported trip on BOTH sides. The distinctive marker used to be a string
+  // in technician_name; v_visit_notes carries only ids, so the VISIT'S OWN UUID
+  // is the marker — still a value that can actually appear in a leaked row,
+  // which is the property that keeps this leak scan from passing vacuously.
+  visitB = (
+    await createVisit({
+      tenantId: tenantB,
+      jobId: jobB,
+      technicianId: null,
+      startsAt: null,
+      endsAt: null,
+      status: 'completed',
+      completedAt: '2026-08-16T13:00:00.000Z',
+      sourceCaptureId: capB,
+    })
+  ).id;
+  await insertVisitNote({ tenantId: tenantB, visitId: visitB, captureId: capB });
 
   const techRow = await pg.query<{ id: string }>(
     `insert into technicians (tenant_id, ref, display_name, tier, state, seat_exempt)
@@ -148,20 +164,25 @@ describe('the four views — tenant isolation', () => {
   // can actually appear in each view's rows — a leak test whose marker cannot
   // occur in the leaked shape passes vacuously (review finding: v_visits rows
   // carry no capture text, so scanning them for 'gate code' proved nothing).
-  const A_MARKERS = ['gate code', 'sv-asg-good', 'sv-item-a', 'sv-visit-marker-a'];
-  const B_MARKERS = ['tenant B private note', 'sv-item-b', 'sv-visit-marker-b'];
-  test.each(['v_captures', 'v_visits', 'v_nudges', 'v_review_items'])(
+  // Built INSIDE the test: the visit-id markers are assigned in beforeAll, which
+  // runs after this describe body is evaluated.
+  const markers = () => ({
+    a: ['gate code', 'sv-asg-good', 'sv-item-a', visitA],
+    b: ['tenant B private note', 'sv-item-b', visitB],
+  });
+  test.each(['v_captures', 'v_visit_notes', 'v_nudges', 'v_review_items'])(
     '%s never returns another tenant’s rows — markers both ways',
     async (view) => {
       const a = JSON.stringify(await rows(tenantA, `select * from ${view}`));
       const b = JSON.stringify(await rows(tenantB, `select * from ${view}`));
+      const { a: A_MARKERS, b: B_MARKERS } = markers();
       for (const m of A_MARKERS) expect(b).not.toContain(m);
       for (const m of B_MARKERS) expect(a).not.toContain(m);
     },
   );
 
   test('every view has real rows on BOTH sides — the leak scans above are not empty-vs-empty', async () => {
-    for (const view of ['v_captures', 'v_visits', 'v_review_items']) {
+    for (const view of ['v_captures', 'v_visit_notes', 'v_review_items']) {
       expect((await rows(tenantA, `select * from ${view}`)).length).toBeGreaterThan(0);
       expect((await rows(tenantB, `select * from ${view}`)).length).toBeGreaterThan(0);
     }
@@ -225,7 +246,7 @@ describe('v_captures — the labeled trail', () => {
   });
 });
 
-describe('v_visits — the note→job bridge', () => {
+describe('v_visit_notes — the note→job bridge', () => {
   test('an UNSTAMPED note is reachable via its visit — the flagship query', async () => {
     // A technician note's job_id is NULL by design (identity resolves after the
     // immutable L1 append). Filtering v_captures by job_id alone would return []
@@ -238,7 +259,7 @@ describe('v_visits — the note→job bridge', () => {
     const bridged = await rows(
       tenantA,
       `select c.raw_text from v_captures c
-        join v_visits v on v.source_capture_id = c.id
+        join v_visit_notes v on v.capture_id = c.id
        where v.job_id = '${jobA}'`,
     );
     expect(bridged.map((r) => r.raw_text)).toContain('came to eighty dollars in parts');
@@ -277,7 +298,7 @@ describe('v_nudges / v_review_items', () => {
 
 describe('the ACL holds', () => {
   test('SELECT on all four views; no writes; base tables still unreachable', async () => {
-    for (const view of ['v_captures', 'v_visits', 'v_nudges', 'v_review_items']) {
+    for (const view of ['v_captures', 'v_visit_notes', 'v_nudges', 'v_review_items']) {
       const { rows: priv } = await pg.query(
         `select has_table_privilege('spine_reader', $1, 'SELECT') as sel,
                 has_table_privilege('spine_reader', $1, 'INSERT') as ins,

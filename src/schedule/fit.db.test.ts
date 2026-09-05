@@ -13,7 +13,7 @@ import {
 import { addTimeOff } from '../db/timeOff.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
-import { createAssignment } from '../db/assignments.js';
+import { createVisit } from '../db/visits.js';
 import { assembleFitContext, findDisplacementCandidates, generateCandidates } from './fit.js';
 
 // Integration for the fit engine's DB-composing wrapper (Plan 3b Phase 1) —
@@ -97,7 +97,7 @@ async function makeVisit(opts: {
     ...(opts.city ? { city: opts.city } : {}),
   });
   const job = await createJob({ tenantId, customerId: customer.id, title: 'fit ctx', status: 'open' });
-  return createAssignment({
+  return createVisit({
     tenantId,
     jobId: job.id,
     technicianId: opts.technicianId,
@@ -174,7 +174,7 @@ describe('assembleFitContext — assignment rows become day context', () => {
     const customer = await createCustomer({ tenantId, name: 'Fit tbd cust' });
     const job = await createJob({ tenantId, customerId: customer.id, title: 'fit tbd', status: 'open' });
     // An untimed row for sparky + one placed Wednesday visit.
-    const tbd = await createAssignment({
+    const tbd = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: sparky.id,
@@ -205,8 +205,8 @@ describe('assembleFitContext — assignment rows become day context', () => {
     } finally {
       // Self-clean BOTH rows: the displacement suite shares this week and
       // caps at 5 candidates — a leftover placed visit shifts its ordering.
-      await pg.query("update assignments set status = 'cancelled' where id = $1", [tbd.id]);
-      await pg.query("update assignments set status = 'cancelled' where id = $1", [placedWed.id]);
+      await pg.query("update visits set status = 'cancelled' where id = $1", [tbd.id]);
+      await pg.query("update visits set status = 'cancelled' where id = $1", [placedWed.id]);
     }
   });
 

@@ -7,12 +7,12 @@ import { addTimeOff } from '../db/timeOff.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob, getJob, updateJobDetails, updateJobStatus } from '../db/jobs.js';
 import {
-  listAssignmentsForJob,
-  listAssignmentsForTechnician,
-  listUnassignedAssignments,
+  listVisitsForJob,
+  listVisitsForTechnician,
+  listUnassignedVisits,
   listUnassignedOpenJobs,
-  updateAssignmentStatus,
-} from '../db/assignments.js';
+  updateVisitStatus,
+} from '../db/visits.js';
 import { latestScheduleVersion, listScheduleEventsSince } from '../db/scheduleEvents.js';
 import {
   bookVisit,
@@ -292,7 +292,7 @@ describe('bookVisit', () => {
     await expect(bookVisit(attempt)).rejects.toThrow(/already has open work on file/);
     await expect(bookVisit(attempt)).rejects.toThrow(onFile.id);
     await expect(bookVisit(attempt)).rejects.toThrow(/forceNewJob/);
-    expect(await listAssignmentsForJob(onFile.id)).toHaveLength(0);
+    expect(await listVisitsForJob(onFile.id)).toHaveLength(0);
     // NO title at all is the other ambiguous shape (which job did the manager
     // mean?) — same refusal, on the preview path too (same front-half).
     await expect(bookVisit({ ...attempt, title: null })).rejects.toThrow(/already has open work on file/);
@@ -383,7 +383,7 @@ describe('moveVisit', () => {
     // Duration preserved (09–11 was 2h → 13:00–15:00).
     expect(moved.created.ends_at).toContain('2026-11-10T15:00');
     // Visible to the ['confirmed']-filtered read every surface uses.
-    const day = await listAssignmentsForTechnician(
+    const day = await listVisitsForTechnician(
       tech.id,
       '2026-11-10T00:00:00.000Z',
       '2026-11-11T00:00:00.000Z',
@@ -461,7 +461,7 @@ describe('moveVisit', () => {
       }),
     ).rejects.toThrow(/overlaps a confirmed visit .* NOT moved/);
     // b untouched and still confirmed.
-    const day = await listAssignmentsForTechnician(
+    const day = await listVisitsForTechnician(
       tech.id,
       '2026-11-12T00:00:00.000Z',
       '2026-11-13T00:00:00.000Z',
@@ -628,7 +628,7 @@ describe('unassigned bookings (technician-optional)', () => {
     expect(reparked.created.technician_id).toBeNull();
   });
 
-  test('listUnassignedAssignments: confirmed null-tech rows from fromISO on, no upper bound', async () => {
+  test('listUnassignedVisits: confirmed null-tech rows from fromISO on, no upper bound', async () => {
     const customer = await createCustomer({ tenantId, name: 'Recall Rae' });
     // Far-future unassigned visit — months out, beyond any board window.
     const far = await bookVisit({
@@ -666,13 +666,13 @@ describe('unassigned bookings (technician-optional)', () => {
       reason: 'never mind',
       actorRef: 'manager-test',
     });
-    const listed = await listUnassignedAssignments(tenantId, '2027-03-01T00:00:00.000Z');
+    const listed = await listUnassignedVisits(tenantId, '2027-03-01T00:00:00.000Z');
     const ids = listed.map((r) => r.id);
     expect(ids).toContain(far.assignment.id);
     expect(ids).not.toContain(assigned.assignment.id);
     expect(ids).not.toContain(cancelled.assignment.id);
     // Past rows excluded: a from AFTER the visit hides it.
-    const after = await listUnassignedAssignments(tenantId, '2027-04-01T00:00:00.000Z');
+    const after = await listUnassignedVisits(tenantId, '2027-04-01T00:00:00.000Z');
     expect(after.map((r) => r.id)).not.toContain(far.assignment.id);
     // Ordered by starts_at.
     const starts = listed.map((r) => r.starts_at);
@@ -729,7 +729,7 @@ describe('detach (unassign) — plan 4a.5', () => {
       assignment.id,
     );
     // And the parked row is now in the recall lister.
-    const parked = await listUnassignedAssignments(tenantId, '2026-12-01T00:00:00.000Z');
+    const parked = await listUnassignedVisits(tenantId, '2026-12-01T00:00:00.000Z');
     expect(parked.map((r) => r.id)).toContain(moved.created.id);
   });
 
@@ -756,7 +756,7 @@ describe('detach (unassign) — plan 4a.5', () => {
         actorRef: 'manager-test',
       }),
     ).rejects.toThrow(/pass ONE of technicianRef .* or unassign/);
-    expect((await listAssignmentsForTechnician(tech.id, '2026-12-02T00:00:00.000Z', '2026-12-03T00:00:00.000Z')).map((r) => r.id)).toContain(assignment.id);
+    expect((await listVisitsForTechnician(tech.id, '2026-12-02T00:00:00.000Z', '2026-12-03T00:00:00.000Z')).map((r) => r.id)).toContain(assignment.id);
   });
 
   test('a park onto an identical existing parked window for the same customer is refused', async () => {
@@ -1018,7 +1018,7 @@ describe('cancelJob — the terminal verb (cancel-vocabulary plan, 2026-07-25)',
       endTime: '14:00',
       actorRef: 'manager-test',
     });
-    const completedRow = await updateAssignmentStatus(done.assignment.id, 'completed');
+    const completedRow = await updateVisitStatus(done.assignment.id, 'completed');
     expect(completedRow.status).toBe('completed');
 
     // Preview: both LIVE visits listed with their promise levels; completed
@@ -1046,7 +1046,7 @@ describe('cancelJob — the terminal verb (cancel-vocabulary plan, 2026-07-25)',
       [first.assignment.id, parked.assignment.id].sort(),
     );
     // The completed row is history, untouched.
-    const rows = await listAssignmentsForJob(jobId);
+    const rows = await listVisitsForJob(jobId);
     expect(rows.find((r) => r.id === done.assignment.id)?.status).toBe('completed');
     expect(rows.filter((r) => r.status === 'cancelled')).toHaveLength(2);
     // Ledger: one 'cancelled' per visit (jobCancellation-stamped) + one

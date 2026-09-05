@@ -18,7 +18,7 @@ export interface FoldedVisit {
   visitId: string;
   jobId: string;
   scheduledAt: string | null;
-  technicianName: string | null;
+  technicianId: string | null;
 }
 
 export interface FoldImpact {
@@ -67,12 +67,17 @@ export async function findFoldImpact(tenantId: string, captureId: string): Promi
         .eq('tenant_id', tenantId)
         .range(from, to),
     ),
-    fetchAll('visits', (from, to) =>
+    // Rung 9b: a note no longer OWNS a visit row — it LINKS one through
+    // visit_notes, and the same trip may carry several notes. So the fold's
+    // visit arm walks the link, not source_capture_id: retracting a note must
+    // still tell the manager which trip loses its evidence, including when the
+    // trip was booked long before the note existed.
+    fetchAll('visit_notes', (from, to) =>
       client
-        .from('visits')
-        .select('id, job_id, scheduled_at, technician_name')
+        .from('visit_notes')
+        .select('visit_id, visits!inner(id,tenant_id,job_id,starts_at,technician_id)')
         .eq('tenant_id', tenantId)
-        .eq('source_capture_id', captureId)
+        .eq('capture_id', captureId)
         .range(from, to),
     ),
   ]);
@@ -99,11 +104,17 @@ export async function findFoldImpact(tenantId: string, captureId: string): Promi
       })),
     ),
   ];
-  const foldedVisits: FoldedVisit[] = visits.map((v) => ({
-    visitId: v.id,
-    jobId: v.job_id,
-    scheduledAt: v.scheduled_at,
-    technicianName: v.technician_name,
-  }));
+  const foldedVisits: FoldedVisit[] = visits
+    // !inner guarantees the embed, but the FK is ID-ONLY: re-check the tenant
+    // before surfacing anything about the trip (the DETAIL_SELECT doctrine).
+    .filter((n) => n.visits && n.visits.tenant_id === tenantId)
+    .map((n) => ({
+      visitId: n.visits.id,
+      jobId: n.visits.job_id,
+      // The trip's own time, which is what "scheduled" meant all along — the
+      // old column of that name was never written by anything.
+      scheduledAt: n.visits.starts_at,
+      technicianId: n.visits.technician_id,
+    }));
   return { facts, visits: foldedVisits };
 }

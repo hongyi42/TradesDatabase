@@ -209,7 +209,7 @@ export async function listJobsWithCustomerByIds(
 // ask. It also bounds the first-run backfill to the same 72h window the visit
 // detector uses, instead of surfacing every historical job at once.
 //
-// Rows with no technician are DROPPED here: assignments.technician_id has been
+// Rows with no technician are DROPPED here: visits.technician_id has been
 // nullable since 20260717120000, and createPendingNudge requires one — there is
 // nobody to ask.
 export type CostGapCandidate = {
@@ -226,7 +226,7 @@ export async function listCostGapCandidates(
   endedToNaive: string, // ISO, firm wall-clock as if UTC — exclusive
 ): Promise<CostGapCandidate[]> {
   const { data, error } = await getClient()
-    .from('assignments')
+    .from('visits')
     .select('technician_id, ends_at, job_id, jobs!inner(id, title, status, tenant_id, customers(name))')
     .eq('tenant_id', tenantId)
     .eq('status', 'confirmed')

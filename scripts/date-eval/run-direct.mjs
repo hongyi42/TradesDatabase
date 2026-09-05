@@ -62,7 +62,7 @@ const visits = await one(
           coalesce(t.ref, 'UNASSIGNED') as tech,
           c.name as customer, j.title as title,
           to_char(a.starts_at at time zone 'UTC', 'HH24:MI') as start_local
-   from assignments a
+   from visits a
    join jobs j on j.id = a.job_id
    join customers c on c.id = j.customer_id
    left join technicians t on t.id = a.technician_id
@@ -78,7 +78,7 @@ const timeOff = await one(
 );
 const windows = await one(
   `select c.name as customer, j.title as title, coalesce(t.ref, null) as tech
-   from assignments a
+   from visits a
    join jobs j on j.id = a.job_id
    join customers c on c.id = j.customer_id
    left join technicians t on t.id = a.technician_id

@@ -11,11 +11,14 @@ import {
   listJobsForCustomer,
   updateJobStatus,
   createVisit,
+  insertVisitNote,
+  getTechnician,
   ALLOWED_TRANSITIONS,
   type CaptureChannel,
   type Job,
   type JobStatus,
   type Json,
+  type Visit,
 } from '../db/index.js';
 import { defaultExtractor, type Extractor, type ExtractedFields } from './extract.js';
 import { matchIdentity, type MatchResult, type ScheduledCustomerDraft } from './identityMatch.js';
@@ -120,6 +123,15 @@ export async function recordFieldNote(
     // redelivery. Harmless (it writes nothing while still unresolved), just a repeat
     // model call. Append-only L1 can't carry a "processed" flag, so we accept the
     // re-run rather than mutate the capture.
+    // RUNG 9B WIDENED THAT CASE, deliberately: a non-technician capture (email,
+    // call, web form) no longer mints a visit, because `visits` IS the schedule
+    // now and a customer's email is not a trip. So when such a note resolves to
+    // an EXISTING customer AND an existing open job, nothing new carries the
+    // capture id and this dedup misses — same bounded cost as above, one repeat
+    // extractor call, and pinned as writing nothing twice in
+    // recordFieldNote.test.ts ("redelivered onto an EXISTING customer+job").
+    // The technician path is unaffected: it always writes a visit_notes link,
+    // which captureHasLinkedL2 reads.
     let landed: RawCapture | null = null;
 
     if (input.externalId) {
@@ -263,15 +275,42 @@ export async function recordFieldNote(
     });
   }
 
-  // The visit is this note's trip.
-  const visit = await createVisit({
-    tenantId,
-    jobId: job.id,
-    technicianName: technicianRef,
-    laborHours: extracted.laborHours ?? null,
-    attributes: buildVisitAttributes(extracted),
-    sourceCaptureId: captureId,
-  });
+  // The visit is this note's trip — for a TECHNICIAN channel only (rung 9b).
+  //
+  // Before the merge this mint was harmless for every channel, because the row
+  // landed in a table no schedule surface read. Now `visits` IS the schedule: a
+  // customer's inbound email or an inbound call would otherwise appear on the
+  // board as a trip that happened, and brief as past work nobody made. A note
+  // filed BY A TECHNICIAN is the only inbound that evidences a trip. (Calls
+  // committing a visit is rung 10, and creates an UNPLACED one deliberately.)
+  //
+  // Phase 1 keeps the old one-visit-per-note shape verbatim so existing tests
+  // still describe real behaviour; Phase 3 replaces it with the attach rule.
+  const isTechnicianChannel =
+    channel === 'technician_voice' || channel === 'technician_photo' || channel === 'technician_note';
+  let visit: Visit | null = null;
+  if (isTechnicianChannel) {
+    // The person column is a real foreign key now, not the old free TEXT name:
+    // resolve the badge's roster ref, and leave it null when the ref is not on
+    // this tenant's roster rather than inventing a link.
+    const technician = await getTechnician(tenantId, technicianRef);
+    visit = await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianId: technician?.id ?? null,
+      startsAt: null,
+      endsAt: null,
+      status: 'completed',
+      // NAIVE-LOCAL like every other time on this row. Phase 3 converts
+      // capturedAt (real UTC) into the firm's wall clock; until then a note
+      // records only THAT the trip happened, and nothing compares this value.
+      completedAt: capturedAt,
+      laborHours: extracted.laborHours ?? null,
+      attributes: buildVisitAttributes(extracted),
+      sourceCaptureId: captureId,
+    });
+    await insertVisitNote({ tenantId, visitId: visit.id, captureId });
+  }
 
   // Status transition only if note-blessed (subset of the hardcoded machine,
   // pinned by test; updateJobStatus re-validates legality at the write). A new
@@ -287,7 +326,13 @@ export async function recordFieldNote(
     if (!staleReopen) await updateJobStatus(job.id, signal);
   }
 
-  return { status: 'matched', captureId, customerId, jobId: job.id, visitId: visit.id };
+  return {
+    status: 'matched',
+    captureId,
+    customerId,
+    jobId: job.id,
+    ...(visit ? { visitId: visit.id } : {}),
+  };
 }
 
 // L1 metadata for an inbound capture: the normalizer's sourceMeta (from/subject/…)

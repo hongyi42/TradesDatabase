@@ -6,8 +6,7 @@ import { getClient } from '../db/client.js';
 import { appendRawCapture } from '../db/rawCaptures.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
-import { createAssignment, updateAssignmentStatus } from '../db/assignments.js';
-import { createVisit } from '../db/visits.js';
+import { createVisit, insertVisitNote, updateVisitStatus } from '../db/visits.js';
 import { upsertJobTypeDuration } from '../db/jobTypeDurations.js';
 import {
   insertTechnician,
@@ -383,7 +382,7 @@ describe('MCP server', () => {
     // customer at '12 MCP St' with a job booked for tech-mcp TODAY.
     const mcpCust = await createCustomer({ tenantId, name: 'MCP Cust', addressLine1: '12 MCP St' });
     const mcpJob = await createJob({ tenantId, customerId: mcpCust.id, title: 'mcp visit' });
-    await createAssignment({
+    await createVisit({
       tenantId,
       jobId: mcpJob.id,
       technicianId: techMcpId,
@@ -436,11 +435,13 @@ describe('MCP server', () => {
     );
     expect(cust.rows[0].name).toBe('MCP Cust'); // preview == commit
 
-    const vis = await pg.query<{ technician_name: string }>(
-      'select technician_name from visits where id = $1',
+    const vis = await pg.query<{ technician_id: string | null }>(
+      'select technician_id from visits where id = $1',
       [done.data.visitId],
     );
-    expect(vis.rows[0].technician_name).toBe('tech-mcp');
+    // Rung 9b: the person is a real foreign key now, resolved from the badge's
+    // roster ref — not the free TEXT name the per-note table carried.
+    expect(vis.rows[0].technician_id).toBe(techMcpId);
 
     // The token is consumed: a repeat confirm reports the note that already
     // landed. It used to throw "confirmation not found — restage", which since
@@ -1527,9 +1528,14 @@ describe('retract_capture + retraction folding', () => {
     const visit = await createVisit({
       tenantId,
       jobId: job.id,
-      technicianName: 'Jane',
+      technicianId: techMcpId,
+      startsAt: null,
+      endsAt: null,
+      status: 'completed',
+      completedAt: '2026-08-16T13:00:00.000Z',
       sourceCaptureId: cap.id,
     });
+    await insertVisitNote({ tenantId, visitId: visit.id, captureId: cap.id });
 
     const staged = await call('retract_capture', { captureId: cap.id, reason: 'wrong info' });
     expect(staged.isError).toBe(false);
@@ -1558,7 +1564,7 @@ describe('retract_capture + retraction folding', () => {
         visitId: visit.id,
         jobId: job.id,
         scheduledAt: null,
-        technicianName: 'Jane',
+        technicianId: techMcpId,
       },
     ]);
     expect(staged.data.note).toContain('willAlsoRemove');
@@ -2594,7 +2600,7 @@ describe('get_schedule', () => {
           : {}),
       });
       const job = await createJob({ tenantId, customerId: customer.id, title: key });
-      const row = await createAssignment({
+      const row = await createVisit({
         tenantId,
         jobId: job.id,
         technicianId: techMcpId,
@@ -2628,7 +2634,7 @@ describe('get_schedule', () => {
     // would leave 16 OPEN jobs with no visit in the tenant — exactly what
     // readUnscheduledJobs (no LIMIT) reports as the loose bucket, so they would
     // surface in every later unassignedOnly / board-tray read in this file.
-    await pg.query('delete from assignments where id = any($1::uuid[])', [gAssignmentIds]);
+    await pg.query('delete from visits where id = any($1::uuid[])', [gAssignmentIds]);
     await pg.query('delete from jobs where id = any($1::uuid[])', [gJobIds]);
     await pg.query('delete from customers where id = any($1::uuid[])', [gCustomerIds]);
   });
@@ -3777,7 +3783,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(booked.data.startTime).toBeNull();
       const assignmentId = booked.data.assignmentId as string;
       const { rows } = await pg.query(
-        'select starts_at, ends_at from assignments where id = $1',
+        'select starts_at, ends_at from visits where id = $1',
         [assignmentId],
       );
       expect(rows[0].starts_at).toBeNull();
@@ -5048,7 +5054,7 @@ describe('find_slots (Plan 3b)', () => {
         : {}),
     });
     const job = await createJob({ tenantId, customerId: cust.id, title: 'slots ctx', status: 'open' });
-    return createAssignment({
+    return createVisit({
       tenantId,
       jobId: job.id,
       technicianId: opts.technicianId,
@@ -5507,7 +5513,7 @@ describe('find_slots (Plan 3b)', () => {
         startsAt: '2027-03-29T09:00:00.000Z',
         endsAt: '2027-03-29T10:00:00.000Z',
       });
-      await updateAssignmentStatus(dead.id, 'cancelled');
+      await updateVisitStatus(dead.id, 'cancelled');
       const refused = await callWith('find_slots', { assignmentId: dead.id });
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain('cancelled');
@@ -5660,7 +5666,7 @@ describe('find_slots (Plan 3b)', () => {
       .eq('tenant_id', tenantId)
       .eq('ref', 'slots-alice')
       .single()).data!;
-    const subject = await createAssignment({
+    const subject = await createVisit({
       tenantId,
       jobId: subjJob.id,
       technicianId: bob.id,
@@ -5752,7 +5758,7 @@ describe('find_slots (Plan 3b)', () => {
     // A PROPOSED subject is absent from the confirmed-only stop list, and the
     // DB legally allows a different CONFIRMED visit at the same instant — the
     // exclusion must not fire and eat that real stop (round-2 residual).
-    const proposed = await createAssignment({
+    const proposed = await createVisit({
       tenantId,
       jobId: subjJob.id,
       technicianId: bob.id,
@@ -6076,7 +6082,7 @@ describe('move_visit unassign (plan 4a.5)', () => {
       expect(parked.data.unassigned).toBe(true);
       expect(parked.data.note).toContain('Parked in one step');
       const parkedRow = await pg.query(
-        'select technician_id from assignments where id = $1',
+        'select technician_id from visits where id = $1',
         [parked.data.assignmentId],
       );
       expect(parkedRow.rows[0].technician_id).toBeNull();
@@ -6117,7 +6123,7 @@ describe('move_visit unassign (plan 4a.5)', () => {
       expect(crossDay.data.status).toBe('moved');
       expect(crossDay.data.unassigned).toBe(true);
       const confirmedRow = await pg.query(
-        'select technician_id, starts_at from assignments where id = $1',
+        'select technician_id, starts_at from visits where id = $1',
         [crossDay.data.assignmentId],
       );
       expect(confirmedRow.rows[0].technician_id).toBeNull(); // detached…

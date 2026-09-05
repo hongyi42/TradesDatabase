@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import type { PlacedAssignment } from '../db/assignments.js';
+import type { PlacedVisit } from '../db/visits.js';
 import type { JobWithCustomer } from '../db/jobs.js';
 import type { Observation } from '../db/observations.js';
 import type { ReviewItem } from '../db/reviewItems.js';
@@ -38,7 +38,7 @@ const NOW = '2026-08-16T12:00:00.000Z';
 
 const tenant = (timezone: string): Tenant => ({ id: 't1', timezone }) as unknown as Tenant;
 
-function visit(over: Partial<PlacedAssignment>): PlacedAssignment {
+function visit(over: Partial<PlacedVisit>): PlacedVisit {
   return {
     id: 'a1',
     tenant_id: 't1',
@@ -52,7 +52,7 @@ function visit(over: Partial<PlacedAssignment>): PlacedAssignment {
     created_at: '2026-08-01T00:00:00.000Z',
     updated_at: '2026-08-01T00:00:00.000Z',
     ...over,
-  } as unknown as PlacedAssignment;
+  } as unknown as PlacedVisit;
 }
 
 function openItem(over: Partial<ReviewItem>): ReviewItem {
@@ -77,7 +77,7 @@ function baseDeps(over: Partial<WatcherDeps> = {}): WatcherDeps {
     getTenant: async () => tenant('UTC'),
     listOverdue: async () => [],
     listCaptureTimes: async () => [],
-    listVisitTimes: async () => [],
+    listNoteTimes: async () => [],
     listTeam: async () => [],
     listJobs: async () => [],
     listEverFlagged: async () => [],
@@ -164,7 +164,7 @@ describe('runWatchers — the firm\'s OWN detection thresholds (plan 2026-08-29)
   const windowFiltered = (t: string, from: string, to: string) =>
     [visit({ id: `a-${t}`, job_id: `j-${t}`, ends_at: ENDS_TWO_HOURS_AGO })].filter(
       // `.gte(from)` / `.lt(to)` — upper bound EXCLUSIVE, matching
-      // listOverdueConfirmedAssignments. `<=` would agree on today's fixture and
+      // listOverdueConfirmedVisits. `<=` would agree on today's fixture and
       // silently disagree on one placed exactly on `to`.
       (v) => v.ends_at! >= from && v.ends_at! < to,
     );
@@ -352,7 +352,7 @@ describe('runWatchers', () => {
         { job_id: 'j1', captured_at: '2026-08-16T08:30:00.000Z' },
         { job_id: 'j2', captured_at: '2026-08-16T06:30:00.000Z' },
       ],
-      listVisitTimes: async () => [{ job_id: 'j3', created_at: '2026-08-16T07:30:00.000Z' }],
+      listNoteTimes: async () => [{ job_id: 'j3', created_at: '2026-08-16T07:30:00.000Z' }],
     }));
     expect(summary.gapsFound).toBe(1);
     expect(summary.freshGaps).toBe(1);
@@ -508,7 +508,7 @@ describe('runWatchers', () => {
       ],
       listCaptureTimes: async () => [{ job_id: 'j9', captured_at: '2026-08-15T11:00:00.000Z' }],
       listAssignments: async () => [
-        visit({ id: 'a-cancelled', status: 'cancelled' } as Partial<PlacedAssignment>),
+        visit({ id: 'a-cancelled', status: 'cancelled' } as Partial<PlacedVisit>),
         visit({ id: 'a-still-open', job_id: 'j8' }),
       ],
       resolveGap: async (_t, _kind, subjectRef, _status, resolution) => {
@@ -541,7 +541,7 @@ describe('runWatchers', () => {
       // Activity BEFORE the flag (09:00 < 10:00) — what the planner escalated despite.
       listCaptureTimes: async () => [{ job_id: 'j-esc', captured_at: '2026-08-16T09:00:00.000Z' }],
       listAssignments: async () => [
-        visit({ id: 'a-esc', status: 'completed' } as Partial<PlacedAssignment>),
+        visit({ id: 'a-esc', status: 'completed' } as Partial<PlacedVisit>),
       ],
       resolveGap: async (_t, _k, subjectRef) => {
         resolved.push(subjectRef);

@@ -416,7 +416,7 @@ describe('GET /board/api/visit (tap-into-a-visit detail)', () => {
   const idByTitle = async (title: string): Promise<string> =>
     (
       await pg.query<{ id: string }>(
-        `select a.id from assignments a join jobs j on j.id = a.job_id
+        `select a.id from visits a join jobs j on j.id = a.job_id
          where j.title = $1 and a.status = 'confirmed'`,
         [title],
       )
@@ -518,7 +518,7 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
   });
 
   afterAll(async () => {
-    await pg.query("update assignments set status = 'cancelled' where id = $1", [stripAssignmentId]);
+    await pg.query("update visits set status = 'cancelled' where id = $1", [stripAssignmentId]);
     await pg.query("update jobs set status = 'cancelled' where id = $1", [stripJobId]);
   });
 
@@ -586,7 +586,7 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     expect(body.untimed).toBe(true);
     // The row: new id, still untimed, new person; the old row cancelled.
     const { rows } = await pg.query(
-      `select id, starts_at, technician_id from assignments where id = $1`,
+      `select id, starts_at, technician_id from visits where id = $1`,
       [body.assignmentId],
     );
     expect(rows[0].starts_at).toBeNull();
@@ -625,7 +625,7 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     const parked = (await detach.json()) as Record<string, unknown>;
     expect(parked.unassigned).toBe(true);
     const { rows } = await pg.query(
-      'select id, starts_at, technician_id from assignments where id = $1',
+      'select id, starts_at, technician_id from visits where id = $1',
       [parked.assignmentId],
     );
     expect(rows[0].starts_at).toBeNull();
@@ -651,7 +651,7 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     expect(okBody.status).toBe('preview');
     expect(okBody.attach).toBe(true);
     expect(okBody.requiresConfirmation).toBe(false);
-    const after = await pg.query('select technician_id, status from assignments where id = $1', [
+    const after = await pg.query('select technician_id, status from visits where id = $1', [
       stripAssignmentId,
     ]);
     expect(after.rows[0].technician_id).toBeNull(); // preview wrote nothing
@@ -671,7 +671,7 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     ).rows[0].id as string;
     const placedRow = (
       await pg.query(
-        `insert into assignments (tenant_id, job_id, starts_at, ends_at, status)
+        `insert into visits (tenant_id, job_id, starts_at, ends_at, status)
          values ($1, $2, $3, $4, 'confirmed') returning id`,
         [tenantId, placedJob, `${relDate(25)}T09:00:00Z`, `${relDate(25)}T10:00:00Z`],
       )
@@ -690,7 +690,7 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
       expect(refused.status).toBe(409);
       expect(((await refused.json()) as { error: string }).error).toContain('has times');
     } finally {
-      await pg.query("update assignments set status = 'cancelled' where id = $1", [placedRow]);
+      await pg.query("update visits set status = 'cancelled' where id = $1", [placedRow]);
       await pg.query("update jobs set status = 'cancelled' where id = $1", [placedJob]);
     }
   });
@@ -758,7 +758,7 @@ describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {
     // would never mint it).
     hostileVisitId = (
       await pg.query<{ id: string }>(
-        `insert into assignments (tenant_id, job_id, technician_id, starts_at, ends_at, status)
+        `insert into visits (tenant_id, job_id, technician_id, starts_at, ends_at, status)
          values ($1, $2, null, $3, $4, 'confirmed') returning id`,
         [tenantId, theirJob.id, `${relDate(11)}T09:00:00Z`, `${relDate(11)}T10:00:00Z`],
       )
@@ -771,7 +771,7 @@ describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {
   });
 
   afterAll(async () => {
-    await pg.query('delete from assignments where id = $1', [hostileVisitId]);
+    await pg.query('delete from visits where id = $1', [hostileVisitId]);
     await pg.query('delete from jobs where id = $1', [mismatchedJobId2]);
     await pg.query('delete from jobs where tenant_id = $1', [probeTenantId]);
     await pg.query('delete from customers where tenant_id = $1', [probeTenantId]);
@@ -816,7 +816,7 @@ describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {
     } finally {
       // Terminal flips, not deletes: a delete cascades toward append-only L1
       // territory; cancelled rows vanish from every bucket read regardless.
-      await pg.query("update assignments set status = 'cancelled' where id = $1", [
+      await pg.query("update visits set status = 'cancelled' where id = $1", [
         booked.assignment.id,
       ]);
       await pg.query("update jobs set status = 'cancelled' where id = $1", [booked.job.id]);
@@ -892,7 +892,7 @@ describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {
       );
     } finally {
       await pg.query(
-        "update assignments set status = 'cancelled' where job_id = any($1::uuid[])",
+        "update visits set status = 'cancelled' where job_id = any($1::uuid[])",
         [[older.job.id, newer.job.id]],
       );
       await pg.query("update jobs set status = 'cancelled' where id = any($1::uuid[])", [
@@ -1016,7 +1016,7 @@ describe('cross-tenant nested rows never leak through the embedded read', () => 
     // the real booking verbs are tenant-scoped and would never create it.
     // Unassigned + its own day so no_confirmed_overlap cannot fire.
     const inserted = await pg.query<{ id: string }>(
-      `insert into assignments
+      `insert into visits
          (tenant_id, job_id, technician_id, starts_at, ends_at, status)
        values ($1, $2, null, '${DAY_X1}T09:00:00Z', '${DAY_X1}T10:00:00Z', 'confirmed')
        returning id`,
@@ -1049,7 +1049,7 @@ describe('cross-tenant nested rows never leak through the embedded read', () => 
       displayName: 'SECRET Rival Tech',
     });
     const insertedTech = await pg.query<{ id: string }>(
-      `insert into assignments
+      `insert into visits
          (tenant_id, job_id, technician_id, starts_at, ends_at, status)
        values ($1, $2, $3, '${DAY_X2}T09:00:00Z', '${DAY_X2}T10:00:00Z', 'confirmed')
        returning id`,
@@ -1069,7 +1069,7 @@ describe('cross-tenant nested rows never leak through the embedded read', () => 
     });
     mismatchedJobId = mismatchedJob.id;
     const insertedCust = await pg.query<{ id: string }>(
-      `insert into assignments
+      `insert into visits
          (tenant_id, job_id, technician_id, starts_at, ends_at, status)
        values ($1, $2, null, '${DAY_X3}T09:00:00Z', '${DAY_X3}T10:00:00Z', 'confirmed')
        returning id`,
@@ -1079,7 +1079,7 @@ describe('cross-tenant nested rows never leak through the embedded read', () => 
   });
 
   afterAll(async () => {
-    await pg.query('delete from assignments where id = any($1)', [
+    await pg.query('delete from visits where id = any($1)', [
       [strandedId, strandedTechId, strandedCustomerId],
     ]);
     await pg.query('delete from jobs where id = any($1)', [[ourJobId, mismatchedJobId]]);
@@ -1187,7 +1187,7 @@ describe('board write path (Phase 3)', () => {
     pg
       .query(
         `select a.id, a.status, a.technician_id, a.starts_at::text as starts_at, t.ref
-           from assignments a left join technicians t on t.id = a.technician_id
+           from visits a left join technicians t on t.id = a.technician_id
           where ${whereSql} order by a.created_at`,
         params,
       )
@@ -1503,7 +1503,7 @@ describe('board quick-edit API (plan 4a.5): roster, book, job, detail additions'
     });
     hostileVisitId = (
       await pg.query<{ id: string }>(
-        `insert into assignments
+        `insert into visits
            (tenant_id, job_id, technician_id, starts_at, ends_at, status)
          values ($1, $2, null, '${HOSTILE_DAY}T09:00:00Z', '${HOSTILE_DAY}T10:00:00Z', 'confirmed')
          returning id`,
@@ -1513,7 +1513,7 @@ describe('board quick-edit API (plan 4a.5): roster, book, job, detail additions'
   });
 
   afterAll(async () => {
-    await pg.query('delete from assignments where id = $1', [hostileVisitId]);
+    await pg.query('delete from visits where id = $1', [hostileVisitId]);
     await pg.query('delete from jobs where tenant_id = $1', [hostileTenantId]);
     await pg.query('delete from customers where tenant_id = $1', [hostileTenantId]);
     await pg.query('delete from tenants where id = $1', [hostileTenantId]);
@@ -1563,7 +1563,7 @@ describe('board quick-edit API (plan 4a.5): roster, book, job, detail additions'
     expect(p).toMatchObject({ requiresConfirmation: false, newJob: false, jobTitle: 'Quick edit probe job' });
     // Preview wrote NOTHING.
     const before = await pg.query(
-      "select id from assignments where job_id = $1 and status = 'confirmed'",
+      "select id from visits where job_id = $1 and status = 'confirmed'",
       [probeJobId],
     );
     expect(before.rows).toHaveLength(0);
@@ -1574,7 +1574,7 @@ describe('board quick-edit API (plan 4a.5): roster, book, job, detail additions'
     expect(c.status).toBe('booked');
     // SQL read-back: confirmed row for the job, held by board-t2.
     const row = await pg.query(
-      `select a.status, t.ref from assignments a join technicians t on t.id = a.technician_id
+      `select a.status, t.ref from visits a join technicians t on t.id = a.technician_id
         where a.id = $1`,
       [c.assignmentId],
     );
@@ -1672,7 +1672,7 @@ describe('board quick-edit API (plan 4a.5): roster, book, job, detail additions'
     expect(row.rows[0]).toEqual({ title: 'Right title', priority: 'urgent' });
     expect(await trayTitle()).toBe('Right title');
     const visits = await pg.query(
-      'select count(*)::int as n from assignments where job_id = $1',
+      'select count(*)::int as n from visits where job_id = $1',
       [job.id],
     );
     expect(visits.rows[0].n).toBe(0);

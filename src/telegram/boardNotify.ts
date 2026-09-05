@@ -1,11 +1,11 @@
 import {
-  getAssignmentForTenant,
+  getVisitForTenant,
   getTechnicianById,
   isInactiveState,
   latestScheduleVersion,
   listScheduleEventsSince,
   listTenantIdsWithTelegramBindings,
-  type Assignment,
+  type Visit,
   type ScheduleEvent,
   type Technician,
 } from '../db/index.js';
@@ -55,21 +55,21 @@ function digestText(pushes: Push[]): string {
 // A push must never render 'undefined–undefined' at a technician. An UNTIMED
 // visit (rung 9a) has neither a day nor times, so `when` collapses to one
 // honest phrase instead of pairing two placeholders.
-const day = (row: Assignment): string => row.starts_at?.slice(0, 10) ?? 'no date yet';
-const span = (row: Assignment): string =>
+const day = (row: Visit): string => row.starts_at?.slice(0, 10) ?? 'no date yet';
+const span = (row: Visit): string =>
   row.starts_at && row.ends_at
     ? `${row.starts_at.slice(11, 16)}–${row.ends_at.slice(11, 16)}`
     : 'time not set';
 // "2026-10-20, 09:00–10:00" for a placed visit; "no time set yet" when there
 // is nothing to say.
-const when = (row: Assignment): string =>
+const when = (row: Visit): string =>
   row.starts_at ? `${day(row)}, ${span(row)}` : 'no time set yet';
 
 const detailStr = (detail: Record<string, unknown>, key: string): string | null =>
   typeof detail[key] === 'string' ? (detail[key] as string) : null;
 
 async function technicianOf(
-  row: Assignment | null,
+  row: Visit | null,
   tenantId: string,
 ): Promise<Technician | null> {
   if (!row?.technician_id) return null; // unassigned — nobody to notify
@@ -86,7 +86,7 @@ async function technicianOf(
 // unbound person simply yields fewer pushes, never an error.
 async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
   const detail = (ev.detail ?? {}) as Record<string, unknown>;
-  const row = ev.assignment_id ? await getAssignmentForTenant(ev.assignment_id, tenantId) : null;
+  const row = ev.assignment_id ? await getVisitForTenant(ev.assignment_id, tenantId) : null;
   const tech = await technicianOf(row, tenantId);
   const out: Push[] = [];
 
@@ -104,7 +104,7 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
       const fromDay = detailStr(detail, 'fromDay') ?? '?';
       const toDay = detailStr(detail, 'toDay') ?? (row ? day(row) : '?');
       const prevId = detailStr(detail, 'previousAssignmentId');
-      const oldRow = prevId ? await getAssignmentForTenant(prevId, tenantId) : null;
+      const oldRow = prevId ? await getVisitForTenant(prevId, tenantId) : null;
       const oldTech = await technicianOf(oldRow, tenantId);
       if (tech && oldTech && tech.id === oldTech.id) {
         // Same person, different slot — one message, not an add + a remove.

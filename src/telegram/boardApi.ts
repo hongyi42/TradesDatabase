@@ -616,7 +616,7 @@ export async function handleBoardRequest(
         const moved = await moveVisit(input);
         json(res, 200, {
           status: 'moved',
-          // A move ALWAYS produces a placed row (rescheduleAssignment requires
+          // A move ALWAYS produces a placed row (rescheduleVisit requires
           // times) — assert instead of widening the payload (plan 4b-2).
           start: moved.created.starts_at as string,
           end: moved.created.ends_at as string,

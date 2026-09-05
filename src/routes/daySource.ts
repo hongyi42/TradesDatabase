@@ -1,5 +1,5 @@
 // Day-stops reader — "which stops does this technician have, per day, in this
-// date range?" — reading the DB-owned booking table (`assignments`, confirmed
+// date range?" — reading the DB-owned booking table (`visits`, confirmed
 // rows only). The schedule_entries sheet-mirror source (and its ROUTE_DAY_SOURCE
 // flag) retired with the Telegram-schedule series Plan 1: the sheet is no
 // longer an input.
@@ -11,7 +11,7 @@
 
 import { formatAddress, type RouteStop } from './deepLink.js';
 import { getTechnician } from '../db/technicians.js';
-import { listAssignmentsForTechnician } from '../db/assignments.js';
+import { listVisitsForTechnician } from '../db/visits.js';
 import { listJobsWithCustomerByIds } from '../db/jobs.js';
 
 export interface DayStops {
@@ -48,23 +48,23 @@ export async function listDayStops(
   // semantics) — that's an empty schedule, never a crash.
   const tech = await getTechnician(tenantId, technicianRef);
   if (!tech) return [];
-  const assignments = await listAssignmentsForTechnician(
+  const visits = await listVisitsForTechnician(
     tech.id,
     `${fromDate.slice(0, 10)}T00:00:00.000Z`,
     `${toDate.slice(0, 10)}T23:59:59.999Z`,
     ['confirmed'],
   );
   const jobs = await listJobsWithCustomerByIds(tenantId, [
-    ...new Set(assignments.map((a) => a.job_id)),
+    ...new Set(visits.map((a) => a.job_id)),
   ]);
   const jobById = new Map(jobs.map((j) => [j.id, j]));
-  // listAssignmentsForTechnician uses OVERLAP semantics, so an overnight
+  // listVisitsForTechnician uses OVERLAP semantics, so an overnight
   // booking that merely ends inside the range would bucket onto a day before
   // fromDate — clamp to the requested days.
   const from = fromDate.slice(0, 10);
   const to = toDate.slice(0, 10);
   return groupByUtcDay(
-    assignments
+    visits
       .filter((a) => {
         const day = a.starts_at.slice(0, 10);
         return day >= from && day <= to;

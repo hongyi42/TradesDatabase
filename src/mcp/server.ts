@@ -74,7 +74,7 @@ import {
   formatDuration,
   isValidDuration,
   MAX_DURATION_MINUTES,
-  getAssignmentForTenant,
+  getVisitForTenant,
   getTechnicianById,
   unwrapAttributes,
   appendCostEvents,
@@ -172,8 +172,8 @@ import {
   servedDayPhrase, isRealDateISO, isWeekday, resolveDate } from '../schedule/dateResolve.js';
 import {
   latestScheduleVersion,
-  listAssignmentsForTenant,
-  listUnassignedAssignments,
+  listVisitsForTenant,
+  listUnassignedVisits,
   listUnplaced,
   listJobsWithCustomerByIds,
   listDecisionsForNudge,
@@ -4089,10 +4089,10 @@ async function dispatch(
       // agent denied it existed — so it rides its own top-level list instead.
       let untimedRows: Awaited<ReturnType<typeof listUnplaced>> = [];
       const rows = unassignedOnly
-        ? await listUnassignedAssignments(tenantId, `${from}T00:00:00.000Z`)
+        ? await listUnassignedVisits(tenantId, `${from}T00:00:00.000Z`)
         : await (async () => {
             const [placed, untimed] = await Promise.all([
-              listAssignmentsForTenant(
+              listVisitsForTenant(
                 tenantId,
                 `${from}T00:00:00.000Z`,
                 new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
@@ -5165,7 +5165,7 @@ async function dispatch(
       let sandboxRef = target.sandbox_ref;
       // The bot handle is the only way the person can OPEN the chat (bots can't
       // message first) — resolve it from the pool row on both paths. Legacy
-      // assignments (no pool row) and pre-handle registrations yield null, which
+      // host assignments (no pool row) and pre-handle registrations yield null, which
       // the tool description turns into "ask your operator", never a guess.
       let botUsername: string | null = null;
       if (!sandboxRef) {
@@ -5970,7 +5970,7 @@ async function dispatch(
       } | null = null;
       let customerIdResolved: string;
       if (assignmentIdArg) {
-        const row = await getAssignmentForTenant(assignmentIdArg, tenantId);
+        const row = await getVisitForTenant(assignmentIdArg, tenantId);
         if (!row) throw new Error('visit not found');
         // Mirror move/cancel's subject rule: terminal rows are history, not
         // schedulable subjects.

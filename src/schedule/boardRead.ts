@@ -2,16 +2,16 @@ import {
   factSourceIds,
   findRetractionsFor,
   foldRetractedFacts,
-  getAssignmentWithRefsForTenant,
+  getVisitWithRefsForTenant,
   getTenant,
   isInactiveState,
-  listAssignmentsWithRefsForTenant,
+  listVisitsWithRefsForTenant,
   listTeam,
-  listUnassignedAssignmentsWithRefs,
+  listUnassignedVisitsWithRefs,
   listUnscheduledOpenJobsWithCustomer,
   isPlaced,
   unwrapAttributes,
-  type Assignment,
+  type Visit,
   type Json,
 } from '../db/index.js';
 import { formatAddress } from '../routes/deepLink.js';
@@ -48,7 +48,7 @@ export interface BoardStop {
   address: string | null;
   start: string;
   end: string;
-  status: Assignment['status'];
+  status: Visit['status'];
   // Null when the assignment references another tenant's job — the id is
   // withheld like every other nested field (see the tenant re-check below).
   jobId: string | null;
@@ -121,7 +121,7 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
     horizonNote = clamp.horizonNote;
   }
 
-  // ONE embedded read for the whole window (was: assignments + jobs-with-
+  // ONE embedded read for the whole window (was: visits + jobs-with-
   // customer + the full roster = three serial round-trips per board button).
   //
   // A second read used to bring the unplaced strip in (plan 4b-2), because a
@@ -129,7 +129,7 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
   // deleted the range: an untimed visit belongs to no day, so the day view has
   // nothing to draw and the read is gone. Those visits live in the flat
   // unscheduled tray (readLooseBucket) instead.
-  const rows = await listAssignmentsWithRefsForTenant(
+  const rows = await listVisitsWithRefsForTenant(
     tenantId,
     `${from}T00:00:00.000Z`,
     new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
@@ -274,7 +274,7 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
   // recorded limitation that `proposed` unassigned rows are invisible to
   // BOTH halves — no production writer mints them today; Plan 3c/4b decides.)
   const [parked, unscheduledJobs] = await Promise.all([
-    listUnassignedAssignmentsWithRefs(tenantId, '1970-01-01T00:00:00.000Z'),
+    listUnassignedVisitsWithRefs(tenantId, '1970-01-01T00:00:00.000Z'),
     jobsPromise,
   ]);
   // Sorted after mapping, not by the SQL order. Dated rows (placed but with
@@ -350,7 +350,7 @@ export async function readRosterForBoard(tenantId: string): Promise<BoardRosterE
 // capture sensitivity filter still has nothing to do here).
 export interface VisitDetail {
   assignmentId: string;
-  status: Assignment['status'];
+  status: Visit['status'];
   // Null on an UNTIMED visit (rung 9a) — nothing records when it should be.
   start: string | null;
   end: string | null;
@@ -417,7 +417,7 @@ export async function readVisitDetail(
 ): Promise<VisitDetail | null> {
   // ONE embedded read (was: assignment → job → customer → technician, four
   // serial round-trips, each waiting on the id from the one before).
-  const row = await getAssignmentWithRefsForTenant(assignmentId, tenantId);
+  const row = await getVisitWithRefsForTenant(assignmentId, tenantId);
   if (!row) return null;
   if (viewerTechnicianId != null && row.technician_id !== viewerTechnicianId) return null;
   // SECURITY: the embed's foreign keys are ID-ONLY, so every nested row is

@@ -4,7 +4,7 @@ import { getClient } from '../db/client.js';
 import { appendRawCapture } from '../db/rawCaptures.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob, listJobsForCustomer } from '../db/jobs.js';
-import { createAssignment } from '../db/assignments.js';
+import { createVisit } from '../db/visits.js';
 import { insertTechnician } from '../db/technicians.js';
 import { setTenantSeats } from '../db/tenants.js';
 import { localDateISO } from '../schedule/availability.js';
@@ -86,11 +86,23 @@ describe('recordFieldNote', () => {
     const visit = await pg.query<{
       labor_hours: string | null;
       source_capture_id: string | null;
-      technician_name: string | null;
-    }>('select labor_hours, source_capture_id, technician_name from visits where id = $1', [r.visitId]);
+      status: string;
+      completed_at: string | null;
+    }>(
+      'select labor_hours, source_capture_id, status, completed_at from visits where id = $1',
+      [r.visitId],
+    );
     expect(Number(visit.rows[0].labor_hours)).toBe(2.5);
     expect(visit.rows[0].source_capture_id).toBe(r.captureId);
-    expect(visit.rows[0].technician_name).toBe('tech-jane');
+    // Rung 9b: a reported trip is a COMPLETED visit on the one visits table,
+    // and the note reaches it through visit_notes rather than owning it.
+    expect(visit.rows[0].status).toBe('completed');
+    expect(visit.rows[0].completed_at).not.toBeNull();
+    const link = await pg.query<{ n: string }>(
+      'select count(*)::int as n from visit_notes where visit_id = $1 and capture_id = $2',
+      [r.visitId, r.captureId],
+    );
+    expect(Number(link.rows[0].n)).toBe(1);
   });
 
   test('note signals drive the WORK dimension only: invoiced ignores a late "done", completed reopens on "underway"', async () => {
@@ -175,7 +187,7 @@ describe('recordFieldNote', () => {
       addressLine1: '88 Sheet St',
     });
     const schedJob = await createJob({ tenantId, customerId: sheetCust.id, title: 'rfn visit' });
-    await createAssignment({
+    await createVisit({
       tenantId,
       jobId: schedJob.id,
       technicianId: roster.id,
@@ -397,6 +409,54 @@ describe('recordFieldNote', () => {
     expect(await visitCount()).toBe(visitsAfterFirst);
   });
 
+  // REVIEW FINDING, rung 9b. The dedup short-circuit keys on captureHasLinkedL2,
+  // and before the merge an email ALWAYS left a link because it always minted a
+  // visit. It no longer does — a customer's email is not a trip — so when the
+  // note resolves to an EXISTING customer AND an existing open job, nothing new
+  // carries the capture id and the redelivery falls through to the orphan-heal
+  // path: extract runs again (one model call), and the note is re-applied.
+  // That is bounded and SAFE, which is what this pins: no second L1 row, no
+  // second customer, no second job, no visit. The pre-existing case above only
+  // proved it for a customer with no job yet, where the job's own
+  // source_capture_id still marks the capture processed.
+  test('an email redelivered onto an EXISTING customer+job re-runs, but writes nothing twice', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Redeliver Cust', phone: '555-7171' });
+    const { createJob } = await import('../db/jobs.js');
+    await createJob({ tenantId, customerId: customer.id, title: 'already open work' });
+    const externalId = 'gmail-msg-existing-job-1';
+    const note = {
+      tenantId,
+      technicianRef: 'connector:gmail',
+      channel: 'email' as const,
+      text: 'any update on the leak?',
+      externalId,
+    };
+    const first = await recordFieldNote(note, stub({ phone: '555-7171' }));
+    expect(first.status).toBe('matched');
+    expect(first.visitId).toBeUndefined(); // an email is not a trip
+    const jobsAfterFirst = (await listJobsForCustomer(customer.id)).length;
+    const visitsAfterFirst = await visitCount();
+
+    const second = await recordFieldNote(note, stub({ phone: '555-7171' }));
+    // It RE-RUNS rather than short-circuiting — asserted explicitly, or this
+    // test would pass identically if the dedup had caught it, and would stop
+    // describing the behaviour it exists to document.
+    expect(second.status).toBe('matched'); // not 'duplicate' — the fall-through
+    expect(second.captureId).toBe(first.captureId); // the SAME L1 row is reused
+    const l1 = await pg.query<{ n: string }>(
+      'select count(*)::int as n from raw_captures where external_id = $1',
+      [externalId],
+    );
+    expect(Number(l1.rows[0].n)).toBe(1);
+    expect((await listJobsForCustomer(customer.id)).length).toBe(jobsAfterFirst);
+    expect(await visitCount()).toBe(visitsAfterFirst);
+    const custs = await pg.query<{ n: string }>(
+      'select count(*)::int as n from customers where tenant_id = $1 and phone = $2',
+      [tenantId, '555-7171'],
+    );
+    expect(Number(custs.rows[0].n)).toBe(1);
+  });
+
   test('#3: an orphan capture (L1 written, extract failed) is healed on redelivery — reuse L1, build L2, no second row', async () => {
     const customer = await createCustomer({ tenantId, name: 'Heal Me', phone: '555-5050' });
     const externalId = 'gmail-msg-heal-1';
@@ -484,7 +544,12 @@ describe('recordFieldNote', () => {
       stub({ phone: '555-9090', workPerformed: 'furnace repair' }),
     );
     expect(r.status).toBe('matched');
-    expect(r.customerId).toBe(customer.id);
-    expect(r.visitId).toBeDefined(); // L2 built when structure is left default
+    expect(r.customerId).toBe(customer.id); // L2 built when structure is left default
+    expect(r.jobId).toBeDefined();
+    // INVERTED by rung 9b: a phone call is NOT a trip. `visits` is now the
+    // schedule, so minting a row here would put a visit nobody made on the
+    // board and brief it as past work. Only a TECHNICIAN channel evidences a
+    // trip; a call that commits one is rung 10, and creates it UNPLACED.
+    expect(r.visitId).toBeUndefined();
   });
 });

@@ -5,7 +5,7 @@ import {
   listJobIdsWithCostEvents,
   findOpenReviewItemsByKind,
   getTenant,
-  listAssignmentsByIds,
+  listVisitsByIds,
   listEverFlaggedSubjectRefs,
   listJobStampedCaptureTimes,
   listJobsWithCustomerByIds,
@@ -13,10 +13,10 @@ import {
   listNudgesByStatus,
   listObservationsByStatus,
   listObservedSubjectRefs,
-  listOverdueConfirmedAssignments,
+  listOverdueConfirmedVisits,
   listTeam,
   listTenantIdsWithTelegramBindings,
-  listVisitTimesForJobs,
+  listNoteTimesForJobs,
   readSettingsTolerantly,
   resolveOpenReviewItemFor,
 } from '../db/index.js';
@@ -54,7 +54,7 @@ import { naiveLocalISO } from '../schedule/booking.js';
 // Restraint machinery (each line guards the manager's attention, the scarce
 // resource):
 //   - the 72h look-back means the historical backlog NEVER surfaces;
-//   - the cap meters FRESH gaps only (ever-flagged assignments are filtered
+//   - the cap meters FRESH gaps only (ever-flagged visits are filtered
 //     out via one batched read BEFORE capping — final-review fix: without it,
 //     stale flagged-but-unfilled gaps occupy the slots and starve new gaps);
 //   - once per assignment EVER (uq_observations_subject_ever owns this since
@@ -193,13 +193,13 @@ const MAX_FLOOR_REACH_MS = 7 * 24 * 3_600_000;
 export interface WatcherDeps {
   listTenants?: typeof listTenantIdsWithTelegramBindings;
   getTenant?: typeof getTenant;
-  listOverdue?: typeof listOverdueConfirmedAssignments;
+  listOverdue?: typeof listOverdueConfirmedVisits;
   listCaptureTimes?: typeof listJobStampedCaptureTimes;
-  listVisitTimes?: typeof listVisitTimesForJobs;
+  listNoteTimes?: typeof listNoteTimesForJobs;
   listTeam?: typeof listTeam;
   listJobs?: typeof listJobsWithCustomerByIds;
   listEverFlagged?: typeof listEverFlaggedSubjectRefs;
-  listAssignments?: typeof listAssignmentsByIds;
+  listAssignments?: typeof listVisitsByIds;
   findOpenGaps?: typeof findOpenReviewItemsByKind;
   resolveGap?: typeof resolveOpenReviewItemFor;
   // Detection-records seams (plan 2026-08-31): the mint writes observations.
@@ -275,13 +275,13 @@ export async function runWatchers(
 ): Promise<WatchersSummary> {
   const listTenants = deps.listTenants ?? listTenantIdsWithTelegramBindings;
   const get = deps.getTenant ?? getTenant;
-  const listOverdue = deps.listOverdue ?? listOverdueConfirmedAssignments;
+  const listOverdue = deps.listOverdue ?? listOverdueConfirmedVisits;
   const listCaptureTimes = deps.listCaptureTimes ?? listJobStampedCaptureTimes;
-  const listVisitTimes = deps.listVisitTimes ?? listVisitTimesForJobs;
+  const listNoteTimes = deps.listNoteTimes ?? listNoteTimesForJobs;
   const team = deps.listTeam ?? listTeam;
   const listJobs = deps.listJobs ?? listJobsWithCustomerByIds;
   const listEverFlagged = deps.listEverFlagged ?? listEverFlaggedSubjectRefs;
-  const listAssignments = deps.listAssignments ?? listAssignmentsByIds;
+  const listAssignments = deps.listAssignments ?? listVisitsByIds;
   const findOpenGaps = deps.findOpenGaps ?? findOpenReviewItemsByKind;
   const resolveGap = deps.resolveGap ?? resolveOpenReviewItemFor;
   const createObs = deps.createObservation ?? createObservation;
@@ -448,7 +448,7 @@ export async function runWatchers(
         const ids = [...jobIds];
         const [captures, visits] = await Promise.all([
           listCaptureTimes(tenantId, ids, floorUtcIso),
-          listVisitTimes(tenantId, ids, floorUtcIso),
+          listNoteTimes(tenantId, ids, floorUtcIso),
         ]);
         const note = (jobId: string | null, utcIso: string): void => {
           if (!jobId) return;
@@ -491,7 +491,7 @@ export async function runWatchers(
 
       // Auto-resolve: the ONE judgment the sweep keeps (build 5, user ruling
       // 5) — a manager's queue item whose ask has since been satisfied closes
-      // itself. Only kinds whose subject IS a visit belong in an assignments
+      // itself. Only kinds whose subject IS a visit belong in a visits
       // lookup: a job-scoped kind's subject_ref is a JOB id.
       const statusSubjects = [
         ...new Set(

@@ -13,9 +13,9 @@
 import {
   ALLOWED_TRANSITIONS,
   appendScheduleEvent,
-  createAssignment,
+  createVisit,
   createJob,
-  getAssignmentForTenant,
+  getVisitForTenant,
   getCustomer,
   getJob,
   getTechnician,
@@ -23,18 +23,18 @@ import {
   isInactiveState,
   isOverlapViolation,
   isValidDuration,
-  listAssignmentsForTechnician,
+  listVisitsForTechnician,
   listTimeOffForTechnician,
-  listAssignmentsForJob,
+  listVisitsForJob,
   listIdenticalUnassignedVisits,
   listUntimedVisitsForJob,
   listOpenJobsForCustomer,
-  rescheduleAssignment,
-  updateAssignmentStatus,
+  rescheduleVisit,
+  updateVisitStatus,
   updateJobDetails,
   updateJobStatus,
   isPlaced,
-  type Assignment,
+  type Visit,
   type Customer,
   type Job,
   type JobPriority,
@@ -61,7 +61,7 @@ export function naiveLocalISO(date: string, hhmm: string): string {
 // window. A visit HAS A TIME OR IT DOES NOT, so a row with no start has no day
 // to name, and 'no time set' is the honest label. It degrades a label, never a
 // booking.
-export function visitDay(row: Assignment): string {
+export function visitDay(row: Visit): string {
   return row.starts_at ? row.starts_at.slice(0, 10) : 'no time set';
 }
 
@@ -127,8 +127,8 @@ async function overlappingConfirmed(
   startISO: string,
   endISO: string,
   excludeId?: string,
-): Promise<Assignment[]> {
-  const rows = await listAssignmentsForTechnician(technicianId, startISO, endISO, ['confirmed']);
+): Promise<Visit[]> {
+  const rows = await listVisitsForTechnician(technicianId, startISO, endISO, ['confirmed']);
   return rows.filter((r) => r.id !== excludeId);
 }
 
@@ -193,7 +193,7 @@ export interface BookVisitInput {
 // and the surface says what it did afterwards.
 //
 // Each preview still carries the verdict as `requiresConfirmation`.
-export function cancelRequiresConfirmation(row: Assignment): boolean {
+export function cancelRequiresConfirmation(row: Visit): boolean {
   return isPlaced(row);
 }
 
@@ -437,7 +437,7 @@ function bookedSpanMinutes(startISO: string, endISO: string): number | null {
 }
 
 export interface BookVisitResult {
-  assignment: Assignment;
+  assignment: Visit;
   job: Job;
   customer: Customer;
   warning?: string;
@@ -470,9 +470,9 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
         r.startISO && r.endISO ? bookedSpanMinutes(r.startISO, r.endISO) : null,
     }));
 
-  let assignment: Assignment;
+  let assignment: Visit;
   try {
-    assignment = await createAssignment({
+    assignment = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: r.technician?.id ?? null,
@@ -544,7 +544,7 @@ export interface MoveVisitInput {
 interface ResolvedMove {
   // May be UNPLACED (plan 4b-2): moving an unplaced visit to real times IS
   // the placing verb — the reschedule produces a placed row either way.
-  old: Assignment;
+  old: Visit;
   // The TARGET technician. null has two readings — an UNASSIGNED visit staying
   // unassigned (the common case: old.technician_id is null and no ref given),
   // or a roster row that vanished (near-unreachable: techs deactivate, never
@@ -561,7 +561,7 @@ interface ResolvedMove {
 async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
   const { tenantId } = input;
   if (!input.reason?.trim()) throw new Error('reason is required for a move');
-  const old = await getAssignmentForTenant(input.assignmentId, tenantId);
+  const old = await getVisitForTenant(input.assignmentId, tenantId);
   if (!old) throw new Error('assignment not found');
   if (old.status !== 'confirmed' && old.status !== 'proposed') {
     throw new Error(`cannot move a ${old.status} assignment`);
@@ -681,8 +681,8 @@ export async function previewMoveVisit(input: MoveVisitInput): Promise<MoveVisit
 }
 
 export interface MoveVisitResult {
-  cancelled: Assignment;
-  created: Assignment;
+  cancelled: Visit;
+  created: Visit;
   warning?: string;
 }
 
@@ -690,13 +690,13 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
   const { tenantId } = input;
   const r = await resolveMove(input);
 
-  let result: { cancelled: Assignment; created: Assignment };
+  let result: { cancelled: Visit; created: Visit };
   try {
-    result = await rescheduleAssignment(r.old.id, {
+    result = await rescheduleVisit(r.old.id, {
       startsAt: r.startISO,
       endsAt: r.endISO,
       ...(input.unassign
-        ? { technicianId: null } // explicit null = DETACH (rescheduleAssignment's !== undefined idiom)
+        ? { technicianId: null } // explicit null = DETACH (rescheduleVisit's !== undefined idiom)
         : input.technicianRef && r.technician
           ? { technicianId: r.technician.id }
           : {}),
@@ -704,7 +704,7 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
       status: 'confirmed', // default-'proposed' would vanish from every reader
     });
   } catch (err) {
-    // rescheduleAssignment cancels FIRST, so ANY insert failure here — the
+    // rescheduleVisit cancels FIRST, so ANY insert failure here — the
     // raced overlap OR a transient DB fault — leaves the visit UNSCHEDULED.
     // Say so honestly (a bare "not moved" would be false: the old booking is
     // gone) and record the stranding in the ledger. The event append is
@@ -774,7 +774,7 @@ export async function previewUnscheduleVisit(
   tenantId: string,
   assignmentId: string,
 ): Promise<UnscheduleVisitPreview> {
-  const target = await getAssignmentForTenant(assignmentId, tenantId);
+  const target = await getVisitForTenant(assignmentId, tenantId);
   if (!target) throw new Error('assignment not found');
   if (target.status !== 'confirmed' && target.status !== 'proposed') {
     throw new Error(`cannot unschedule a ${target.status} assignment`);
@@ -792,11 +792,11 @@ export async function previewUnscheduleVisit(
   };
 }
 
-export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Assignment> {
+export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Visit> {
   if (!input.reason?.trim()) throw new Error('reason is required for an unschedule');
   // Tenant guard first — this module is the reuse surface for Plans 2–3, and
-  // updateAssignmentStatus alone is id-only.
-  const target = await getAssignmentForTenant(input.assignmentId, input.tenantId);
+  // updateVisitStatus alone is id-only.
+  const target = await getVisitForTenant(input.assignmentId, input.tenantId);
   if (!target) throw new Error('assignment not found');
   // Actionable message when the row went terminal between stage and confirm
   // (e.g. a move cancelled it and re-created the visit under a new id) — the
@@ -808,7 +808,7 @@ export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Assi
         'cancelled; check get_team_schedule for its current booking',
     );
   }
-  const cancelled = await updateAssignmentStatus(target.id, 'cancelled', input.reason);
+  const cancelled = await updateVisitStatus(target.id, 'cancelled', input.reason);
   await appendScheduleEvent({
     tenantId: input.tenantId,
     assignmentId: cancelled.id,
@@ -831,8 +831,8 @@ export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Assi
 // the old row, insert a fresh unplaced row carrying the range/promise.
 // Placed rows are refused — move_visit owns them (same times).
 export interface AttachUnplacedResult {
-  cancelled: Assignment;
-  created: Assignment;
+  cancelled: Visit;
+  created: Visit;
 }
 
 interface AttachUnplacedGuardInput {
@@ -847,9 +847,9 @@ interface AttachUnplacedGuardInput {
 // preview, so a stale tab walked the picker + confirm into a guaranteed 409).
 async function resolveAttachUnplaced(
   input: AttachUnplacedGuardInput,
-): Promise<{ old: Assignment; technician: Technician | null }> {
+): Promise<{ old: Visit; technician: Technician | null }> {
   const { tenantId } = input;
-  const old = await getAssignmentForTenant(input.assignmentId, tenantId);
+  const old = await getVisitForTenant(input.assignmentId, tenantId);
   if (!old) throw new Error('assignment not found');
   if (old.status !== 'confirmed' && old.status !== 'proposed') {
     throw new Error(`cannot attach to a ${old.status} assignment`);
@@ -897,10 +897,10 @@ export async function attachUnplacedVisit(
   const { tenantId } = input;
   if (!input.reason?.trim()) throw new Error('reason is required for an attach');
   const { old, technician } = await resolveAttachUnplaced(input);
-  const cancelled = await updateAssignmentStatus(old.id, 'cancelled', input.reason);
-  let created: Assignment;
+  const cancelled = await updateVisitStatus(old.id, 'cancelled', input.reason);
+  let created: Visit;
   try {
-    created = await createAssignment({
+    created = await createVisit({
       tenantId,
       jobId: old.job_id,
       technicianId: technician?.id ?? null,
@@ -1042,8 +1042,8 @@ async function resolveCancelJob(tenantId: string, jobId: string): Promise<Job> {
   return job;
 }
 
-const liveRowsForJob = async (jobId: string): Promise<Assignment[]> =>
-  (await listAssignmentsForJob(jobId)).filter(
+const liveRowsForJob = async (jobId: string): Promise<Visit[]> =>
+  (await listVisitsForJob(jobId)).filter(
     (r) => r.status === 'confirmed' || r.status === 'proposed',
   );
 
@@ -1093,7 +1093,7 @@ export interface CancelJobInput {
 
 export interface CancelJobResult {
   job: Job;
-  cancelledVisits: Assignment[];
+  cancelledVisits: Visit[];
 }
 
 export async function cancelJob(input: CancelJobInput): Promise<CancelJobResult> {
@@ -1107,9 +1107,9 @@ export async function cancelJob(input: CancelJobInput): Promise<CancelJobResult>
   // re-runnable state (the job is still open; already-cancelled rows are
   // simply absent from the next run's live list). Completed/terminal rows
   // are never touched.
-  const cancelledVisits: Assignment[] = [];
+  const cancelledVisits: Visit[] = [];
   for (const row of await liveRowsForJob(job.id)) {
-    const cancelled = await updateAssignmentStatus(row.id, 'cancelled', input.reason);
+    const cancelled = await updateVisitStatus(row.id, 'cancelled', input.reason);
     cancelledVisits.push(cancelled);
     await appendScheduleEvent({
       tenantId,

@@ -114,7 +114,7 @@ describe('seedScenario — explicit timestamps, pinned subjects', () => {
 
     // The visit stores the firm's wall clock (naive-local, as-if-UTC) — the
     // stored instant equals the naiveLocalISO string read as UTC.
-    const { rows: visits } = await pg.query(`select starts_at from assignments where id = $1`, [
+    const { rows: visits } = await pg.query(`select starts_at from visits where id = $1`, [
       seeded.assignmentId,
     ]);
     expect(new Date(visits[0].starts_at).getTime()).toBe(
@@ -379,7 +379,7 @@ describe('the sweep touches nothing (build 5)', () => {
     }, t0Ms);
     const gapId = seeded.nudgeIds.gap;
     const { rows: [g] } = await pg.query('select subject_ref from nudges where id = $1', [gapId]);
-    await pg.query("update assignments set status = 'cancelled' where id = $1", [g.subject_ref]);
+    await pg.query("update visits set status = 'cancelled' where id = $1", [g.subject_ref]);
     // A queued relic past the OLD 18h delivery deadline.
     const { rows: [q] } = await pg.query(
       `insert into nudges (tenant_id, kind, subject_ref, status, question, queued_at, created_at)
@@ -442,7 +442,7 @@ describe('the planner ends a moot gap on the record (build 5)', () => {
     const { rows: [gapRow] } = await pg.query(
       'select subject_ref from nudges where id = $1', [gapId],
     );
-    await pg.query("update assignments set status = 'cancelled' where id = $1", [
+    await pg.query("update visits set status = 'cancelled' where id = $1", [
       gapRow.subject_ref,
     ]);
 

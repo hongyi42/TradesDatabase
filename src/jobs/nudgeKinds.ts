@@ -61,7 +61,7 @@ export interface NudgeKindSpec {
   // Does subject_ref name a VISIT (an assignment id), or something else? The
   // sweep uses this to decide which batched status read a kind's subjects
   // belong in — a job-scoped kind's subject is a job id, and looking it up in
-  // the assignments table is both wasted work and a lie about what the id
+  // the visits table is both wasted work and a lie about what the id
   // means.
   subjectIsVisit: boolean;
   // How an open MANAGER REVIEW ITEM of this kind closes itself → resolution

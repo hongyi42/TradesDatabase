@@ -32,7 +32,7 @@ import { randomUUID } from 'node:crypto';
 import { getClient } from '../db/client.js';
 import type { Database } from '../db/database.types.js';
 import {
-  createAssignment,
+  createVisit,
   createCustomer,
   createJob,
   insertTechnician,
@@ -90,7 +90,7 @@ export function atOffset(t0Ms: number, offset: Offset): string {
 }
 
 /** Real-UTC instant → the firm's wall clock in the canonical naive-local
- *  storage form (assignments' convention — watchers.ts's own helper, mirrored). */
+ *  storage form (the visit row's convention — watchers.ts's own helper, mirrored). */
 export function toNaiveLocal(iso: string, tz: string = SIM_TZ): string {
   return naiveLocalISO(localDateISO(iso, tz), localTimeHHMM(iso, tz));
 }
@@ -231,7 +231,7 @@ export async function seedScenario(
   if (world.visit) {
     startsAtLocal = toNaiveLocal(atOffset(t0Ms, world.visit.startsAt), tz);
     endsAtLocal = toNaiveLocal(atOffset(t0Ms, world.visit.endsAt), tz);
-    const a = await createAssignment({
+    const a = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,

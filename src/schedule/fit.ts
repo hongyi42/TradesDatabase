@@ -4,7 +4,7 @@
 // bottom; the Google drive-delta measurement is Phase 2.
 //
 // Time convention: everything here is naive-local HH:MM minute arithmetic on
-// the wall-clock times the schedule stores (assignments are naive-local, see
+// the wall-clock times the schedule stores (visit rows are naive-local, see
 // booking.ts) — no timezone math anywhere. Pattern days resolve via
 // localDayOfWeek(date, 'UTC') exactly like the availability calculator.
 //
@@ -16,11 +16,11 @@
 
 import {
   getTechnicianById,
-  listAssignmentsForTenant,
+  listVisitsForTenant,
   listJobsWithCustomerByIds,
   listTeam,
   listTimeOffForTechnician,
-  type PlacedAssignment,
+  type PlacedVisit,
   type JobPriority,
   type Technician,
   type WeeklyPattern,
@@ -317,9 +317,9 @@ const expandDates = (startsOn: string, endsOn: string): string[] => {
 // Clamp an assignment row onto ONE day's HH:MM span. Rows are naive-local;
 // a row spilling past midnight (backfill-sourced) still blocks the morning of
 // the day it runs into (review finding #7 — overlap, not start-day, semantics).
-// PlacedAssignment: every caller feeds range-filtered rows (compiler-checked
+// PlacedVisit: every caller feeds range-filtered rows (compiler-checked
 // since plan 4b-2 — an unplaced row has no span to clamp).
-export function clampRowToDay(row: PlacedAssignment, dateISO: string): VisitSpan | null {
+export function clampRowToDay(row: PlacedVisit, dateISO: string): VisitSpan | null {
   // Compare INSTANTS, never strings: PostgREST renders timestamptz as
   // '…T00:00:00+00:00' (offset suffix, no ms) while locally built literals end
   // '.000Z', and ASCII '+' < '.' misclassifies midnight-aligned rows — a
@@ -379,7 +379,7 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
   // day it could land on. Rung 9a deleted the range: an untimed visit belongs
   // to no day at all, so it can be budgeted against none of them, and there is
   // nothing to read.
-  const placedRows = await listAssignmentsForTenant(
+  const placedRows = await listVisitsForTenant(
     input.tenantId,
     `${input.earliest}T00:00:00.000Z`,
     addDaysISO(input.latest, 1) + 'T00:00:00.000Z',
@@ -454,7 +454,7 @@ export async function findDisplacementCandidates(
   // excludeAssignmentId: an assignmentId ask's own subject — "what could move
   // to make room" must never propose moving the visit to make room for itself.
   const rows = (
-    await listAssignmentsForTenant(
+    await listVisitsForTenant(
       tenantId,
       `${earliest}T00:00:00.000Z`,
       addDaysISO(latest, 1) + 'T00:00:00.000Z',

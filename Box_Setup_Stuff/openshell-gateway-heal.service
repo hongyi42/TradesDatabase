@@ -1,0 +1,32 @@
+# /etc/systemd/system/openshell-gateway-heal.service
+#
+# Runs gateway-heal.sh every time openshell-gateway.service starts — including
+# an automatic Restart=always recovery at 3am that nobody is watching.
+#
+# WHY A SEPARATE UNIT rather than ExecStartPost= on the gateway. ExecStartPost
+# holds the unit in `activating` until it returns, and this waits up to 90s for
+# the listener plus up to 180s for the medic. A gateway that reads as
+# not-yet-active for four minutes would make every monitor that checks
+# ActiveState report a false outage during a successful recovery.
+#
+# WantedBy=openshell-gateway.service (not multi-user.target): enabling drops a
+# symlink into openshell-gateway.service.wants/, so this is pulled in by the
+# gateway starting, at boot and on every restart alike.
+[Unit]
+Description=Restore sandboxes after the OpenShell gateway starts
+After=openshell-gateway.service docker.service
+Requires=docker.service
+# Tie its lifetime to the gateway's: no point healing seats for a gateway that
+# has been deliberately stopped.
+BindsTo=openshell-gateway.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/usr/local/sbin/gateway-heal.sh
+# The script already bounds every step and always exits 0; this is the backstop
+# if it is ever edited into something that can hang.
+TimeoutStartSec=420
+
+[Install]
+WantedBy=openshell-gateway.service

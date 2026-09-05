@@ -169,6 +169,19 @@ Prior record said "133 refs / 14 files". Measured today on `main @ f5b786d`:
 CHECK, `set_promise` (tool + `updateAssignmentPromise`), every formatter that prints a promise, and
 the `worldSpec`/`corpus`/`toolCases` fixtures that set it.
 
+**The ladder is NOT redundant with the window — it is a second, independent fact.** A fresh booking
+defaults to `promise_level='none'` (`booking.ts:436`: *"a fresh booking promises the customer
+NOTHING"*), so a visit can be placed Tuesday 2pm with nothing promised; and `time_only` promises a
+TIME with **no** day, leaving `promised_day` NULL by design (`booking.ts:74`, and the DB CHECK
+allows exactly that pair). Promise = what the customer was **told**. Window = what is **planned**.
+
+**All 333 references serve exactly one live behaviour.** `promiseBroken`
+([booking.ts:722](src/schedule/booking.ts#L722)) derives from the two predicates
+`carriesPromisedDay` / `carriesPromisedTime` and feeds `requiresConfirmation` on `move_visit`
+(:776 — *"= promiseBroken (the doctrine's verdict for moves)"*). Nothing else consumes the ladder as
+a decision. So the deletion's real cost is that one confirmation guard, not the columns — see
+Decision Point (f).
+
 **Dead-code check post-rung-8:** `partitionMovable`'s promise-graded movement freedom was
 solver-only. `src/schedule/fit.ts` retains only 5 promise refs; the displacement tiebreak that used
 promise grading was touched in rung 8's Phase 2. Whether any promise-reading branch is now
@@ -322,9 +335,23 @@ in the migration — which requires a mapping from assignment id to the new visi
 `schedule_events_append_only` trigger decides whether the old schedule's history can survive the
 retirement at all, or must be dropped under the waiver.
 
-**(f) Promise columns: dropped or retained-inert.** Rung 8's precedent is instructive — `locked` was
-dropped, and the drop had to go **code-first** because running code still wrote it. The same ordering
-question applies to `promise_level`, which has a NOT NULL default and a CHECK.
+**(f) What replaces the promise ladder's ONE live behaviour.** The ladder is deleted — that is the
+ruling, not a question. But the columns are not inert scaffolding: promise and window are
+**deliberately independent** (`booking.ts:436` — *"Default 'none': a fresh booking promises the
+customer NOTHING"*; `time_only` promises a time with **no** day, `promised_day` NULL). The ladder
+tracks *what the customer was told*; the window tracks *what is planned*. They power exactly one
+live behaviour — `promiseBroken` at [booking.ts:722](src/schedule/booking.ts#L722), which sets
+`requiresConfirmation` on `move_visit`, so moving a promised visit off its promised day stops and
+asks. Deleting the ladder deletes that guard unless something replaces it. Three replacements exist:
+(i) **nothing** — the manager owns the schedule now, a move is just a move; (ii) **window width IS
+the promise** — moving outside the window is the break, moving within it is not; no new columns,
+keeps the guard, but an internally-placed visit now reads as promised so it over-confirms;
+(iii) **the planner judges from L1** — the promise lives in the call/email that made it, and
+`source_capture_id` already distinguishes a customer-committed window from a manager-placed one.
+
+**(f2) Drop ordering.** Mechanically, rung 8's `locked` is the precedent: the drop had to go
+**code-first**, because running code still wrote the column. `promise_level` has a NOT NULL default
+and a CHECK (`promised_day_when_promised`), so the same ordering applies.
 
 **(g) Destructive vs additive migration.** The waiver permits destruction. Additive keeps L1 intact
 but leaves per-note `visits` rows to reconcile against schedule rows with no key to join on.

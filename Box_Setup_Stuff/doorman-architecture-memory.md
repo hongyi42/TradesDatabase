@@ -301,11 +301,13 @@ Generator runs at image BUILD time (Dockerfile `RUN … generate-openclaw-config
 
 ## Verify (end-to-end)
 - Host→doorman→Render: `curl -X POST http://172.18.0.1:3001/mcp -H "Authorization: Bearer <badge>" …
-  '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` → HTTP 200 + **14 tools** for a technician-tier
-  badge, or **34** for a badge whose ref maps to an active manager roster row (base minus
-  get_schedule plus the 21 admin/scheduling tools; see the badge↔roster note above). A manager
-  badge returning only 14 means the server has no active `tier='manager'` row for that ref (or is
-  running older code).
+  '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` → HTTP 200 + **17 tools** for a technician-tier
+  badge, or **41** for a badge whose ref maps to an active manager roster row (base minus
+  get_schedule plus the admin/scheduling tools; see the badge↔roster note above). ⚠ **These two
+  numbers move with the surface and this file drifts — `server.test.ts` PINS them (17 and 41 as of
+  rung 9a, 2026-09-05) and is the authority when the two disagree.** A manager badge returning the
+  technician count means the server has no active `tier='manager'` row for that ref (or is running
+  older code).
 - Agent: message the bot ("list recent captures") → OCSF on host shows
   `ALLOWED /usr/local/bin/node(<pid>) -> host.openshell.internal:3001 [policy:trades_spine_doorman]` and the bot
   returns real data.

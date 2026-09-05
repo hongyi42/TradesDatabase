@@ -30,8 +30,22 @@
 -- The other order is strictly safe — rung 9a's code never names these columns,
 -- so it runs happily against a database that still has them.
 --
--- (Phase 2's constraint drop was the opposite: safe EITHER way, because
--- dropping a CHECK only widens what the table accepts.)
+-- Phase 2's constraint drop (20260906110000) goes the OTHER way: apply it
+-- BEFORE this deploy, or with it. Dropping a CHECK only widens what the table
+-- accepts, so the old code is happy either way — but the NEW code is not:
+-- createAssignment now inserts an untimed visit as starts_at/ends_at NULL with
+-- no range, which `assignment_placed_or_windowed` rejects with 23514. Leave
+-- 110000 until after the deploy and every untimed booking — this rung's
+-- headline feature — errors until it lands.
+--
+--   20260906110000  BEFORE the deploy (or with it)
+--   20260906120000  AFTER the deploy   ← this file
+--
+-- BOTH Render services must be on the new commit before this file is applied,
+-- not just the web service: lifecycle-heart (the cron job) imports the spine
+-- tool surface from src/mcp/server.ts, and the code it runs today SELECTs all
+-- four columns in src/db/context.ts and src/schedule/boardRead.ts — those
+-- PostgREST reads 400 the moment the columns vanish.
 --
 -- Before deploying, dismiss any OPEN review_items of kind 'pending_booking' or
 -- 'pending_visit_move'. Phase 1 deleted those staged kinds, so resolve_review

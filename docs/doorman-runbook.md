@@ -368,11 +368,13 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://172.17.0.1:3001/ \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'   # expect 403
 ```
 
-- (a) should list the 14 tools for a technician-tier badge: `record_field_note`, `find_customer`,
-  `get_customer_context`, `get_job`, `resolve_date`, `list_recent_captures`, `brief_customer`,
-  `answer_customer_question`, `web_search`, `read_webpage`, `send_email`, `retract_capture`,
-  `record_standing_fact`, `get_schedule`. (A badge whose roster row is an ACTIVE `tier='manager'`
-  lists **34** — `get_schedule` is REMOVED (2026-07-19: it is the technician route view; a
+- (a) should list the **17** tools for a technician-tier badge: `record_field_note`,
+  `find_customer`, `get_customer_context`, `get_job`, `resolve_date`, `list_recent_captures`,
+  `brief_customer`, `answer_customer_question`, `web_search`, `read_webpage`, `send_email`,
+  `retract_capture`, `record_standing_fact`, `get_schedule`, and — since build 5.5 —
+  `inform_team_lead`, `ask_team_lead`, `inform_teammate`. (A badge whose roster row is
+  an ACTIVE `tier='manager'` lists **41** as of rung 9a, 2026-09-05 — `server.test.ts` pins both
+  counts and is the authority when this line drifts — `get_schedule` is REMOVED (2026-07-19: it is the technician route view; a
   manager's only schedule read is get_team_schedule, which includes visits they hold, and
   schedule viewing lives on the dispatch board) while the 8 seat/lifecycle-management tools are
   added: add/deactivate/reactivate technician seat, bind_telegram, list_team,

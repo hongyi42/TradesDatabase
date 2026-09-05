@@ -255,6 +255,17 @@ so the window is small: check for open rows of those two kinds before deploying,
       both return and keep their grants
 - [ ] Schema md5 over `information_schema.columns` matches local vs pilot
 - [ ] One `lifecycle-heart` tick after the migration: `ok: true`, `tenantErrors: 0`
+- [ ] **Deploy BOTH Render services, not just web** (review finding): `lifecycle-heart` imports the
+      spine tool surface from `src/mcp/server.ts`, and the deployed `src/db/context.ts` /
+      `src/schedule/boardRead.ts` SELECT all four columns — those reads 400 the moment the columns
+      vanish, and the tick check above would only discover it afterwards
+- [ ] **Roll the box doctrine to all six seats** (review finding — it is in this phase's prose and
+      the preflight, but was in no checklist). Until `wire` runs, every AGENTS.md still teaches
+      promise-gated staging and `timeTbd` booking against a server where `set_promise` is gone and
+      book/move never stage — wrong in the direction that makes the agent ask for confirmations it
+      will not get and pass arguments the schema rejects. md5 all seven `bootstrap-box.sh` copies
+      against the repo first ([[bootstrap-copy-drift-trap]]), then **s2 first** (the canary seat)
+      and confirm `grep -c "promiseLevel" AGENTS.md` → 0 before the fleet
 
 ### Manual verification
 - [ ] Book a visit with no time from a manager seat; it appears in the unscheduled tray

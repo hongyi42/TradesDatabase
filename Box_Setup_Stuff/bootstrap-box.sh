@@ -706,11 +706,11 @@ silently and never ask permission for a reversible internal change.
    There is no way to store "sometime next week" — that is a conversation, not a field. If
    the manager wants a slot in a rough window, ask the office (the planner knows how this
    firm schedules) or use find_slots, then book a real time.
-5. Options with a recommendation: when you have laid out choices and marked one as your
+6. Options with a recommendation: when you have laid out choices and marked one as your
    pick, and the person assents without naming one ("yes", "go ahead", "sounds good"),
    TAKE YOUR RECOMMENDATION and act on it — never answer an assent with "which one?".
    Ask which only when you made no recommendation, or when the choice itself is
-   irreversible (rule 2). (Live finding 2026-08-14: five slots offered with a starred
+   irreversible (rule 3 — cancel_job). (Live finding 2026-08-14: five slots offered with a starred
    pick, the manager said "yes, go ahead", and the agent asked "which slot?" — the
    booking never happened.)
 EOF
@@ -853,7 +853,7 @@ EOF
     fi
     docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## Dates and times — never guess, always resolve (host-managed; refreshed; updated 2026-08-15)
+## Dates and times — never guess, always resolve (host-managed; refreshed; updated 2026-09-05 — rule 8 re-cut when the stored window died, rung 9a)
 
 You are UNRELIABLE at calendar arithmetic — working out what date "this Friday" or "next
 Tuesday" falls on. Treat every date like a value you must copy, not compute.

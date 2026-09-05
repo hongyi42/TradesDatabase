@@ -17,13 +17,21 @@
 -- ladder existed to smuggle a commitment past this line. Delete the line and
 -- the reason for the ladder goes with it.
 --
--- DEPLOY ORDER: this one is SAFE TO APPLY BEFORE THE CODE DEPLOY — the opposite
--- of Phase 3's column drops, and worth stating because the two arrive together.
--- Dropping a CHECK only ever WIDENS what the table accepts. Every shape the
--- currently-running pilot code writes was already legal, so it keeps working
--- untouched; the new all-NULL shape simply becomes possible for the code that
--- follows. (Phase 3 drops the columns themselves and MUST go after its deploy,
--- because code still running would be writing them.)
+-- DEPLOY ORDER: apply this BEFORE the code deploy, or with it — never after.
+--
+-- Dropping a CHECK only ever WIDENS what the table accepts, so the currently
+-- running pilot code keeps working untouched either way. But the code that
+-- FOLLOWS needs this gone: createAssignment writes an untimed visit as
+-- starts_at/ends_at NULL with no range, and `assignment_placed_or_windowed`
+-- rejects exactly that with 23514. Leave this until after the deploy and every
+-- untimed booking — rung 9a's headline feature — errors until it lands.
+--
+--   20260906110000  BEFORE the deploy (or with it)   ← this file
+--   20260906120000  AFTER the deploy
+--
+-- The two are opposites, which is why both headers spell it out: 120000 drops
+-- the COLUMNS, and code still running writes them, so applying it early breaks
+-- every booking.
 --
 -- Dropping a constraint UPDATES NO ROWS, so the append-only triggers on
 -- raw_captures / schedule_events / money_events never fire — the trap that

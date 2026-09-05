@@ -196,44 +196,44 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L4428 · The quiet-firm skip
 - L4431 · No v_office_messages
 - L4433 · B65-REACH-A-MANAGER
-- L4605 · A green suite proves nothing when you mass-edit tests.
-- L4610 · A test can pin the bug.
-- L4613 · Reachability is not a compile error.
-- L4617 · created_at now means the VISIT's age, not the row's
-- L4670 · A technician's seat agent has NO scheduling verb at any tier.
-- L4673 · Live specimen in the pilot _(2026-09-01)_
-- L4683 · Counting.
-- L4685 · Detection.
-- L4689 · Booking.
-- L4702 · Build 6 (vocabulary): _(2026-09-01)_
-- L4707 · Build 7 (detectors report):
-- L4713 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L4620 · A green suite proves nothing when you mass-edit tests.
+- L4625 · A test can pin the bug.
+- L4628 · Reachability is not a compile error.
+- L4632 · created_at now means the VISIT's age, not the row's
+- L4685 · A technician's seat agent has NO scheduling verb at any tier.
+- L4688 · Live specimen in the pilot _(2026-09-01)_
+- L4698 · Counting.
+- L4700 · Detection.
+- L4704 · Booking.
+- L4717 · Build 6 (vocabulary): _(2026-09-01)_
+- L4722 · Build 7 (detectors report):
+- L4728 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L5108 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L5131 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L5178 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L5215 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L5247 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L5252 · Every member row stores the FULL grouped message in question.
-- L5256 · The attribution stamp is an audit link, not a gate.
-- L5260 · The derived stamp requires a capture a badge-holder SPOKE
-- L5264 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L5270 · The follow-up loop has two halves and both had to be written down.
-- L5276 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L5350 · Batching works.
-- L5352 · The follow-up leg works, including the half that fails silently.
-- L5356 · Both attribution paths fired, each in its designed case.
-- L5360 · Escalation fired correctly
-- L5361 · The planner's group-aware pacing is the result worth keeping.
+- L5123 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L5146 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L5193 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L5230 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L5262 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L5267 · Every member row stores the FULL grouped message in question.
+- L5271 · The attribution stamp is an audit link, not a gate.
+- L5275 · The derived stamp requires a capture a badge-holder SPOKE
+- L5279 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L5285 · The follow-up loop has two halves and both had to be written down.
+- L5291 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L5365 · Batching works.
+- L5367 · The follow-up leg works, including the half that fails silently.
+- L5371 · Both attribution paths fired, each in its designed case.
+- L5375 · Escalation fired correctly
+- L5376 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L5542 · Evals:
-- L5549 · Runbooks:
-- L5554 · Decision history with citations:
-- L5558 · This file
+- L5557 · Evals:
+- L5564 · Runbooks:
+- L5569 · Decision history with citations:
+- L5573 · This file
 
 <!-- INDEX:END -->
 
@@ -4594,12 +4594,27 @@ proving both migrations apply from scratch). Plan:
 `unschedule_visit` stages only when the visit is PLACED; `cancel_job` unchanged (always stages).
 `pending_booking` and `pending_visit_move` review kinds are deleted — nothing mints them.
 
-**DEPLOY ORDER differs per migration, and getting it backwards breaks the pilot both ways:**
-`20260906110000` (a CHECK drop) is safe EITHER side of the code deploy — dropping a constraint only
-widens what the table accepts. `20260906120000` (the column drops) must go **AFTER** the code, the
-reverse of this repo's usual rule, because pilot code still running writes `promise_level` and
-`earliest_date` on every insert. Before deploying, dismiss any open `pending_booking` /
-`pending_visit_move` review items (15-minute expiry, so the window is small).
+**DEPLOY ORDER — the two migrations are OPPOSITES, and each has exactly one wrong order:**
+
+```
+20260906110000  (drops a CHECK)     BEFORE the deploy, or with it
+20260906120000  (drops the columns) AFTER the deploy
+BOTH Render services (web AND lifecycle-heart cron) on the new commit before 120000
+```
+
+`110000` is often described as "safe either way" because dropping a constraint only widens what
+the table accepts — true for the code already running, FALSE for the code arriving:
+`createAssignment` writes an untimed visit as all-NULL, which `assignment_placed_or_windowed`
+rejects with 23514, so applying it late breaks every untimed booking. `120000` is the reverse of
+this repo's usual rule, because pilot code still running WRITES `promise_level` / `earliest_date`
+on every insert. The cron service matters as much as the web one: `src/jobs/lifecycle.ts` imports
+the spine tool surface, and the deployed `src/db/context.ts` / `src/schedule/boardRead.ts` SELECT
+all four columns — those reads 400 the moment the columns vanish.
+
+Before deploying, dismiss any open `pending_booking` / `pending_visit_move` review items
+(15-minute expiry, so the window is small). **And re-run the box doctrine (`wire`) on all six
+seats** — until that happens their AGENTS.md still teaches promise-gated staging and `timeTbd`
+booking against a server where `set_promise` no longer exists and book/move never stage.
 
 **Traps this rung produced, worth carrying:**
 - **A green suite proves nothing when you mass-edit tests.** Deleting a test that asserts on a

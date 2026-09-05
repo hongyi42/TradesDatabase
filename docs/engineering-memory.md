@@ -3485,7 +3485,7 @@ what to do. Attention curation is a WEIGHTING, never a gate (user, 2026-08-28).
 8  the schedule is the manager's  DEMOLISH the solver ritual + pinning   [BUILT 2026-09-04; §8b below]
 9a the rails come out            promise ladder + stored window DELETED  [BUILT 2026-09-05; §8 below]
 9b the visit is one object        committed→placed→happened→reported; absorbs old 8   [user 2026-09-03]
-10 the call commits a visit       the extractor may create an UNPLACED visit   [user 2026-09-03]
+10 inbound commits a visit        CALL **AND EMAIL** → extractor creates UNPLACED  [user 2026-09-05]
 11 the planner learns the schedule  recommends; passes the firm's pattern to seats   [user 2026-09-03]
 12 new eyes                       contradiction detectors — ours, SQL, cheap   [was 9; now on ONE visit]
 ```
@@ -4664,7 +4664,15 @@ booking against a server where `set_promise` no longer exists and book/move neve
 **The remodel (user's model, 2026-09-03):** a call → the extractor judges the job and, if the firm
 committed to a visit, creates it UNPLACED (the accepted carve-out: never on a day, never with a
 person; a wrong inference is an entry in the unscheduled list the manager can drop — create, don't
-stage). After that ONLY the manager touches the schedule, by hand or through their agent, which asks
+stage). **AMENDED 2026-09-05 (user): EMAIL inbound is in rung 10 too** — *"it's just an extra input
+path similar to phone calls anyways."* The rung is INBOUND-shaped, not phone-shaped: a call and an
+email are the same event (correspondence in which the firm may commit to coming out), they already
+share one write path (`recordFieldNote`, `src/inbound/webhook.ts` + `src/email/ingest.ts` both call
+it), and the carve-out's safety argument — a wrong inference is a droppable row in the unscheduled
+list, never a booking on someone's day — does not depend on which pipe carried the words. Web form is
+the same shape and should be settled with it. Rung 9b's technician-channel gate is the interim state,
+not a permanent rule: it stops inbound minting a COMPLETED visit (a customer's email is not a trip),
+and rung 10 is where inbound starts minting a COMMITTED one. After that ONLY the manager touches the schedule, by hand or through their agent, which asks
 (duration, time, who), has Google Maps tools, and uses its own judgment about the route optimizer.
 The planner reads the schedule + unplaced visits, RECOMMENDS, learns how this firm schedules, and
 passes that down to the seats. The promise ladder collapses into the visit's own window. The solver

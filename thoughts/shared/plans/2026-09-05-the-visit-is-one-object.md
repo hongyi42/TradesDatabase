@@ -51,9 +51,15 @@ schedule rows (303 live), 321 schedule_events (288 linked), 20 per-note visit ro
 - **Overdue-gap subject = `${visitId}@${starts_at}`** *(reviewer finding)* — `uq_observations_subject_ever` is
   once-ever per subject; with ids surviving moves, a visit flagged, moved and overdue again would never be
   re-detected. Bare-id rows already on file still parse (no `@` → the whole string).
-- **Only technician channels touch visits** *(reviewer finding)* — `technician_voice|technician_photo|
-  technician_note` (incl. the MCP `record_field_note` path) attach or mint; `email`/`phone_call`/`web_form`
-  build customer + job only. A customer's email is not a trip; call-committed visits are rung 10.
+- **Only a technician channel CREATES a visit from a note** *(reviewer finding)* — and this is a rule about
+  the NOTE door, not about people. Managers create visits all day through `book_visit`, which is admin-gated
+  and untouched by this rung; `record_field_note`'s schema only accepts `technician_voice|technician_photo|
+  technician_note`, so a manager filing a note still creates one. What the gate excludes is inbound
+  CORRESPONDENCE — `email`/`phone_call`/`web_form` — which builds customer + job only. A customer's email is
+  not a trip, and now that `visits` IS the schedule such a row would show on the board as work nobody did.
+  **INTERIM, not permanent** *(user, 2026-09-05)*: rung 10 is where inbound starts creating a COMMITTED
+  (unplaced) visit, and it covers **email as well as calls** — *"it's just an extra input path similar to
+  phone calls anyways."*
 - **`completed_at` is naive-local**, the same convention as `starts_at`/`ends_at` *(reviewer finding)*.
 - **Freshness keeps two homes, one re-sourced** *(mine)* — "visit rows minted since the floor" becomes "notes
   linked since the floor" (`visit_notes`); job-stamped captures unchanged. Same for `listJobActivity`,
@@ -300,7 +306,10 @@ on-or-after-start note, and makes retractions follow the link.
    a customer's emailed answer to a gap cannot be cited (cite-or-don't-close), and the overdue watcher reads
    the job as SILENT and keeps nudging. Pre-9b the minted visit carried both links by accident.
    Fix: `resolveVisitForNote` runs for every channel; step (3) — create as happened — is technician-only,
-   and a non-technician note with no visit to attach to simply links nothing, as today.
+   and a non-technician note with no visit to attach to simply links nothing, as today. The split to hold
+   onto: **ATTACH is channel-blind, CREATE is not.** Rung 10 then gives inbound (call AND email) its own
+   creation path — a COMMITTED unplaced visit, never a completed one — so this gate expires there rather
+   than hardening into a rule.
 2. **That also closes the redelivery hole** Phase 1 accepted: with a link present, `captureHasLinkedL2`
    short-circuits again. Until it does, a redelivered inbound note re-runs the extractor, and a stale
    forward status signal can land late — an email whose `completed` signal was SKIPPED on pass 1 (job was
@@ -386,6 +395,6 @@ order that keeps five services alive, re-wires the fleet, and proves the object 
 - [ ] Telegram board: a moved visit's detail link still opens (`visitId`), the tray shows committed visits, a
       reported visit shows as done. *Manual list is non-empty — pause for the user after Phase 4.*
 
-**Recorded, not built:** rung 9c multi-technician (participant table; `technician_id` stays the lead); rung 10
-creates committed visits from calls via `createVisit` untimed; drop `proposed` from `visit_status` once a test
-pins that nothing writes it.
+**Recorded, not built:** rung 9c multi-technician (participant table; `technician_id` stays the lead); **rung 10
+— INBOUND commits a visit: CALL AND EMAIL** (user, 2026-09-05), extractor creates it untimed via `createVisit`,
+web form to be settled with them; drop `proposed` from `visit_status` once a test pins that nothing writes it.

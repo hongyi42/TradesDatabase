@@ -194,8 +194,6 @@ interface DayResponse {
       address: string | null;
       start: string;
       end: string;
-      promiseLevel: string;
-      promisedDay: string | null;
       status: string;
       jobId: string | null;
     }>;
@@ -273,8 +271,6 @@ describe('GET /board/api/day', () => {
         'customer',
         'end',
         'jobId',
-        'promiseLevel',
-        'promisedDay',
         'start',
         'status',
         'technicianName',
@@ -1268,7 +1264,7 @@ describe('board write path (Phase 3)', () => {
     expect(resp.status).toBe(413);
   });
 
-  test('preview → requiresConfirmation false (unpromised), NO write; commit → moved row + moved event', async () => {
+  test('preview → requiresConfirmation false, NO write; commit → moved row + moved event', async () => {
     const [t1Row] = await assignmentRows(
       `t.ref = 'board-t1' and a.status = 'confirmed' and a.starts_at::date = '${DAY_A}'`,
     );
@@ -1281,8 +1277,8 @@ describe('board write path (Phase 3)', () => {
     };
     const preview = await post('/board/api/move', body, 900000001, true);
     expect(preview.status).toBe(200);
-    const p = (await preview.json()) as { requiresConfirmation: boolean; promiseBroken: boolean; toDay: string };
-    expect(p).toMatchObject({ requiresConfirmation: false, promiseBroken: false, toDay: DAY_MOVE });
+    const p = (await preview.json()) as { requiresConfirmation: boolean; toDay: string };
+    expect(p).toMatchObject({ requiresConfirmation: false, toDay: DAY_MOVE });
     // Preview wrote NOTHING: the row is untouched, still on DAY_A.
     const [after] = await assignmentRows('a.id = $1', [t1Row.id]);
     expect(after.status).toBe('confirmed');
@@ -1353,7 +1349,7 @@ describe('board write path (Phase 3)', () => {
     expect(parkedRows).toHaveLength(1);
   });
 
-  test('a promise-breaking move previews requiresConfirmation:true', async () => {
+  test('rung 9a: a date-changing move previews FALSE; cancelling that placed visit still confirms', async () => {
     const { assignment } = await bookVisit({
       tenantId,
       technicianRef: 'board-t2',
@@ -1371,10 +1367,9 @@ describe('board write path (Phase 3)', () => {
       true,
     );
     expect(preview.status).toBe(200);
-    const p = (await preview.json()) as { requiresConfirmation: boolean; promiseBroken: boolean };
-    expect(p.requiresConfirmation).toBe(true);
-    expect(p.promiseBroken).toBe(true);
-    // Cancel two-mode on the same promised row: preview says confirm needed…
+    const p = (await preview.json()) as { requiresConfirmation: boolean };
+    expect(p.requiresConfirmation).toBe(false); // was true under the ladder
+    // Cancel two-mode on the same PLACED row: preview says confirm needed…
     const cp = await post('/board/api/cancel', { assignmentId: assignment.id }, 900000001, true);
     expect(((await cp.json()) as { requiresConfirmation: boolean }).requiresConfirmation).toBe(true);
     // …no reason → 400; with reason → cancelled + event.
@@ -1458,7 +1453,7 @@ describe('board write path (Phase 3)', () => {
   });
 });
 
-describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail additions', () => {
+describe('board quick-edit API (plan 4a.5): roster, book, job, detail additions', () => {
   const post = (path: string, body: unknown, userId: number, preview = false) =>
     fetch(`${base}${path}${preview ? '?preview=1' : ''}`, {
       method: 'POST',
@@ -1577,7 +1572,7 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
   test('tier gates: every quick-edit surface is managers-only', async () => {
     const roster = await fetch(`${base}/board/api/roster`, { headers: tma(900000002) });
     expect(roster.status).toBe(403);
-    for (const path of ['/board/api/book', '/board/api/promise', '/board/api/job']) {
+    for (const path of ['/board/api/book', '/board/api/job']) {
       const resp = await post(path, {}, 900000002);
       expect(resp.status).toBe(403);
       expect(((await resp.json()) as { error: string }).error).toBe('managers only');
@@ -1601,7 +1596,7 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
     });
   });
 
-  test('book: validation 400s; unpromised preview writes NOTHING; commit books; overlap → 409', async () => {
+  test('book: validation 400s; preview writes NOTHING; commit books; overlap → 409', async () => {
     expect(
       (await post('/board/api/book', { customerId: 'x', date: BOOK_DAY, startTime: '09:00', endTime: '10:00' }, 900000001)).status,
     ).toBe(400);
@@ -1609,9 +1604,6 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
     expect((await post('/board/api/book', { jobId: probeJobId, date: BOOK_DAY, startTime: '09:00' }, 900000001)).status).toBe(400);
     expect(
       (await post('/board/api/book', { jobId: probeJobId, date: BOOK_DAY, startTime: '09:00', endTime: '10:00', technicianRef: '' }, 900000001)).status,
-    ).toBe(400);
-    expect(
-      (await post('/board/api/book', { jobId: probeJobId, date: BOOK_DAY, startTime: '09:00', endTime: '10:00', promiseLevel: 'sworn' }, 900000001)).status,
     ).toBe(400);
 
     const body = { jobId: probeJobId, date: BOOK_DAY, startTime: '09:00', endTime: '10:00', technicianRef: 'board-t2' };
@@ -1628,9 +1620,8 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
 
     const commit = await post('/board/api/book', body, 900000001);
     expect(commit.status).toBe(200);
-    const c = (await commit.json()) as { status: string; assignmentId: string; promiseLevel: string };
+    const c = (await commit.json()) as { status: string; assignmentId: string };
     expect(c.status).toBe('booked');
-    expect(c.promiseLevel).toBe('none');
     // SQL read-back: confirmed row for the job, held by board-t2.
     const row = await pg.query(
       `select a.status, t.ref from assignments a join technicians t on t.id = a.technician_id
@@ -1644,36 +1635,8 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
     expect(((await clash.json()) as { error: string }).error).toContain('already has a confirmed visit');
   });
 
-  test('book with a promise: preview stages the one dialog; commit records it', async () => {
-    const body = {
-      jobId: probeJobId,
-      date: BOOK_DAY,
-      startTime: '13:00',
-      endTime: '14:00',
-      technicianRef: 'board-t2',
-    };
-    const preview = await post('/board/api/book', body, 900000001, true);
-    expect(((await preview.json()) as { requiresConfirmation: boolean }).requiresConfirmation).toBe(true);
-    const commit = await post('/board/api/book', body, 900000001);
-    expect(commit.status).toBe(200);
-    const c = (await commit.json()) as { assignmentId: string; promiseLevel: string };
-    expect(c.promiseLevel).toBe('day');
-    const row = await pg.query(
-      'select promise_level, promised_day::text as promised_day from assignments where id = $1',
-      [c.assignmentId],
-    );
-    expect(row.rows[0]).toEqual({ promise_level: 'day', promised_day: BOOK_DAY });
-  });
-
   test('final-review guards: one-shot verbs refuse ?preview=1; board writes refuse past dates; book refuses stray priority', async () => {
     // One-shot verbs 400 a preview request instead of silently committing.
-    const pv = await fetch(`${base}/board/api/promise?preview=1`, {
-      method: 'POST',
-      headers: { ...tma(900000001), 'content-type': 'application/json' },
-      body: JSON.stringify({ assignmentId: notesVisitId, promiseLevel: 'day' }),
-    });
-    expect(pv.status).toBe(400);
-    expect(((await pv.json()) as { error: string }).error).toContain('has no preview');
     const jv = await fetch(`${base}/board/api/job?preview=1`, {
       method: 'POST',
       headers: { ...tma(900000001), 'content-type': 'application/json' },
@@ -1706,37 +1669,6 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
     );
     expect(stray.status).toBe(400);
     expect(((await stray.json()) as { error: string }).error).toContain('priority is not set at booking');
-  });
-
-  test('promise: one-shot old→new + ledger event; unknown id → 409', async () => {
-    const resp = await post(
-      '/board/api/promise',
-      { assignmentId: notesVisitId, promiseLevel: 'time_only' },
-      900000001,
-    );
-    expect(resp.status).toBe(200);
-    expect(((await resp.json()) as { changes: unknown }).changes).toEqual({
-      promiseLevel: { from: 'none', to: 'time_only' },
-      promisedDay: { from: null, to: null }, // time_only carries no day
-    });
-    const row = await pg.query(
-      'select promise_level, promised_day from assignments where id = $1',
-      [notesVisitId],
-    );
-    expect(row.rows[0]).toEqual({ promise_level: 'time_only', promised_day: null });
-    const ev = await pg.query(
-      "select actor_ref from schedule_events where assignment_id = $1 and kind = 'promise_updated'",
-      [notesVisitId],
-    );
-    expect(ev.rows).toEqual([{ actor_ref: 'board-mgr' }]);
-    expect((await post('/board/api/promise', { assignmentId: notesVisitId, promiseLevel: 'oath' }, 900000001)).status).toBe(400);
-    const unknown = await post(
-      '/board/api/promise',
-      { assignmentId: '00000000-0000-0000-0000-000000000009', promiseLevel: 'day' },
-      900000001,
-    );
-    expect(unknown.status).toBe(409);
-    expect(((await unknown.json()) as { error: string }).error).toBe('visit not found');
   });
 
   test('job: title+priority old→new + SQL read-back; jobType and empty patches → 400', async () => {

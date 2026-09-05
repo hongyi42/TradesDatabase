@@ -121,11 +121,6 @@
     return DOW[new Date(Date.parse(ymd + 'T00:00:00Z')).getUTCDay()];
   }
 
-  function stopBadges(stop) {
-    var badges = '';
-    return badges;
-  }
-
   function stopCard(stop, canAct) {
     // .draggable is what carries touch-action:none — the read-only surfaces
     // (technician view, manager's Mine tab, past weeks AND past days inside
@@ -140,7 +135,7 @@
       esc(stop.customer || 'Unknown customer') +
       '</div>' +
       (stop.address ? '<div class="stop-address">' + esc(stop.address) + '</div>' : '') +
-      '</div><div class="stop-badges">' + stopBadges(stop) + '</div>' +
+      '</div>' +
       (canAct
         ? '<button type="button" class="stop-cancel" aria-label="Unschedule visit">✕</button>'
         : '') +
@@ -1028,7 +1023,7 @@
   // move-shaped write: drag, tray Assign, the Technician picker, the When
   // editor. doneMsg(body) composes the success toast; confirmation and
   // warning disclosures ride on top, never dropped.
-  function postMove(body, doneMsg, oldStart) {
+  function postMove(body, doneMsg) {
     apiPost('/board/api/move', body, true)
       .then(function (p) {
         if (!p.ok) {
@@ -1053,13 +1048,10 @@
               refresh();
             });
         };
-        if (p.body.requiresConfirmation) {
-          confirmAsk(breakMsg(p.body, oldStart), function (yes) {
-            if (yes) commit();
-          });
-        } else {
-          commit();
-        }
+        // Rung 9a: a move is one-shot. The API's requiresConfirmation is
+        // always false here, and the promise-break dialog it used to open is
+        // gone with the ladder.
+        commit();
       })
       .catch(function () {
         toast('Network error — nothing was changed.', true);

@@ -303,7 +303,7 @@ describe('assignments', () => {
     expect(history.map((r) => r.id)).toEqual([created.id, cancelled.id]); // newest first
   });
 
-  test('reschedule technicianId:null DETACHES; undefined keeps; time_only rows accept a NULL promised_day', async () => {
+  test('reschedule technicianId:null DETACHES; undefined keeps the technician', async () => {
     const job = await makeJob('reschedule-detach');
     const original = await createAssignment({
       tenantId,
@@ -329,16 +329,6 @@ describe('assignments', () => {
       reason: 'shifted',
     });
     expect(kept.created.technician_id).toBeNull(); // old row's (null) carried
-    // time_only + promised_day NULL passes the swapped CHECK constraint.
-    const timeOnly = await createAssignment({
-      tenantId,
-      jobId: job.id,
-      technicianId: null,
-      startsAt: '2026-09-26T09:00:00.000Z',
-      endsAt: '2026-09-26T10:00:00.000Z',
-    });
-    expect(timeOnly.promise_level).toBe('time_only');
-    expect(timeOnly.promised_day).toBeNull();
   });
 
   test('reschedule with an invalid new range throws BEFORE cancelling anything', async () => {
@@ -538,34 +528,11 @@ describe('unplaced visits (Plan 4b-2): shapes + the narrowed overlap guard)', ()
   });
 });
 
-describe('promise ladder + schedule events (Plan 1, schedule core)', () => {
+describe('assignment reads + schedule events (Plan 1, schedule core)', () => {
   async function makeJob(title: string) {
     const customer = await createCustomer({ tenantId, name: `Cust for ${title}` });
     return createJob({ tenantId, customerId: customer.id, title, status: 'open' });
   }
-
-  test('promise columns round-trip; defaults are none/null', async () => {
-    const job = await makeJob('promise-roundtrip');
-    const bare = await createAssignment({
-      tenantId,
-      jobId: job.id,
-      technicianId: tech.id,
-      startsAt: '2026-10-01T09:00:00.000Z',
-      endsAt: '2026-10-01T11:00:00.000Z',
-    });
-    expect(bare.promise_level).toBe('none');
-    expect(bare.promised_day).toBeNull();
-
-    const promised = await createAssignment({
-      tenantId,
-      jobId: job.id,
-      technicianId: tech.id,
-      startsAt: '2026-10-02T09:00:00.000Z',
-      endsAt: '2026-10-02T11:00:00.000Z',
-    });
-    expect(promised.promise_level).toBe('day');
-    expect(promised.promised_day).toBe('2026-10-02');
-  });
 
   test('getAssignmentForTenant tenant-guards; listAssignmentsForTenant spans technicians, confirmed-only default, overlap edges', async () => {
     const job = await makeJob('tenant-list');

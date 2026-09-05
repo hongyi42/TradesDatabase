@@ -73,15 +73,16 @@ export const STAGED_TOOLS = new Set([
   'add_technician_seat',
   'deactivate_technician_seat',
   'cancel_job',
-  // The scheduling verbs stage CONDITIONALLY: one-shot when nothing was
-  // promised (no confirmId ever appears, so isCommit never fires), but any
-  // promise-touching call returns needs_confirmation + confirmId — "call again
-  // with ONLY confirmId", the exact shape isCommit detects. Absent from this
-  // list, an agent could stage and self-confirm a promise-breaking move in one
-  // turn and confirm-discipline would not notice; the workflow family leans on
-  // exactly that check.
-  'book_visit',
-  'move_visit',
+  // unschedule_visit stages when the visit is PLACED — a customer is expecting
+  // it — and returns needs_confirmation + confirmId, "call again with ONLY
+  // confirmId", the exact shape isCommit detects. Absent from this list, an
+  // agent could stage and self-confirm a cancellation in one turn and
+  // confirm-discipline would not notice; the workflow family leans on exactly
+  // that check.
+  //
+  // book_visit and move_visit were here for the same reason until rung 9a
+  // (2026-09-05) made them unconditionally one-shot. They mint no confirmId at
+  // all now, so listing them would guard a shape that can no longer occur.
   'unschedule_visit',
 ]);
 

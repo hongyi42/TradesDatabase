@@ -90,8 +90,6 @@ async function makeVisit(opts: {
   endsAt: string;
   city?: string;
   status?: 'proposed' | 'confirmed';
-  promiseLevel?: 'day';
-  promisedDay?: string;
 }) {
   const customer = await createCustomer({
     tenantId,
@@ -106,7 +104,6 @@ async function makeVisit(opts: {
     startsAt: opts.startsAt,
     endsAt: opts.endsAt,
     status: opts.status ?? 'confirmed',
-    ...(opts.promiseLevel ? { promiseLevel: opts.promiseLevel, promisedDay: opts.promisedDay } : {}),
   });
 }
 
@@ -264,37 +261,35 @@ describe('assembleFitContext — assignment rows become day context', () => {
 });
 
 describe('findDisplacementCandidates', () => {
-  test('promise-free visits order first; promise + lock ride along', async () => {
-    const promised = await makeVisit({
+  test('displacement candidates order EARLIEST FIRST and never include the asker', async () => {
+    const earlier = await makeVisit({
       technicianId: sparky.id,
       startsAt: '2026-08-04T08:00:00.000Z',
       endsAt: '2026-08-04T10:00:00.000Z',
-      promiseLevel: 'day',
-      promisedDay: '2026-08-04',
     });
-    // Later in the week but promise-free → still listed FIRST.
-    const free = await makeVisit({
+    const later = await makeVisit({
       technicianId: sparky.id,
       startsAt: '2026-08-06T08:00:00.000Z',
       endsAt: '2026-08-06T10:00:00.000Z',
     });
 
+    // Rung 9a: the promise-graded tiebreak is gone, so start time is the whole
+    // rule — the Aug 4 row now sorts ahead of the Aug 6 one.
     const out = await findDisplacementCandidates(tenantId, WEEK_START, WEEK_END);
     const ids = out.map((d) => d.assignmentId);
-    expect(ids.indexOf(free.id)).toBeLessThan(ids.indexOf(promised.id));
+    expect(ids.indexOf(earlier.id)).toBeLessThan(ids.indexOf(later.id));
 
     // An assignmentId ask's own subject never appears — a visit cannot be
     // proposed as displacement to make room for itself.
-    const excluded = await findDisplacementCandidates(tenantId, WEEK_START, WEEK_END, 5, free.id);
-    expect(excluded.map((d) => d.assignmentId)).not.toContain(free.id);
-    expect(excluded.map((d) => d.assignmentId)).toContain(promised.id);
-    const p = out.find((d) => d.assignmentId === promised.id);
+    const excluded = await findDisplacementCandidates(tenantId, WEEK_START, WEEK_END, 5, later.id);
+    expect(excluded.map((d) => d.assignmentId)).not.toContain(later.id);
+    expect(excluded.map((d) => d.assignmentId)).toContain(earlier.id);
+    const p = out.find((d) => d.assignmentId === earlier.id);
     expect(p).toMatchObject({
       technicianRef: sparky.ref,
       day: '2026-08-04',
       weekday: 'Tue', // server-computed — the agent never does calendar math
       span: '08:00–10:00',
-      promiseLevel: 'day',
     });
     expect(p?.customer).toContain('Fit cust');
   });

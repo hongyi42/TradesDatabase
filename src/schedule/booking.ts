@@ -925,8 +925,8 @@ export interface AttachUnplacedPreview {
   technicianRef: string | null; // resolved target; null = detach
   earliestDate: string;
   latestDate: string;
-  // An attach is reversible (unassign:true parks it back) and keeps the
-  // promise untouched — never confirm-gated (the confirmation doctrine).
+  // An attach is reversible (unassign:true parks it back) — never
+  // confirm-gated (the confirmation doctrine).
   requiresConfirmation: false;
 }
 

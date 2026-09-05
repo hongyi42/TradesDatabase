@@ -28,7 +28,7 @@ import {
   type Grader,
 } from './graders.js';
 import type { TenantKey, TenantManifest, WorldManifest } from './worldManifest.js';
-import { customerName, jobId, jobTitle, visitDate, visitId } from './worldManifest.js';
+import { customerName, jobId, jobTitle, visitDate } from './worldManifest.js';
 import { addDays, nextWorkday, titleWeekday, weekdayOf, isWeekend } from './clock.js';
 import type { Requirement } from './toolCases.js';
 

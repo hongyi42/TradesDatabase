@@ -761,7 +761,7 @@ export function buildToolCases(): ToolCase[] {
       {
         label: 'stage the cancellation',
         args: (ctx) => ({ jobId: jobId(ctx.tenant, 'job-t1-rs-04'), reason: 'eval: cancel_job path' }),
-        // Terminal and irreversible, so it confirms unconditionally under the
+        // Terminal and irreversible, so it confirms unconditionally.
         check: staged,
       },
       {

@@ -1953,8 +1953,9 @@ were unreachable when those items were created, the per-tick routing cap deferre
   [phone-call-runbook.md](phone-call-runbook.md).
 - **43 manager tools, a 4-tool team-lead surface, and 12 views (2026-08-24; surface widened
   2026-08-30).** `MANAGER_TOOLS` (`src/mcp/server.ts`, pinned by `server.test.ts`) is 16 base
-  (17 minus `get_schedule`) + 26 admin = **42** since rung 8 (2026-09-04) took the four solver
-  tools; it read 13 base + 30 admin = 43 when this entry was written. `spine_read`, `recall_decisions`, `read_memory` and `write_memory` are a
+  (17 minus `get_schedule`) + 25 admin = **41** since rung 9a (2026-09-05) deleted `set_promise`,
+  on top of rung 8 (2026-09-04) taking the four solver tools; it read 13 base + 30 admin = 43 when
+  this entry was written. `spine_read`, `recall_decisions`, `read_memory` and `write_memory` are a
   **team-lead-only surface that REPLACES rather than extends**, gated to the `spine:` namespace.
   The last two arrived with build 3 (2026-08-30) and `write_memory` is **the identity's first
   write verb** — it passes the gate's "nothing irreversible or externally visible" rule because

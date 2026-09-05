@@ -21,7 +21,6 @@ import {
   listTeam,
   listTimeOffForTechnician,
   listUnplacedAssignedForRange,
-  type Assignment,
   type PlacedAssignment,
   type JobPriority,
   type Technician,

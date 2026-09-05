@@ -17,8 +17,9 @@ export type ReviewKind =
   | 'pending_retraction'
   | 'pending_standing_fact'
   | 'offboarding_reminder'
-  | 'pending_booking'
-  | 'pending_visit_move'
+  // 'pending_booking' and 'pending_visit_move' were deleted in rung 9a: book
+  // and move are one-shot, so nothing mints them. 'pending_visit_cancel' is
+  // the one scheduling token that survives.
   | 'pending_visit_cancel'
   | 'pending_job_cancel'
   | 'pending_seat_add'

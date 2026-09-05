@@ -2025,7 +2025,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
     );
     try {
       // The full manager surface: every base spine tool EXCEPT get_schedule
-      // (technician route view, removed 2026-07-19) + the 26 admin tools —
+      // (technician route view, removed 2026-07-19) + the 25 admin tools —
       // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
@@ -2046,7 +2046,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('inform_team_lead'); // the planner's inbox (build 5.5)
       expect(mgrTools).toContain('ask_team_lead'); // the Q&A desk (build 5.5 Phase 2)
       expect(mgrTools).toContain('inform_teammate'); // seat-to-seat informs (build 5.5 Phase 3)
-      expect(mgrTools).toHaveLength(42);
+      expect(mgrTools).toHaveLength(41);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -2449,7 +2449,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(42); // base minus get_schedule + 26 admin
+        expect(mgrTools).toHaveLength(41); // base minus get_schedule + 25 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -3765,39 +3765,25 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(mixed.isError).toBe(true);
       expect(mixed.text).toContain('NOT settled');
 
-      // THE regression (plan-review severe finding): a day-promised timeTbd
-      // booking routes through STAGING — the stage must carry the unplaced
-      // shape and the confirm must accept it as valid, not "malformed".
-      const staged = await callWith('book_visit', {
+      // An unplaced booking lands in ONE call (rung 9a: nothing stages it) and
+      // the row keeps the unplaced shape — null times, the range set.
+      const booked = await callWith('book_visit', {
         customerId: customer.id,
-        title: 'tbd promised install',
+        title: 'tbd install',
         timeTbd: true,
         earliestDate: '2026-12-14',
-        promiseLevel: 'day',
       });
-      expect(staged.data.status).toBe('needs_confirmation');
-      expect(staged.data.preview).toMatchObject({
-        timeTbd: true,
-        earliestDate: '2026-12-14',
-        latestDate: '2026-12-14',
-        startTime: null,
-        endTime: null,
-        promiseLevel: 'day',
-      });
-      const booked = await callWith('book_visit', { confirmId: staged.data.confirmId });
       expect(booked.data.status).toBe('booked');
       expect(booked.data.timeTbd).toBe(true);
       expect(booked.data.startTime).toBeNull();
       const assignmentId = booked.data.assignmentId as string;
-      // Row read-back: null times, range set, promise stamped.
       const { rows } = await pg.query(
-        'select starts_at, ends_at, earliest_date::text, latest_date::text, promise_level, promised_day from assignments where id = $1',
+        'select starts_at, ends_at, earliest_date::text, latest_date::text from assignments where id = $1',
         [assignmentId],
       );
       expect(rows[0].starts_at).toBeNull();
       expect(rows[0].ends_at).toBeNull();
       expect(rows[0].earliest_date).toBe('2026-12-14');
-      expect(rows[0].promise_level).toBe('day');
 
       // A RANGE that straddles `from` is still-live work and must not be
       // clamped out of recall (review finding: only a fully-past range drops).
@@ -4065,7 +4051,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
     }
   });
 
-  test('book → team view → move (promise break) → cancel, with version bumps and token guards', async () => {
+  test('book → team view → move → cancel: one-shot writes, staged cancel, version bumps and token guards', async () => {
     const customer = await createCustomer({
       tenantId,
       name: 'Sched Henderson',
@@ -4079,56 +4065,30 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       technicianRef: 'mgr-test',
     });
     try {
-      // STAGE: full preview, resolved defaults, availability warning (tech-mcp
-      // has no working pattern configured), nothing booked yet.
-      const staged = await callWith('book_visit', {
+      // BOOK: one call, full echo, availability warning (tech-mcp has no
+      // working pattern configured). Rung 9a removed the staging entirely.
+      const booked = await callWith('book_visit', {
         customerId: customer.id,
         technicianRef: 'tech-mcp',
         title: 'water heater swap',
         date: '2026-12-01',
         startTime: '09:00',
         endTime: '12:00',
-        promiseLevel: 'day', // manager told the customer this day (exercises the promise-break path)
       });
-      expect(staged.data.status).toBe('needs_confirmation');
-      expect(staged.data.preview).toMatchObject({
-        customerName: 'Sched Henderson',
-        technicianName: 'Tech MCP',
-        newJob: true,
+      expect(booked.data.status).toBe('booked');
+      expect(booked.data).toMatchObject({
+        customer: 'Sched Henderson',
+        technicianRef: 'tech-mcp',
+        jobTitle: 'water heater swap',
         date: '2026-12-01',
         startTime: '09:00',
         endTime: '12:00',
-        promiseLevel: 'day',
       });
-      expect(staged.data.preview.warning).toContain('no working pattern');
-
-      // Forged confirmId → not found.
-      const forged = await callWith('book_visit', { confirmId: customer.id });
-      expect(forged.isError).toBe(true);
-      expect(forged.text).toContain('confirmation not found');
-
-      // resolve_review refuses to "resolve" the live booking token (the token
-      // survives — the confirm below still works).
-      const refusedBooking = await callWith('resolve_review', {
-        reviewItemId: staged.data.confirmId,
-        resolution: 'resolved',
-      });
-      expect(refusedBooking.isError).toBe(true);
-      expect(refusedBooking.text).toContain('book_visit');
-
-      // CONFIRM books it.
-      const booked = await callWith('book_visit', { confirmId: staged.data.confirmId });
-      expect(booked.data.status).toBe('booked');
-      expect(booked.data.promiseLevel).toBe('day');
+      expect(booked.data.warning).toContain('no working pattern');
       const assignmentId = booked.data.assignmentId as string;
 
-      // Second confirm on the consumed token → nothing double-booked.
-      const replay = await callWith('book_visit', { confirmId: staged.data.confirmId });
-      expect(replay.isError).toBe(true);
-      expect(replay.text).toContain('confirmation not found');
-
-      // Team view: the manager sees ANOTHER technician's stop, with the
-      // promise/lock markers and a scheduleVersion.
+      // Team view: the manager sees ANOTHER technician's stop, with a
+      // scheduleVersion.
       const team = await callWith('get_team_schedule', { from: '2026-12-01', to: '2026-12-01' });
       expect(team.data.status).toBe('ok');
       const v1 = team.data.scheduleVersion as number;
@@ -4138,8 +4098,6 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(stop).toMatchObject({
         technicianRef: 'tech-mcp',
         customer: 'Sched Henderson',
-        promiseLevel: 'day',
-        promisedDay: '2026-12-01',
         // Wall-clock HH:MM slices only. The raw timestamptz must never reach
         // the agent: its '+00:00' marker lies under the naive-local convention
         // (live 2026-07-22: the agent fabricated a UTC→Pacific conversion for
@@ -4153,26 +4111,14 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(team.data.days[0].weekday).toBe('Tue');
       expect(stop?.address).toContain('40 Elm Ave');
 
-      // MOVE to another day: preview must flag the promise break; confirm moves.
-      const moveStage = await callWith('move_visit', {
+      // MOVE to another day: one call, no gate (rung 9a).
+      const moved = await callWith('move_visit', {
         assignmentId,
         date: '2026-12-02',
         startTime: '13:00',
         reason: 'customer asked for Wednesday',
       });
-      expect(moveStage.data.status).toBe('needs_confirmation');
-      expect(moveStage.data.preview.promiseBroken).toBe(true);
-      expect(moveStage.data.note).toContain('promiseBroken is TRUE');
-      // Refusal covers the move kind too.
-      const refusedMove = await callWith('resolve_review', {
-        reviewItemId: moveStage.data.confirmId,
-        resolution: 'resolved',
-      });
-      expect(refusedMove.isError).toBe(true);
-      expect(refusedMove.text).toContain('move_visit');
-      const moved = await callWith('move_visit', { confirmId: moveStage.data.confirmId });
       expect(moved.data.status).toBe('moved');
-      expect(moved.data.promiseBroken).toBe(true);
       const movedId = moved.data.assignmentId as string;
       expect(movedId).not.toBe(assignmentId);
 
@@ -4187,6 +4133,11 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         reason: 'testing the refusal',
       });
       expect(cancelStage.data.status).toBe('needs_confirmation');
+      // Forged confirmId → not found. (These guards used to ride the booking
+      // token; unschedule_visit is the verb that still stages.)
+      const forged = await callWith('unschedule_visit', { confirmId: customer.id });
+      expect(forged.isError).toBe(true);
+      expect(forged.text).toContain('confirmation not found');
       const refused = await callWith('resolve_review', {
         reviewItemId: cancelStage.data.confirmId,
         resolution: 'resolved',
@@ -4221,14 +4172,14 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
     }
   });
 
-  test('unpromised book/move/cancel are ONE-SHOT (doctrine: reversible + internal = act and report)', async () => {
-    // The pilot bugs, both directions: booking silently recorded "customer
-    // told this day" (default is now 'none'), and reversible internal changes
-    // dragged the manager through a confirmation they didn't need.
+  test('book/move are ONE-SHOT; unscheduling a PLACED visit is the one surviving gate (rung 9a)', async () => {
+    // The pilot bug this fixes: reversible internal changes dragged the manager
+    // through a confirmation they didn't need. Rung 9a finished the job — no
+    // promise level gates anything, so book and move never stage at all.
     const customer = await createCustomer({ tenantId, name: 'Unpromised Uma' });
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
-      // ONE call books it — no needs_confirmation for an unpromised visit.
+      // ONE call books it — book_visit never stages.
       const booked = await callWith('book_visit', {
         customerId: customer.id,
         technicianRef: 'tech-mcp',
@@ -4237,7 +4188,6 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         endTime: '10:00',
       });
       expect(booked.data.status).toBe('booked');
-      expect(booked.data.promiseLevel).toBe('none');
       expect(booked.data.note).toContain('one step');
       // 4b-1 (final-review finding): the minted shell RECORDS the booked span
       // as the job's length — a silently-stored value unless echoed here, the
@@ -4249,7 +4199,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       const stop = (team.data.days[0].stops as Array<Record<string, unknown>>).find(
         (s) => s.assignmentId === id,
       );
-      expect(stop).toMatchObject({ promiseLevel: 'none', promisedDay: null });
+      expect(stop).toBeDefined();
 
       // No default times (user decision 2026-07-18): an omitted endTime is
       // REFUSED with an ask-the-manager error — the server invents nothing.
@@ -4263,7 +4213,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(missingEnd.text).toContain('startTime and endTime are required');
       expect(missingEnd.text).toContain('ask them');
 
-      // Moving the unpromised visit is one-shot too — and claims no break.
+      // Moving it is one-shot too, whatever the customer was told — the agent
+      // is expected to have READ the job's record for promises first.
       const moved = await callWith('move_visit', {
         assignmentId: id,
         date: '2026-12-16',
@@ -4271,61 +4222,68 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         reason: 'internal reshuffle',
       });
       expect(moved.data.status).toBe('moved');
-      expect(moved.data.promiseBroken).toBe(false);
       expect(moved.data.note).toContain('one step');
 
-      // Unscheduling it: one-shot as well — and the result must say the WORK
-      // survives (the job returns to the loose bucket).
-      const cancelled = await callWith('unschedule_visit', {
+      // INVERTED (rung 9a): the visit is PLACED, so a customer is expecting it
+      // — unscheduling now stages and asks, where it used to be one-shot.
+      const cancelStage = await callWith('unschedule_visit', {
         assignmentId: moved.data.assignmentId,
         reason: 'not needed',
       });
+      expect(cancelStage.data.status).toBe('needs_confirmation');
+      const cancelled = await callWith('unschedule_visit', { confirmId: cancelStage.data.confirmId });
+      // The result must still say the WORK survives (job → loose bucket).
       expect(cancelled.data.status).toBe('unscheduled');
-      expect(cancelled.data.note).toContain('one step');
       expect(cancelled.data.note).toContain('loose bucket');
 
-      // The PROMISED path also requires both times — staged and confirmed with
-      // exactly the stated window (preview == commit).
-      const staged = await callWith('book_visit', {
+      // …and an UNPLACED visit is nobody's appointment yet, so it drops in one
+      // call — the other side of the same gate.
+      const unplaced = await callWith('book_visit', {
         customerId: customer.id,
-        technicianRef: 'tech-mcp',
-        date: '2026-12-18',
-        startTime: '09:00',
-        endTime: '10:30',
-        promiseLevel: 'day',
-        forceNewJob: true, // titleless repeat on one customer — mint guard bypass
+        title: 'nothing promised, no time',
+        timeTbd: true,
+        earliestDate: '2026-12-18',
       });
-      expect(staged.data.status).toBe('needs_confirmation');
-      expect(staged.data.preview.endTime).toBe('10:30');
-      const confirmed = await callWith('book_visit', { confirmId: staged.data.confirmId });
-      expect(confirmed.data.status).toBe('booked');
-      expect(confirmed.data.endTime).toBe('10:30');
+      expect(unplaced.data.status).toBe('booked');
+      const dropped = await callWith('unschedule_visit', {
+        assignmentId: unplaced.data.assignmentId,
+        reason: 'never needed',
+      });
+      expect(dropped.data.status).toBe('unscheduled');
+      expect(dropped.data.note).toContain('one step');
     } finally {
       await mgrClient.close();
     }
   });
 
-  test('expired staged booking is dismissed with a clean restage error', async () => {
+  test('an expired staged confirmation is dismissed with a clean restage error', async () => {
     const customer = await createCustomer({ tenantId, name: 'Expiry Ed' });
     const { client: mgrClient, callWith } = await clientFor({
       tenantId,
       technicianRef: 'mgr-test',
     });
     try {
-      const staged = await callWith('book_visit', {
+      // unschedule_visit on a PLACED visit is the verb that still stages
+      // (rung 9a) — book_visit is one-shot and mints no token to expire.
+      const booked = await callWith('book_visit', {
         customerId: customer.id,
         technicianRef: 'tech-mcp',
         date: '2026-12-08',
         startTime: '09:00',
         endTime: '10:00',
-        promiseLevel: 'day', // promised → still stages (one-shot would skip the token)
       });
+      expect(booked.data.status).toBe('booked');
+      const staged = await callWith('unschedule_visit', {
+        assignmentId: booked.data.assignmentId,
+        reason: 'customer went quiet',
+      });
+      expect(staged.data.status).toBe('needs_confirmation');
       // Age the token past the 15-minute window.
       await pg.query(
         `update review_items set detail = detail || jsonb_build_object('stagedAt', $1::text) where id = $2`,
         [new Date(Date.now() - 20 * 60_000).toISOString(), staged.data.confirmId],
       );
-      const expired = await callWith('book_visit', { confirmId: staged.data.confirmId });
+      const expired = await callWith('unschedule_visit', { confirmId: staged.data.confirmId });
       expect(expired.isError).toBe(true);
       expect(expired.text).toContain('confirmation expired');
     } finally {
@@ -4333,7 +4291,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
     }
   });
 
-  test('staging an impossible booking fails at stage time (unknown tech, overlap)', async () => {
+  test('an impossible booking is refused on the call (unknown tech, overlap)', async () => {
     const customer = await createCustomer({ tenantId, name: 'Impossible Iva' });
     const { client: mgrClient, callWith } = await clientFor({
       tenantId,
@@ -4350,7 +4308,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(unknown.isError).toBe(true);
       expect(unknown.text).toContain("'ghost-tech' not found");
 
-      // Unpromised → lands in one call under the one-shot doctrine.
+      // Lands in one call under the one-shot doctrine.
       const first = await callWith('book_visit', {
         customerId: customer.id,
         technicianRef: 'tech-mcp',
@@ -4378,19 +4336,14 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
     const customer = await createCustomer({ tenantId, name: 'Assign Later Al' });
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
-      // PROMISED + unassigned: the promise forces the stage, whose preview
-      // must echo a person-less booking (null technician fields).
-      const staged = await callWith('book_visit', {
+      // Unassigned: the one-shot result must echo a person-less booking
+      // (null technician fields), same contract the stage used to carry.
+      const booked = await callWith('book_visit', {
         customerId: customer.id,
         date: '2027-01-05',
         startTime: '09:00',
         endTime: '10:00',
-        promiseLevel: 'day',
       });
-      expect(staged.data.status).toBe('needs_confirmation');
-      expect(staged.data.preview.technicianRef).toBeNull();
-      expect(staged.data.preview.technicianName).toBeNull();
-      const booked = await callWith('book_visit', { confirmId: staged.data.confirmId });
       expect(booked.data.status).toBe('booked');
       expect(booked.data.unassigned).toBe(true);
       expect(booked.data.technicianRef).toBeNull();
@@ -4403,7 +4356,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       );
       expect(stop).toMatchObject({ unassigned: true, technicianRef: null, technicianName: null });
 
-      // Attaching a person same day/time keeps the promise → ONE-SHOT move.
+      // Attaching a person same day/time → ONE-SHOT move.
       const moved = await callWith('move_visit', {
         assignmentId: id,
         date: '2027-01-05',
@@ -4412,7 +4365,6 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         reason: 'assigning tech',
       });
       expect(moved.data.status).toBe('moved');
-      expect(moved.data.promiseBroken).toBe(false);
       const after = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05' });
       const attached = (after.data.days[0].stops as Array<Record<string, unknown>>).find(
         (s) => s.assignmentId === moved.data.assignmentId,
@@ -4973,22 +4925,17 @@ describe('schedule-input verbs (Plan 3a)', () => {
       expect(combo.isError).toBe(true);
       expect(combo.text).toContain('existing job');
 
-      // Staged path: preview shows the tier + job title; commit writes and
-      // echoes exactly them.
-      const staged = await callWith('book_visit', {
+      // One-shot path: the result echoes the tier + job title it wrote.
+      const confirmed = await callWith('book_visit', {
         customerId: customer.id,
         title: 'panel upgrade',
         date: '2027-04-03',
         startTime: '09:00',
         endTime: '10:00',
-        promiseLevel: 'day',
         priority: 'emergency',
       });
-      expect(staged.data.status).toBe('needs_confirmation');
-      expect(staged.data.preview.priority).toBe('emergency');
-      expect(staged.data.preview.jobTitle).toBe('panel upgrade');
-      const confirmed = await callWith('book_visit', { confirmId: staged.data.confirmId });
       expect(confirmed.isError).toBe(false);
+      expect(confirmed.data.jobTitle).toBe('panel upgrade');
       expect(confirmed.data.jobPriority).toBe('emergency');
       expect(confirmed.data.jobTitle).toBe('panel upgrade');
       const jobRow2 = await pg.query('select priority from jobs where id = $1', [confirmed.data.jobId]);
@@ -5667,7 +5614,8 @@ describe('find_slots (Plan 3b)', () => {
       expect(impossible.data.noFit.hint).toContain('shorter visit');
       const displaced = impossible.data.noFit.displacementCandidates as Array<Record<string, unknown>>;
       expect(displaced.length).toBeGreaterThanOrEqual(2); // the two 03-08 visits
-      expect(displaced[0]).toHaveProperty('promiseLevel');
+      expect(displaced[0]).toHaveProperty('assignmentId');
+      expect(displaced[0]).not.toHaveProperty('promiseLevel');
     } finally {
       await mgrClient.close();
     }
@@ -6116,8 +6064,8 @@ describe('update_job (the job identity editor)', () => {
   });
 });
 
-describe('move_visit unassign + time_only (plan 4a.5)', () => {
-  test('one-shot park, staged-confirm park (the preview==commit path), time_only record', { timeout: 30_000 }, async () => {
+describe('move_visit unassign (plan 4a.5)', () => {
+  test('one-shot park, cross-day park still detaches', { timeout: 30_000 }, async () => {
     const customer = await createCustomer({ tenantId, name: 'Park Probe Cust' });
     // Own probe tech — standalone-runnable (the update_job round-2 lesson).
     const pkt = await insertTechnician({
@@ -6148,7 +6096,7 @@ describe('move_visit unassign + time_only (plan 4a.5)', () => {
       expect(badFlag.isError).toBe(true);
       expect(badFlag.text).toContain('unassign must be a boolean');
 
-      // Unpromised park: ONE call, technician gone, row visible as unassigned.
+      // Park: ONE call, technician gone, row visible as unassigned.
       const booked = await callWith('book_visit', {
         customerId: customer.id,
         technicianRef: 'park-probe-tech',
@@ -6186,40 +6134,37 @@ describe('move_visit unassign + time_only (plan 4a.5)', () => {
       expect(both.isError).toBe(true);
       expect(both.text).toContain('not both');
 
-      // STAGED-CONFIRM PARK (plan review finding #1): a promise-breaking
-      // cross-day park must stage, and the CONFIRM must still detach —
-      // dropping unassign from the staged detail would commit a plain move
-      // that keeps the technician (preview ≠ commit on the one gated path).
-      const promised = await callWith('book_visit', {
+      // CROSS-DAY PARK (plan review finding #1, carried into rung 9a): a park
+      // that ALSO changes the day must still detach. It used to stage on the
+      // promise break; now it is one-shot, but dropping `unassign` on the way
+      // through would still commit a plain move that keeps the technician.
+      const other = await callWith('book_visit', {
         customerId: customer.id,
         technicianRef: 'park-probe-tech',
         date: '2027-07-06',
         startTime: '09:00',
         endTime: '10:00',
-        promiseLevel: 'day',
         forceNewJob: true, // titleless repeat on one customer — mint guard bypass
       });
-      const stagedPromised = await callWith('book_visit', { confirmId: promised.data.confirmId });
-      expect(stagedPromised.data.status).toBe('booked');
-      const parkStage = await callWith('move_visit', {
-        assignmentId: stagedPromised.data.assignmentId,
-        date: '2027-07-07', // day change on a day-promise → break → stage
+      expect(other.data.status).toBe('booked');
+      const crossDay = await callWith('move_visit', {
+        assignmentId: other.data.assignmentId,
+        date: '2027-07-07', // a DIFFERENT day, and unassigning at the same time
         startTime: '09:00',
         unassign: true,
         reason: 'park it for the reflow',
       });
-      expect(parkStage.data.status).toBe('needs_confirmation');
-      expect(parkStage.data.preview.unassign).toBe(true);
-      expect(parkStage.data.preview.promiseLevel).toBe('day');
-      const parkConfirmed = await callWith('move_visit', { confirmId: parkStage.data.confirmId });
-      expect(parkConfirmed.isError).toBe(false);
-      expect(parkConfirmed.data.status).toBe('moved');
-      expect(parkConfirmed.data.unassigned).toBe(true);
+      expect(crossDay.isError).toBe(false);
+      expect(crossDay.data.status).toBe('moved');
+      expect(crossDay.data.unassigned).toBe(true);
       const confirmedRow = await pg.query(
-        'select technician_id from assignments where id = $1',
-        [parkConfirmed.data.assignmentId],
+        'select technician_id, starts_at from assignments where id = $1',
+        [crossDay.data.assignmentId],
       );
-      expect(confirmedRow.rows[0].technician_id).toBeNull();
+      expect(confirmedRow.rows[0].technician_id).toBeNull(); // detached…
+      // …and the day change landed too: a park keeps its time, it only drops
+      // the person.
+      expect(confirmedRow.rows[0].starts_at.toISOString()).toContain('2027-07-07');
 
     } finally {
       await mgrClient.close();
@@ -6347,7 +6292,7 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
     }
   });
 
-  test('cascade through the tool: promised visit disclosed in the preview, then dies', { timeout: 30_000 }, async () => {
+  test('cascade through the tool: the live visit is disclosed in the preview, then dies', { timeout: 30_000 }, async () => {
     const customer = await createCustomer({ tenantId, name: 'Cascade Cal' });
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
@@ -6358,17 +6303,16 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
         startTime: '09:00',
         endTime: '11:00',
       });
-      expect(booked.data.status).toBe('booked'); // unassigned + unpromised → one-shot
+      expect(booked.data.status).toBe('booked'); // book_visit is always one-shot
       const jobId = booked.data.jobId as string;
       const stage = await callWith('cancel_job', { jobId, reason: 'customer called it off' });
       const preview = stage.data.preview as {
         visits: Array<{ assignmentId: string; day: string }>;
       };
-      // The stake is stated: the promised visit rides the preview.
+      // The stake is stated: the live visit rides the preview.
       expect(preview.visits).toHaveLength(1);
       expect(preview.visits[0]).toMatchObject({
         assignmentId: booked.data.assignmentId,
-        promiseLevel: 'day',
         day: '2027-02-01',
       });
 

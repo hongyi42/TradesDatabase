@@ -163,7 +163,6 @@ import {
   unscheduleVisit,
   moveVisit,
   openWorkSteer,
-  previewBookVisit,
   previewUnscheduleVisit,
   previewMoveVisit,
   spanMinutes,
@@ -4418,8 +4417,8 @@ async function dispatch(
     }
     case 'move_visit': {
       const subjectRef = identity.technicianRef;
-        // STAGE — previewMoveVisit throws on impossible moves; promiseBroken
-        // rides in the preview so the manager confirms the break knowingly.
+        // previewMoveVisit throws on impossible moves before anything is
+        // written; since rung 9a the move then commits in the same call.
         const assignmentId = str('assignmentId');
         const date = str('date');
         const startTime = str('startTime');
@@ -6515,8 +6514,6 @@ async function dispatch(
       // only via its own tool's confirm call; dismissing (= cancel) is fine.
       // New staged kinds get an entry here, not a fresh if-block.
       const STAGED_ACTION_KINDS: Record<string, string> = {
-        pending_booking: 'book_visit',
-        pending_visit_move: 'move_visit',
         pending_visit_cancel: 'unschedule_visit',
         pending_job_cancel: 'cancel_job',
         pending_seat_add: 'add_technician_seat',

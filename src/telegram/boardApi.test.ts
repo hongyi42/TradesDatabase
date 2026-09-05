@@ -288,8 +288,6 @@ describe('GET /board/api/day', () => {
       unassigned: false,
       customer: 'Board Casa',
       address: '12 Board St, Springfield, OR, 97477',
-      promiseLevel: 'none',
-      promisedDay: null,
       status: 'confirmed',
     });
     expect(typeof stop.jobId).toBe('string');
@@ -450,8 +448,6 @@ describe('GET /board/api/visit (tap-into-a-visit detail)', () => {
       technicianRef: 'board-t1',
       technicianName: 'Tess One',
       jobTitle: 'AC tune-up',
-      promiseLevel: 'none',
-      promisedDay: null,
       customer: {
         name: 'Board Casa',
         phone: '555-014-2000',
@@ -1366,7 +1362,6 @@ describe('board write path (Phase 3)', () => {
       date: DAY_PROM,
       startTime: '09:00',
       endTime: '10:00',
-      promiseLevel: 'day',
       actorRef: 'board-mgr',
     });
     const preview = await post(
@@ -1656,7 +1651,6 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
       startTime: '13:00',
       endTime: '14:00',
       technicianRef: 'board-t2',
-      promiseLevel: 'day',
     };
     const preview = await post('/board/api/book', body, 900000001, true);
     expect(((await preview.json()) as { requiresConfirmation: boolean }).requiresConfirmation).toBe(true);

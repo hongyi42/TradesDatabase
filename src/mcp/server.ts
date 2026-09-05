@@ -158,17 +158,14 @@ import {
 } from '../schedule/fit.js';
 import {
   bookVisit,
-  bookingRequiresConfirmation,
   cancelJob,
   previewCancelJob,
   unscheduleVisit,
-  isPromiseLevel,
   moveVisit,
   openWorkSteer,
   previewBookVisit,
   previewUnscheduleVisit,
   previewMoveVisit,
-  setVisitPromise,
   spanMinutes,
   updateJobIdentity,
 } from '../schedule/booking.js';
@@ -187,7 +184,6 @@ import {
   writeMemoryFile,
   readJobNote,
   writeJobNote,
-  type PromiseLevel,
 } from '../db/index.js';
 import { braveWebSearch } from '../web/braveSearch.js';
 import { fetchPageText } from '../web/fetchPage.js';
@@ -736,13 +732,13 @@ const TOOLS = [
 // other.
 const SPINE_VIEW_CATALOG =
   'It CANNOT write, and it can only read these fifteen views (nothing else exists to it): ' +
-  'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, promise_level, ' +
-  'promised_day, earliest_date, latest_date, technician_ref, technician_name, job_id, ' +
+  'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, ' +
+  'earliest_date, latest_date, technician_ref, technician_name, job_id, ' +
   'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
   'schedule that STANDS: confirmed and completed visits only, so count(*) here is real ' +
   'bookings; cancelled visits are NOT in it — they live in ' +
   'v_cancelled_visits(assignment_id, local_day, local_weekday, starts_at, ends_at, reason, ' +
-  'updated_at, promise_level, promised_day, earliest_date, latest_date, technician_ref, ' +
+  'updated_at, earliest_date, latest_date, technician_ref, ' +
   'technician_name, job_id, job_title, job_type, customer_id, customer_name, city, ' +
   'postal_code), which also says why (reason) and when (updated_at); ' +
   'v_team(ref, display_name, tier, state, seat_exempt, skills, service_cities, availability, ' +
@@ -970,9 +966,7 @@ const ADMIN_TOOLS = [
       "The whole team's schedule, and a manager's ONLY schedule read (it includes visits you " +
       'hold yourself — there is no separate personal view): for each day in [from,to] ' +
       "(YYYY-MM-DD; both optional — default today in the firm's timezone; capped at 14 days), " +
-      "every technician's confirmed visits with customer, address, times, promiseLevel (what " +
-      'the customer was ' +
-      'told: none/day/time/time_only) and promisedDay. Stops with ' +
+      "every technician's confirmed visits with customer, address and times. Stops with " +
       'unassigned:true have NOBODY attached yet and need a person (attach with move_visit). ' +
       'Pass unassignedOnly:true to list ALL upcoming visits with nobody attached, however far ' +
       'out (no 14-day cap) — use it when the manager asks what still needs assigning. Stops ' +
@@ -1003,12 +997,12 @@ const ADMIN_TOOLS = [
   {
     name: 'book_visit',
     description:
-      'Book a visit onto the schedule (manager only). Reversible and internal (nothing ' +
-      'promised to the customer) → done in ONE call ({status:"booked"}) — ALWAYS tell the ' +
-      'manager what was done (day, time, who, and any warning); never act silently. If the ' +
-      'customer was promised ANYTHING (any promiseLevel other than "none") you instead get ' +
-      '{status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
-      'yes, call again with ONLY confirmId. Call with date + startTime + endTime ' +
+      'Book a visit onto the schedule (manager only). Done in ONE call ' +
+      '({status:"booked"}) — ALWAYS tell the manager what was done (day, time, who, and any ' +
+      'warning); never act silently. Before booking around a commitment the firm already ' +
+      'made, READ the job\'s own record (get_job / list_recent_captures) — what a customer ' +
+      'was told lives in what people actually said, not in a field. ' +
+      'Call with date + startTime + endTime ' +
       '(+ customerId OR jobId; technicianRef optional). customerId MINTS A NEW JOB — when ' +
       'booking work already on file (a named job, a multi-day split, a return visit), pass ' +
       'that job\'s jobId instead: one job, many visits, never a duplicate job per day. ' +
@@ -1026,10 +1020,8 @@ const ADMIN_TOOLS = [
       'or a range with latestDate) until someone places it. timeTbd is NEVER your own choice ' +
       'when a time was stated. Omit technicianRef to ' +
       'book WITHOUT a technician (put it on the calendar, assign later — attach someone with ' +
-      'move_visit; find these via get_team_schedule unassignedOnly:true). promiseLevel ' +
-      'records what the customer was ACTUALLY told and defaults to "none". Pass "day" ONLY ' +
-      'when the manager says the customer was told the day, or "time" when told an exact ' +
-      'time. NEVER assume a promise was made. When talking to customers, offer DAYS, not times. ' +
+      'move_visit; find these via get_team_schedule unassignedOnly:true). ' +
+      'When talking to customers, offer DAYS, not times. ' +
       'When the result carries dayPhrase, SAY IT VERBATIM whenever you name the day — never ' +
       'work out the weekday yourself; you are unreliable at calendar math. ' +
       'When the result carries boardNote, ALWAYS end your report with its exact ' +
@@ -1047,7 +1039,6 @@ const ADMIN_TOOLS = [
         timeTbd: { type: 'boolean', description: 'true ONLY when the manager explicitly said the time is unsettled — books an UNPLACED visit (day known, no times). Requires NO startTime/endTime. Never your own inference. First call only.' },
         earliestDate: { type: 'string', description: 'With timeTbd: the day (YYYY-MM-DD), or the range start. Defaults to date. First call only.' },
         latestDate: { type: 'string', description: 'With timeTbd: range end (YYYY-MM-DD), for "sometime that week". Defaults to earliestDate. First call only.' },
-        promiseLevel: { type: 'string', enum: ['none', 'day', 'time', 'time_only'], description: 'What the customer was ACTUALLY told (default "none" = nothing promised). "day" = told the day; "time" = told the day AND time; "time_only" = told a time but NOT the day (the day may still move). Set a level only when the manager indicates a promise was made. First call only.' },
         priority: { type: 'string', enum: ['emergency', 'urgent', 'routine', 'maintenance'], description: 'Triage tier for the NEW job when booking by customerId (default "routine"). Rejected with jobId — an existing job keeps its recorded priority. First call only.' },
         forceNewJob: { type: 'boolean', description: 'customerId path only: override the open-work guard and mint a new job even though the customer has open work on file. ONLY when the work is genuinely different from every listed job — never to skip the jobId lookup. First call only.' },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
@@ -1062,12 +1053,10 @@ const ADMIN_TOOLS = [
       'unassigned visit (pass technicianRef with the same day/time), and how one gets TAKEN ' +
       'OFF: unassign:true parks the visit — pulls the person off, keeps day/time; find it ' +
       'under get_team_schedule unassignedOnly:true or the board\'s loose bucket. Reversible ' +
-      'and internal ' +
-      '(no customer promise affected) → done in ONE call ({status:"moved"}) — ALWAYS tell the ' +
-      'manager what moved; never act silently. If the move would break what the customer was ' +
-      'promised (promiseBroken TRUE — they heard a different day/time and someone must tell ' +
-      'them) you instead get {status:"needs_confirmation", confirmId} with a preview — show ' +
-      'it, get an explicit yes, call again with ONLY confirmId. Call with assignmentId + ' +
+      'and internal → done in ONE call ({status:"moved"}) — ALWAYS tell the ' +
+      'manager what moved; never act silently. Before moving a visit, READ the job\'s own ' +
+      'record (get_job / list_recent_captures): if the firm told this customer a day or a ' +
+      'time, moving it is a promise someone must now un-tell them. Call with assignmentId + ' +
       'date + startTime (+ optional endTime/technicianRef OR unassign) + reason. When the ' +
       'result carries ' +
       'boardNote, ALWAYS end your report with its exact [See it on the board](…) line — it ' +
@@ -1095,10 +1084,8 @@ const ADMIN_TOOLS = [
       'job returns to the loose bucket for rebooking — say so in your report. For "the ' +
       'customer called the whole thing off / we are not doing this work", use cancel_job ' +
       'instead. If the manager\'s words could mean either ("cancel the Hendersons"), ASK ' +
-      'which they mean — never guess. Reversible and internal (nothing promised to the ' +
-      'customer) → done in ONE call ({status:"unscheduled"}) — ALWAYS tell the manager what ' +
-      'was unscheduled; never act silently. If the customer was promised anything (any ' +
-      'promiseLevel other than "none") you instead ' +
+      'which they mean — never guess. Cancelling a visit that is ON THE CALENDAR is ' +
+      'externally visible — a customer is expecting it — so that is TWO-STEP: you ' +
       'get {status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
       'yes, call again with ONLY confirmId. Call with assignmentId + reason. When the result ' +
       'carries boardNote, ALWAYS end your ' +
@@ -1538,37 +1525,6 @@ const ADMIN_TOOLS = [
     },
   },
   {
-    name: 'set_promise',
-    description:
-      "Correct a visit's PROMISE record (manager only) — what the customer was ACTUALLY told: " +
-      "'none' (nothing promised), 'day' (told which day), 'time' (told day AND time), " +
-      "'time_only' (told a time but NOT the day — the time gates changes, the day moves " +
-      'freely). Pass ' +
-      'assignmentId + promiseLevel; done in ONE call — this corrects the record of what was ' +
-      'said, nothing moves. The promised day is derived from the visit itself — you never ' +
-      "compute a date. Use it the MOMENT you notice a promise went unrecorded (e.g. the " +
-      'manager said the customer was told a day, but the booked result shows promiseLevel ' +
-      '"none"): an unrecorded promise lets the visit be moved later with NO confirmation — ' +
-      'exactly what the promise ladder exists to prevent. To promise a DIFFERENT day than ' +
-      'the visit is booked, move the visit instead (the schedule should match the promise). ' +
-      'ALWAYS tell the manager exactly what changed (old → new).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        assignmentId: { type: 'string', description: 'The visit whose promise record is wrong.' },
-        promiseLevel: {
-          type: 'string',
-          enum: ['none', 'day', 'time', 'time_only'],
-          description:
-            "What the customer was ACTUALLY told. 'day'/'time' anchor to the visit's own " +
-            "date (server-derived); 'time_only' anchors to the visit's start time with NO " +
-            "promised day; 'none' clears the promise.",
-        },
-      },
-      required: ['assignmentId', 'promiseLevel'],
-    },
-  },
-  {
     name: 'find_slots',
     description:
       'Find bookable schedule slots (manager only) — READ-ONLY, it books NOTHING. This tool ' +
@@ -1898,9 +1854,6 @@ const BOARD_LINK_TOOL_NAMES = new Set([
   // A job rename changes what the board displays → its confirmation is a
   // schedule answer under the same doctrine; same fabrication risk applies.
   'update_job',
-  // A promise correction changes what move/cancel will ask (and the board
-  // pins promised visits) — its confirmation is a schedule answer too.
-  'set_promise',
 ]);
 
 // Took a `param` for the freeze proposal view's deep link; that view died
@@ -4227,8 +4180,6 @@ async function dispatch(
                 latestDate: row.latest_date,
               }
             : {}),
-          promiseLevel: row.promise_level,
-          promisedDay: row.promised_day,
           status: row.status,
           jobId: row.job_id,
         });
@@ -4329,8 +4280,6 @@ async function dispatch(
     }
     case 'book_visit': {
       const subjectRef = identity.technicianRef;
-      const confirmId = str('confirmId');
-      if (!confirmId) {
         // STAGE. previewBookVisit runs every dry check (tenant guards,
         // technician resolution, time validation, overlap pre-check) and
         // throws on anything that would make the booking impossible — nothing
@@ -4373,10 +4322,6 @@ async function dispatch(
         if (timeTbd && !date && !earliestDateArg) {
           throw new Error('a timeTbd booking needs the day: pass earliestDate (or date)');
         }
-        const promiseLevelArg = str('promiseLevel');
-        if (promiseLevelArg && !isPromiseLevel(promiseLevelArg)) {
-          throw new Error(`invalid promiseLevel: ${promiseLevelArg}`);
-        }
         const customerId = str('customerId');
         const jobId = str('jobId');
         const priorityArg = str('priority');
@@ -4408,7 +4353,6 @@ async function dispatch(
                 ...(latestDateArg ? { latestDate: latestDateArg } : {}),
               }
             : {}),
-          ...(promiseLevelArg ? { promiseLevel: promiseLevelArg as PromiseLevel } : {}),
           ...(priorityArg ? { priority: priorityArg as JobPriority } : {}),
           ...(args.forceNewJob === true ? { forceNewJob: true } : {}),
           actorRef: subjectRef,
@@ -4417,7 +4361,6 @@ async function dispatch(
         // nothing promised = internal + reversible → ONE step. For a book the
         // verdict is input-derived, so no preview round is needed — bookVisit
         // runs every guard itself (one resolution instead of two).
-        if (!bookingRequiresConfirmation((promiseLevelArg as PromiseLevel | undefined) ?? 'none')) {
           const booked = await bookVisit(bookInput);
           return {
             status: 'booked',
@@ -4456,7 +4399,6 @@ async function dispatch(
                   latestDate: booked.assignment.latest_date,
                 }
               : {}),
-            promiseLevel: booked.assignment.promise_level,
             jobPriority: booked.job.priority,
             // Same silent-stored-value rule as jobTitle (final-review finding):
             // a customerId-path booking mints a shell that RECORDS the booked
@@ -4465,196 +4407,17 @@ async function dispatch(
             jobDurationMinutes: booked.job.duration_minutes,
             ...(booked.warning ? { warning: booked.warning } : {}),
             note:
-              'Booked in one step — nothing was promised to the customer, so no confirmation ' +
-              'was needed (undo = move_visit / unschedule_visit). Tell the manager exactly what ' +
+              'Booked in one step (undo = move_visit / unschedule_visit). ' +
+              'Tell the manager exactly what ' +
               'was booked: the JOB (jobTitle above — their words to object to if you assumed ' +
               'it), customer, day, time, and who. A timeTbd result has NO time — say "time ' +
               'not set yet" and the day (or range); placing it later is a move_visit with real ' +
               'times. On a new job the booked span is stored as ' +
-              "the job's length (jobDurationMinutes) — mention it; update_job corrects it. " +
-              'This visit is recorded as promise-free ' +
-              '(promiseLevel "none"): if the manager\'s words actually said the customer was ' +
-              'told a day or time, correct that NOW with set_promise — an unrecorded promise ' +
-              'lets the visit move later with no confirmation.',
+              "the job's length (jobDurationMinutes) — mention it; update_job corrects it.",
           };
-        }
-        const preview = await previewBookVisit(bookInput);
-        // Staging replaces any prior staged booking (re-stage supersedes) and
-        // the NEW confirmId below is the visible replacement. One-shot calls
-        // above deliberately leave pending tokens alone — booking Bob must not
-        // silently kill a promised Alice booking still awaiting its yes.
-        await resolveOpenReviewItemFor(
-          tenantId,
-          'pending_booking',
-          subjectRef,
-          'dismissed',
-          'superseded by a new booking request',
-        );
-        const item = await upsertOpenReviewItem({
-          tenantId,
-          kind: 'pending_booking',
-          subjectRef,
-          detail: {
-            customerId: customerId ?? null,
-            jobId: jobId ?? null,
-            title: str('title') ?? null,
-            technicianRef: technicianRef ?? null,
-            date: preview.date,
-            // RESOLVED times/promise — the staged copy is the booking of
-            // record; commit passes exactly these so preview == commit. On a
-            // timeTbd stage the times are NULL and the RANGE is the record
-            // (plan 4b-2's severe finding: the old guard read null times as
-            // corruption, stranding the manager with a dead confirm).
-            startTime: preview.startTime,
-            endTime: preview.endTime,
-            timeTbd: preview.timeTbd,
-            earliestDate: preview.earliestDate,
-            latestDate: preview.latestDate,
-            promiseLevel: preview.promiseLevel,
-            // The INPUT priority (null on the jobId path, where the arg is
-            // rejected) — commit passes this, while preview.priority above
-            // shows the resulting tier either way.
-            priority: priorityArg ? (priorityArg as JobPriority) : null,
-            preview: preview as unknown as Json,
-            stagedAt: new Date().toISOString(),
-          } as unknown as Json,
-        });
-        // Echo the ITEM's staged preview, not local state (racing stages —
-        // same rule as send_email).
-        const staged = (item.detail ?? {}) as { preview?: unknown };
-        return {
-          status: 'needs_confirmation',
-          confirmId: item.id,
-          preview: staged.preview ?? preview,
-          note: 'Nothing was booked. Show the manager exactly this preview; on their explicit yes call again with ONLY confirmId.',
-        };
-      }
-      // CONFIRM. Guarded token lookup → expiry → CONSUME FIRST (at-most-once,
-      // the send_email idiom) → book. The DB overlap guard is the backstop.
-      const item = await getOpenReviewItem(confirmId, tenantId, {
-        kind: 'pending_booking',
-        subjectRef,
-      });
-      if (!item) {
-        throw new Error('confirmation not found — call book_visit again with the booking details to restage');
-      }
-      const d = (item.detail ?? {}) as {
-        customerId?: string | null;
-        jobId?: string | null;
-        title?: string | null;
-        technicianRef?: string | null; // null = staged unassigned booking
-        date?: string;
-        startTime?: string | null;
-        endTime?: string | null;
-        // The unplaced stage shape (plan 4b-2): timeTbd true, range set,
-        // times null. Absent on pre-feature tokens (treated as placed).
-        timeTbd?: boolean;
-        earliestDate?: string | null;
-        latestDate?: string | null;
-        promiseLevel?: PromiseLevel;
-        // Absent on tokens staged before the priority feature deployed — the
-        // malformed guard below deliberately does NOT require it; commit then
-        // writes the pre-feature default ('routine' via createJob).
-        priority?: JobPriority | null;
-        stagedAt?: string;
-      };
-      if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
-        await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
-        throw new Error('confirmation expired — restage the booking and confirm again');
-      }
-      // An explicit null technicianRef is a VALID staged unassigned booking;
-      // an ABSENT key is corruption (every stage writes the field) — refuse it
-      // rather than silently committing a nobody-attached visit. A timeTbd
-      // stage VALIDLY carries null times + a range (plan 4b-2): judging those
-      // by the placed rule stranded the manager with a dead confirm and
-      // nothing booked (the staged supersede had already killed prior tokens).
-      const stagedUnplaced = d.timeTbd === true;
-      const shapeValid = stagedUnplaced
-        ? !!d.earliestDate && !d.startTime && !d.endTime
-        : !!d.date && !!d.startTime && !!d.endTime;
-      if (d.technicianRef === undefined || !shapeValid || (!d.customerId && !d.jobId)) {
-        throw new Error('staged booking is malformed — restage with the booking details');
-      }
-      const consumed = await resolveReviewItem(
-        item.id,
-        tenantId,
-        'resolved',
-        `booking confirmed by ${subjectRef}`,
-      );
-      if (!consumed) {
-        throw new Error('already confirmed or cancelled — nothing was booked by this call');
-      }
-      let booked;
-      try {
-        booked = await bookVisit({
-          tenantId,
-          ...(d.technicianRef ? { technicianRef: d.technicianRef } : {}),
-          ...(d.customerId ? { customerId: d.customerId } : {}),
-          ...(d.jobId ? { jobId: d.jobId } : {}),
-          title: d.title ?? null,
-          // The mint guard ran at STAGE time and the manager approved that
-          // preview — their yes IS the authorization for the previewed mint,
-          // so the commit never re-litigates it (a guard newly firing between
-          // stage and yes would strand the manager with a dead confirm).
-          forceNewJob: true,
-          ...(stagedUnplaced
-            ? {
-                timeTbd: true,
-                earliestDate: d.earliestDate as string,
-                ...(d.latestDate ? { latestDate: d.latestDate } : {}),
-              }
-            : {
-                date: d.date as string,
-                startTime: d.startTime as string,
-                endTime: d.endTime as string,
-              }),
-          promiseLevel: d.promiseLevel,
-          ...(d.priority ? { priority: d.priority } : {}),
-          actorRef: subjectRef,
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        try {
-          await annotateResolvedReviewItem(
-            confirmId,
-            tenantId,
-            `confirmed but booking FAILED (${msg}) — nothing was booked`,
-          );
-        } catch {
-          /* advisory */
-        }
-        throw new Error(`visit NOT booked: ${msg} — restage to try again`);
-      }
-      return {
-        status: 'booked',
-        assignmentId: booked.assignment.id,
-        jobId: booked.job.id,
-        jobTitle: booked.job.title, // same job-identity echo as the one-shot path
-        customer: booked.customer.name,
-        ...(booked.assignment.starts_at
-          ? { dayPhrase: servedDayPhrase(booked.assignment.starts_at.slice(0, 10)) }
-          : {}),
-        technicianRef: d.technicianRef ?? null,
-        unassigned: booked.assignment.technician_id === null,
-        date: d.date ?? booked.assignment.earliest_date,
-        startTime: d.startTime ?? null,
-        endTime: d.endTime ?? null,
-        ...(stagedUnplaced
-          ? {
-              timeTbd: true,
-              earliestDate: booked.assignment.earliest_date,
-              latestDate: booked.assignment.latest_date,
-            }
-          : {}),
-        promiseLevel: booked.assignment.promise_level,
-        jobPriority: booked.job.priority,
-        ...(booked.warning ? { warning: booked.warning } : {}),
-      };
     }
     case 'move_visit': {
       const subjectRef = identity.technicianRef;
-      const confirmId = str('confirmId');
-      if (!confirmId) {
         // STAGE — previewMoveVisit throws on impossible moves; promiseBroken
         // rides in the preview so the manager confirms the break knowingly.
         const assignmentId = str('assignmentId');
@@ -4684,7 +4447,6 @@ async function dispatch(
         // breaking = internal + reversible → move in ONE step and report. A
         // promise-breaking move stages below (the customer heard a different
         // day/time — someone must own telling them before it changes).
-        if (!preview.requiresConfirmation) {
           const moved = await moveVisit({
             tenantId,
             assignmentId,
@@ -4705,7 +4467,6 @@ async function dispatch(
             startTime,
             endTime: preview.endTime,
             ...(unassignArg ? { unassigned: true } : {}),
-            promiseBroken: false,
             ...(moved.warning ? { warning: moved.warning } : {}),
             note: unassignArg
               ? 'Parked in one step — the person was taken off; the visit keeps its slot and ' +
@@ -4714,132 +4475,6 @@ async function dispatch(
               : 'Moved in one step — no customer promise was affected, so no confirmation was ' +
                 'needed. Tell the manager exactly what moved.',
           };
-        }
-        // Staging replaces any prior staged move (the new confirmId is the
-        // visible replacement); one-shot moves above leave pending tokens alone.
-        await resolveOpenReviewItemFor(
-          tenantId,
-          'pending_visit_move',
-          subjectRef,
-          'dismissed',
-          'superseded by a new move request',
-        );
-        const item = await upsertOpenReviewItem({
-          tenantId,
-          kind: 'pending_visit_move',
-          subjectRef,
-          detail: {
-            assignmentId,
-            date,
-            startTime,
-            endTime: preview.endTime, // resolved — preview == commit
-            technicianRef: technicianRefArg ?? null,
-            // Persisted so the confirm-time replay commits the SAME move that
-            // was previewed — dropping it here would confirm a park as a
-            // technician-keeping move (plan review finding #1).
-            unassign: unassignArg,
-            reason,
-            preview: preview as unknown as Json,
-            stagedAt: new Date().toISOString(),
-          } as unknown as Json,
-        });
-        const staged = (item.detail ?? {}) as { preview?: unknown };
-        return {
-          status: 'needs_confirmation',
-          confirmId: item.id,
-          preview: staged.preview ?? preview,
-          // Staging is only reachable when the promise breaks (one-shot
-          // handles the rest), so say it unconditionally.
-          note:
-            'Nothing was moved. Show the manager exactly this preview — promiseBroken is ' +
-            'TRUE: the customer was promised a different day/time and someone must tell ' +
-            'them; on their explicit yes call again with ONLY confirmId.',
-        };
-      }
-      // CONFIRM — consume-first (at-most-once).
-      const item = await getOpenReviewItem(confirmId, tenantId, {
-        kind: 'pending_visit_move',
-        subjectRef,
-      });
-      if (!item) {
-        throw new Error('confirmation not found — call move_visit again with the move details to restage');
-      }
-      const d = (item.detail ?? {}) as {
-        assignmentId?: string;
-        date?: string;
-        startTime?: string;
-        endTime?: string;
-        technicianRef?: string | null;
-        unassign?: boolean;
-        reason?: string;
-        stagedAt?: string;
-      };
-      if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
-        await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
-        throw new Error('confirmation expired — restage the move and confirm again');
-      }
-      if (!d.assignmentId || !d.date || !d.startTime || !d.endTime || !d.reason) {
-        throw new Error('staged move is malformed — restage with the move details');
-      }
-      const consumed = await resolveReviewItem(
-        item.id,
-        tenantId,
-        'resolved',
-        `move confirmed by ${subjectRef}`,
-      );
-      if (!consumed) {
-        throw new Error('already confirmed or cancelled — nothing was moved by this call');
-      }
-      let moved;
-      try {
-        moved = await moveVisit({
-          tenantId,
-          assignmentId: d.assignmentId,
-          date: d.date,
-          startTime: d.startTime,
-          endTime: d.endTime,
-          ...(d.technicianRef ? { technicianRef: d.technicianRef } : {}),
-          // Plain form at every site (final-review finding: three different
-          // spellings of the same flag invite the drop-the-flag bug class).
-          unassign: d.unassign === true,
-          reason: d.reason,
-          actorRef: subjectRef,
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        try {
-          await annotateResolvedReviewItem(
-            confirmId,
-            tenantId,
-            `confirmed but move FAILED (${msg})`,
-          );
-        } catch {
-          /* advisory */
-        }
-        // No "NOT moved" prefix: on the stranded path the verb's own message
-        // says the old booking IS cancelled — prefixing would contradict it.
-        throw new Error(`move failed: ${msg}`);
-      }
-      return {
-        status: 'moved',
-        assignmentId: moved.created.id,
-        previousAssignmentId: moved.cancelled.id,
-        date: d.date,
-        ...(d.date ? { dayPhrase: servedDayPhrase(d.date) } : {}),
-        startTime: d.startTime,
-        endTime: d.endTime,
-        ...(d.unassign === true ? { unassigned: true } : {}),
-        promiseBroken: moved.promiseBroken,
-        ...(moved.promiseBroken
-          ? {
-              // Level-agnostic (final-review finding: the old copy claimed "a
-              // different day" even when a time_only/time promise broke on a
-              // same-day time change).
-              note: 'this move breaks what the customer was told — make sure someone tells them',
-            }
-          : {}),
-        ...(moved.warning ? { warning: moved.warning } : {}),
-      };
     }
     case 'unschedule_visit': {
       const subjectRef = identity.technicianRef;
@@ -6317,65 +5952,6 @@ async function dispatch(
           `'invoice_voided' for an invoice) citing eventId ${event.id} — a partial adjustment ` +
           'is cancel-then-re-enter. A mistaken void/correction is fixed by RE-ISSUING the ' +
           'cancelled entry, never by correcting the correction.',
-      };
-    }
-    case 'set_promise': {
-      // Non-string args rejected, never coerced-to-absent (find_slots rule).
-      for (const k of ['assignmentId', 'promiseLevel']) {
-        if (args[k] !== undefined && typeof args[k] !== 'string') {
-          throw new Error(`${k} must be a string`);
-        }
-      }
-      const assignmentId = str('assignmentId');
-      if (!assignmentId) throw new Error('assignmentId is required');
-      const promiseLevelArg = str('promiseLevel');
-      if (!promiseLevelArg || !isPromiseLevel(promiseLevelArg)) {
-        throw new Error(
-          `invalid promiseLevel: ${String(args.promiseLevel ?? '')} (use none, day, time, or time_only)`,
-        );
-      }
-      // Shared core (plan 4a.5): tenant guard + live-status check + SERVER-
-      // derived promised day (the promise is about THIS visit — its day comes
-      // from the row itself; promising a DIFFERENT day than the visit is
-      // booked is move_visit's job) + CAS write + the promise_updated ledger
-      // event, in ONE body the board endpoint calls too.
-      const { previous: row, updated } = await setVisitPromise(
-        tenantId,
-        assignmentId,
-        promiseLevelArg,
-        identity.technicianRef,
-      );
-      const visitDate = (updated.starts_at ?? updated.earliest_date ?? '').slice(0, 10);
-      return {
-        status: 'ok',
-        assignmentId,
-        jobId: row.job_id,
-        date: visitDate,
-        weekday: weekdayLabel(visitDate),
-        changes: {
-          promiseLevel: { from: row.promise_level, to: updated.promise_level },
-          promisedDay: { from: row.promised_day, to: updated.promised_day },
-        },
-        // The gating claim must match the actual gate (review finding): a
-        // 'day' promise breaks only when the DAY changes — a same-day time
-        // shift stays one-shot — while 'time' gates every move.
-        note:
-          updated.promise_level === 'none'
-            ? 'Promise cleared — this visit can now move without a confirmation round. Tell ' +
-              'the manager exactly what changed, old → new.'
-            : updated.promise_level === 'day'
-              ? 'Promise recorded — moving this visit to ANOTHER day, or cancelling it, now ' +
-                'requires the manager to confirm first (the customer was told the day; a ' +
-                'same-day time shift stays one-shot). Tell the manager exactly what ' +
-                'changed, old → new.'
-              : updated.promise_level === 'time_only'
-                ? 'Promise recorded — changing this visit\'s START TIME, or cancelling it, ' +
-                  'now requires the manager to confirm first (the customer was told the ' +
-                  'time but not the day — the day may still move freely). Tell the manager ' +
-                  'exactly what changed, old → new.'
-                : 'Promise recorded — moving or cancelling this visit now requires the ' +
-                  'manager to confirm first (the customer was told the day AND time). Tell ' +
-                  'the manager exactly what changed, old → new.',
       };
     }
     case 'find_slots': {

@@ -49,8 +49,6 @@ export interface BoardStop {
   address: string | null;
   start: string;
   end: string;
-  promiseLevel: Assignment['promise_level'];
-  promisedDay: string | null;
   status: Assignment['status'];
   // Null when the assignment references another tenant's job — the id is
   // withheld like every other nested field (see the tenant re-check below).
@@ -70,7 +68,6 @@ export interface UnplacedStop {
   jobDurationMinutes: number | null;
   earliestDate: string;
   latestDate: string;
-  promiseLevel: Assignment['promise_level'];
 }
 
 export interface BoardDays {
@@ -207,8 +204,6 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
         : null,
       start: row.starts_at,
       end: row.ends_at,
-      promiseLevel: row.promise_level,
-      promisedDay: row.promised_day,
       status: row.status,
       // Gated on the tenant-checked job, NOT the raw row.job_id: a stranded
       // cross-tenant assignment would otherwise disclose the other firm's job
@@ -240,7 +235,6 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
       jobDurationMinutes: job ? job.duration_minutes : null,
       earliestDate: row.earliest_date as string,
       latestDate: row.latest_date as string,
-      promiseLevel: row.promise_level,
     };
     const first = (row.earliest_date as string) < from ? from : (row.earliest_date as string);
     const last = (row.latest_date as string) > toDay ? toDay : (row.latest_date as string);
@@ -406,8 +400,6 @@ export interface VisitDetail {
   end: string | null;
   earliestDate: string | null;
   latestDate: string | null;
-  promiseLevel: Assignment['promise_level'];
-  promisedDay: string | null;
   unassigned: boolean;
   technicianRef: string | null;
   technicianName: string | null;
@@ -490,8 +482,6 @@ export async function readVisitDetail(
     end: row.ends_at,
     earliestDate: row.earliest_date,
     latestDate: row.latest_date,
-    promiseLevel: row.promise_level,
-    promisedDay: row.promised_day,
     unassigned: row.technician_id === null,
     technicianRef: technician?.ref ?? null,
     technicianName: technician?.display_name ?? null,

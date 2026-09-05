@@ -336,8 +336,6 @@ describe('assignments', () => {
       technicianId: null,
       startsAt: '2026-09-26T09:00:00.000Z',
       endsAt: '2026-09-26T10:00:00.000Z',
-      promiseLevel: 'time_only',
-      promisedDay: null,
     });
     expect(timeOnly.promise_level).toBe('time_only');
     expect(timeOnly.promised_day).toBeNull();
@@ -564,59 +562,9 @@ describe('promise ladder + schedule events (Plan 1, schedule core)', () => {
       technicianId: tech.id,
       startsAt: '2026-10-02T09:00:00.000Z',
       endsAt: '2026-10-02T11:00:00.000Z',
-      promiseLevel: 'day',
-      promisedDay: '2026-10-02',
     });
     expect(promised.promise_level).toBe('day');
     expect(promised.promised_day).toBe('2026-10-02');
-  });
-
-  test('DB check rejects a promise without a promised day', async () => {
-    const job = await makeJob('promise-check');
-    await expect(
-      createAssignment({
-        tenantId,
-        jobId: job.id,
-        technicianId: tech.id,
-        startsAt: '2026-10-03T09:00:00.000Z',
-        endsAt: '2026-10-03T11:00:00.000Z',
-        promiseLevel: 'day', // promisedDay deliberately omitted
-      }),
-    ).rejects.toMatchObject({ code: '23514' });
-  });
-
-  test('reschedule carries promise fields by default and honors status/overrides', async () => {
-    const job = await makeJob('promise-carry');
-    const original = await createAssignment({
-      tenantId,
-      jobId: job.id,
-      technicianId: tech.id,
-      startsAt: '2026-10-06T09:00:00.000Z',
-      endsAt: '2026-10-06T11:00:00.000Z',
-      status: 'confirmed',
-      promiseLevel: 'day',
-      promisedDay: '2026-10-06',
-    });
-    // Default: promise fields carry, status falls back to 'proposed'.
-    const first = await rescheduleAssignment(original.id, {
-      startsAt: '2026-10-06T13:00:00.000Z',
-      endsAt: '2026-10-06T15:00:00.000Z',
-      reason: 'carry check',
-    });
-    expect(first.created.status).toBe('proposed');
-    expect(first.created.promise_level).toBe('day');
-    expect(first.created.promised_day).toBe('2026-10-06');
-    // Overrides: status 'confirmed' + a new promised day (the manual-move shape).
-    const second = await rescheduleAssignment(first.created.id, {
-      startsAt: '2026-10-07T09:00:00.000Z',
-      endsAt: '2026-10-07T11:00:00.000Z',
-      reason: 'move to the 7th',
-      status: 'confirmed',
-      promisedDay: '2026-10-07',
-    });
-    expect(second.created.status).toBe('confirmed');
-    expect(second.created.promised_day).toBe('2026-10-07');
-    expect(second.created.promise_level).toBe('day'); // still carried
   });
 
   test('getAssignmentForTenant tenant-guards; listAssignmentsForTenant spans technicians, confirmed-only default, overlap edges', async () => {

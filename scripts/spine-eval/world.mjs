@@ -506,10 +506,6 @@ async function applyTenant(t, existing) {
       endsAt: placed ? naive(v.date, addMin(v.startTime, v.durationMinutes)) : null,
       ...(placed ? {} : { earliestDate: v.earliestDate, latestDate: v.latestDate }),
       status: v.status,
-      promiseLevel: v.promiseLevel,
-      // Server-derived from the visit's own day, exactly as bookVisit does — the
-      // spec never carries a promised day of its own to get out of step with.
-      promisedDay: v.promiseLevel === 'none' ? null : v.date,
     });
     visitIds[v.key] = row.id;
   }

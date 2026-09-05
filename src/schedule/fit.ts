@@ -447,7 +447,6 @@ export interface DisplacementCandidate {
   day: string;
   weekday: string; // server-computed — same no-agent-calendar-math rule
   span: string;
-  promiseLevel: Assignment['promise_level'];
 }
 
 export async function findDisplacementCandidates(
@@ -471,11 +470,10 @@ export async function findDisplacementCandidates(
   const nameByJob = new Map(jobs.map((j) => [j.id, j.customers?.name ?? null]));
   const refCache = new Map<string, string | null>();
   const out: DisplacementCandidate[] = [];
-  const ordered = [...rows].sort((a, b) => {
-    const ap = a.promise_level === 'none' ? 0 : 1;
-    const bp = b.promise_level === 'none' ? 0 : 1;
-    return ap - bp || (a.starts_at < b.starts_at ? -1 : 1);
-  });
+  // Earliest first. The promise-graded tiebreak died with the ladder
+  // (rung 9a) — what a customer was told is no longer a column, so start time
+  // is the only ordering the row itself can justify.
+  const ordered = [...rows].sort((a, b) => (a.starts_at < b.starts_at ? -1 : 1));
   for (const row of ordered.slice(0, limit)) {
     let ref: string | null = null;
     if (row.technician_id) {
@@ -492,7 +490,6 @@ export async function findDisplacementCandidates(
       day: row.starts_at.slice(0, 10),
       weekday: weekdayLabel(row.starts_at.slice(0, 10)),
       span: `${row.starts_at.slice(11, 16)}–${row.ends_at.slice(11, 16)}`,
-      promiseLevel: row.promise_level,
     });
   }
   return out;

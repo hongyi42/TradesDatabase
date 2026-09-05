@@ -6,7 +6,6 @@ import type { Technician } from './technicians.js';
 
 export type Assignment = Database['public']['Tables']['assignments']['Row'];
 export type AssignmentStatus = Database['public']['Enums']['assignment_status'];
-export type PromiseLevel = Database['public']['Enums']['promise_level'];
 
 // Rows that HAVE times (plan 4b-2). Every reader whose query filters on
 // starts_at/ends_at returns these by construction: a SQL comparison against
@@ -38,10 +37,6 @@ export interface CreateAssignmentInput {
   latestDate?: string | null; // YYYY-MM-DD — range end (= earliestDate for one day)
   status?: AssignmentStatus;
   sourceCaptureId?: string | null;
-  // Commitment ladder: what the customer was told. The DB check requires
-  // promisedDay whenever promiseLevel is not 'none'.
-  promiseLevel?: PromiseLevel;
-  promisedDay?: string | null; // YYYY-MM-DD
 }
 
 // Insert one assignment row. Inserting as 'confirmed' can raise the DB's
@@ -74,8 +69,6 @@ export async function createAssignment(input: CreateAssignmentInput): Promise<As
       latest_date: input.latestDate ?? null,
       status: input.status ?? 'proposed',
       source_capture_id: input.sourceCaptureId ?? null,
-      promise_level: input.promiseLevel ?? 'none',
-      promised_day: input.promisedDay ?? null,
     })
     .select()
     .single();
@@ -152,13 +145,10 @@ export interface RescheduleInput {
   endsAt: string;
   technicianId?: string | null; // omit = same technician; null = DETACH (park unassigned)
   reason: string; // why the old booking was undone (kept on the cancelled row)
-  // Omitted → the new row keeps the old row's promise fields (a move carries
-  // the promise). status keeps its 'proposed' default for existing callers;
-  // manual moves pass 'confirmed' — a default-'proposed' replacement would
-  // vanish from every ['confirmed']-filtered reader and escape the DB guard.
+  // status keeps its 'proposed' default for existing callers; manual moves
+  // pass 'confirmed' — a default-'proposed' replacement would vanish from
+  // every ['confirmed']-filtered reader and escape the DB guard.
   status?: AssignmentStatus;
-  promiseLevel?: PromiseLevel;
-  promisedDay?: string | null;
 }
 
 // The reschedule primitive: cancel the old row (reason kept) + insert a fresh
@@ -186,14 +176,12 @@ export async function rescheduleAssignment(
   const created = await createAssignment({
     tenantId: old.tenant_id,
     jobId: old.job_id,
-    // The promisedDay idiom below, not `??`: an explicit null means DETACH,
-    // and `??` would silently resurrect the old technician (plan 4a.5).
+    // `!== undefined`, not `??`: an explicit null means DETACH, and `??`
+    // would silently resurrect the old technician (plan 4a.5).
     technicianId: input.technicianId !== undefined ? input.technicianId : old.technician_id,
     startsAt: input.startsAt,
     endsAt: input.endsAt,
     status: input.status,
-    promiseLevel: input.promiseLevel ?? old.promise_level,
-    promisedDay: input.promisedDay !== undefined ? input.promisedDay : old.promised_day,
   });
   return { cancelled, created };
 }
@@ -248,43 +236,6 @@ export async function listAssignmentsByIds(
     }
   }
   return out;
-}
-
-// Correct a visit's PROMISE record — what the customer was actually told —
-// after booking. Born from a live E2E finding (2026-07-22): a manager's "I
-// told Marcus we're coming Thursday" never became promiseLevel on the call,
-// the visit landed unprotected ('none'), and no tool could fix it — so a
-// genuinely promised visit would move SILENTLY, the exact harm the promise
-// ladder exists to prevent. Promise fields only: times are immutable here
-// (reschedule = cancel + insert) and status has its own machine above.
-// promisedDay is the CALLER's derivation from the row (bookVisit precedent:
-// the promise is about THIS visit, so its day comes from the row, never from
-// agent date math); the DB check constraint backstops the pairing.
-export async function updateAssignmentPromise(
-  tenantId: string,
-  assignmentId: string,
-  promiseLevel: PromiseLevel,
-  promisedDay: string | null,
-  // CAS: the caller's snapshot of updated_at — the old→new echo the tool
-  // returns is only honest if nothing moved between read and write
-  // (updateJobDetails precedent).
-  expectedUpdatedAt: string,
-): Promise<Assignment> {
-  const { data, error } = await getClient()
-    .from('assignments')
-    .update({ promise_level: promiseLevel, promised_day: promisedDay })
-    .eq('id', assignmentId)
-    .eq('tenant_id', tenantId) // tenant guard: a cross-tenant id matches no row
-    .eq('updated_at', expectedUpdatedAt)
-    .select()
-    .maybeSingle();
-  if (error) throw new Error(`updateAssignmentPromise failed: ${error.message}`);
-  if (!data) {
-    throw new Error(
-      'visit changed while updating (or not found) — re-read it and try again so the old→new report stays honest',
-    );
-  }
-  return data;
 }
 
 // Rows overlapping the [fromISO, toISO) window for the WHOLE tenant — the

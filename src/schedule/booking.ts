@@ -30,7 +30,6 @@ import {
   listIdenticalUnplacedVisits,
   listOpenJobsForCustomer,
   rescheduleAssignment,
-  updateAssignmentPromise,
   updateAssignmentStatus,
   updateJobDetails,
   updateJobStatus,
@@ -40,7 +39,6 @@ import {
   type Job,
   type JobPriority,
   type Json,
-  type PromiseLevel,
   type UpdateJobDetailsInput,
   type Technician,
   type WeeklyPattern,
@@ -49,43 +47,22 @@ import { isTechnicianAvailableOn } from './availability.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
-const PROMISE_LEVELS: PromiseLevel[] = ['none', 'day', 'time', 'time_only'];
 
 // The naive-local storage form: local wall-clock written as if UTC.
 export function naiveLocalISO(date: string, hhmm: string): string {
   return `${date}T${hhmm}:00.000Z`;
 }
 
-// The day a visit belongs to, for replies and ledger events: the promised day
-// wins (what the customer was told), else the placed start's day, else the
-// unplaced range's earliest day (plan 4b-2 — an unplaced row HAS a day, just
-// no time). '?' is unreachable today (the DB check forces one shape) and
-// exists so a malformed row degrades a label, never a booking.
+// The day a visit belongs to, for replies and ledger events: the placed
+// start's day, else the unplaced range's earliest day (plan 4b-2 — an unplaced
+// row HAS a day, just no time).
+//
+// The `promised_day` arm is GONE (rung 9a): the promise ladder is deleted, so
+// what the customer was TOLD is no longer a column — it lives in L1, where the
+// agent reads it. 'no time set' is the honest label for a row with no day at
+// all; it degrades a label, never a booking.
 export function visitDay(row: Assignment): string {
-  return (
-    row.promised_day ?? (row.starts_at ? row.starts_at.slice(0, 10) : (row.earliest_date ?? '?'))
-  );
-}
-
-export function isPromiseLevel(v: unknown): v is PromiseLevel {
-  return typeof v === 'string' && (PROMISE_LEVELS as string[]).includes(v);
-}
-
-// Which levels carry a promised DAY: 'day' and 'time' (= day+time). 'none'
-// promises nothing; 'time_only' promises a TIME with no day — the day moves
-// freely, so promised_day stays NULL (the DB check allows exactly this pair).
-// ONE predicate for every promisedDay stamping site (bookVisit / moveVisit /
-// set_promise) so they can never drift (plan 4a.5).
-export function carriesPromisedDay(level: PromiseLevel): boolean {
-  return level === 'day' || level === 'time';
-}
-
-// The ladder's second axis: which levels promise a TIME. Together the two
-// predicates ARE the per-level semantics table — promiseBroken derives from
-// them (final-review finding: a hand-enumerated ternary chain would silently
-// classify any future fifth level as promise-safe).
-export function carriesPromisedTime(level: PromiseLevel): boolean {
-  return level === 'time' || level === 'time_only';
+  return row.starts_at ? row.starts_at.slice(0, 10) : (row.earliest_date ?? 'no time set');
 }
 
 // eventDetailExtra → a spreadable record. Non-object values (arrays/scalars —
@@ -191,7 +168,6 @@ export interface BookVisitInput {
   timeTbd?: boolean; // true = book UNPLACED (day known, time not yet)
   earliestDate?: string; // YYYY-MM-DD — the unplaced day / range start (default: date)
   latestDate?: string; // YYYY-MM-DD — range end (default: earliestDate)
-  promiseLevel?: PromiseLevel; // default 'none' — record only promises actually made
   // Triage tier for the job SHELL minted on the customerId path (default
   // 'routine'). Ignored on the jobId path — the MCP layer rejects the
   // combination outright so an unstored urgency is never reported as stored.
@@ -207,15 +183,20 @@ export interface BookVisitInput {
   actorRef: string;
 }
 
-// The confirmation doctrine (user decision 2026-07-17), single-sourced so every
-// surface (MCP tools, the Mini App, the auto-scheduler) inherits it instead of
-// re-deriving: confirm only what is irreversible or externally visible — for
-// the schedule that means a CUSTOMER PROMISE at stake. Book/cancel gate on the
-// promise level; a move gates on whether the move would BREAK the promise
-// (same-day time shuffles of a day-promise stay one-shot). Each preview also
-// carries the decision as `requiresConfirmation`.
-export function bookingRequiresConfirmation(promiseLevel: PromiseLevel): boolean {
-  return promiseLevel !== 'none';
+// The confirmation doctrine (user decision 2026-07-17, RE-GATED 2026-09-05),
+// single-sourced so every surface (MCP tools, the Mini App) inherits it instead
+// of re-deriving: confirm only what is irreversible or externally visible.
+//
+// It used to key on the promise ladder — `promiseLevel !== 'none'` for
+// book/cancel, `promiseBroken` for a move. The ladder is deleted (rung 9a), so
+// the test is now PLACEMENT: a visit with a real time on the calendar is one a
+// customer is expecting, and cancelling it is the externally-visible act.
+// Booking and moving are what the manager just asked for — they are one-shot,
+// and the surface says what it did afterwards.
+//
+// Each preview still carries the verdict as `requiresConfirmation`.
+export function cancelRequiresConfirmation(row: Assignment): boolean {
+  return isPlaced(row);
 }
 
 interface ResolvedBooking {
@@ -230,7 +211,6 @@ interface ResolvedBooking {
   endISO: string | null;
   earliestDate: string | null;
   latestDate: string | null;
-  promiseLevel: PromiseLevel;
   warning?: string;
 }
 
@@ -327,22 +307,6 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
     if (earliestDate > latestDate) {
       throw new Error('earliestDate must be on or before latestDate');
     }
-    const promiseLevel = input.promiseLevel ?? 'none';
-    // A timeless visit cannot hold a TIME promise — the break test could
-    // never fire and the promise would gate nothing (plan decision). And a
-    // DAY promise needs one day to point at: a range is not a told day.
-    if (carriesPromisedTime(promiseLevel)) {
-      throw new Error(
-        `promiseLevel '${promiseLevel}' needs a booked time — place the visit (book with ` +
-          'times) before recording a time promise',
-      );
-    }
-    if (promiseLevel === 'day' && earliestDate !== latestDate) {
-      throw new Error(
-        'a day promise needs ONE day — book a single-day timeTbd visit (earliestDate = ' +
-          'latestDate) or narrow the range first',
-      );
-    }
     // Same duplicate hazard as person-less placed rows, range-keyed: unplaced
     // rows are ALSO exempt from the DB guard, so a transport retry would
     // silently duplicate without this. Technician-keyed — a retry carries the
@@ -380,7 +344,6 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
       endISO: null,
       earliestDate,
       latestDate,
-      promiseLevel,
       ...(warning ? { warning } : {}),
     };
   }
@@ -433,12 +396,6 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
     endISO,
     earliestDate: null,
     latestDate: null,
-    // Default 'none': a fresh booking promises the customer NOTHING unless the
-    // manager says otherwise. Recording 'day' by default let the schedule
-    // "know" the customer was told a day nobody actually told them — an
-    // assumption the manager could not distinguish from fact. The agent passes
-    // 'day'/'time' only when the manager's words show a promise was made.
-    promiseLevel: input.promiseLevel ?? 'none',
     ...(warning ? { warning } : {}),
   };
 }
@@ -458,7 +415,6 @@ export interface BookVisitPreview {
   timeTbd: boolean;
   earliestDate: string | null;
   latestDate: string | null;
-  promiseLevel: PromiseLevel;
   // What the job's priority will be after commit: the existing job's recorded
   // tier, or the stated/default tier of the shell about to be minted — shown
   // so the manager confirms exactly what commit writes (preview == commit).
@@ -488,14 +444,15 @@ export async function previewBookVisit(input: BookVisitInput): Promise<BookVisit
     timeTbd: r.startISO === null,
     earliestDate: r.earliestDate,
     latestDate: r.latestDate,
-    promiseLevel: r.promiseLevel,
     priority: r.existingJob ? r.existingJob.priority : (input.priority ?? 'routine'),
     jobDurationMinutes: r.existingJob
       ? r.existingJob.duration_minutes
       : r.startISO && r.endISO
         ? bookedSpanMinutes(r.startISO, r.endISO)
         : null,
-    requiresConfirmation: bookingRequiresConfirmation(r.promiseLevel),
+    // ONE-SHOT (rung 9a): booking is what the manager just asked for. The
+    // field stays so surfaces need no reshaping when a future gate arrives.
+    requiresConfirmation: false,
     ...(r.warning ? { warning: r.warning } : {}),
   };
 }
@@ -563,15 +520,6 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       earliestDate: r.earliestDate,
       latestDate: r.latestDate,
       status: 'confirmed',
-      promiseLevel: r.promiseLevel,
-      // Stamp a promised day ONLY for day-carrying levels — 'none' promises
-      // nothing and 'time_only' promises no DAY (the CHECK backstops the pair).
-      // An unplaced day-promise is single-day by the resolve guard, and its
-      // promised day IS the range day — never input.date, which may name a
-      // different day than the range when both are passed (review finding).
-      promisedDay: carriesPromisedDay(r.promiseLevel)
-        ? (r.startISO ? (input.date as string) : (r.earliestDate as string))
-        : null,
     });
   } catch (err) {
     // The pre-check raced a concurrent booking and the DB guard fired. If WE
@@ -610,7 +558,6 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
             earliestDate: r.earliestDate,
             latestDate: r.latestDate,
           }),
-      promiseLevel: assignment.promise_level,
       technicianRef: r.technician?.ref ?? null,
       customerId: r.customer.id,
       jobId: job.id,
@@ -651,7 +598,6 @@ interface ResolvedMove {
   endTime: string;
   startISO: string;
   endISO: string;
-  promiseBroken: boolean;
   warning?: string;
 }
 
@@ -710,19 +656,6 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
   const startISO = naiveLocalISO(input.date, input.startTime);
   const endISO = naiveLocalISO(input.date, endTime);
 
-  // Does this move break what the customer was told? Derived from the two
-  // ladder predicates — a day-carrying promise breaks when the DAY changes, a
-  // time-carrying one when the start TIME changes ('time' = both axes;
-  // 'time_only' has promised_day NULL, so dayChanged is never consulted).
-  const dayChanged = old.promised_day !== input.date;
-  // An unplaced row has no old time — placing it is never a TIME break
-  // (isPlaced guard, plan 4b-2). Time promises cannot exist on unplaced rows
-  // anyway (refused at booking and set_promise), so this arm is belt only.
-  const timeChanged = isPlaced(old) && old.starts_at.slice(11, 16) !== input.startTime;
-  const promiseBroken =
-    (carriesPromisedDay(old.promise_level) && dayChanged) ||
-    (carriesPromisedTime(old.promise_level) && timeChanged);
-
   // No target technician (a detach, or unassigned staying unassigned) →
   // nothing to clash with; the DB guard likewise ignores NULL rows. That
   // exemption is exactly why the person-less RESULT needs resolveBooking's
@@ -757,7 +690,7 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
   const warning = technician
     ? await availabilityWarning(technician, input.date, startISO)
     : undefined;
-  return { old, technician, endTime, startISO, endISO, promiseBroken, ...(warning ? { warning } : {}) };
+  return { old, technician, endTime, startISO, endISO, ...(warning ? { warning } : {}) };
 }
 
 export interface MoveVisitPreview {
@@ -768,12 +701,8 @@ export interface MoveVisitPreview {
   toDay: string;
   startTime: string;
   endTime: string; // resolved — store on the stage
-  // The OLD row's level — what is at stake. Surfaces phrase the confirm on it
-  // ("was told 09:00" for time_only vs "was told Thursday" for day levels).
-  promiseLevel: PromiseLevel;
   unassign: boolean; // true = this move PARKS the visit (detach)
-  promiseBroken: boolean;
-  requiresConfirmation: boolean; // = promiseBroken (the doctrine's verdict for moves)
+  requiresConfirmation: boolean; // always false since rung 9a — a move is one-shot
   warning?: string;
 }
 
@@ -789,10 +718,9 @@ export async function previewMoveVisit(input: MoveVisitInput): Promise<MoveVisit
     toDay: input.date,
     startTime: input.startTime,
     endTime: r.endTime,
-    promiseLevel: r.old.promise_level,
     unassign: !!input.unassign,
-    promiseBroken: r.promiseBroken,
-    requiresConfirmation: r.promiseBroken,
+    // ONE-SHOT (rung 9a): a move is what the manager just asked for.
+    requiresConfirmation: false,
     ...(r.warning ? { warning: r.warning } : {}),
   };
 }
@@ -800,7 +728,6 @@ export async function previewMoveVisit(input: MoveVisitInput): Promise<MoveVisit
 export interface MoveVisitResult {
   cancelled: Assignment;
   created: Assignment;
-  promiseBroken: boolean;
   warning?: string;
 }
 
@@ -820,9 +747,6 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
           : {}),
       reason: input.reason,
       status: 'confirmed', // default-'proposed' would vanish from every reader
-      // Promise level carries from the old row; the promised day tracks the new
-      // date only for day-carrying levels ('none'/'time_only' stay day-free).
-      promisedDay: carriesPromisedDay(r.old.promise_level) ? input.date : null,
     });
   } catch (err) {
     // rescheduleAssignment cancels FIRST, so ANY insert failure here — the
@@ -864,14 +788,12 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
       ...extraDetail(input.eventDetailExtra), // computed keys below win clashes
       fromDay: visitDay(r.old),
       toDay: input.date,
-      promiseBroken: r.promiseBroken,
       previousAssignmentId: r.old.id,
     },
   });
 
   return {
     ...result,
-    promiseBroken: r.promiseBroken,
     ...(r.warning ? { warning: r.warning } : {}),
   };
 }
@@ -890,7 +812,6 @@ export interface UnscheduleVisitPreview {
   assignmentId: string;
   customerName: string | null;
   day: string;
-  promiseLevel: PromiseLevel;
   requiresConfirmation: boolean; // the doctrine's verdict for this cancel
 }
 
@@ -909,8 +830,10 @@ export async function previewUnscheduleVisit(
     assignmentId: target.id,
     customerName: customer?.name ?? null,
     day: visitDay(target),
-    promiseLevel: target.promise_level,
-    requiresConfirmation: bookingRequiresConfirmation(target.promise_level),
+    // The one surviving gate (rung 9a): cancelling a PLACED visit is
+    // externally visible — a customer is expecting it. An untimed visit is
+    // nobody's appointment yet, so dropping it is one-shot.
+    requiresConfirmation: cancelRequiresConfirmation(target),
   };
 }
 
@@ -1041,8 +964,6 @@ export async function attachUnplacedVisit(
       earliestDate: old.earliest_date,
       latestDate: old.latest_date,
       status: 'confirmed',
-      promiseLevel: old.promise_level,
-      promisedDay: old.promised_day,
     });
   } catch (err) {
     // Cancel-first means ANY insert failure leaves the visit gone from every
@@ -1079,7 +1000,6 @@ export async function attachUnplacedVisit(
       fromDay: visitDay(old),
       toDay: visitDay(created),
       attachedTechnicianRef: technician?.ref ?? null,
-      promiseBroken: false,
       previousAssignmentId: old.id,
     },
   });
@@ -1092,69 +1012,6 @@ export async function attachUnplacedVisit(
 // the board endpoints need the same writes, and hand-copying the CAS + ledger
 // event is exactly how two surfaces start disagreeing. Handlers keep their
 // validation and echo composition; these cores own the guarded write + event.
-
-export interface SetVisitPromiseResult {
-  previous: Assignment;
-  updated: Assignment;
-}
-
-// Correct a visit's promise record. The promised day is SERVER-derived from
-// the visit's own row (bookVisit precedent — caller date math never touches
-// the promise record); 'none'/'time_only' carry no day. CAS on the row read
-// here, so the old→new echo callers compose is honest.
-export async function setVisitPromise(
-  tenantId: string,
-  assignmentId: string,
-  promiseLevel: PromiseLevel,
-  actorRef: string,
-): Promise<SetVisitPromiseResult> {
-  const row = await getAssignmentForTenant(assignmentId, tenantId);
-  if (!row) throw new Error('visit not found');
-  if (row.status !== 'confirmed' && row.status !== 'proposed') {
-    throw new Error(`this visit is ${row.status} — promises are corrected on live visits only`);
-  }
-  // Unplaced rows (plan 4b-2): a TIME promise is incoherent on a timeless
-  // visit (its break test could never fire — the promise would gate nothing),
-  // and a DAY promise needs exactly one day to point at.
-  if (!isPlaced(row)) {
-    if (carriesPromisedTime(promiseLevel)) {
-      throw new Error(
-        `promiseLevel '${promiseLevel}' needs a booked time — place the visit first ` +
-          '(move it to real times), then record the time promise',
-      );
-    }
-    if (promiseLevel === 'day' && row.earliest_date !== row.latest_date) {
-      throw new Error(
-        'a day promise needs ONE day and this visit holds a range ' +
-          `(${row.earliest_date}–${row.latest_date}) — move it to a single day first`,
-      );
-    }
-  }
-  const promisedDay = carriesPromisedDay(promiseLevel)
-    ? (row.starts_at ? row.starts_at.slice(0, 10) : (row.earliest_date as string))
-    : null;
-  const updated = await updateAssignmentPromise(
-    tenantId,
-    assignmentId,
-    promiseLevel,
-    promisedDay,
-    row.updated_at, // CAS — the echo must describe THIS read
-  );
-  // The promise level gates every future move/cancel confirmation on this
-  // visit — the change joins the append-only ledger like every schedule
-  // mutation: who changed what, when, old → new, forever.
-  await appendScheduleEvent({
-    tenantId,
-    assignmentId,
-    kind: 'promise_updated',
-    actorRef,
-    detail: {
-      promiseLevel: { from: row.promise_level, to: updated.promise_level },
-      promisedDay: { from: row.promised_day, to: updated.promised_day },
-    },
-  });
-  return { previous: row, updated };
-}
 
 export interface UpdateJobIdentityResult {
   previous: Job;
@@ -1211,7 +1068,6 @@ export interface CancelJobVisit {
   assignmentId: string;
   day: string;
   startTime: string;
-  promiseLevel: PromiseLevel;
   technicianRef: string | null;
 }
 
@@ -1272,7 +1128,6 @@ export async function previewCancelJob(
       // An unplaced visit has a day but no time — say so rather than crash
       // the cancel preview (its cascade must cover EVERY live row).
       startTime: row.starts_at ? row.starts_at.slice(11, 16) : 'no time set',
-      promiseLevel: row.promise_level,
       technicianRef: ref,
     });
   }

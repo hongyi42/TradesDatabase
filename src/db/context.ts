@@ -46,8 +46,6 @@ export interface UpcomingVisit {
    * pre-composed phrase removes).
    */
   phrase: string;
-  promiseLevel: string | null;
-  promisedDay: string | null;
 }
 
 export interface CustomerContext {
@@ -123,8 +121,6 @@ export async function getCustomerContext(
             ? { timeTbd: true as const, earliestDate: r.earliest_date, latestDate: r.latest_date }
             : {}),
           phrase,
-          promiseLevel: r.promise_level,
-          promisedDay: r.promised_day,
         };
       });
   }

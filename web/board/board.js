@@ -6,7 +6,7 @@
 //
 // Write path (managers only) inherits Feature A's confirmation doctrine via
 // the server previews: requiresConfirmation false → commit one-shot and toast
-// what happened; true → one in-UI confirm showing the promise break. Never
+// what happened; true → one in-UI confirm. Never
 // ask twice, never confirm a reversible internal change.
 /* global Telegram */
 (function () {
@@ -123,17 +123,6 @@
 
   function stopBadges(stop) {
     var badges = '';
-    if (stop.promiseLevel && stop.promiseLevel !== 'none') {
-      // Four-level ladder (plan 4a.5): 'time' stores day+time; 'time_only'
-      // stores a time with no day. Labels say exactly what was promised.
-      var lbl =
-        stop.promiseLevel === 'time'
-          ? 'promised day+time'
-          : stop.promiseLevel === 'time_only'
-            ? 'promised time'
-            : 'promised day';
-      badges += '<span class="badge promise">' + lbl + '</span>';
-    }
     return badges;
   }
 
@@ -708,23 +697,6 @@
     );
   }
 
-  function promiseText(d) {
-    // Disambiguated copy (user question 2026-07-23): the date is the day the
-    // VISIT was promised FOR — never the day the telling happened. An
-    // UNPLACED visit (plan 4b-2) has no start — its day comes from the range,
-    // and time-level promises cannot exist on it (refused server-side).
-    var day = d.promisedDay || (d.start ? d.start.slice(0, 10) : d.earliestDate);
-    var when = dayName(day) + ' ' + day;
-    if (d.promiseLevel === 'time' && d.start) {
-      return "Customer was told we're coming " + esc(when) + ' at ' + esc(hhmm(d.start));
-    }
-    if (d.promiseLevel === 'day') return "Customer was told we're coming " + esc(when);
-    if (d.promiseLevel === 'time_only' && d.start) {
-      return 'Customer was told ' + esc(hhmm(d.start)) + ', day not promised';
-    }
-    return 'Nothing promised to the customer';
-  }
-
   function renderDetail(d) {
     var c = d.customer || {};
     // Edit affordances (plan 4a.5): manager + a live, TODAY-OR-FUTURE visit.
@@ -805,10 +777,6 @@
           '" data-ext="1">' + esc(c.address) + '</a>',
       );
     }
-    // "Scheduling promise", not "Promise" — the word stops doing two jobs:
-    // this row is the day/time commitment that gates moves/cancels; anything
-    // else promised to the customer (a discount…) lives in the notes below.
-    rows += detailRow('Scheduling promise', promiseText(d) + pencil('promise'));
     var flags = [];
     if (d.status !== 'confirmed') flags.push(d.status);
     if (flags.length) rows += detailRow('Flags', esc(flags.join(', ')));
@@ -1056,29 +1024,9 @@
     });
   }
 
-  // The one confirm dialog's copy, from the move preview: name what actually
-  // breaks (a day promise vs a time_only promise), and say when the drop also
-  // parks the visit. oldStart is the PROMISED time — the preview's startTime
-  // is the requested NEW one, which by definition differs whenever a
-  // time_only dialog fires (review finding: the dialog named the wrong time).
-  function breakMsg(p, oldStart) {
-    // A day+time promise broken by a SAME-DAY time change is a time break too
-    // (final-review finding: the day branch would print "promised day (X → X)").
-    var timeBreak =
-      p.promiseLevel === 'time_only' || (p.promiseLevel === 'time' && p.fromDay === p.toDay);
-    var what = timeBreak
-      ? 'a promised time (' + (oldStart || p.startTime) + ' → ' + p.startTime + ')'
-      : 'a promised day (' + p.fromDay + ' → ' + p.toDay + ')';
-    return (
-      'This breaks ' + what + ' — the customer must be told.' +
-      (p.unassign ? ' The visit will be left with NOBODY assigned.' : '') +
-      ' Move anyway?'
-    );
-  }
-
-  // Preview → (one confirm when a promise breaks) → commit, shared by every
+  // Preview → (one confirm when the server asks) → commit, shared by every
   // move-shaped write: drag, tray Assign, the Technician picker, the When
-  // editor. doneMsg(body) composes the success toast; promise-break and
+  // editor. doneMsg(body) composes the success toast; confirmation and
   // warning disclosures ride on top, never dropped.
   function postMove(body, doneMsg, oldStart) {
     apiPost('/board/api/move', body, true)
@@ -1097,14 +1045,7 @@
                 return;
               }
               closeDetail();
-              // "Say what you did" includes a promise broken in the preview→
-              // commit race window — the server reports it; never swallow it.
-              toast(
-                doneMsg(r.body) +
-                  (r.body.promiseBroken ? '. This BROKE a customer promise — tell them' : '') +
-                  (r.body.warning ? '. ' + r.body.warning : ''),
-                !!r.body.promiseBroken,
-              );
+              toast(doneMsg(r.body) + (r.body.warning ? '. ' + r.body.warning : ''));
               refresh();
             })
             .catch(function () {
@@ -1123,21 +1064,6 @@
       .catch(function () {
         toast('Network error — nothing was changed.', true);
       });
-  }
-
-  var PROMISE_OPTIONS = [
-    ['none', 'No promise'],
-    ['day', 'Day only'],
-    ['time_only', 'Time only'],
-    ['time', 'Day + time'],
-  ];
-
-  function promiseLabel(level) {
-    var label = level;
-    PROMISE_OPTIONS.forEach(function (o) {
-      if (o[0] === level) label = o[1];
-    });
-    return label;
   }
 
   // The OFFERED job lengths (plan 4b-1) — mirrors DURATION_LADDER in
@@ -1202,8 +1128,8 @@
   }
 
   // The sheet-row editors. Every write goes through the Phase-2 endpoints —
-  // the same shared verbs chat drives. NOTE: /promise and /job are ONE-SHOT
-  // endpoints; never send them ?preview=1 (it is ignored and would commit).
+  // the same shared verbs chat drives. NOTE: /job is a ONE-SHOT endpoint;
+  // never send it ?preview=1 (it is ignored and would commit).
   function openEditor(kind, d) {
     // Unplaced visits (plan 4b-2): the editors prefill from the range day and
     // EMPTY times — placing means typing real ones.
@@ -1310,43 +1236,6 @@
             },
             d.start ? hhmm(d.start) : null,
           );
-        },
-      );
-      return;
-    }
-    if (kind === 'promise') {
-      openSheet(
-        sheetShell(
-          'Scheduling promise',
-          '<div class="field-note">What was the customer ACTUALLY told about this visit?</div>' +
-            fieldRow('Promise', selectHtml('qe-promise', PROMISE_OPTIONS, d.promiseLevel)) +
-            formButtons('Save'),
-        ),
-        function (e, ov) {
-          var btn = e.target.closest && e.target.closest('[data-form]');
-          if (!btn) return;
-          if (btn.getAttribute('data-form') === 'cancel') {
-            openDetail(d.assignmentId);
-            return;
-          }
-          var level = val(ov, 'qe-promise');
-          if (level === d.promiseLevel) {
-            openDetail(d.assignmentId);
-            return;
-          }
-          apiPost('/board/api/promise', { assignmentId: d.assignmentId, promiseLevel: level })
-            .then(function (r) {
-              if (!r.ok) {
-                toast(r.body.error || 'Promise update failed (' + r.status + ')', true);
-                return;
-              }
-              toast('Promise: ' + promiseLabel(d.promiseLevel) + ' → ' + promiseLabel(level));
-              openDetail(d.assignmentId); // same id — the record edit never remints
-              refresh();
-            })
-            .catch(function () {
-              toast('Network error — nothing was changed.', true);
-            });
         },
       );
       return;
@@ -1517,7 +1406,7 @@
 
   // The tray's booking sheet (plan 4a.5): day + start + end are REQUIRED —
   // the server never invents a visit length (standing user decision) — plus
-  // technician-or-leave-unassigned and the promise selector.
+  // technician-or-leave-unassigned.
   function openBookingForm(jobId, title) {
     fetchRoster(function (roster) {
       if (!roster) return;
@@ -1548,7 +1437,6 @@
             '<div class="field-note">Leave empty for a single day; set it for "sometime that week".</div>' +
             '</div>' +
             fieldRow('Technician', selectHtml('qe-tech', techOptions, '')) +
-            fieldRow('Promise', selectHtml('qe-promise', PROMISE_OPTIONS, 'none')) +
             formButtons('Book visit'),
         ),
         function (e, ov) {
@@ -1602,8 +1490,6 @@
           }
           var ref = val(ov, 'qe-tech');
           if (ref) body.technicianRef = ref;
-          var level = val(ov, 'qe-promise');
-          if (level !== 'none') body.promiseLevel = level;
           apiPost('/board/api/book', body, true)
             .then(function (p) {
               if (!p.ok) {
@@ -1637,17 +1523,7 @@
                     refresh();
                   });
               };
-              if (p.body.requiresConfirmation) {
-                confirmAsk(
-                  'This records a promise to the customer (' + promiseLabel(level) + ') for ' +
-                    body.date + (isTbd ? ' (time to be set)' : ' ' + body.startTime) + '. Book it?',
-                  function (yes) {
-                    if (yes) commit();
-                  },
-                );
-              } else {
-                commit();
-              }
+              commit();
             })
             .catch(function () {
               toast('Network error — nothing was booked.', true);
@@ -1721,14 +1597,9 @@
               refresh();
               return;
             }
-            // Disclose a promise that appeared between preview and commit —
-            // the cancel one-shot must still "say what you did" in full.
-            var hadPromise = r.body.promiseLevel && r.body.promiseLevel !== 'none';
             toast(
               'Unscheduled ' + (p.body.customerName || 'the visit') + ' on ' + p.body.day +
-                ' — back in the loose bucket' +
-                (hadPromise ? '. This visit was PROMISED to the customer — tell them' : ''),
-              !!hadPromise,
+                ' — back in the loose bucket',
             );
             refresh();
           })
@@ -1738,17 +1609,11 @@
           });
       };
       if (p.body.requiresConfirmation) {
-        // Name what was ACTUALLY promised per level (final-review finding:
-        // the old two-level ternary described a time_only cancel as "promised
-        // a day" — a false statement of the stake on a destructive dialog).
-        var stake =
-          p.body.promiseLevel === 'time_only'
-            ? 'was promised a time (' + card.getAttribute('data-start') + ')'
-            : p.body.promiseLevel === 'time'
-              ? 'was promised the day AND time on ' + p.body.day
-              : 'was promised a day on ' + p.body.day;
+        // The visit is ON THE CALENDAR (rung 9a re-gate): a customer is
+        // expecting it, which is what makes cancelling externally visible.
         confirmAsk(
-          (p.body.customerName || 'The customer') + ' ' + stake + '. Unschedule anyway?',
+          (p.body.customerName || 'The customer') + ' is booked in on ' + p.body.day +
+            ' and is expecting this visit. Unschedule anyway?',
           function (yes) {
             if (yes) commit();
           },

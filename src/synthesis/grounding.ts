@@ -66,8 +66,7 @@ export function serializeContextForPrompt(context: CustomerContext): string {
             (u.timeTbd
               ? `day not set yet — will land ${u.phrase}`
               : `${u.phrase} ${u.startTime ?? ''}${u.endTime ? `–${u.endTime}` : ''}`) +
-            ` tech=${u.technicianRef ?? (u.unassigned ? 'UNASSIGNED' : '—')}` +
-            `${u.promiseLevel && u.promiseLevel !== 'none' ? ` promised=${u.promiseLevel}:${u.promisedDay ?? '?'}` : ''}`,
+            ` tech=${u.technicianRef ?? (u.unassigned ? 'UNASSIGNED' : '—')}`,
         )
         .join('\n')
     : '- (none booked)';

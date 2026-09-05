@@ -188,18 +188,6 @@ describe('buildWorldSpec — every visit is a legal row', () => {
       }
     });
   });
-
-  it('carries a promised day whenever it promises anything', () => {
-    // The DB check requires promised_day for any promise_level != 'none'; the
-    // applier derives it from the visit's own day, so the spec only has to keep
-    // promises off unplaced rows, where there is no day to derive.
-    eachTenant((t, _w, anchor) => {
-      for (const v of t.visits) {
-        if (v.promiseLevel === 'none') continue;
-        expect(isPlacedSpec(v), `${t.name} @ ${anchor}: ${v.key} promises with no day`).toBe(true);
-      }
-    });
-  });
 });
 
 describe('buildWorldSpec — the planted edges', () => {
@@ -343,10 +331,8 @@ describe('buildWorldSpec — isolation and density', () => {
       const queue = main.jobs.filter((j) => j.status === 'open' && !scheduled.has(j.key));
       expect(queue.length, `queue @ ${anchor}`).toBeGreaterThanOrEqual(4);
 
-      // The ladder, pins and time-TBD rows all have to exist or the scenarios
-      // that read them grade against an empty set.
-      expect(main.visits.some((v) => v.promiseLevel === 'day')).toBe(true);
-      expect(main.visits.some((v) => v.promiseLevel === 'time')).toBe(true);
+      // Time-TBD rows have to exist or the scenarios that read them grade
+      // against an empty set.
       expect(main.visits.some((v) => !isPlacedSpec(v))).toBe(true);
       expect(main.visits.some((v) => v.technicianRef === null)).toBe(true);
     });

@@ -24,7 +24,11 @@
 #    So the fallback lane is PROBED (daily, directly) — see probe_fallback.
 #
 # THREE GATES, in cost order:
-#   1. BALANCE (free, every tick). GET /api/v1/key + /api/v1/credits. Money is
+#   1. BALANCE (free, every tick). GET /api/v1/key (https://openrouter.ai/docs/limits
+#      — `limit_remaining`: "Remaining credits for the key, or null if unlimited")
+#      + GET /api/v1/credits (https://openrouter.ai/docs/api-reference/get-credits
+#      — management key required, so a plain key may 403 it; that NARROWS the watch,
+#      it does not condemn the key — only /key's own 401 does). Money is
 #      the failure that actually killed the fleet — DeepInfra, Fireworks 412,
 #      Fireworks 402 on 2026-09-04 — and no model fallback survives it: the key
 #      is shared by every lane. remaining = min(key limit_remaining, account
@@ -92,7 +96,17 @@ PRIMARY_MODEL="google/gemini-3.8-flash"     # what served= should say (v7; pinne
 FALLBACK_MODEL="meta/muse-spark-1.3"        # v7: the morning's primary, 81/82 on the same eval
 BALANCE_FLOOR_USD="${MEDIC_BALANCE_FLOOR_USD:-2.00}"
 PROBE_INTERVAL="${MEDIC_PROBE_INTERVAL:-3600}"        # seconds between PASSED completion probes
-FALLBACK_INTERVAL="${MEDIC_FALLBACK_INTERVAL:-86400}" # seconds between PASSED fallback probes
+FALLBACK_INTERVAL="${MEDIC_FALLBACK_INTERVAL:-86400}" # seconds between fallback probes
+# Both intervals feed `[ "$age" -ge "$2" ]`. A non-integer (an operator "stretching
+# the medic" with `1h` in the unit's EnvironmentFile — the same file that holds the
+# key) makes that test ERROR, `due` returns non-zero = "not due", and after one pass
+# the paid completion probe NEVER RUNS AGAIN — a stall stays invisible while every
+# tick logs ok. Verified empirically. Fail loudly at startup instead.
+for _iv in PROBE_INTERVAL FALLBACK_INTERVAL; do
+  eval "_v=\$$_iv"
+  case "$_v" in ''|*[!0-9]*) printf 'nemoclaw-inference-medic: %s must be whole seconds, got "%s" — refusing to run with a probe cadence that would silently never fire\n' "$_iv" "$_v" >&2; exit 1 ;; esac
+done
+unset _iv _v
 STATE_DIR="${MEDIC_STATE_DIR:-/var/lib/nemoclaw-inference-medic}"
 OPENROUTER_API="${MEDIC_OPENROUTER_API:-https://openrouter.ai/api/v1}"
 # seconds; a stall reads as a miss. 40 = ~4x the observed worst case on a
@@ -103,6 +117,11 @@ RETRY_SLEEP="${MEDIC_RETRY_SLEEP:-2}"       # pause before the one retry; 0 in t
 
 SERVED=unknown
 FALLBACK_SERVED=unknown
+# `timeout` is coreutils: present on the box (Linux), absent from a stock macOS
+# dev host where the vitest suite runs — so resolve it, do not assume it. Empty
+# means "run unbounded", which is exactly v6's behaviour, so a host without it
+# is no worse off than before.
+TIMEOUT_BIN="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
 
 log() { echo "nemoclaw-inference-medic: $*"; }
 warn() { echo "nemoclaw-inference-medic: $*" >&2; }
@@ -120,8 +139,30 @@ stamp_age() { # name -> seconds since the stamp, or nothing if there is none
   local f="$STATE_DIR/$1" t
   [ "$state_ready" = 1 ] && [ -f "$f" ] || return 0
   t="$(cat "$f" 2>/dev/null || true)"
-  [ -n "$t" ] && echo $(( $(date +%s) - t ))
+  # Guard the arithmetic: a hand-written or half-written stamp (non-digits, two
+  # lines, a leading zero) makes `$(( ))` raise a raw bash error with no medic
+  # prefix, `age` comes back empty, and the paid probe quietly reverts to every
+  # tick. Treat unreadable as absent, and SAY so.
+  case "$t" in
+    '') return 0 ;;
+    *[!0-9]*) warn "cadence stamp $f is unreadable ('$t') — treating as absent (the paid probe runs this tick)"; return 0 ;;
+  esac
+  # 10# forces base 10: an all-digit stamp with a leading zero ('08') is read as
+  # OCTAL by $(( )) and errors "value too great for base" — same silent revert to
+  # every-tick as a non-digit stamp, but it slips past the guard above.
+  echo $(( $(date +%s) - 10#$t ))
   return 0
+}
+stamp_drop() { # name — force the next tick to PROBE, whatever the cadence says.
+  # Called whenever a gate fails. Without it the stamp-only-on-pass design still
+  # has the hole it was built to close: probe passes at T, balance fails at T+10m
+  # (incident opens), operator fixes the key, next tick finds balance ok + route
+  # ok and `due last-probe 3600` FALSE — so it logs "probe skipped", returns 0,
+  # and OnSuccess closes the incident with nothing verified. The gateway-side
+  # credential could still be the old one and the fleet dead for another 45 min
+  # behind a green medic.
+  [ "$state_ready" = 1 ] || return 0
+  rm -f "$STATE_DIR/$1" 2>/dev/null || true
 }
 stamp_put() { # name — write-then-rename, and SAY SO if it fails: a silently
   # unwritable stamp (a root-owned file from a hand run, say) would otherwise
@@ -177,7 +218,12 @@ def num(v):
 kc, kd = split(sys.argv[1])
 cc, cd = split(sys.argv[2])
 floor = float(sys.argv[3])
-if kc == 401 or cc == 401:
+# ONLY /key can condemn the key. /credits is management-key-only, and the docs say
+# a non-management key gets 403 there (not 401) — but /key returning 200 is already
+# proof the key is live, so no /credits status should ever page KEY REJECTED —
+# AGENTS ARE DOWN at a healthy fleet. A /credits failure is a NARROWED WATCH; the
+# srcs tag below is where it must show up.
+if kc == 401:
     print("unauth"); sys.exit()
 # Every verdict names its SOURCES, so the journal shows when half the watch is
 # missing — e.g. `/credits` is documented as management-key-only
@@ -269,11 +315,22 @@ served_of() {
 # route from inside a sandbox container (the exact path agent turns take).
 # Success requires BOTH `data: [DONE]` and `"finish_reason":"tool_calls"`.
 # Returns 0 = pass (SERVED set), 1 = miss, 2 = no container to probe from.
+# Run a command under a wall-clock bound when the host can (see TIMEOUT_BIN).
+exec_bounded() { # seconds -- command...
+  local secs="$1"; shift
+  if [ -n "$TIMEOUT_BIN" ]; then "$TIMEOUT_BIN" "$secs" "$@"; else "$@"; fi
+}
 probe_completion() { # model-id-hint
   local cid body
   cid="$(probe_container)"
   [ -n "$cid" ] || return 2
-  body="$(probe_payload | sed "s|__MODEL__|$1|" | docker exec -i -u sandbox "$cid" sh -lc \
+  # `timeout` wraps the WHOLE exec: curl's own -m only starts once curl runs, so a
+  # wedged dockerd, a paused/OOM-thrashing container or a slow login shell hangs
+  # before it. Unbounded, two of these plus the retry blow TimeoutStartSec=300,
+  # systemd SIGKILLs the unit, OnFailure opens an incident that reads as an
+  # inference outage, and the same 300 s stall repeats every tick. Bounded, it is
+  # a MISS with the intended message.
+  body="$(probe_payload | sed "s|__MODEL__|$1|" | exec_bounded "$((PROBE_TIMEOUT + 10))" docker exec -i -u sandbox "$cid" sh -lc \
     "curl -sk -m $PROBE_TIMEOUT \
       -X POST https://inference.local/v1/chat/completions \
       -H 'Content-Type: application/json' \
@@ -305,13 +362,22 @@ main() {
   # picked up by the next live turn, not the next tick.
   set +e; check_balance; rc=$?; set -e
   if [ "$rc" -ne 0 ]; then
-    set +e; set_route "$WANT_PROVIDER" "$WANT_MODEL"; set -e
-    warn "route held on $WANT_PROVIDER / $WANT_MODEL while the key cannot pay"
+    # `if set_route` (not a set +e toggle) so the status is USED: telling an
+    # operator the route is held when the assertion just failed sends them to the
+    # billing page while the gateway points somewhere else entirely. v5 drew this
+    # distinction; v6 lost it with the toggle.
+    stamp_drop last-probe   # recovery must re-verify, not inherit this pass
+    if set_route "$WANT_PROVIDER" "$WANT_MODEL"; then
+      warn "route held on $WANT_PROVIDER / $WANT_MODEL while the key cannot pay"
+    else
+      warn "route could NOT be asserted either — $WANT_PROVIDER failed REGISTRATION while the key cannot pay. Fix the key first (the balance line above), then: openshell provider get $WANT_PROVIDER -g nemoclaw"
+    fi
     return 1
   fi
 
   # Gate 2 — registration.
   if ! set_route "$WANT_PROVIDER" "$WANT_MODEL"; then
+    stamp_drop last-probe   # recovery must re-verify, not inherit an older pass
     warn "$WANT_PROVIDER failed REGISTRATION — AGENTS ARE DOWN and the route could not be asserted. Check: openshell provider get $WANT_PROVIDER -g nemoclaw"
     return 1
   fi
@@ -330,13 +396,26 @@ main() {
       0)
         stamp_put last-probe
         log "route OK on $WANT_PROVIDER / $WANT_MODEL — serving verified (tool call returned) served=$SERVED"
-        if [ "$SERVED" != unknown ] && [ "$SERVED" != "$PRIMARY_MODEL" ]; then
-          warn "PRIMARY NOT SERVING — $SERVED is carrying the fleet (fallback active). Agents answer, at the fallback's cost and behaviour; the medic never reroutes. Check Google / OpenRouter status."
-        fi ;;
+        # OpenRouter spells the same model two ways: the stream's `model` field
+        # returns the plain id, while the generation record for the SAME turn
+        # returned `google/gemini-3.8-flash-20260902` (observed on the s2 canary,
+        # 2026-09-05). If a preset version or a vendor change ever puts the dated
+        # snapshot in the stream, an exact compare would warn "PRIMARY NOT SERVING"
+        # every hour on a perfectly healthy fleet — and a real fallback event would
+        # then be indistinguishable from the noise. Accept the plain id and an
+        # 8-digit date suffix; anything else (e.g. a `-lite` variant) is a
+        # different model and still warns.
+        case "$SERVED" in
+          unknown|"$PRIMARY_MODEL"|"$PRIMARY_MODEL"-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) : ;;
+          *) warn "PRIMARY NOT SERVING — $SERVED is carrying the fleet (fallback active). Agents answer, at the fallback's cost and behaviour; the medic never reroutes. Check Google / OpenRouter status." ;;
+        esac ;;
       2)
+        # No `return` here: probe_fallback runs from the HOST via curl and needs
+        # no container, so a sandbox outage must not also silence the daily
+        # second-lane verification. Falling through keeps the exit code 0 (the
+        # function's final `return 0`) while the fallback block below still runs.
         warn "no running sandbox container — completion gate SKIPPED (registration only)"
-        log "route asserted on $WANT_PROVIDER — REGISTRATION ONLY, no container for the completion probe"
-        return 0 ;;
+        log "route asserted on $WANT_PROVIDER — REGISTRATION ONLY, no container for the completion probe" ;;
       *)
         warn "$WANT_PROVIDER REGISTERED but failed the tool-call completion probe TWICE (stall, non-serving key/model, or a model that will not emit tool calls)"
         warn "$WANT_PROVIDER IS NOT SERVING — route held (registration ok, completions failing). AGENTS ARE DOWN. The medic never reroutes; the preset's own chain is the second lane. Check https://openrouter.ai/settings/credits and OpenRouter status first."
@@ -352,12 +431,21 @@ main() {
     if [ -z "${OPENROUTER_API_KEY:-}" ]; then
       warn "FALLBACK probe skipped — no OPENROUTER_API_KEY in the environment"
     else
+      # Stamped on EVERY attempt, pass or miss — unlike the primary. The
+      # stamp-only-on-pass rule exists so a "skipped" tick can never exit 0 and
+      # close an open ops incident; this probe never touches the exit code, so
+      # that reason does not apply here. Stamping only on a pass would make a
+      # PERSISTENTLY FAILING fallback re-probe every 5-minute tick — 288 paid
+      # direct calls a day (~$1-2/day at the migration's rates) on the lane
+      # carrying no traffic, with a WARN nobody is paged for. The header and
+      # FALLBACK_INTERVAL both say "daily"; this is what makes that true in the
+      # state where it matters.
       set +e; probe_fallback; rc=$?; set -e
+      stamp_put last-fallback
       if [ "$rc" -eq 0 ]; then
-        stamp_put last-fallback
         log "fallback lane verified — $FALLBACK_MODEL emitted a tool call (served=$FALLBACK_SERVED)"
       else
-        warn "FALLBACK $FALLBACK_MODEL failed its tool-call probe — the chain has no verified second lane (primary unaffected; exit unaffected)"
+        warn "FALLBACK $FALLBACK_MODEL failed its tool-call probe — the chain has no verified second lane (primary unaffected; exit unaffected). Next attempt in ${FALLBACK_INTERVAL}s."
       fi
     fi
   fi

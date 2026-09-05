@@ -2,8 +2,13 @@
 -- thoughts/shared/plans/2026-09-05-fleet-to-openrouter-muse-spark.md).
 --
 -- The six seat agents moved from Fireworks/GLM-5.2 to an OpenRouter preset
--- (`@preset/trades-seats`) that serves meta/muse-spark-1.3 and falls back,
--- per request, to ~google/gemini-flash-latest (google/gemini-3.8-flash today).
+-- (`@preset/trades-seats`) that serves google/gemini-3.8-flash and falls back,
+-- per request, to meta/muse-spark-1.3. BOTH IDS ARE PINNED — the floating
+-- `~google/gemini-flash-latest` alias was retired the same day, because every
+-- verification gate (the medic's served= compare, the date-eval's model gate)
+-- compares exact strings. Lane order was Muse-first for part of 2026-09-05 and
+-- flipped that evening on the date-eval evidence; rates for both are below, so
+-- this file is correct either way.
 --
 -- WHY THESE ROWS EXIST WHEN NOTHING STAMPS THEM. Seat inference never passes
 -- through recordModelUsage — the gateway is a credential-injecting passthrough
@@ -20,9 +25,15 @@
 -- NVIDIA's $0 rows are: the rollup drops an UNPRICED sku rather than showing
 -- it as zero. Muse publishes no input_cache_write price (0); Gemini publishes
 -- $0.0417/M. Cached-input on Muse is IMPLICIT (measured 1,137/1,264 tokens hit
--- on a repeat); on Gemini it needs cache_control breakpoints the gateway does
--- not send, so the Gemini cached-input row prices a path the fleet cannot
--- reach today — kept for honesty and for the spine, which could.
+-- on a repeat). Gemini caches IMPLICITLY too — measured 2026-09-05: the fleet's
+-- own date-eval read 28,002 of 32,260 prompt tokens from cache on the second
+-- call of every session (61.4% across the run), through the gateway's plain
+-- OpenAI-completions requests with no cache_control breakpoints. So BOTH
+-- cached-input rows price a path the fleet reaches every day. (An earlier draft
+-- of this header said Gemini "needs cache_control the gateway does not send" —
+-- that was a misreading of https://openrouter.ai/docs/features/prompt-caching,
+-- whose breakpoint sentence is scoped to pre-2.5 Gemini; the same section says
+-- 2.5-and-newer cache implicitly with no breakpoints.)
 --
 -- Price book convention: never edit a rate in place — close with effective_to
 -- and open a new row. Rates read from the OpenRouter model pages 2026-09-05.

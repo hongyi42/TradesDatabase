@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 212 documents · 204 live · 8 superseded.
+Regenerate with `npm run decisions:index`. 213 documents · 204 live · 9 superseded.
 
 ## Superseded — do not build on these
 
@@ -42,6 +42,7 @@ Regenerate with `npm run decisions:index`. 212 documents · 204 live · 8 supers
 - `2026-08-22` ~~[2026-08-22-brain-memory-foundations](shared/research/2026-08-22-brain-memory-foundations.md)~~ → **[2026-08-23-memory-architecture-substrate](shared/research/2026-08-23-memory-architecture-substrate.md)**
 - `2026-08-04` ~~[2026-08-04-query-spine-design](shared/plans/2026-08-04-query-spine-design.md)~~ → **[2026-08-23-the-brain-can-look](shared/plans/2026-08-23-the-brain-can-look.md)**
 - `2026-07-04` ~~[2026-07-04-feature-B-outbound-composio-actions](shared/plans/2026-07-04-feature-B-outbound-composio-actions.md)~~ → **[2026-07-04-feature-B-outbound-composio-sessions](shared/plans/2026-07-04-feature-B-outbound-composio-sessions.md)**
+- `2026-07-03` ~~[2026-07-03-scheduling-foundation](shared/plans/2026-07-03-scheduling-foundation.md)~~ → **[2026-09-05-the-visit-is-one-object](shared/plans/2026-09-05-the-visit-is-one-object.md)**
 - `2026-06-30` ~~[2026-06-30-phone-call-input-short-two-tier](shared/plans/2026-06-30-phone-call-input-short-two-tier.md)~~ → **[2026-08-04-phone-call-signalwire](shared/plans/2026-08-04-phone-call-signalwire.md)**
 - `????-??-??` ~~[2026-08-15-fireworks-switch](shared/plans/2026-08-15-fireworks-switch.md)~~ → **[2026-09-05-fleet-to-openrouter-muse-spark](shared/plans/2026-09-05-fleet-to-openrouter-muse-spark.md)**
 
@@ -49,6 +50,7 @@ Regenerate with `npm run decisions:index`. 212 documents · 204 live · 8 supers
 
 - `2026-09-05` `plan` [2026-09-05-fleet-to-openrouter-muse-spark](shared/plans/2026-09-05-fleet-to-openrouter-muse-spark.md) · _draft_ — Move the six-seat fleet from Fireworks/GLM-5.2 to OpenRouter — Muse Spark 1.3 primary, Gemini Flash (floating…
 - `2026-09-05` `plan` [2026-09-05-the-rails-come-out](shared/plans/2026-09-05-the-rails-come-out.md) — "Rung 9, part A — delete the promise ladder and the stored window; no schema rail restricts the agent"
+- `2026-09-05` `plan` [2026-09-05-the-visit-is-one-object](shared/plans/2026-09-05-the-visit-is-one-object.md) `describes 1 deleted file` · _draft_ — Rung 9b — the visit is one object: rename assignments→visits, drop the per-note visits table, moves in place,…
 - `2026-09-05` `research` [2026-09-05-fleet-to-openrouter-gemini-3-8-flash](shared/research/2026-09-05-fleet-to-openrouter-gemini-3-8-flash.md) `not landed` — Switching the six-seat fleet from Fireworks/GLM-5.2 to OpenRouter/google/gemini-3.8-flash — the full footprint
 - `2026-09-05` `research` [2026-09-05-the-visit-is-one-object](shared/research/2026-09-05-the-visit-is-one-object.md) `landed` — "Rung 9 — the visit is one object: the full footprint of retiring `assignments` into `visits`, collapsing the…
 - `2026-09-03` `plan` [2026-09-03-the-schedule-is-the-managers](shared/plans/2026-09-03-the-schedule-is-the-managers.md) `drift 30` — "Rung 8 — the schedule is the manager's: delete the autonomous solver and pinning"
@@ -208,7 +210,6 @@ Regenerate with `npm run decisions:index`. 212 documents · 204 live · 8 supers
 - `2026-07-04` `research` [2026-07-04-feature-A-automatic-technician-telegram-binding-via-manager-nemoclaw](shared/research/2026-07-04-feature-A-automatic-technician-telegram-binding-via-manager-nemoclaw.md) `landed` `drift 165` — "Feature A — automatic technician onboarding: bind a new technician NemoClaw to a Telegram user id from the m…
 - `2026-07-04` `research` [2026-07-04-feature-B-outbound-composio-actions](shared/research/2026-07-04-feature-B-outbound-composio-actions.md) `landed` `drift 144` — "Feature B — Outbound Composio actions via NemoClaw (Gmail send/draft + per-tenant connectors), complementing…
 - `2026-07-03` `plan` [2026-07-03-local-test-stack-and-roster-safety](shared/plans/2026-07-03-local-test-stack-and-roster-safety.md) — Move the test suite onto a local Supabase stack and close the truncation → live-box outage path
-- `2026-07-03` `plan` [2026-07-03-scheduling-foundation](shared/plans/2026-07-03-scheduling-foundation.md) `drift 62` — Scheduling foundation — availability, areas, durations, timezone, assignments (Plan 1 of the auto-scheduling…
 - `2026-07-03` `research` [2026-07-03-auto-scheduling-current-surfaces](shared/research/2026-07-03-auto-scheduling-current-surfaces.md) `landed` `describes 3 deleted files` `drift 176` — Auto-scheduling technicians — every surface the codebase has today that a scheduler would build on (schedule…
 - `2026-07-03` `research` [2026-07-03-cold-sandbox-identity-injection](shared/research/2026-07-03-cold-sandbox-identity-injection.md) `landed` — Cold-sandbox identity injection — badge, Telegram sender binding, unbind at offboarding (pre-research for the…
 - `2026-07-03` `research` [2026-07-03-sales-role-surfaces](shared/research/2026-07-03-sales-role-surfaces.md) `landed` `describes 2 deleted files` `drift 162` — Sales role — every existing surface a third role (sales: per-technician transaction amounts, Excel reports, s…

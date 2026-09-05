@@ -232,10 +232,10 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 **7. Where the deep detail lives**
 
-- L5802 · Evals:
-- L5809 · Runbooks:
-- L5814 · Decision history with citations:
-- L5818 · This file
+- L5804 · Evals:
+- L5811 · Runbooks:
+- L5816 · Decision history with citations:
+- L5820 · This file
 
 <!-- INDEX:END -->
 
@@ -5672,8 +5672,10 @@ before the flip: the medic's exact payload with `models:[muse, ~gemini]` fell th
 mandatory, medium 160–374 tokens, peaked 478/512 → `max_tokens` 1024 in the probe, 8192 on the
 seats; implicit caching engaged 1,137/1,264 on a repeat; probe ≈ $0.0014 cached / $0.0033 not.
 Gemini: 570 tokens for the same payload (tokenizer ≈ 2.2x more efficient than Muse's), reasoning
-mandatory and NOT controllable (`none` still burned 124), never caches on this path (needs
-`cache_control` the gateway does not send), probe ≈ $0.0011. Muse honours `reasoning_effort`
+mandatory and NOT controllable (`none` still burned 124), probe ≈ $0.0011. (The "never caches on
+this path" claim recorded here on 2026-09-05 morning was WRONG — measured that evening, Gemini
+caches implicitly through the gateway's plain requests, session-stickily; see the Gemini caching
+entry below.) Muse honours `reasoning_effort`
 (minimal 12–90). `~google/gemini-flash-latest` resolves to `google/gemini-3.8-flash` and
 retargets on release. Only Meta hosts Muse, only Google hosts Gemini.
 
@@ -5721,7 +5723,7 @@ to 727 (high) tokens — effort works where the prompt is specific. Prompt cachi
 **Double texting:** OpenClaw's inbound debouncer `messages.inbound.debounceMs` defaults to
 **0 = off**, and no seat ever carried a `messages` block. User approved **2000 ms** (the vendor's
 example); `bootstrap-box.sh wire` now writes it — apply s2 first, then the fleet. Its documented
-limit (`docs/concepts/messages.md`): text only — a photo flushes immediately. The queue's default
+limit (https://docs.openclaw.ai/concepts/messages): text only — a photo flushes immediately. The queue's default
 `steer` mode could not merge the mango-cake pair either: the Telegram handler ran turn 1 inline,
 so the follow-up text was not even read until turn 1's reply had gone out (20s after it was sent).
 

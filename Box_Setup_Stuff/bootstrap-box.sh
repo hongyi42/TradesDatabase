@@ -561,8 +561,15 @@ phase_wire() {
   #   NEMOCLAW_CTX_WINDOW=262144 ./bootstrap-box.sh wire s2
   # Bigger is not free: every call re-sends the session, and a long session's
   # first call after an idle gap is uncached input at full price.
-  local ctx="${NEMOCLAW_CTX_WINDOW:-131072}"
-  case "$ctx" in ''|*[!0-9]*) fail "NEMOCLAW_CTX_WINDOW must be an integer (got '$ctx')";; esac
+  # REQUIRED, no default (2026-09-05): five of the six seats are manager tier, so a
+  # default of 131072 was wrong more often than right — and a re-wire for an unrelated
+  # reason (doctrine refresh, plugin update, the next model flip) would silently halve a
+  # manager's window, upload it, restart the gateway and print `ok ... ctx=131072`. The
+  # `cmp -s` guard treats that downgrade as a legitimate change. A wrong window must
+  # never be the silent outcome; make the operator name the tier every time.
+  local ctx="${NEMOCLAW_CTX_WINDOW:-}"
+  [ -n "$ctx" ] || fail "NEMOCLAW_CTX_WINDOW is required — 262144 for a MANAGER seat, 131072 for a TECHNICIAN seat (tier lives in technicians.tier in the pilot DB). e.g. NEMOCLAW_CTX_WINDOW=262144 ./bootstrap-box.sh wire $agent"
+  case "$ctx" in *[!0-9]*) fail "NEMOCLAW_CTX_WINDOW must be an integer (got '$ctx')";; esac
 
   log "egress policy (§5a)"
   cat > "$HOME/trades-spine-doorman-egress-policy.yaml" <<'EOF'
@@ -1314,7 +1321,8 @@ EOF
     # before the content has arrived. OpenClaw's default is 0 = off
     # (resolveInboundDebounceMs: override ?? byChannel ?? base ?? 0), and no seat
     # ever carried a `messages` block. 2000 is the vendor's own example. Known
-    # limit, from docs/concepts/messages.md: the window holds TEXT ONLY — a
+    # limit, from https://docs.openclaw.ai/concepts/messages ("Debounce applies to
+    # text-only messages; media/attachments flush immediately"): the window holds TEXT ONLY — a
     # photo flushes immediately, so photo-then-question is still two turns (the
     # 2026-09-05 mango-cake turn: 44s, three shell probes + a second vision call
     # to re-find an image already in the transcript as MediaPath). That one is a
@@ -1322,7 +1330,15 @@ EOF
     # lives here for the same reason tools.deny does.
     jq --argjson deny "$ts_deny" --argjson ctx "$ctx" '
       (.agents.defaults.thinkingDefault) = "adaptive"
-      | (.agents.defaults.model) = ((.agents.defaults.model // {}) | .primary = "inference/google/gemini-3.8-flash")
+      | (.agents.defaults.model) = ((.agents.defaults.model // {})
+          # openclaw accepts BOTH the object form and a bare string. Indexing a
+          # string with .primary is a jq type error (exit 5), which under
+          # `set -euo pipefail` aborts the whole wire phase after the temp dir is
+          # made — with a raw jq error and no hint. A seat can carry the string
+          # form from a hand fix or an older generator (the bootstrap-copy-drift
+          # trap), so normalize before assigning.
+          | (if type == "string" then {primary: .} else . end)
+          | .primary = "inference/google/gemini-3.8-flash")
       | (.messages) = ((.messages // {}) | .inbound = ((.inbound // {}) | .debounceMs = 2000))
       | (.tools) = ((.tools // {}) | .deny = (((.deny // []) + $deny) | unique))
       | (.tools.toolSearch) = false

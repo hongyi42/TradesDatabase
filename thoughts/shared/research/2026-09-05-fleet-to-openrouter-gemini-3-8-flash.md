@@ -191,10 +191,14 @@ All OpenRouter facts below were verified live on 2026-09-05 against the vendor, 
   Google internally mapping this to a `thinkingLevel`"* — so the reasoning budget is **not
   precisely controllable**. `effort: "none"` / `enabled: false` disable reasoning **on models
   where it is not mandatory**; 3.8-flash is mandatory.
-- Prompt caching — https://openrouter.ai/docs/features/prompt-caching : *"Gemini caching in
-  OpenRouter requires you to insert `cache_control` breakpoints explicitly within message
-  content, similar to Anthropic."* TTL *"on average 3-5 minutes"*; Flash minimum **1,024
-  tokens**. `prompt_cache_key` is honoured **as a sticky-routing key**, not as a cache enabler:
+- Prompt caching — https://openrouter.ai/docs/features/prompt-caching. **CORRECTED 2026-09-05
+  (the original reading of this page was wrong — see the amendment at the top).** The page's
+  `cache_control` sentence is scoped to OLDER Gemini models; the same section says *"Gemini 2.5
+  series models and newer support implicit caching … no manual setup or additional
+  `cache_control` breakpoints required"*, and 3.8-flash is newer. Measured: implicit caching DOES
+  engage through the gateway's plain requests. Explicit breakpoints still cache more (99.98% vs
+  ~89%) because the implicit cache is session-sticky. TTL *"5 minute … that does not update"*;
+  Flash minimum **1,024 tokens**. `prompt_cache_key` is honoured **as a sticky-routing key**, not as a cache enabler:
   *"If neither [session_id nor header] is set, OpenRouter falls back to the OpenAI-style
   `prompt_cache_key` request field as the sticky routing key."*
 - Headers — https://openrouter.ai/docs/api-reference/overview : `HTTP-Referer` and `X-Title` are
@@ -266,12 +270,14 @@ Everything below was measured on GLM-5.2. None of it is evidence about Gemini 3.
 ### Cost shape
 
 The seat prompt alone is **33,473 bytes** (~8.4K tokens) before tool schemas and history. On
-Fireworks the agentic baseline ran **93% cached input**. On OpenRouter, Gemini caching needs
-explicit `cache_control` breakpoints that the gateway's `openai-completions` passthrough does
-not insert, and `prompt_cache_key` (which the seats *do* set, via
-`compat.supportsPromptCacheKey: true`) only pins **sticky routing**, not caching. So the
-expected shape is a move from mostly-cached input to **uncached input at $0.75/M**, plus
-**mandatory reasoning billed at $3.75/M**.
+Fireworks the agentic baseline ran **93% cached input**. **CORRECTED 2026-09-05 by measurement
+(this paragraph predicted the opposite):** Gemini caches IMPLICITLY through the gateway's plain
+`openai-completions` requests — no `cache_control` needed. `prompt_cache_key` (which the seats do
+set) pins **sticky routing**, and that is precisely what makes the implicit cache session-sticky:
+the first call of a fresh session misses, later calls in the same session hit. The 82-question
+eval ran **61.4% cached across the whole run** (call 2 of every session read 28,002 of 32,260
+tokens). Actual shape: **$0.038 per question**, cached input at $0.075/M, uncached at $0.75/M,
+mandatory reasoning billed at $3.75/M.
 
 Per `never-size-from-the-pilot-box`, no per-turn figure is derived here from accumulated box
 state — the numbers above are the eval harness's own recorded ledger and the vendor's published
@@ -388,8 +394,13 @@ Seat-traffic cost attribution stays unpriced until rows are added.
    for decision (a) — a 1M window may cost 1.8x per token, not just more tokens.
 3. **Does the gateway forward `reasoning` / `reasoning_effort` at all?** If not, the fleet gets
    `default_effort: "medium"` with no lever, and (b) becomes the only control.
-4. **Does openclaw's `openai-completions` dialect send `cache_control` breakpoints?** If not,
-   Gemini prompt caching cannot engage and the 93%-cached economics do not carry over.
+4. ~~**Does openclaw's `openai-completions` dialect send `cache_control` breakpoints?**~~
+   **ANSWERED 2026-09-05: it does not — and it does not need to.** openclaw emits breakpoints only
+   for provider `openrouter` + an `anthropic/*` model id
+   (`openai-completions.js:1076`, `createOpenRouterSystemCacheWrapper`), and
+   `compat.cacheControlFormat` is not a key the strict config schema accepts. But Gemini caches
+   implicitly anyway (measured), so the caching economics DO carry over — at 61% rather than the
+   93% Fireworks reached, because the implicit cache is session-sticky.
 5. **Does the gateway send `temperature`?** The Vertex (`Google`) lane does not list
    `temperature`/`top_p` as supported while the AI Studio lane does — sending it may silently
    narrow routing to one lane.

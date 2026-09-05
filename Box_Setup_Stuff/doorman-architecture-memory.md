@@ -145,7 +145,9 @@ standard tier, NOT `-contributor`, whose prompts "may be used to improve Meta's 
   request, with no memory** — if the primary
   errors, that request goes to the second lane; the next request tries the primary again. The response's `model`
   names what served. Created via `POST /api/v1/presets/trades-seats/chat/completions` with the
-  planner's key (the docs say management-key-only; it worked). Read it back with `GET
+  planner's key. (An earlier note here said "the docs say management-key-only"; that was the
+  /credits endpoint's restriction, not the presets endpoint's — the presets page states only a
+  bearer token. Do not go hunting for a management key during an incident.) Read it back with `GET
   /api/v1/presets/trades-seats`.
 - **One key pays for the fleet AND the spine's planner** (user ruling 2026-09-05: "this is
   testing suite"). A balance-out kills both in the same minute, which is why the medic's first
@@ -234,9 +236,18 @@ the id SPELLING differs by provider: DeepInfra `zai-org/GLM-5.2`, NVIDIA `z-ai/g
   (retired); `z-ai/glm5.1` → 404 model_not_found. Never trust page URLs or guesses.
 - **nemoclaw's own `--verify` CANNOT reach NVIDIA** — it runs inside the egress-restricted
   gateway container and fails on connection (not auth). Run catalog checks from the host shell.
-- **Change models the supported way:** `nemoclaw inference set --provider nvidia-prod
-  --model <id> --sandbox <AGENT>` — updates the gateway route AND all three openclaw.json refs
-  (agents.defaults.model.primary + registry id/name). No hand-edit of the writable layer.
+- **Change models the supported way — ONBOARD ONLY (scoped 2026-09-05):** `nemoclaw inference set
+  --provider nvidia-prod --model <id> --sandbox <AGENT>` updates the gateway route AND all three
+  openclaw.json refs (agents.defaults.model.primary + registry id/name). That is the right tool
+  while a seat is still on the NVIDIA onboard path.
+  **Do NOT run it against a wired seat.** Since the OpenRouter switch the seat's model entry is
+  written by `bootstrap-box.sh wire <AGENT>`, deliberately by hand (jq), because it carries four
+  fields the vendor command cannot express: `contextWindow` (per-tier), `maxTokens 8192`,
+  `input:["text","image"]` and `compat.supportsReasoningEffort`. The vendor command would
+  overwrite id/name with the ROUTED string — `@preset/trades-seats`, which is not a model — and
+  drop all four, leaving the seat with no image input and no reasoning lever until someone
+  notices. `wire`'s `cmp -s` guard only catches it on the next wire run. If it is ever run by
+  mistake: re-run `NEMOCLAW_CTX_WINDOW=<tier> ./bootstrap-box.sh wire <AGENT>`.
 - Error decoding: 410 = retired model route; 404 = id never existed; 401/403 = key problem;
   5xx/timeout = provider blip.
 

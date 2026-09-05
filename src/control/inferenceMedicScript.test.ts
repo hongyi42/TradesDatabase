@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-// Locks in Box_Setup_Stuff/nemoclaw-inference-medic.sh's decision table (v6).
+// Locks in Box_Setup_Stuff/nemoclaw-inference-medic.sh's decision table (v7).
 //
 // Four generations of blind spot, each pinned here so it cannot come back:
 //  - v2 probed with `openshell inference set`, which validates endpoint
@@ -56,7 +56,7 @@ interface RunResult {
   stderr: string;
 }
 
-describe.skipIf(!haveBash)('nemoclaw-inference-medic.sh decision table (v6)', () => {
+describe.skipIf(!haveBash)('nemoclaw-inference-medic.sh decision table (v7)', () => {
   let dir: string;
 
   beforeEach(async () => {
@@ -122,6 +122,7 @@ case "$healthy" in
   fallback)   emit_tool_call "\\"model\\":\\"meta/muse-spark-1.3\\","; exit 0 ;;
   nomodel)    emit_tool_call ""; exit 0 ;;
   presetslug) emit_tool_call "\\"model\\":\\"@preset/trades-seats\\","; exit 0 ;;
+  dated)      emit_tool_call "\\"model\\":\\"google/gemini-3.8-flash-20260902\\","; exit 0 ;;
   prose)
     printf '%s\\n' 'data: {"model":"google/gemini-3.8-flash","choices":[{"index":0,"delta":{"content":"This coming Friday is the 14th."},"finish_reason":null}]}'
     printf '%s\\n' 'data: {"model":"google/gemini-3.8-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
@@ -368,6 +369,76 @@ exit 0
       expect(`${r.stdout}${r.stderr}`).not.toMatch(/fireworks|deepinfra|nvidia|FAILOVER/i);
     }
   }, 30_000);
+
+
+  // ── v7 (2026-09-05): the behaviour changes the evening flip brought with it.
+  // Every one of these was a hole a reviewer found in the v6 script; each is
+  // pinned here so it cannot come back.
+
+  it('v7 RECOVERY: a failed gate invalidates the pass stamp, so the next tick must re-verify', async () => {
+    // The hole: probe passes, a LATER gate fails and opens an incident, the
+    // operator fixes it — and the recovery tick logs "probe skipped", exits 0
+    // and closes the incident with no completion ever verified.
+    const pass = await run({ MEDIC_PROBE_INTERVAL: '3600' });
+    expect(pass.stdout).toContain('serving verified');
+    const down = await run({ MEDIC_PROBE_INTERVAL: '3600', KEY_REMAINING: 'null', CREDITS_REMAINING: '1' });
+    expect(down.code).toBe(1);
+    const recovered = await run({ MEDIC_PROBE_INTERVAL: '3600' });
+    expect(recovered.code).toBe(0);
+    expect(recovered.stdout).toContain('serving verified');
+    expect(recovered.stdout).not.toContain('probe skipped');
+  }, 40_000);
+
+  it('v7: a /credits 401 does NOT condemn a key whose own /key call is 200', async () => {
+    // /credits is management-key-only; only /key can say the key is rejected.
+    const r = await run({ CREDITS_HTTP: '401' });
+    expect(r.code).toBe(0);
+    expect(r.stderr).not.toContain('KEY REJECTED');
+    expect(r.stderr).not.toContain('AGENTS ARE DOWN');
+    expect(r.stdout).toContain('credits:http401');
+    expect(r.stdout).toContain('serving verified');
+  }, 20_000);
+
+  it("v7: the vendor's dated snapshot id is the primary, not a fallback event", async () => {
+    // OpenRouter returned `google/gemini-3.8-flash-20260902` for the same turn
+    // the stream called `google/gemini-3.8-flash`. An exact compare would warn
+    // "PRIMARY NOT SERVING" hourly on a healthy fleet.
+    const r = await run({ COMPLETION_PRIMARY: 'dated' });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('served=google/gemini-3.8-flash-20260902');
+    expect(r.stderr).not.toContain('PRIMARY NOT SERVING');
+  }, 20_000);
+
+  it('v7: a FAILING fallback lane backs off to its interval instead of re-probing every tick', async () => {
+    // Stamped on every attempt, not only on a pass: otherwise a dead second
+    // lane costs 288 paid direct probes a day for a WARN nobody is paged for.
+    const first = await run({ COMPLETION_FALLBACK: '0', MEDIC_FALLBACK_INTERVAL: '3600' });
+    expect(first.code).toBe(0);
+    expect(first.stderr).toContain('no verified second lane');
+    const second = await run({ COMPLETION_FALLBACK: '0', MEDIC_FALLBACK_INTERVAL: '3600' });
+    expect(second.code).toBe(0);
+    expect(second.stderr).not.toContain('no verified second lane');
+  }, 40_000);
+
+  it('v7: no sandbox container still verifies the fallback lane (it is probed from the HOST)', async () => {
+    const r = await run({ HAVE_CONTAINER: '0' });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('REGISTRATION ONLY');
+    expect(r.stdout).toContain('fallback lane verified');
+  }, 20_000);
+
+  it('v7: balance down AND registration down says so — it does not claim the route is held', async () => {
+    const r = await run({ KEY_REMAINING: 'null', CREDITS_REMAINING: '1', REG_OPENROUTER: '0' });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('route could NOT be asserted either');
+    expect(r.stderr).not.toContain('route held on');
+  }, 20_000);
+
+  it('v7: a non-integer probe interval is refused, not silently treated as "never due"', async () => {
+    const r = await run({ MEDIC_PROBE_INTERVAL: '1h' });
+    expect(r.code).toBe(1);
+    expect(`${r.stdout}${r.stderr}`).toContain('PROBE_INTERVAL must be whole seconds');
+  }, 20_000);
 
   it('the key never appears in any argv or in the journal: the Authorization header rides via -K', async () => {
     const r = await run({});

@@ -1,6 +1,6 @@
 # /etc/systemd/system/nemoclaw-inference-medic.service
-# Assert the OpenRouter preset route (@preset/trades-seats: Muse Spark 1.3 →
-# Gemini Flash, chained by OpenRouter per request) and verify it is serving —
+# Assert the OpenRouter preset route (@preset/trades-seats: Gemini 3.8 Flash →
+# Muse Spark 1.3, chained by OpenRouter per request) and verify it is serving —
 # a free balance check every tick, a turn-shaped tool-call probe hourly. Runs
 # as the gateway owner. Triggered on boot + every 5 min by
 # nemoclaw-inference-medic.timer. See nemoclaw-inference-medic.sh for the why.

@@ -238,10 +238,24 @@ describe('cost_rates versioning', () => {
       // cache-write row is $0 for the same reason NVIDIA's rows are: OpenRouter
       // publishes no input_cache_write price for GLM 5.3, and the rollup's
       // INNER join would DROP an unpriced SKU rather than show it as zero.
+      // The 2026-09-05 seat-fleet switch (migration 20260906130000): the
+      // OpenRouter preset's two lanes. Nothing stamps these yet — seat spend is
+      // account-level and netted from the invoice — the rows exist so the price
+      // book is the vendor's numbers and a later seat-side collector is not
+      // dropped by the rollup's INNER join. Muse's cache-write is $0 for the
+      // NVIDIA reason (unpriced = dropped, not zero).
+      'openrouter/gemini-3.8-flash-cache-write 4.17e-8/token',
+      'openrouter/gemini-3.8-flash-cached-input 7.5e-8/token',
+      'openrouter/gemini-3.8-flash-input 7.5e-7/token',
+      'openrouter/gemini-3.8-flash-output 0.00000375/token',
       'openrouter/glm-5.3-cache-write 0/token',
       'openrouter/glm-5.3-cached-input 2.6e-7/token',
       'openrouter/glm-5.3-input 0.0000014/token',
       'openrouter/glm-5.3-output 0.0000044/token',
+      'openrouter/muse-spark-1.3-cache-write 0/token',
+      'openrouter/muse-spark-1.3-cached-input 1.5e-7/token',
+      'openrouter/muse-spark-1.3-input 0.00000125/token',
+      'openrouter/muse-spark-1.3-output 0.00000425/token',
     ]);
     // Every rate must cite its vendor doc — CLAUDE.md's rule, and the only way a
     // future reader can re-verify a price that has gone stale.

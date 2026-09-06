@@ -325,10 +325,12 @@ for (const item of remaining) {
     console.error(`  after ${asked} question(s); last completed: ${item.id}`);
     console.error(`\n  Results so far are kept and are still valid — they were all asked`);
     console.error(`  on ${startRoute.model}. Nothing after this point would be.`);
-    console.error(`\n  Most likely cause: the Fireworks balance ran out (HTTP 402) or the`);
-    console.error(`  account is suspended (412). Check billing FIRST — see`);
-    console.error(`  docs/inference-recovery-runbook.md. There is no failover: the medic`);
-    console.error(`  holds the route and reports, it does not reroute.`);
+    console.error(`\n  Most likely cause: the medic timer re-asserted the fleet's everyday`);
+    console.error(`  preset route (@preset/trades-seats) over this eval's single-model route`);
+    console.error(`  — stop the timer before an eval (runbook §5) — or the shared OpenRouter`);
+    console.error(`  key ran out of credits (HTTP 402). Check the medic journal and billing`);
+    console.error(`  FIRST — see docs/inference-recovery-runbook.md. The medic holds the`);
+    console.error(`  route and reports; it does not reroute.`);
     console.error(`  Once the route is back, resume with the SAME command (answered`);
     console.error(`  questions are skipped):`);
     console.error(`    npm run date-eval:run -- --dir ${DIR} --yes\n`);

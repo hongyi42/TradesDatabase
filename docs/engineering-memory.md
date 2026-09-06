@@ -4695,7 +4695,14 @@ seats → tick → compat-view drop. **Pilot schema md5 now EQUALS local:
    The code did exactly what it was specified to do; the specification assumed jobs do not
    accumulate long-past `confirmed` rows, and they do. Consequence to carry into rung 9c/10: either
    step 2 should ignore visits whose day is long past, or something must sweep stale `confirmed`
-   visits. Until then, a job with old bookings quietly grows a trip per note.
+   visits.
+   **⚠ Do NOT size this from the pilot** ([[never-size-from-the-pilot-box]], and I nearly did):
+   step 2 is defeated only when a job has MORE THAN ONE live visit, which is **3 of 300** open jobs
+   there — the one I hit was one of the three, which made it read as common. What the pilot shows is
+   the SHAPE, not the rate: 281 of those jobs carry a `confirmed` visit more than three days past
+   that nobody ever completed, and that is an artifact of seeded data nobody closes out, not a
+   forecast of a real firm. The mechanism is worth fixing; its frequency is unknown and this
+   environment cannot tell you.
 3. **`visits` inherited `assignments`' anon/authenticated SELECT on the pilot** — the rename carries
    grants. This is the pre-existing recorded posture (`20260824120000` was never applied to the
    pilot, so RLS is off on these tables) and NOT something this rung introduced, but it is a real

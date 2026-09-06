@@ -130,7 +130,7 @@ describe('matchIdentity — schedule branch (confirmed assignments)', () => {
     });
     expect(r.status).toBe('needs_confirmation');
     expect(r.suggestion?.address).toBe('5 Schedule Rd');
-    expect(r.suggestion?.assignmentId).toBe(assignment.id);
+    expect(r.suggestion?.visitId).toBe(assignment.id);
 
     // EVENING capture: 2026-06-20T01:00Z is still 6pm June 19 in the firm's
     // timezone (seed default America/Los_Angeles). The consultation must key

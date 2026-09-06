@@ -7,6 +7,8 @@ import { addTimeOff } from '../db/timeOff.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob, getJob, updateJobDetails, updateJobStatus } from '../db/jobs.js';
 import {
+  getVisitForTenant,
+  createVisit,
   listVisitsForJob,
   listVisitsForTechnician,
   listUnassignedVisits,
@@ -373,15 +375,15 @@ describe('moveVisit', () => {
     // agent is expected to have READ the job's record for promises first.
     const moved = await moveVisit({
       tenantId,
-      assignmentId: assignment.id,
+      visitId: assignment.id,
       date: '2026-11-10',
       startTime: '13:00',
       reason: 'customer asked for Tuesday',
       actorRef: 'manager-test',
     });
-    expect(moved.created.status).toBe('confirmed'); // BLOCKER-#1 regression pin
+    expect(moved.visit.status).toBe('confirmed'); // BLOCKER-#1 regression pin
     // Duration preserved (09–11 was 2h → 13:00–15:00).
-    expect(moved.created.ends_at).toContain('2026-11-10T15:00');
+    expect(moved.visit.ends_at).toContain('2026-11-10T15:00');
     // Visible to the ['confirmed']-filtered read every surface uses.
     const day = await listVisitsForTechnician(
       tech.id,
@@ -389,10 +391,10 @@ describe('moveVisit', () => {
       '2026-11-11T00:00:00.000Z',
       ['confirmed'],
     );
-    expect(day.map((r) => r.id)).toContain(moved.created.id);
+    expect(day.map((r) => r.id)).toContain(moved.visit.id);
     // Event trail records where it landed.
     const events = await listScheduleEventsSince(tenantId, 0, 100);
-    const movedEvent = events.find((e) => e.assignment_id === moved.created.id && e.kind === 'moved');
+    const movedEvent = events.find((e) => e.assignment_id === moved.visit.id && e.kind === 'moved');
     expect(movedEvent?.detail).toMatchObject({ toDay: '2026-11-10' });
   });
 
@@ -409,18 +411,18 @@ describe('moveVisit', () => {
     });
     const moved = await moveVisit({
       tenantId,
-      assignmentId: assignment.id,
+      visitId: assignment.id,
       date: '2026-11-11',
       startTime: '09:30', // overlaps ONLY itself
       reason: 'shift half an hour',
       actorRef: 'manager-test',
     });
-    expect(moved.created.starts_at).toContain('2026-11-11T09:30');
+    expect(moved.visit.starts_at).toContain('2026-11-11T09:30');
 
     // Same-technician move onto a SUNDAY warns too (no technicianRef passed).
     const sundayMove = await moveVisit({
       tenantId,
-      assignmentId: moved.created.id,
+      visitId: moved.visit.id,
       date: '2026-11-15', // Sunday — pattern empty
       startTime: '09:30',
       reason: 'weekend squeeze',
@@ -453,7 +455,7 @@ describe('moveVisit', () => {
     await expect(
       moveVisit({
         tenantId,
-        assignmentId: b.assignment.id,
+        visitId: b.assignment.id,
         date: '2026-11-12',
         startTime: '10:00', // lands inside a's 09–11
         reason: 'bad idea',
@@ -470,6 +472,49 @@ describe('moveVisit', () => {
     expect(day.map((r) => r.id).sort()).toEqual([a.assignment.id, b.assignment.id].sort());
   });
 
+  test('the DB guard firing mid-move leaves the visit EXACTLY where it was', async () => {
+    // The pre-check above catches the ordinary case. This is the RACE: the
+    // blocker appears after resolveMove has read the day, so the exclusion
+    // constraint is what stops it. The property that matters is what the
+    // manager is told — under cancel-then-insert the visit was already gone by
+    // this point and the message had to admit it; an UPDATE changes nothing.
+    const customer = await createCustomer({ tenantId, name: 'Race Rita' });
+    const mover = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      date: '2026-11-19',
+      startTime: '14:00',
+      endTime: '15:00',
+      actorRef: 'manager-test',
+    });
+    // Insert the blocker straight through the db layer, so nothing in the
+    // booking path has had a chance to see it.
+    await createVisit({
+      tenantId,
+      jobId: mover.job.id,
+      technicianId: tech.id,
+      startsAt: '2026-11-19T09:00:00.000Z',
+      endsAt: '2026-11-19T11:00:00.000Z',
+      status: 'confirmed',
+    });
+    await expect(
+      moveVisit({
+        tenantId,
+        visitId: mover.assignment.id,
+        date: '2026-11-19',
+        startTime: '09:30',
+        endTime: '10:30',
+        reason: 'onto a slot that just filled',
+        actorRef: 'manager-test',
+      }),
+    ).rejects.toThrow(/NOT moved/);
+    // Untouched: same id, same times, still on the schedule.
+    const still = await getVisitForTenant(mover.assignment.id, tenantId);
+    expect(still?.status).toBe('confirmed');
+    expect(new Date(still?.starts_at as string).toISOString()).toBe('2026-11-19T14:00:00.000Z');
+  });
+
   test('cross-tenant / unknown assignment ids read as not found (move AND cancel)', async () => {
     const customer = await createCustomer({ tenantId, name: 'Guard Gil' });
     const { assignment } = await bookVisit({
@@ -484,7 +529,7 @@ describe('moveVisit', () => {
     await expect(
       moveVisit({
         tenantId: OTHER_TENANT,
-        assignmentId: assignment.id,
+        visitId: assignment.id,
         date: '2026-11-13',
         startTime: '11:00',
         reason: 'wrong tenant',
@@ -494,7 +539,7 @@ describe('moveVisit', () => {
     await expect(
       unscheduleVisit({
         tenantId: OTHER_TENANT,
-        assignmentId: assignment.id,
+        visitId: assignment.id,
         reason: 'wrong tenant',
         actorRef: 'intruder',
       }),
@@ -584,15 +629,15 @@ describe('unassigned bookings (technician-optional)', () => {
     expect(assignment.technician_id).toBeNull();
     const moved = await moveVisit({
       tenantId,
-      assignmentId: assignment.id,
+      visitId: assignment.id,
       date: '2026-11-25',
       startTime: '09:00',
       technicianRef: 'book-tech',
       reason: 'assigning Bob',
       actorRef: 'manager-test',
     });
-    expect(moved.created.technician_id).toBe(tech.id);
-    expect(moved.created.status).toBe('confirmed');
+    expect(moved.visit.technician_id).toBe(tech.id);
+    expect(moved.visit.status).toBe('confirmed');
     // The attached technician's slot is now guarded: booking Bob into the
     // same window must clash.
     await expect(
@@ -619,13 +664,13 @@ describe('unassigned bookings (technician-optional)', () => {
     });
     const reparked = await moveVisit({
       tenantId,
-      assignmentId: parked.assignment.id,
+      visitId: parked.assignment.id,
       date: '2026-11-27',
       startTime: '09:00',
       reason: 'shift a day',
       actorRef: 'manager-test',
     });
-    expect(reparked.created.technician_id).toBeNull();
+    expect(reparked.visit.technician_id).toBeNull();
   });
 
   test('listUnassignedVisits: confirmed null-tech rows from fromISO on, no upper bound', async () => {
@@ -662,7 +707,7 @@ describe('unassigned bookings (technician-optional)', () => {
     });
     await unscheduleVisit({
       tenantId,
-      assignmentId: cancelled.assignment.id,
+      visitId: cancelled.assignment.id,
       reason: 'never mind',
       actorRef: 'manager-test',
     });
@@ -696,7 +741,7 @@ describe('detach (unassign) — plan 4a.5', () => {
     // Preview first: a park is one-shot — nothing about it is confirm-gated.
     const preview = await previewMoveVisit({
       tenantId,
-      assignmentId: assignment.id,
+      visitId: assignment.id,
       date: '2026-12-01',
       startTime: '09:00',
       unassign: true,
@@ -710,27 +755,29 @@ describe('detach (unassign) — plan 4a.5', () => {
     const before = await latestScheduleVersion(tenantId);
     const moved = await moveVisit({
       tenantId,
-      assignmentId: assignment.id,
+      visitId: assignment.id,
       date: '2026-12-01',
       startTime: '09:00',
       unassign: true,
       reason: 'tech pulled to an emergency',
       actorRef: 'manager-test',
     });
-    expect(moved.created.technician_id).toBeNull();
-    expect(moved.created.status).toBe('confirmed');
-    expect(moved.cancelled.id).toBe(assignment.id);
-    // The ledger records a plain 'moved' with the old row linked — exactly
-    // what boardNotify resolves for the "moved off your schedule" push.
+    expect(moved.visit.technician_id).toBeNull();
+    expect(moved.visit.status).toBe('confirmed');
+    // INVERTED by rung 9b: parking no longer cancels a row and mints a
+    // replacement — it EDITS the visit, so the id the manager was holding is
+    // still the id afterwards.
+    expect(moved.visit.id).toBe(assignment.id);
+    // The ledger records a plain 'moved' naming who LOST it — exactly what
+    // boardNotify resolves for the "moved off your schedule" push. It used to
+    // carry the predecessor's id; there is no predecessor now.
     const events = await listScheduleEventsSince(tenantId, before);
-    const ev = events.find((e) => e.assignment_id === moved.created.id && e.kind === 'moved');
+    const ev = events.find((e) => e.assignment_id === moved.visit.id && e.kind === 'moved');
     expect(ev).toBeDefined();
-    expect((ev?.detail as { previousAssignmentId?: string }).previousAssignmentId).toBe(
-      assignment.id,
-    );
+    expect((ev?.detail as { previousTechnicianId?: string }).previousTechnicianId).toBe(tech.id);
     // And the parked row is now in the recall lister.
     const parked = await listUnassignedVisits(tenantId, '2026-12-01T00:00:00.000Z');
-    expect(parked.map((r) => r.id)).toContain(moved.created.id);
+    expect(parked.map((r) => r.id)).toContain(moved.visit.id);
   });
 
   test('unassign + technicianRef is refused; nothing changes', async () => {
@@ -747,7 +794,7 @@ describe('detach (unassign) — plan 4a.5', () => {
     await expect(
       moveVisit({
         tenantId,
-        assignmentId: assignment.id,
+        visitId: assignment.id,
         date: '2026-12-02',
         startTime: '09:00',
         technicianRef: 'book-tech',
@@ -784,7 +831,7 @@ describe('detach (unassign) — plan 4a.5', () => {
     await expect(
       moveVisit({
         tenantId,
-        assignmentId: assignment.id,
+        visitId: assignment.id,
         date: '2026-12-03',
         startTime: '09:00',
         endTime: '10:00',
@@ -796,7 +843,7 @@ describe('detach (unassign) — plan 4a.5', () => {
     // A park onto a CLEAN window still lands.
     const moved = await moveVisit({
       tenantId,
-      assignmentId: assignment.id,
+      visitId: assignment.id,
       date: '2026-12-03',
       startTime: '13:00',
       endTime: '14:00',
@@ -804,7 +851,7 @@ describe('detach (unassign) — plan 4a.5', () => {
       reason: 'park it',
       actorRef: 'manager-test',
     });
-    expect(moved.created.technician_id).toBeNull();
+    expect(moved.visit.technician_id).toBeNull();
   });
 
 });
@@ -888,7 +935,7 @@ describe('untimed bookings + placing them — plan 4b-2, rung 9a', () => {
     });
     const moved = await moveVisit({
       tenantId,
-      assignmentId: booked.assignment.id,
+      visitId: booked.assignment.id,
       date: '2026-11-30',
       startTime: '09:00',
       endTime: '10:30',
@@ -896,9 +943,9 @@ describe('untimed bookings + placing them — plan 4b-2, rung 9a', () => {
       reason: 'placing the visit',
       actorRef: 'mgr',
     });
-    expect(moved.created.starts_at).toBe('2026-11-30T09:00:00+00:00');
-    expect(moved.created.ends_at).toBe('2026-11-30T10:30:00+00:00');
-    expect(moved.created.technician_id).toBe(tech.id);
+    expect(moved.visit.starts_at).toBe('2026-11-30T09:00:00+00:00');
+    expect(moved.visit.ends_at).toBe('2026-11-30T10:30:00+00:00');
+    expect(moved.visit.technician_id).toBe(tech.id);
   });
 
   test('placing without endTime uses the job length; errors when that is null too', async () => {
@@ -909,18 +956,18 @@ describe('untimed bookings + placing them — plan 4b-2, rung 9a', () => {
     await updateJobDetails(tenantId, withLen.job.id, { durationMinutes: 90 },
       (await getJob(withLen.job.id))!.updated_at);
     const moved = await moveVisit({
-      tenantId, assignmentId: withLen.assignment.id,
+      tenantId, visitId: withLen.assignment.id,
       date: '2026-12-01', startTime: '13:00',
       reason: 'placing with job length', actorRef: 'mgr',
     });
-    expect(moved.created.ends_at).toBe('2026-12-01T14:30:00+00:00'); // 13:00 + 90m
+    expect(moved.visit.ends_at).toBe('2026-12-01T14:30:00+00:00'); // 13:00 + 90m
 
     const noLen = await bookVisit({
       tenantId, customerId: customer.id, title: 'no length', actorRef: 'mgr',
     });
     await expect(
       moveVisit({
-        tenantId, assignmentId: noLen.assignment.id,
+        tenantId, visitId: noLen.assignment.id,
         date: '2026-12-02', startTime: '13:00',
         reason: 'no length anywhere', actorRef: 'mgr',
       }),
@@ -944,7 +991,7 @@ describe('unscheduleVisit', () => {
     const before = await latestScheduleVersion(tenantId);
     const cancelled = await unscheduleVisit({
       tenantId,
-      assignmentId: assignment.id,
+      visitId: assignment.id,
       reason: 'customer cancelled',
       actorRef: 'manager-test',
     });
@@ -1027,13 +1074,13 @@ describe('cancelJob — the terminal verb (cancel-vocabulary plan, 2026-07-25)',
     expect(preview.requiresConfirmation).toBe(true);
     expect(preview.jobTitle).toBe('full repipe');
     expect(preview.customerName).toBe('Terminal Tess');
-    expect(preview.visits.map((v) => v.assignmentId).sort()).toEqual(
+    expect(preview.visits.map((v) => v.visitId).sort()).toEqual(
       [first.assignment.id, parked.assignment.id].sort(),
     );
-    expect(preview.visits.find((v) => v.assignmentId === first.assignment.id)?.technicianRef).toBe(
+    expect(preview.visits.find((v) => v.visitId === first.assignment.id)?.technicianRef).toBe(
       'book-tech',
     );
-    expect(preview.visits.find((v) => v.assignmentId === parked.assignment.id)?.technicianRef).toBeNull();
+    expect(preview.visits.find((v) => v.visitId === parked.assignment.id)?.technicianRef).toBeNull();
 
     const result = await cancelJob({
       tenantId,

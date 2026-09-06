@@ -15,9 +15,9 @@ export type PlacedVisit = Visit & { starts_at: string; ends_at: string };
 export const isPlaced = (a: Visit): a is PlacedVisit =>
   a.starts_at !== null && a.ends_at !== null;
 
-// Hardcoded, auditable state machine (jobs.ts pattern). Times on a row are
-// immutable — a reschedule is cancel + insert, never an edit — so status is the
-// only mutable business field and cancelled/completed are terminal.
+// Hardcoded, auditable state machine (jobs.ts pattern). Rung 9b: a move now
+// EDITS the row (see moveVisitRow), so times are mutable too — but status is
+// still the only field with a legal graph, and cancelled/completed are terminal.
 export const VISIT_TRANSITIONS: Record<VisitStatus, VisitStatus[]> = {
   proposed: ['confirmed', 'cancelled'],
   confirmed: ['completed', 'cancelled'],
@@ -44,12 +44,6 @@ export interface CreateVisitInput {
   completedAt?: string | null;
   laborHours?: number | null;
   attributes?: Json; // L3
-  // Carry the ORIGINAL row's age forward. Every move / park / attach is a
-  // cancel-plus-insert, so without this the successor row is born "now" and an
-  // oldest-first unscheduled queue silently degrades into least-recently-
-  // touched — the visit nobody can place would drift to the back every time
-  // someone tried (reviewer finding, rung 9a).
-  createdAt?: string;
 }
 
 // Insert one visit row. Inserting as 'confirmed' can raise the DB's
@@ -78,7 +72,6 @@ export async function createVisit(input: CreateVisitInput): Promise<Visit> {
       completed_at: input.completedAt ?? null,
       labor_hours: input.laborHours ?? null,
       attributes: input.attributes ?? {},
-      ...(input.createdAt ? { created_at: input.createdAt } : {}),
     })
     .select()
     .single();
@@ -110,6 +103,10 @@ export async function updateVisitStatus(
   id: string,
   next: VisitStatus,
   reason?: string | null,
+  // Naive-local, like every other time on this row. Optional on purpose: the
+  // caller that COMPLETES a visit often knows only that it finished (the
+  // cancel_job cascade, the status walk) — a note is what usually knows when.
+  completedAt?: string | null,
 ): Promise<Visit> {
   const current = await getVisit(id);
   if (!current) throw new Error(`updateVisitStatus: visit ${id} not found`);
@@ -125,6 +122,7 @@ export async function updateVisitStatus(
     .update({
       status: next,
       ...(next === 'cancelled' && reason != null ? { reason } : {}),
+      ...(next === 'completed' && completedAt != null ? { completed_at: completedAt } : {}),
     }) // updated_at is stamped by the DB trigger
     .eq('id', id)
     .eq('status', current.status)
@@ -150,51 +148,141 @@ export function isOverlapViolation(err: unknown): boolean {
   );
 }
 
-export interface RescheduleInput {
+export interface MoveVisitRowInput {
   startsAt: string;
   endsAt: string;
   technicianId?: string | null; // omit = same technician; null = DETACH (park unassigned)
-  reason: string; // why the old booking was undone (kept on the cancelled row)
-  // status keeps its 'proposed' default for existing callers; manual moves
-  // pass 'confirmed' — a default-'proposed' replacement would vanish from
-  // every ['confirmed']-filtered reader and escape the DB guard.
-  status?: VisitStatus;
+  reason: string; // why the visit moved (kept on the row)
+  status?: VisitStatus; // omit = leave it where it is
 }
 
-// The reschedule primitive: cancel the old row (reason kept) + insert a fresh
-// 'proposed' row. NOT atomic across the two statements — accepted: the worst
-// crash case is a cancelled booking with no successor, visible in Plan 4's
-// proposal queue, never a double-booking (the DB guard holds regardless).
-export async function rescheduleVisit(
-  id: string,
-  input: RescheduleInput,
-): Promise<{ cancelled: Visit; created: Visit }> {
-  // Validate the NEW range before mutating anything: cancel-then-fail on a
-  // trivially bad input (swapped/malformed times) would destroy a real
-  // confirmed booking deterministically — worse than the accepted crash-window
-  // non-atomicity, and preventable here. (Review finding, 2026-07-04.)
+// THE MOVE PRIMITIVE — ONE UPDATE, and the visit keeps its id (rung 9b).
+//
+// It used to be cancel-the-old-row + insert-a-new-one, which meant a visit's id
+// changed every time anybody touched it. That cost three things this replaces:
+//   * a visit could not be named across a move, so nothing could point at one —
+//     a gap, a note, a manager's link all went stale the moment it slid an hour;
+//   * the two statements were not atomic, so a failure between them left the
+//     visit CANCELLED WITH NO SUCCESSOR — stranded, invisible to every reader,
+//     and the caller had to apologise for it;
+//   * `created_at` had to be hand-carried onto the successor or the unscheduled
+//     queue's oldest-first order silently became least-recently-touched.
+// An UPDATE has none of those. It is atomic by construction: if the exclusion
+// constraint fires (23P01), NOTHING changed and the visit still sits where it
+// was, so the caller can say "that slot is taken" instead of "it is gone".
+//
+// Guarded on the status we read (the jobs.ts concurrency idiom): a concurrent
+// CANCEL between our read and this write matches no row and surfaces. Two
+// racing MOVES both see 'confirmed', so the later one wins and both append a
+// `moved` event — accepted, and narrower than it sounds: the schedule has one
+// manager, the DB guard still forbids double-booking a person, and the ledger
+// records both attempts in order. (The old cancel-then-insert made the second
+// fail on an illegal cancelled → cancelled edge, which read as a crash rather
+// than a last-write-wins.)
+export async function moveVisitRow(id: string, input: MoveVisitRowInput): Promise<Visit> {
+  // Validate BEFORE touching anything. Nothing is destroyed on a bad input now,
+  // but a swapped range would still be written, and the DB's own check would
+  // reject it with a raw 23514 the caller cannot explain.
   const startMs = Date.parse(input.startsAt);
   const endMs = Date.parse(input.endsAt);
   if (Number.isNaN(startMs) || Number.isNaN(endMs) || startMs >= endMs) {
     throw new Error(
-      `rescheduleVisit: invalid time range ${input.startsAt} – ${input.endsAt} (nothing cancelled)`,
+      `moveVisitRow: invalid time range ${input.startsAt} – ${input.endsAt} (nothing changed)`,
     );
   }
   const old = await getVisit(id);
-  if (!old) throw new Error(`rescheduleVisit: visit ${id} not found`);
-  const cancelled = await updateVisitStatus(id, 'cancelled', input.reason);
-  const created = await createVisit({
-    tenantId: old.tenant_id,
-    jobId: old.job_id,
-    // `!== undefined`, not `??`: an explicit null means DETACH, and `??`
-    // would silently resurrect the old technician (plan 4a.5).
-    technicianId: input.technicianId !== undefined ? input.technicianId : old.technician_id,
-    startsAt: input.startsAt,
-    endsAt: input.endsAt,
-    status: input.status,
-    createdAt: old.created_at, // a reschedule keeps the visit's original age
-  });
-  return { cancelled, created };
+  if (!old) throw new Error(`moveVisitRow: visit ${id} not found`);
+  // Terminal rows are not movable. The old cancel-then-insert primitive got
+  // this for free — its first step was a status transition, and cancelled →
+  // cancelled is not a legal edge — so an UPDATE has to say it out loud, or
+  // "move it" would quietly re-time a visit that was called off or already
+  // done. The booking layer checks too (resolveMove); this is the floor.
+  if (old.status === 'cancelled' || old.status === 'completed') {
+    throw new Error(`cannot move a ${old.status} visit`);
+  }
+  const { data, error } = await getClient()
+    .from('visits')
+    .update({
+      starts_at: input.startsAt,
+      ends_at: input.endsAt,
+      // `!== undefined`, not `??`: an explicit null means DETACH, and `??`
+      // would silently resurrect the old technician (plan 4a.5).
+      ...(input.technicianId !== undefined ? { technician_id: input.technicianId } : {}),
+      reason: input.reason,
+      ...(input.status ? { status: input.status } : {}),
+    }) // updated_at is stamped by the DB trigger
+    .eq('id', id)
+    .eq('status', old.status)
+    .select()
+    .maybeSingle();
+  if (error) {
+    throw Object.assign(new Error(`moveVisitRow failed: ${error.message}`), { code: error.code });
+  }
+  if (!data) {
+    throw new Error(
+      `moveVisitRow: visit ${id} changed concurrently (was '${old.status}'); move not applied`,
+    );
+  }
+  return data;
+}
+
+// Attach or detach the PERSON on a visit, leaving its times alone — the tray's
+// drag-to-assign and its reverse. A sibling of moveVisitRow rather than a
+// special case of it: an attach has no new time to validate, and folding the
+// two would mean inventing times for an untimed visit just to move nobody.
+//
+// `status` is passed explicitly for the reason the old cancel-then-insert path
+// had to: the successor it created was always 'confirmed', and an attach that
+// silently left a row 'proposed' would vanish from every ['confirmed']-filtered
+// reader — on the board, in the tray, and in the overlap guard (review finding).
+export async function attachVisitTechnician(
+  id: string,
+  input: { technicianId: string | null; reason: string; status?: VisitStatus },
+): Promise<Visit> {
+  const old = await getVisit(id);
+  if (!old) throw new Error(`attachVisitTechnician: visit ${id} not found`);
+  if (old.status === 'cancelled' || old.status === 'completed') {
+    throw new Error(`cannot attach a person to a ${old.status} visit`);
+  }
+  const { data, error } = await getClient()
+    .from('visits')
+    .update({
+      technician_id: input.technicianId,
+      reason: input.reason,
+      ...(input.status ? { status: input.status } : {}),
+    })
+    .eq('id', id)
+    .eq('status', old.status) // the jobs.ts CAS: a concurrent flip surfaces
+    .select()
+    .maybeSingle();
+  if (error) {
+    throw Object.assign(new Error(`attachVisitTechnician failed: ${error.message}`), {
+      code: error.code,
+    });
+  }
+  if (!data) {
+    throw new Error(
+      `attachVisitTechnician: visit ${id} changed concurrently (was '${old.status}'); not applied`,
+    );
+  }
+  return data;
+}
+
+// The lifecycle as ONE WORD, mirroring the `stage` case in v_schedule
+// (20260906140000). A db test pins the two equal for the four stages the view
+// can show — if they drift, the agent's SQL and the app's objects would
+// disagree about what a visit IS.
+//
+// 'cancelled' is the one value SQL never returns: v_schedule is confirmed +
+// completed by construction, and a cancelled visit lives in v_cancelled_visits.
+// It exists here because an app-side caller holds the row itself and needs a
+// total function over it.
+export type VisitStage = 'committed' | 'placed' | 'happened' | 'reported' | 'cancelled';
+
+export function stageOf(v: Visit, hasNotes: boolean): VisitStage {
+  if (v.status === 'cancelled') return 'cancelled';
+  if (v.status === 'completed') return hasNotes ? 'reported' : 'happened';
+  return v.starts_at === null ? 'committed' : 'placed';
 }
 
 // Tenant-guarded point read for tool/module surfaces: a cross-tenant or

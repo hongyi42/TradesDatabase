@@ -160,7 +160,7 @@ describe('pollOnce', () => {
     sends.mockClear();
     await moveVisit({
       tenantId,
-      assignmentId: assignment.id,
+      visitId: assignment.id,
       date: '2026-10-07',
       startTime: '10:00',
       reason: 'shifted a day',
@@ -183,7 +183,7 @@ describe('pollOnce', () => {
     sends.mockClear();
     await moveVisit({
       tenantId,
-      assignmentId: assignment.id,
+      visitId: assignment.id,
       date: '2026-10-08',
       startTime: '09:00',
       technicianRef: 'notify-n2',
@@ -214,7 +214,7 @@ describe('pollOnce', () => {
     sends.mockClear();
     await moveVisit({
       tenantId,
-      assignmentId: assignment.id,
+      visitId: assignment.id,
       date: '2026-10-12',
       startTime: '09:00',
       unassign: true,
@@ -244,13 +244,13 @@ describe('pollOnce', () => {
     sends.mockClear();
     await unscheduleVisit({
       tenantId,
-      assignmentId: a.assignment.id,
+      visitId: a.assignment.id,
       reason: 'customer away',
       actorRef: 'notify-mgr',
     });
     await unscheduleVisit({
       tenantId,
-      assignmentId: b.assignment.id,
+      visitId: b.assignment.id,
       reason: 'customer away too',
       actorRef: 'notify-mgr',
     });
@@ -282,7 +282,7 @@ describe('pollOnce', () => {
     await pg.query("update technicians set state = 'offboarding' where ref = 'notify-n2'");
     await moveVisit({
       tenantId,
-      assignmentId: assignment.id,
+      visitId: assignment.id,
       date: '2026-10-10',
       startTime: '09:00',
       technicianRef: 'notify-n1',

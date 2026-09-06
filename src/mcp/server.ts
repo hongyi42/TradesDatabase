@@ -75,6 +75,7 @@ import {
   isValidDuration,
   MAX_DURATION_MINUTES,
   getVisitForTenant,
+  stageOf,
   getTechnicianById,
   unwrapAttributes,
   appendCostEvents,
@@ -731,12 +732,16 @@ const TOOLS = [
 // other.
 const SPINE_VIEW_CATALOG =
   'It CANNOT write, and it can only read these fifteen views (nothing else exists to it): ' +
-  'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, ' +
-  'technician_ref, technician_name, job_id, ' +
+  'v_schedule(visit_id, local_day, local_weekday, starts_at, ends_at, completed_at, status, ' +
+  'stage, technician_ref, technician_name, job_id, ' +
   'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
   'schedule that STANDS: confirmed and completed visits only, so count(*) here is real ' +
   'bookings; cancelled visits are NOT in it — they live in ' +
-  'v_cancelled_visits(assignment_id, local_day, local_weekday, starts_at, ends_at, reason, ' +
+  "v_cancelled_visits. `stage` is the visit's life in one word: 'committed' (agreed, no time " +
+  "set yet), 'placed' (on the calendar), 'happened' (the trip is done), 'reported' (a field " +
+  "note has landed on it). Prefer it over reading status and starts_at yourself — " +
+  "\"which visits are committed but not placed\" is `where stage = 'committed'`. " +
+  'v_cancelled_visits(visit_id, local_day, local_weekday, starts_at, ends_at, reason, ' +
   'updated_at, technician_ref, ' +
   'technician_name, job_id, job_title, job_type, customer_id, customer_name, city, ' +
   'postal_code), which also says why (reason) and when (updated_at); ' +
@@ -768,14 +773,14 @@ const SPINE_VIEW_CATALOG =
   "(3) sensitivity is NULL on most rows — never filter it with != (SQL != drops the NULLs and " +
   "silently hides the normal rows); use IS DISTINCT FROM, or no filter. (4) job_id here is only " +
   'the DIRECT stamp and is usually NULL by design — the durable link from a note to its job is ' +
-  'the visit: join v_visits on v_visits.source_capture_id = v_captures.id. Filtering v_captures ' +
+  'the visit: join v_visit_notes on v_visit_notes.capture_id = v_captures.id. Filtering v_captures ' +
   'by job_id alone reads as "nobody said anything" on exactly the jobs where somebody did. ' +
   '(5) These are the words people actually said, so they may be QUOTED — copied exactly as they ' +
   'came back, never tidied up. (For the assistant that closes gaps: a quote must be findable in ' +
   "either these results or the gap's own evidence lines, and a lookup you list AFTER your " +
   'decision has not run yet — read first.) ' +
-  'v_visits(id, job_id, source_capture_id, technician_name, labor_hours, created_at) — the ' +
-  'trips notes belong to; the note-to-job bridge; ' +
+  'v_visit_notes(visit_id, capture_id, job_id, created_at) — which field note reported which ' +
+  'trip; the note-to-job bridge (one trip can carry several notes); ' +
   'v_nudges(id, kind, status, subject_ref, technician_ref, technician_name, job_id, question, ' +
   'resolution, answered_by_capture_id, not_before, escalate_after, created_at, queued_at, ' +
   'asked_at, resolved_at, serve_count, attempts) — questions the assistant has asked and how ' +
@@ -1051,7 +1056,7 @@ const ADMIN_TOOLS = [
       'and internal → done in ONE call ({status:"moved"}) — ALWAYS tell the ' +
       'manager what moved; never act silently. Before moving a visit, READ the job\'s own ' +
       'record (get_job / list_recent_captures): if the firm told this customer a day or a ' +
-      'time, moving it is a promise someone must now un-tell them. Call with assignmentId + ' +
+      'time, moving it is a promise someone must now un-tell them. Call with visitId + ' +
       'date + startTime (+ optional endTime/technicianRef OR unassign) + reason. When the ' +
       'result carries ' +
       'boardNote, ALWAYS end your report with its exact [See it on the board](…) line — it ' +
@@ -1060,7 +1065,7 @@ const ADMIN_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        assignmentId: { type: 'string', description: 'The visit to move (from get_team_schedule).' },
+        visitId: { type: 'string', description: 'The visit to move (from get_team_schedule).' },
         date: { type: 'string', description: 'New YYYY-MM-DD.' },
         startTime: { type: 'string', description: 'New HH:MM.' },
         endTime: { type: 'string', description: 'New HH:MM (default: keep the old duration).' },
@@ -1081,13 +1086,13 @@ const ADMIN_TOOLS = [
       'which they mean — never guess. Cancelling a visit that is ON THE CALENDAR is ' +
       'externally visible — a customer is expecting it — so that is TWO-STEP: you ' +
       'get {status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
-      'yes, call again with ONLY confirmId. Call with assignmentId + reason. When the result ' +
+      'yes, call again with ONLY confirmId. Call with visitId + reason. When the result ' +
       'carries boardNote, ALWAYS end your ' +
       'report with its exact [See it on the board](…) line — it renders as a tappable link.',
     inputSchema: {
       type: 'object',
       properties: {
-        assignmentId: { type: 'string', description: 'The visit to unschedule. First call only.' },
+        visitId: { type: 'string', description: 'The visit to unschedule. First call only.' },
         reason: { type: 'string', description: 'Why (kept on the record). First call only.' },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
@@ -1525,7 +1530,7 @@ const ADMIN_TOOLS = [
       '(genuinely NEW work only — GUARDED: refused with the open-jobs list when the customer ' +
       'already has open work on file; re-call with the matching jobId, or forceNewJob:true ' +
       'only for truly different new work), jobId (work on a recorded job — the usual case), ' +
-      'or assignmentId (re-placing or assigning an ' +
+      'or visitId (re-placing or assigning an ' +
       "existing visit — its booked length is used). Returns up to 5 ranked candidates, each " +
       'with technician, date, times, and a human-ready reasons line — RELAY those reasons, ' +
       'do not invent your own. Every date comes WITH its weekday (the weekday field, also in ' +
@@ -1545,12 +1550,12 @@ const ADMIN_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        customerId: { type: 'string', description: 'Exactly one of customerId/jobId/assignmentId.' },
-        jobId: { type: 'string', description: 'Exactly one of customerId/jobId/assignmentId.' },
-        assignmentId: {
+        customerId: { type: 'string', description: 'Exactly one of customerId/jobId/visitId.' },
+        jobId: { type: 'string', description: 'Exactly one of customerId/jobId/visitId.' },
+        visitId: {
           type: 'string',
           description:
-            'Exactly one of customerId/jobId/assignmentId — find who/when could take this ' +
+            'Exactly one of customerId/jobId/visitId — find who/when could take this ' +
             'existing visit (its own current slot is ignored while searching).',
         },
         durationMinutes: {
@@ -1903,7 +1908,7 @@ interface StagedNoteDetail {
   // The identity question, stored so the needs_identity response can echo the
   // ITEM's question — racing stages may return the other call's row, and the
   // question must describe the note that will actually commit (review finding).
-  suggestion?: { address: string; assignmentId: string };
+  suggestion?: { address: string; visitId: string };
   identityReason?: string;
 }
 
@@ -4106,7 +4111,7 @@ async function dispatch(
       const jobs = await listJobsWithCustomerByIds(tenantId, [
         // BOTH reads (review finding): in windowed mode the untimed rows come
         // from their own query, so their jobs are absent from `rows` and every
-        // untimed visit came back with customer: null — an assignmentId the
+        // untimed visit came back with customer: null — an visitId the
         // agent could not put a name to, which defeats the list's purpose.
         ...new Set([...rows, ...untimedRows].map((r) => r.job_id)),
       ]);
@@ -4137,7 +4142,11 @@ async function dispatch(
         const technician = row.technician_id ? techById.get(row.technician_id) : undefined;
         const bucket = byDay.get(day) ?? [];
         bucket.push({
-          assignmentId: row.id,
+          visitId: row.id,
+          // The lifecycle in one word, same vocabulary as v_schedule.stage.
+          // These rows are read 'confirmed' and timed, so they are 'placed' —
+          // stated rather than left for the model to infer from two fields.
+          stage: stageOf(row, false),
           technicianRef: technician?.ref ?? null,
           technicianName: technician?.display_name ?? null,
           unassigned: row.technician_id === null,
@@ -4174,7 +4183,9 @@ async function dispatch(
       // Recall mode needs it just as much — that view is where a person-less
       // untimed visit is reachable at all.
       const untimed = untimedRows.map((r) => ({
-        assignmentId: r.id,
+        visitId: r.id,
+        // 'committed': agreed to, no time set yet — the whole point of this view.
+        stage: stageOf(r, false),
         customer: jobById.get(r.job_id)?.customers?.name ?? null,
         jobId: r.job_id,
         technicianRef: r.technician_id ? (techById.get(r.technician_id)?.ref ?? null) : null,
@@ -4339,7 +4350,7 @@ async function dispatch(
           const booked = await bookVisit(bookInput);
           return {
             status: 'booked',
-            assignmentId: booked.assignment.id,
+            visitId: booked.assignment.id,
             jobId: booked.job.id,
             // The job's identity rides EVERY booked result: the title is
             // agent-supplied free text on the customerId path, and without
@@ -4387,11 +4398,11 @@ async function dispatch(
       const subjectRef = identity.technicianRef;
         // previewMoveVisit throws on impossible moves before anything is
         // written; since rung 9a the move then commits in the same call.
-        const assignmentId = str('assignmentId');
+        const visitId = str('visitId');
         const date = str('date');
         const startTime = str('startTime');
         const reason = str('reason')?.trim();
-        if (!assignmentId) throw new Error('assignmentId is required');
+        if (!visitId) throw new Error('visitId is required');
         if (!date || !startTime) throw new Error('date and startTime are required');
         if (!reason) throw new Error('reason is required — say why the visit is moving');
         const technicianRefArg = str('technicianRef');
@@ -4401,7 +4412,7 @@ async function dispatch(
         const unassignArg = args.unassign === true;
         const preview = await previewMoveVisit({
           tenantId,
-          assignmentId,
+          visitId,
           date,
           startTime,
           ...(str('endTime') ? { endTime: str('endTime') } : {}),
@@ -4417,7 +4428,7 @@ async function dispatch(
         // and this tool cannot and must not claim none existed.
           const moved = await moveVisit({
             tenantId,
-            assignmentId,
+            visitId,
             date,
             startTime,
             endTime: preview.endTime, // resolved — preview == commit
@@ -4428,8 +4439,11 @@ async function dispatch(
           });
           return {
             status: 'moved',
-            assignmentId: moved.created.id,
-            previousAssignmentId: moved.cancelled.id,
+            // The SAME id it had before the move (rung 9b): a visit is one
+            // object for its whole life, so a link or a gap that named it
+            // still names it.
+            visitId: moved.visit.id,
+            stage: stageOf(moved.visit, false),
             date,
             ...(date ? { dayPhrase: servedDayPhrase(date) } : {}),
             startTime,
@@ -4450,11 +4464,11 @@ async function dispatch(
       const confirmId = str('confirmId');
       if (!confirmId) {
         // STAGE.
-        const assignmentId = str('assignmentId');
+        const visitId = str('visitId');
         const reason = str('reason')?.trim();
-        if (!assignmentId) throw new Error('assignmentId is required');
+        if (!visitId) throw new Error('visitId is required');
         if (!reason) throw new Error('reason is required — say why the visit is being unscheduled');
-        const preview = await previewUnscheduleVisit(tenantId, assignmentId);
+        const preview = await previewUnscheduleVisit(tenantId, visitId);
         // Doctrine (2026-07-17, verdict computed in booking.ts): cancelling an
         // UNPROMISED visit is internal + reversible (the job stays open;
         // rebook any time) → one step. Cancelling a promised visit stages —
@@ -4462,13 +4476,13 @@ async function dispatch(
         if (!preview.requiresConfirmation) {
           const cancelledRow = await unscheduleVisit({
             tenantId,
-            assignmentId,
+            visitId,
             reason,
             actorRef: subjectRef,
           });
           return {
             status: 'unscheduled',
-            assignmentId: cancelledRow.id,
+            visitId: cancelledRow.id,
             // Placed day, else the unplaced range's day (plan 4b-2).
             day: cancelledRow.starts_at?.slice(0, 10) ?? null,
             note:
@@ -4491,7 +4505,7 @@ async function dispatch(
           kind: 'pending_visit_cancel',
           subjectRef,
           detail: {
-            assignmentId,
+            visitId,
             reason,
             preview: preview as unknown as Json,
             stagedAt: new Date().toISOString(),
@@ -4511,15 +4525,15 @@ async function dispatch(
         subjectRef,
       });
       if (!item) {
-        throw new Error('confirmation not found — call unschedule_visit again with assignmentId + reason to restage');
+        throw new Error('confirmation not found — call unschedule_visit again with visitId + reason to restage');
       }
-      const d = (item.detail ?? {}) as { assignmentId?: string; reason?: string; stagedAt?: string };
+      const d = (item.detail ?? {}) as { visitId?: string; reason?: string; stagedAt?: string };
       if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
         throw new Error('confirmation expired — restage the unschedule and confirm again');
       }
-      if (!d.assignmentId || !d.reason) {
-        throw new Error('staged unschedule is malformed — restage with assignmentId + reason');
+      if (!d.visitId || !d.reason) {
+        throw new Error('staged unschedule is malformed — restage with visitId + reason');
       }
       const consumed = await resolveReviewItem(
         item.id,
@@ -4534,7 +4548,7 @@ async function dispatch(
       try {
         cancelledRow = await unscheduleVisit({
           tenantId,
-          assignmentId: d.assignmentId,
+          visitId: d.visitId,
           reason: d.reason,
           actorRef: subjectRef,
         });
@@ -4553,7 +4567,7 @@ async function dispatch(
       }
       return {
         status: 'unscheduled',
-        assignmentId: cancelledRow.id,
+        visitId: cancelledRow.id,
         // Placed day, else the unplaced range's day (plan 4b-2).
         day: cancelledRow.starts_at?.slice(0, 10) ?? null,
         note: 'the work is not cancelled — the job is back in the loose bucket for rebooking',
@@ -4655,7 +4669,7 @@ async function dispatch(
         jobId: result.job.id,
         jobTitle: result.job.title,
         visitsCancelled: result.cancelledVisits.map((v) => ({
-          assignmentId: v.id,
+          visitId: v.id,
           // Placed day, else the unplaced range's day (plan 4b-2).
           day: v.starts_at?.slice(0, 10) ?? null,
         })),
@@ -5927,17 +5941,17 @@ async function dispatch(
       // Non-string args are REJECTED, never coerced-to-absent: str() maps
       // {technicianRef: 123} to undefined, which would silently UN-PIN the
       // search (the get_schedule precedent — the SDK doesn't validate args).
-      for (const k of ['customerId', 'jobId', 'assignmentId', 'technicianRef', 'assumedType']) {
+      for (const k of ['customerId', 'jobId', 'visitId', 'technicianRef', 'assumedType']) {
         if (args[k] !== undefined && typeof args[k] !== 'string') {
           throw new Error(`${k} must be a string`);
         }
       }
-      // ------- subject: exactly one of customerId | jobId | assignmentId
+      // ------- subject: exactly one of customerId | jobId | visitId
       const customerIdArg = str('customerId');
       const jobIdArg = str('jobId');
-      const assignmentIdArg = str('assignmentId');
-      if ([customerIdArg, jobIdArg, assignmentIdArg].filter(Boolean).length !== 1) {
-        throw new Error('pass exactly one of customerId, jobId, or assignmentId');
+      const visitIdArg = str('visitId');
+      if ([customerIdArg, jobIdArg, visitIdArg].filter(Boolean).length !== 1) {
+        throw new Error('pass exactly one of customerId, jobId, or visitId');
       }
       const pinnedRef = str('technicianRef');
       const assumedType = str('assumedType')?.trim().toLowerCase();
@@ -5969,8 +5983,8 @@ async function dispatch(
         status: string;
       } | null = null;
       let customerIdResolved: string;
-      if (assignmentIdArg) {
-        const row = await getVisitForTenant(assignmentIdArg, tenantId);
+      if (visitIdArg) {
+        const row = await getVisitForTenant(visitIdArg, tenantId);
         if (!row) throw new Error('visit not found');
         // Mirror move/cancel's subject rule: terminal rows are history, not
         // schedulable subjects.
@@ -5998,7 +6012,7 @@ async function dispatch(
       // — the recurring live failure is searching (then booking) by customerId
       // for work already on file, which is also where every baffling "no
       // recorded type" error came from. Steer to the real jobId instead.
-      if (!jobIdArg && !assignmentIdArg && args.forceNewJob !== true) {
+      if (!jobIdArg && !visitIdArg && args.forceNewJob !== true) {
         const openWork = await listOpenJobsForCustomer(customer.id);
         if (openWork.length > 0) throw new Error(openWorkSteer('searched', openWork));
       }
@@ -6210,7 +6224,7 @@ async function dispatch(
         latest,
         ...(pinnedRef ? { technicianRef: pinnedRef } : {}),
         ...(requiredSkills ? { requiredSkills } : {}),
-        ...(subjectRow ? { excludeAssignmentId: subjectRow.id } : {}),
+        ...(subjectRow ? { excludeVisitId: subjectRow.id } : {}),
       });
       const customerCity = customer.city?.trim().toLowerCase() || null;
       const generated = generateCandidates({
@@ -6345,7 +6359,7 @@ async function dispatch(
             latest: addDaysISO(latest, 14),
             ...(pinnedRef ? { technicianRef: pinnedRef } : {}),
             ...(requiredSkills ? { requiredSkills } : {}),
-            ...(subjectRow ? { excludeAssignmentId: subjectRow.id } : {}),
+            ...(subjectRow ? { excludeVisitId: subjectRow.id } : {}),
           });
           const beyond = generateCandidates({
             todayISO,

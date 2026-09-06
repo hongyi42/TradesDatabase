@@ -200,7 +200,7 @@ describe('assembleFitContext — assignment rows become day context', () => {
       expect(sp.stopsByDate.get('2026-08-04')).toBeUndefined();
       expect(sp.stopsByDate.get('2026-08-05')).toBe(1);
       // Excluding the untimed subject changes nothing — it was never counted.
-      const excluded = await ctx({ technicianRef: sparky.ref, excludeAssignmentId: tbd.id });
+      const excluded = await ctx({ technicianRef: sparky.ref, excludeVisitId: tbd.id });
       expect(excluded.technicians[0].commitmentsByDate.get('2026-08-05')).toBe(1);
     } finally {
       // Self-clean BOTH rows: the displacement suite shares this week and
@@ -210,7 +210,7 @@ describe('assembleFitContext — assignment rows become day context', () => {
     }
   });
 
-  test('confirmed rows only; unassigned rows block nobody; city rides lowercased; excludeAssignmentId frees the subject', async () => {
+  test('confirmed rows only; unassigned rows block nobody; city rides lowercased; excludeVisitId frees the subject', async () => {
     const mine = await makeVisit({
       technicianId: plumber.id,
       startsAt: '2026-08-03T09:00:00.000Z',
@@ -235,9 +235,9 @@ describe('assembleFitContext — assignment rows become day context', () => {
     expect(p.stopsByDate.get('2026-08-03')).toBe(1);
     expect(p.citiesByDate.get('2026-08-03')).toEqual(new Set(['springfield']));
 
-    // The assignmentId ask: the subject's own row must not block the gaps it
+    // The visitId ask: the subject's own row must not block the gaps it
     // would vacate.
-    const excluded = await ctx({ technicianRef: plumber.ref, excludeAssignmentId: mine.id });
+    const excluded = await ctx({ technicianRef: plumber.ref, excludeVisitId: mine.id });
     expect(excluded.technicians[0].visitsByDate.get('2026-08-03')).toBeUndefined();
     expect(excluded.technicians[0].stopsByDate.get('2026-08-03')).toBeUndefined();
   });
@@ -274,15 +274,15 @@ describe('findDisplacementCandidates', () => {
     // Rung 9a: the promise-graded tiebreak is gone, so start time is the whole
     // rule — the Aug 4 row now sorts ahead of the Aug 6 one.
     const out = await findDisplacementCandidates(tenantId, WEEK_START, WEEK_END);
-    const ids = out.map((d) => d.assignmentId);
+    const ids = out.map((d) => d.visitId);
     expect(ids.indexOf(earlier.id)).toBeLessThan(ids.indexOf(later.id));
 
-    // An assignmentId ask's own subject never appears — a visit cannot be
+    // An visitId ask's own subject never appears — a visit cannot be
     // proposed as displacement to make room for itself.
     const excluded = await findDisplacementCandidates(tenantId, WEEK_START, WEEK_END, 5, later.id);
-    expect(excluded.map((d) => d.assignmentId)).not.toContain(later.id);
-    expect(excluded.map((d) => d.assignmentId)).toContain(earlier.id);
-    const p = out.find((d) => d.assignmentId === earlier.id);
+    expect(excluded.map((d) => d.visitId)).not.toContain(later.id);
+    expect(excluded.map((d) => d.visitId)).toContain(earlier.id);
+    const p = out.find((d) => d.visitId === earlier.id);
     expect(p).toMatchObject({
       technicianRef: sparky.ref,
       day: '2026-08-04',

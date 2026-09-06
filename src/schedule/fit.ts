@@ -342,7 +342,7 @@ export interface AssembleFitContextInput {
   latest: string;
   technicianRef?: string; // pin to one person
   requiredSkills?: string[]; // lowercase; three-state semantics (Decisions)
-  excludeAssignmentId?: string; // the subject row of an assignmentId ask
+  excludeVisitId?: string; // the subject row of an visitId ask
 }
 
 export async function assembleFitContext(input: AssembleFitContextInput): Promise<FitContext> {
@@ -386,7 +386,7 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
     ['confirmed'],
   );
   const rows = placedRows.filter(
-    (r) => r.technician_id !== null && r.id !== input.excludeAssignmentId,
+    (r) => r.technician_id !== null && r.id !== input.excludeVisitId,
   );
   const jobs = await listJobsWithCustomerByIds(input.tenantId, [
     ...new Set(rows.map((r) => r.job_id)),
@@ -436,7 +436,7 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
 // (A pinned-last tiebreak sat in the middle until rung 8 — pinning bound only
 // AUTOMATIC scheduling, and there is none.)
 export interface DisplacementCandidate {
-  assignmentId: string;
+  visitId: string;
   customer: string | null;
   technicianRef: string | null;
   day: string;
@@ -449,9 +449,9 @@ export async function findDisplacementCandidates(
   earliest: string,
   latest: string,
   limit = 5,
-  excludeAssignmentId?: string,
+  excludeVisitId?: string,
 ): Promise<DisplacementCandidate[]> {
-  // excludeAssignmentId: an assignmentId ask's own subject — "what could move
+  // excludeVisitId: an visitId ask's own subject — "what could move
   // to make room" must never propose moving the visit to make room for itself.
   const rows = (
     await listVisitsForTenant(
@@ -460,7 +460,7 @@ export async function findDisplacementCandidates(
       addDaysISO(latest, 1) + 'T00:00:00.000Z',
       ['confirmed'],
     )
-  ).filter((r) => r.id !== excludeAssignmentId);
+  ).filter((r) => r.id !== excludeVisitId);
   const jobs = await listJobsWithCustomerByIds(tenantId, [...new Set(rows.map((r) => r.job_id))]);
   const nameByJob = new Map(jobs.map((j) => [j.id, j.customers?.name ?? null]));
   const refCache = new Map<string, string | null>();
@@ -479,7 +479,7 @@ export async function findDisplacementCandidates(
       ref = refCache.get(row.technician_id) ?? null;
     }
     out.push({
-      assignmentId: row.id,
+      visitId: row.id,
       customer: nameByJob.get(row.job_id) ?? null,
       technicianRef: ref,
       day: row.starts_at.slice(0, 10),

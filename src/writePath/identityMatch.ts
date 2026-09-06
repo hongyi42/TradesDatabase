@@ -40,7 +40,7 @@ export interface MatchResult {
   status: 'matched' | 'needs_confirmation' | 'needs_disambiguation';
   customerId?: string;
   jobId?: string;
-  suggestion?: { address: string; assignmentId: string };
+  suggestion?: { address: string; visitId: string };
   createFrom?: ScheduledCustomerDraft;
   reason?: string;
 }
@@ -83,7 +83,7 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
   const tech = await getTechnician(tenantId, technicianRef);
   const timezone = tech ? ((await getTenant(tenantId))?.timezone ?? 'UTC') : 'UTC';
   const day = localDateISO(capturedAt, timezone);
-  let scheduled: { assignmentId: string; customerId: string; jobId: string; address: string | null }[] =
+  let scheduled: { visitId: string; customerId: string; jobId: string; address: string | null }[] =
     [];
   if (tech) {
     const visits = (
@@ -103,7 +103,7 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
       if (!job) return [];
       return [
         {
-          assignmentId: a.id,
+          visitId: a.id,
           customerId: job.customer_id,
           jobId: a.job_id,
           address: job.customers?.address_line1 ?? null,
@@ -127,7 +127,7 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
   if (scheduled.length === 1 && scheduled[0].address) {
     return {
       status: 'needs_confirmation',
-      suggestion: { address: scheduled[0].address, assignmentId: scheduled[0].assignmentId },
+      suggestion: { address: scheduled[0].address, visitId: scheduled[0].visitId },
     };
   }
 

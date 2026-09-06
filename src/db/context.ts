@@ -26,7 +26,7 @@ import { factSourceIds, foldRetractedFacts } from './standingFacts.js';
 // (rung 9a) carries no date at all — every date field is null and the phrase
 // says so.
 export interface UpcomingVisit {
-  assignmentId: string;
+  visitId: string;
   jobId: string;
   jobTitle: string | null;
   technicianRef: string | null;
@@ -105,7 +105,7 @@ export async function getCustomerContext(
         const date = r.starts_at?.slice(0, 10) ?? null;
         const phrase = date ? `${weekdayFull(date)} ${date}` : 'no time set yet';
         return {
-          assignmentId: r.id,
+          visitId: r.id,
           jobId: r.job_id,
           jobTitle: r.jobs?.title ?? null,
           technicianRef: r.technicians?.ref ?? null,

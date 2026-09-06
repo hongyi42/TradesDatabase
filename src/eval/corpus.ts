@@ -1132,7 +1132,7 @@ export function buildCorpus(): Scenario[] {
       `Theo Marsh's afternoon on ${visitDate(ctx.tenant, 'visit-t2-wf-07')} just fell through — both customers are flexible and nothing was promised. Push each of those visits to his next open slots after that day.`,
       'yes, go ahead',
     ],
-    // Finding the two assignmentIds requires reading the day first.
+    // Finding the two visitIds requires reading the day first.
     graders: () => [gradeToolChoice({ required: ['get_team_schedule', 'move_visit'] })],
     endState: {
       describe: 'both afternoon visits now sit on later days',

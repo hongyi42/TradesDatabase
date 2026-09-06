@@ -111,12 +111,12 @@ describe('getCustomerContext', () => {
     });
 
     const ctx = await getCustomerContext(customer.id);
-    const ids = ctx.upcomingVisits.map((u) => u.assignmentId);
+    const ids = ctx.upcomingVisits.map((u) => u.visitId);
     expect(ids).toContain(placed.id);
     expect(ids).toContain(unplaced.id);
     expect(ids).toHaveLength(2); // cancelled + past excluded
 
-    const placedRow = ctx.upcomingVisits.find((u) => u.assignmentId === placed.id);
+    const placedRow = ctx.upcomingVisits.find((u) => u.visitId === placed.id);
     // Display convention: raw wall-clock slices, never timezone-converted —
     // and the day label is SERVER-composed (the resolve_date phrase pattern:
     // the eval caught the model writing "Tuesday, Aug 19" for a served
@@ -128,7 +128,7 @@ describe('getCustomerContext', () => {
       phrase: 'Friday 2027-03-05',
     });
 
-    const windowRow = ctx.upcomingVisits.find((u) => u.assignmentId === unplaced.id);
+    const windowRow = ctx.upcomingVisits.find((u) => u.visitId === unplaced.id);
     // INVERTED (rung 9a): this used to carry a stored range, and the phrase
     // read "between Monday … and Friday …". Nothing records when an untimed
     // visit should happen, so the ONLY honest phrase says so — the brief must
@@ -166,10 +166,10 @@ describe('getCustomerContext', () => {
     });
 
     const ctx = await getCustomerContext(mine.id);
-    expect(ctx.upcomingVisits.map((u) => u.assignmentId)).not.toContain(theirRow.id);
+    expect(ctx.upcomingVisits.map((u) => u.visitId)).not.toContain(theirRow.id);
     // And reading the OTHER tenant's customer directly never mixes mine in.
     const otherCtx = await getCustomerContext(theirs.id);
-    expect(otherCtx.upcomingVisits.map((u) => u.assignmentId)).toEqual([theirRow.id]);
+    expect(otherCtx.upcomingVisits.map((u) => u.visitId)).toEqual([theirRow.id]);
   });
 
   test('listRawCapturesForCustomer returns newest first', async () => {

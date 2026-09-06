@@ -687,7 +687,7 @@ export function buildToolCases(): ToolCase[] {
         label: 'move a visit',
         // Doctrine: a move is one-shot — act, then say what you did.
         args: (ctx) => ({
-          assignmentId: visitId(ctx.tenant, 'visit-t1-rs-01'),
+          visitId: visitId(ctx.tenant, 'visit-t1-rs-01'),
           date: nextWorkday(addDays(ctx.anchor, 9)),
           // 16:15, not 15:15: the rs fixtures themselves sit at 15:15 across
           // seven consecutive working days, so a move INTO that window collides
@@ -727,7 +727,7 @@ export function buildToolCases(): ToolCase[] {
     steps: [
       {
         label: 'unschedule',
-        args: (ctx) => ({ assignmentId: visitId(ctx.tenant, 'visit-t1-rs-03'), reason: 'eval: unschedule path' }),
+        args: (ctx) => ({ visitId: visitId(ctx.tenant, 'visit-t1-rs-03'), reason: 'eval: unschedule path' }),
         // The vocabulary matters: "cancel" a visit and "cancel" the job are
         // different acts, and the 2026-07-25 device pass found the agent
         // conflating them. The tool must disclose which one this is.

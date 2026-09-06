@@ -51,6 +51,7 @@ import {
   type Technician,
   type TechnicianState,
 } from '../db/index.js';
+import { visitIdOfSubject } from '../jobs/nudgeKinds.js';
 import { runToolLoop, ToolLoopLimitError, type ToolLoopLimit } from '../model/toolLoop.js';
 import { MAX_DELIVERY_ATTEMPTS, MAX_SERVE_COUNT } from '../control/nudgeQueue.js';
 import type { ForcedToolSpec } from '../model/forcedTool.js';
@@ -3792,7 +3793,12 @@ export async function runPlanner(
       // subject_ref (or a test fixture's literal) must not 400 the tenant's
       // entire tick. A filtered-out id simply contributes no fact.
       const uuidish = (v: string): boolean => UUID_ISH_RE.test(v);
-      const subjectRefs = [...new Set(open.map((n) => n.subject_ref))].filter(uuidish);
+      // A visit-scoped subject is `<visit id>@<starts_at>` since rung 9b, so
+      // parse before the uuid test — filtering the raw value would drop every
+      // visit gap on the floor and the planner would see none of them.
+      const subjectRefs = [
+        ...new Set(open.map((n) => visitIdOfSubject(n.subject_ref))),
+      ].filter(uuidish);
       const statusJobIds = readJobIds; // same rule, one definition (build 7)
       // Started together, settled together — independent reads, and a serial
       // await would add a round trip per firm per tick (the memory-read idiom).
@@ -3811,7 +3817,8 @@ export async function runPlanner(
       // The wording is the old specs' verbatim (nudgeKinds pre-build-5), so the
       // resolution a moot close writes reads the same as the sweep's did.
       const mootFactFor = (n: Nudge): string | null => {
-        const vs = visitStatusById.get(n.subject_ref);
+        // The map is keyed by VISIT ID; the subject carries its time too.
+        const vs = visitStatusById.get(visitIdOfSubject(n.subject_ref));
         if (vs === 'cancelled' || vs === 'completed') {
           return `the visit was ${vs} — nothing left to ask`;
         }

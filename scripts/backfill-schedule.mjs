@@ -202,7 +202,7 @@ for (const row of rows) {
     });
     await appendScheduleEvent({
       tenantId,
-      assignmentId: assignment.id,
+      visitId: assignment.id,
       kind: 'backfilled',
       actorRef: 'system',
       detail: { externalRowKey: key, technicianRef: row.technician_ref },

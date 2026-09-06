@@ -148,8 +148,11 @@ create view v_schedule as
          v.ends_at,
          v.completed_at,
          v.status,
+         -- No 'cancelled' arm: this view is confirmed+completed by definition
+         -- (the WHERE below), and a cancelled visit lives in v_cancelled_visits.
+         -- An arm that can never fire would tell a reader `stage='cancelled'`
+         -- is a thing to query here, and it would always return nothing.
          case
-           when v.status = 'cancelled' then 'cancelled'
            when v.status = 'completed' then
              case when exists (select 1 from visit_notes n where n.visit_id = v.id)
                   then 'reported' else 'happened' end

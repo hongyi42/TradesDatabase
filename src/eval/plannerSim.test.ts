@@ -1,3 +1,4 @@
+import { visitIdOfSubject } from '../jobs/nudgeKinds.js';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { createTenant } from '../db/tenants.js';
@@ -88,7 +89,9 @@ describe('seedScenario — explicit timestamps, pinned subjects', () => {
     expect(n.status).toBe('asked');
     // subject_ref pinned by kind: the ASSIGNMENT id for a visit gap, so the
     // live detector's once-ever dedup sees the gap as already surfaced.
-    expect(n.subject_ref).toBe(seeded.assignmentId);
+    // Rung 9b: the visit AT ITS TIME, so the once-ever index still lets a
+    // moved-and-overdue-again visit through. Parse to pin WHICH visit.
+    expect(visitIdOfSubject(n.subject_ref)).toBe(seeded.visitId);
     expect(new Date(n.asked_at).toISOString()).toBe(atOffset(t0Ms, '-24.5h'));
     expect(new Date(n.escalate_after).toISOString()).toBe(atOffset(t0Ms, '+2h'));
 
@@ -115,7 +118,7 @@ describe('seedScenario — explicit timestamps, pinned subjects', () => {
     // The visit stores the firm's wall clock (naive-local, as-if-UTC) — the
     // stored instant equals the naiveLocalISO string read as UTC.
     const { rows: visits } = await pg.query(`select starts_at from visits where id = $1`, [
-      seeded.assignmentId,
+      seeded.visitId,
     ]);
     expect(new Date(visits[0].starts_at).getTime()).toBe(
       Date.parse(toNaiveLocal(atOffset(t0Ms, '-27h'))),
@@ -379,7 +382,9 @@ describe('the sweep touches nothing (build 5)', () => {
     }, t0Ms);
     const gapId = seeded.nudgeIds.gap;
     const { rows: [g] } = await pg.query('select subject_ref from nudges where id = $1', [gapId]);
-    await pg.query("update visits set status = 'cancelled' where id = $1", [g.subject_ref]);
+    await pg.query("update visits set status = 'cancelled' where id = $1", [
+      visitIdOfSubject(g.subject_ref),
+    ]);
     // A queued relic past the OLD 18h delivery deadline.
     const { rows: [q] } = await pg.query(
       `insert into nudges (tenant_id, kind, subject_ref, status, question, queued_at, created_at)
@@ -443,7 +448,7 @@ describe('the planner ends a moot gap on the record (build 5)', () => {
       'select subject_ref from nudges where id = $1', [gapId],
     );
     await pg.query("update visits set status = 'cancelled' where id = $1", [
-      gapRow.subject_ref,
+      visitIdOfSubject(gapRow.subject_ref),
     ]);
 
     const stubLoop: typeof runToolLoop = async (req, _tools, execute) => {

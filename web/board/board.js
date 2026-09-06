@@ -127,7 +127,7 @@
     // the current calendar week) must keep native card-origin scrolling.
     // canAct comes from renderDay: actionable() AND the day not being past.
     return (
-      '<div class="stop' + (canAct ? ' draggable' : '') + '" data-id="' + esc(stop.assignmentId) + '"' +
+      '<div class="stop' + (canAct ? ' draggable' : '') + '" data-id="' + esc(stop.visitId) + '"' +
       ' data-start="' + esc(hhmm(stop.start)) + '" data-end="' + esc(hhmm(stop.end)) + '"' +
       ' data-ref="' + esc(stop.technicianRef || '') + '">' +
       '<div class="stop-time">' + esc(hhmm(stop.start)) + '–' + esc(hhmm(stop.end)) + '</div>' +
@@ -476,7 +476,7 @@
       ? 'No time set yet'
       : v.weekday + ' ' + v.date + ' · ' + v.startTime + '–' + v.endTime;
     return (
-      '<div class="bucket-row bucket-visit" data-id="' + esc(v.assignmentId) + '">' +
+      '<div class="bucket-row bucket-visit" data-id="' + esc(v.visitId) + '">' +
       '<div class="bucket-row-txt"><div class="bucket-row-main">' +
       esc(whenTxt) +
       '</div><div class="bucket-row-sub">' +
@@ -497,7 +497,7 @@
       // rescheduling it, which stays a chat job for now.
       (v.overdue
         ? ''
-        : '<button type="button" class="bucket-assign" data-id="' + esc(v.assignmentId) + '"' +
+        : '<button type="button" class="bucket-assign" data-id="' + esc(v.visitId) + '"' +
           (untimed
             ? ' data-tbd="1"'
             : ' data-date="' + esc(v.date) + '"' +
@@ -598,7 +598,7 @@
               if (assign.getAttribute('data-tbd')) {
                 postMove(
                   {
-                    assignmentId: assign.getAttribute('data-id'),
+                    visitId: assign.getAttribute('data-id'),
                     attachUnplaced: true,
                     technicianRef: ref,
                     reason: 'Assigned from the loose bucket',
@@ -612,7 +612,7 @@
               }
               postMove(
                 {
-                  assignmentId: assign.getAttribute('data-id'),
+                  visitId: assign.getAttribute('data-id'),
                   date: assign.getAttribute('data-date'),
                   startTime: assign.getAttribute('data-start'),
                   endTime: assign.getAttribute('data-end'),
@@ -790,8 +790,8 @@
     }, 300);
   }
 
-  function openDetail(assignmentId) {
-    fetch('/board/api/visit?assignmentId=' + encodeURIComponent(assignmentId), {
+  function openDetail(visitId) {
+    fetch('/board/api/visit?visitId=' + encodeURIComponent(visitId), {
       headers: authHeaders(),
     })
       .then(function (resp) {
@@ -1109,7 +1109,7 @@
           // day range.
           if (!d.start) {
             var tbdBody = {
-              assignmentId: d.assignmentId,
+              visitId: d.visitId,
               attachUnplaced: true,
               reason: ref ? 'Assigned on the visit sheet' : 'Unassigned on the visit sheet',
             };
@@ -1126,7 +1126,7 @@
             return;
           }
           var body = {
-            assignmentId: d.assignmentId,
+            visitId: d.visitId,
             date: vDate,
             startTime: hhmm(d.start),
             endTime: hhmm(d.end),
@@ -1161,11 +1161,11 @@
           var btn = e.target.closest && e.target.closest('[data-form]');
           if (!btn) return;
           if (btn.getAttribute('data-form') === 'cancel') {
-            openDetail(d.assignmentId);
+            openDetail(d.visitId);
             return;
           }
           var body = {
-            assignmentId: d.assignmentId,
+            visitId: d.visitId,
             date: val(ov, 'qe-date'),
             startTime: val(ov, 'qe-start'),
             endTime: val(ov, 'qe-end'),
@@ -1202,7 +1202,7 @@
         title: d.jobTitle,
         duration: d.jobDurationMinutes,
         onDone: function () {
-          openDetail(d.assignmentId); // same id — a job edit never remints the visit
+          openDetail(d.visitId); // same id — a job edit never remints the visit
         },
       });
     }
@@ -1484,7 +1484,7 @@
     var currentRef = card.getAttribute('data-ref');
     var sameDay = card.closest('.day').getAttribute('data-date') === targetDate;
     var body = {
-      assignmentId: card.getAttribute('data-id'),
+      visitId: card.getAttribute('data-id'),
       date: targetDate,
       startTime: card.getAttribute('data-start'),
       endTime: card.getAttribute('data-end'),
@@ -1523,7 +1523,7 @@
   }
 
   function cancelFlow(card) {
-    var body = { assignmentId: card.getAttribute('data-id') };
+    var body = { visitId: card.getAttribute('data-id') };
     apiPost('/board/api/cancel', body, true).then(function (p) {
       if (!p.ok) {
         toast(p.body.error || 'Unschedule failed (' + p.status + ')', true);
@@ -1532,7 +1532,7 @@
       var commit = function () {
         apiPost(
           '/board/api/cancel',
-          { assignmentId: body.assignmentId, reason: 'Unscheduled on the dispatch board' },
+          { visitId: body.visitId, reason: 'Unscheduled on the dispatch board' },
           false,
         )
           .then(function (r) {

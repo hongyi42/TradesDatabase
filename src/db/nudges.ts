@@ -36,7 +36,7 @@ export const OPEN_NUDGE_STATUSES: NudgeStatus[] = ['pending', 'queued', 'asked']
 export interface CreatePendingNudgeInput {
   tenantId: string;
   kind: ReviewKind; // shared vocabulary with review_items — one gap, one name
-  subjectRef: string; // the gap's subject (assignment id for overdue_visit_gap)
+  subjectRef: string; // the gap's subject (`<visit id>@<starts_at>` for overdue_visit_gap)
   technicianId: string;
   context?: Json;
 }

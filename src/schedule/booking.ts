@@ -29,7 +29,8 @@ import {
   listIdenticalUnassignedVisits,
   listUntimedVisitsForJob,
   listOpenJobsForCustomer,
-  rescheduleVisit,
+  moveVisitRow,
+  attachVisitTechnician,
   updateVisitStatus,
   updateJobDetails,
   updateJobStatus,
@@ -504,7 +505,7 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
 
   await appendScheduleEvent({
     tenantId,
-    assignmentId: assignment.id,
+    visitId: assignment.id,
     kind: 'booked',
     actorRef: input.actorRef,
     detail: {
@@ -529,7 +530,7 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
 
 export interface MoveVisitInput {
   tenantId: string;
-  assignmentId: string;
+  visitId: string;
   date: string; // YYYY-MM-DD
   startTime: string; // HH:MM
   endTime?: string; // HH:MM, default = preserve the old duration
@@ -561,7 +562,7 @@ interface ResolvedMove {
 async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
   const { tenantId } = input;
   if (!input.reason?.trim()) throw new Error('reason is required for a move');
-  const old = await getVisitForTenant(input.assignmentId, tenantId);
+  const old = await getVisitForTenant(input.visitId, tenantId);
   if (!old) throw new Error('assignment not found');
   if (old.status !== 'confirmed' && old.status !== 'proposed') {
     throw new Error(`cannot move a ${old.status} assignment`);
@@ -649,7 +650,7 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
 }
 
 export interface MoveVisitPreview {
-  assignmentId: string;
+  visitId: string;
   customerName: string | null;
   technicianName: string | null;
   fromDay: string;
@@ -666,7 +667,7 @@ export async function previewMoveVisit(input: MoveVisitInput): Promise<MoveVisit
   const job = await getJob(r.old.job_id);
   const customer = job ? await getCustomer(job.customer_id) : null;
   return {
-    assignmentId: r.old.id,
+    visitId: r.old.id,
     customerName: customer?.name ?? null,
     technicianName: r.technician?.display_name ?? null,
     fromDay: visitDay(r.old),
@@ -681,81 +682,75 @@ export async function previewMoveVisit(input: MoveVisitInput): Promise<MoveVisit
 }
 
 export interface MoveVisitResult {
-  cancelled: Visit;
-  created: Visit;
+  // ONE row, the SAME id it had before (rung 9b). There is no `cancelled`/
+  // `created` pair any more: a move edits the visit, so nothing is destroyed
+  // and nothing is minted. `previousTechnicianId` is what the board's push
+  // needs to tell the person who LOST the visit.
+  visit: Visit;
+  previousTechnicianId: string | null;
   warning?: string;
 }
 
 export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult> {
   const { tenantId } = input;
   const r = await resolveMove(input);
+  const previousTechnicianId = r.old.technician_id;
+  const fromDay = visitDay(r.old);
 
-  let result: { cancelled: Visit; created: Visit };
+  // ONE statement, so there is no window to be stranded in. The old code
+  // cancelled first and inserted second, which meant an overlap raced at
+  // exactly the wrong moment left the visit CANCELLED WITH NO SUCCESSOR and
+  // the caller apologising for a booking it had destroyed. An UPDATE that
+  // trips the exclusion constraint changes nothing at all, so the honest
+  // report is simply "that slot is taken".
+  let visit: Visit;
   try {
-    result = await rescheduleVisit(r.old.id, {
+    visit = await moveVisitRow(r.old.id, {
       startsAt: r.startISO,
       endsAt: r.endISO,
       ...(input.unassign
-        ? { technicianId: null } // explicit null = DETACH (rescheduleVisit's !== undefined idiom)
+        ? { technicianId: null } // explicit null = DETACH (the !== undefined idiom)
         : input.technicianRef && r.technician
           ? { technicianId: r.technician.id }
           : {}),
       reason: input.reason,
-      status: 'confirmed', // default-'proposed' would vanish from every reader
+      status: 'confirmed', // a moved visit is on the schedule, never 'proposed'
     });
   } catch (err) {
-    // rescheduleVisit cancels FIRST, so ANY insert failure here — the
-    // raced overlap OR a transient DB fault — leaves the visit UNSCHEDULED.
-    // Say so honestly (a bare "not moved" would be false: the old booking is
-    // gone) and record the stranding in the ledger. The event append is
-    // best-effort: it must not mask the real failure.
-    const why = isOverlapViolation(err)
-      ? 'slot was taken concurrently'
-      : err instanceof Error
-        ? err.message
-        : String(err);
-    try {
-      await appendScheduleEvent({
-        tenantId,
-        assignmentId: r.old.id,
-        kind: 'move_failed',
-        actorRef: input.actorRef,
-        // Caller-supplied detail rides along, so a batch caller can stamp its
-        // own identity onto every ledger row it writes — including this
-        // stranding one.
-        detail: { ...extraDetail(input.eventDetailExtra), toDay: input.date, reason: why },
-      });
-    } catch {
-      /* advisory */
+    if (isOverlapViolation(err)) {
+      throw new Error(
+        `${r.technician?.display_name ?? 'that technician'} already has a confirmed visit ` +
+          `overlapping ${input.date} ${input.startTime}–${r.endTime} — the visit has NOT moved`,
+      );
     }
-    throw new Error(
-      `the old booking was cancelled but re-booking failed (${why}) — ` +
-        'the visit is currently UNSCHEDULED; book it again',
-    );
+    throw err;
   }
 
   await appendScheduleEvent({
     tenantId,
-    assignmentId: result.created.id,
+    visitId: visit.id,
     kind: 'moved',
     actorRef: input.actorRef,
     detail: {
       ...extraDetail(input.eventDetailExtra), // computed keys below win clashes
-      fromDay: visitDay(r.old),
+      fromDay,
       toDay: input.date,
-      previousAssignmentId: r.old.id,
+      // The visit keeps its id now, so "who held it before" is the thing a
+      // reader actually needs — the old id would just be this one.
+      previousTechnicianId,
     },
   });
 
   return {
-    ...result,
+    visit,
+    previousTechnicianId,
     ...(r.warning ? { warning: r.warning } : {}),
   };
 }
 
 export interface UnscheduleVisitInput {
   tenantId: string;
-  assignmentId: string;
+  visitId: string;
   reason: string;
   // Extra ledger-event detail — same contract as Book/MoveVisitInput's, so a
   // batch caller can stamp its own identity onto the rows it writes.
@@ -764,7 +759,7 @@ export interface UnscheduleVisitInput {
 }
 
 export interface UnscheduleVisitPreview {
-  assignmentId: string;
+  visitId: string;
   customerName: string | null;
   day: string;
   requiresConfirmation: boolean; // the doctrine's verdict for this cancel
@@ -772,9 +767,9 @@ export interface UnscheduleVisitPreview {
 
 export async function previewUnscheduleVisit(
   tenantId: string,
-  assignmentId: string,
+  visitId: string,
 ): Promise<UnscheduleVisitPreview> {
-  const target = await getVisitForTenant(assignmentId, tenantId);
+  const target = await getVisitForTenant(visitId, tenantId);
   if (!target) throw new Error('assignment not found');
   if (target.status !== 'confirmed' && target.status !== 'proposed') {
     throw new Error(`cannot unschedule a ${target.status} assignment`);
@@ -782,7 +777,7 @@ export async function previewUnscheduleVisit(
   const job = await getJob(target.job_id);
   const customer = job ? await getCustomer(job.customer_id) : null;
   return {
-    assignmentId: target.id,
+    visitId: target.id,
     customerName: customer?.name ?? null,
     day: visitDay(target),
     // The one surviving gate (rung 9a): cancelling a PLACED visit is
@@ -796,7 +791,7 @@ export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Visi
   if (!input.reason?.trim()) throw new Error('reason is required for an unschedule');
   // Tenant guard first — this module is the reuse surface for Plans 2–3, and
   // updateVisitStatus alone is id-only.
-  const target = await getVisitForTenant(input.assignmentId, input.tenantId);
+  const target = await getVisitForTenant(input.visitId, input.tenantId);
   if (!target) throw new Error('assignment not found');
   // Actionable message when the row went terminal between stage and confirm
   // (e.g. a move cancelled it and re-created the visit under a new id) — the
@@ -811,7 +806,7 @@ export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Visi
   const cancelled = await updateVisitStatus(target.id, 'cancelled', input.reason);
   await appendScheduleEvent({
     tenantId: input.tenantId,
-    assignmentId: cancelled.id,
+    visitId: cancelled.id,
     kind: 'cancelled',
     actorRef: input.actorRef,
     detail: {
@@ -831,13 +826,15 @@ export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Visi
 // the old row, insert a fresh unplaced row carrying the range/promise.
 // Placed rows are refused — move_visit owns them (same times).
 export interface AttachUnplacedResult {
-  cancelled: Visit;
-  created: Visit;
+  // Same shape and same reason as MoveVisitResult: attaching a person edits the
+  // visit, so its id survives and the tray row the manager tapped still exists.
+  visit: Visit;
+  previousTechnicianId: string | null;
 }
 
 interface AttachUnplacedGuardInput {
   tenantId: string;
-  assignmentId: string;
+  visitId: string;
   technicianRef: string | null; // null = DETACH (park back unassigned)
 }
 
@@ -849,7 +846,7 @@ async function resolveAttachUnplaced(
   input: AttachUnplacedGuardInput,
 ): Promise<{ old: Visit; technician: Technician | null }> {
   const { tenantId } = input;
-  const old = await getVisitForTenant(input.assignmentId, tenantId);
+  const old = await getVisitForTenant(input.visitId, tenantId);
   if (!old) throw new Error('assignment not found');
   if (old.status !== 'confirmed' && old.status !== 'proposed') {
     throw new Error(`cannot attach to a ${old.status} assignment`);
@@ -870,7 +867,7 @@ async function resolveAttachUnplaced(
 }
 
 export interface AttachUnplacedPreview {
-  assignmentId: string;
+  visitId: string;
   technicianRef: string | null; // resolved target; null = detach
   // An attach is reversible (unassign:true parks it back) — never
   // confirm-gated (the confirmation doctrine).
@@ -882,7 +879,7 @@ export async function previewAttachUnplacedVisit(
 ): Promise<AttachUnplacedPreview> {
   const { old, technician } = await resolveAttachUnplaced(input);
   return {
-    assignmentId: old.id,
+    visitId: old.id,
     technicianRef: technician?.ref ?? null,
     requiresConfirmation: false,
   };
@@ -897,57 +894,34 @@ export async function attachUnplacedVisit(
   const { tenantId } = input;
   if (!input.reason?.trim()) throw new Error('reason is required for an attach');
   const { old, technician } = await resolveAttachUnplaced(input);
-  const cancelled = await updateVisitStatus(old.id, 'cancelled', input.reason);
-  let created: Visit;
-  try {
-    created = await createVisit({
-      tenantId,
-      jobId: old.job_id,
-      technicianId: technician?.id ?? null,
-      startsAt: null,
-      endsAt: null,
-      status: 'confirmed',
-      createdAt: old.created_at, // an attach keeps the visit's original age
-    });
-  } catch (err) {
-    // Cancel-first means ANY insert failure leaves the visit gone from every
-    // reader — say so honestly and ledger the stranding, exactly like
-    // moveVisit's identical window (review finding: the bare escape read as a
-    // no-op 500 while the visit had really been removed).
-    const why = err instanceof Error ? err.message : String(err);
-    try {
-      await appendScheduleEvent({
-        tenantId,
-        assignmentId: old.id,
-        kind: 'move_failed',
-        actorRef: input.actorRef,
-        detail: { toDay: visitDay(old), reason: why },
-      });
-    } catch {
-      /* advisory */
-    }
-    throw new Error(
-      `the old row was removed but re-creating the visit failed (${why}) — ` +
-        'the visit is currently UNSCHEDULED; book it again',
-    );
-  }
+  const previousTechnicianId = old.technician_id;
+
+  // An attach only changes WHO — the visit stays untimed. One guarded UPDATE,
+  // so the row the manager tapped in the tray cannot vanish underneath them
+  // (which is exactly what the old cancel-then-insert could do on a failure).
+  const visit = await attachVisitTechnician(old.id, {
+    technicianId: technician?.id ?? null,
+    reason: input.reason,
+    status: 'confirmed', // never leave it 'proposed' — see the note on the core
+  });
+
   // 'moved' so boardNotify's existing copy fires: an attach pushes "a visit
   // landed on your schedule: <day>, time not set" to the new person; a detach
   // pushes "moved off your schedule" to the displaced one (the day/span
   // fallbacks own the unplaced rendering).
   await appendScheduleEvent({
     tenantId,
-    assignmentId: created.id,
+    visitId: visit.id,
     kind: 'moved',
     actorRef: input.actorRef,
     detail: {
       fromDay: visitDay(old),
-      toDay: visitDay(created),
+      toDay: visitDay(visit),
       attachedTechnicianRef: technician?.ref ?? null,
-      previousAssignmentId: old.id,
+      previousTechnicianId,
     },
   });
-  return { cancelled, created };
+  return { visit, previousTechnicianId };
 }
 
 // ---- Shared edit cores (plan 4a.5): ONE body per verb, every surface calls it ----
@@ -1009,7 +983,7 @@ export async function updateJobIdentity(
 // stage-and-confirm; there is no one-shot path.
 
 export interface CancelJobVisit {
-  assignmentId: string;
+  visitId: string;
   day: string;
   startTime: string;
   technicianRef: string | null;
@@ -1067,7 +1041,7 @@ export async function previewCancelJob(
       ref = refCache.get(row.technician_id) ?? null;
     }
     visits.push({
-      assignmentId: row.id,
+      visitId: row.id,
       day: visitDay(row),
       // An unplaced visit has a day but no time — say so rather than crash
       // the cancel preview (its cascade must cover EVERY live row).
@@ -1113,7 +1087,7 @@ export async function cancelJob(input: CancelJobInput): Promise<CancelJobResult>
     cancelledVisits.push(cancelled);
     await appendScheduleEvent({
       tenantId,
-      assignmentId: cancelled.id,
+      visitId: cancelled.id,
       kind: 'cancelled',
       actorRef: input.actorRef,
       detail: {

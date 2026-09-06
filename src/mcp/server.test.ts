@@ -3781,10 +3781,10 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(booked.data.untimed).toBe(true);
       expect(booked.data.date).toBeNull();
       expect(booked.data.startTime).toBeNull();
-      const assignmentId = booked.data.assignmentId as string;
+      const visitId = booked.data.visitId as string;
       const { rows } = await pg.query(
         'select starts_at, ends_at from visits where id = $1',
-        [assignmentId],
+        [visitId],
       );
       expect(rows[0].starts_at).toBeNull();
       expect(rows[0].ends_at).toBeNull();
@@ -3794,14 +3794,14 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       // date to clamp, and therefore no way to mis-date it.
       const recall = await callWith('get_team_schedule', { unassignedOnly: true });
       const untimed = recall.data.untimed as Array<Record<string, unknown>>;
-      const mine = untimed.find((st) => st.assignmentId === assignmentId);
+      const mine = untimed.find((st) => st.visitId === visitId);
       expect(mine).toBeDefined();
       expect(mine?.unassigned).toBe(true);
       // …and it appears on no day group at all.
       const dayStops = (
         recall.data.days as Array<{ date: string; stops: Array<Record<string, unknown>> }>
       ).flatMap((d) => d.stops);
-      expect(dayStops.some((st) => st.assignmentId === assignmentId)).toBe(false);
+      expect(dayStops.some((st) => st.visitId === visitId)).toBe(false);
 
       // find_slots on the untimed visit: duration from the JOB's recorded
       // length. The search window no longer defaults to the visit's own days
@@ -3813,14 +3813,14 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         thu: [['08:00', '17:00']], fri: [['08:00', '17:00']], sat: [], sun: [],
       });
       const jobId = booked.data.jobId as string;
-      const noLen = await callWith('find_slots', { assignmentId });
+      const noLen = await callWith('find_slots', { visitId });
       expect(noLen.isError).toBe(true); // fail-closed: no length anywhere yet
       const upd = await callWith('update_job', { jobId, durationMinutes: 120 });
       expect(upd.data.status).toBe('ok');
       // find_slots' OWN earliestDate/latestDate survive rung 9a — they are a
       // SEARCH RANGE ("look between these dates"), never a commitment.
       const slots = await callWith('find_slots', {
-        assignmentId, earliestDate: '2026-12-14', latestDate: '2026-12-14',
+        visitId, earliestDate: '2026-12-14', latestDate: '2026-12-14',
       });
       expect(slots.data.status).toBe('ok');
       expect(slots.data.durationAssumption).toContain("job's recorded length");
@@ -3871,7 +3871,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         technicianRef: 'tech-mcp',
       });
       expect(booked.data.status).toBe('booked');
-      const assignmentId = booked.data.assignmentId as string;
+      const visitId = booked.data.visitId as string;
       // INVERTED (rung 9a): it used to land on its stored range's earliest day
       // and be re-clamped into every window that touched the range. There is
       // no range, so it lands on NO day — and rides the top-level `untimed`
@@ -3882,9 +3882,9 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       const fullStops = (
         full.data.days as Array<{ date: string; stops: Array<Record<string, unknown>> }>
       ).flatMap((d) => d.stops);
-      expect(fullStops.some((st) => st.assignmentId === assignmentId)).toBe(false);
+      expect(fullStops.some((st) => st.visitId === visitId)).toBe(false);
       const untimed = full.data.untimed as Array<Record<string, unknown>>;
-      expect(untimed.find((u) => u.assignmentId === assignmentId)).toMatchObject({
+      expect(untimed.find((u) => u.visitId === visitId)).toMatchObject({
         technicianRef: 'tech-mcp',
         unassigned: false,
         // The customer NAME must resolve. Untimed rows come from their own
@@ -3900,10 +3900,10 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       const outsideStops = (
         outside.data.days as Array<{ stops: Array<Record<string, unknown>> }>
       ).flatMap((d) => d.stops);
-      expect(outsideStops.some((st) => st.assignmentId === assignmentId)).toBe(false);
+      expect(outsideStops.some((st) => st.visitId === visitId)).toBe(false);
       expect(
         (outside.data.untimed as Array<Record<string, unknown>>).some(
-          (u) => u.assignmentId === assignmentId,
+          (u) => u.visitId === visitId,
         ),
       ).toBe(true);
 
@@ -3913,9 +3913,9 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       const wide = await callWith('book_visit', {
         customerId: customer.id, title: 'whole month',
       });
-      const wideId = wide.data.assignmentId as string;
+      const wideId = wide.data.visitId as string;
       await callWith('update_job', { jobId: wide.data.jobId, durationMinutes: 60 });
-      const slots = await callWith('find_slots', { assignmentId: wideId });
+      const slots = await callWith('find_slots', { visitId: wideId });
       expect(slots.data.status).not.toBe('invalid_range');
       const searched = slots.data.searched as { days: number } | undefined;
       if (searched) expect(searched.days).toBeLessThanOrEqual(14);
@@ -4052,7 +4052,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         endTime: '12:00',
       });
       expect(booked.data.warning).toContain('no working pattern');
-      const assignmentId = booked.data.assignmentId as string;
+      const visitId = booked.data.visitId as string;
 
       // Team view: the manager sees ANOTHER technician's stop, with a
       // scheduleVersion.
@@ -4061,7 +4061,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       const v1 = team.data.scheduleVersion as number;
       expect(v1).toBeGreaterThan(0);
       const stops = team.data.days[0].stops as Array<Record<string, unknown>>;
-      const stop = stops.find((s) => s.assignmentId === assignmentId);
+      const stop = stops.find((s) => s.visitId === visitId);
       expect(stop).toMatchObject({
         technicianRef: 'tech-mcp',
         customer: 'Sched Henderson',
@@ -4080,14 +4080,19 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
 
       // MOVE to another day: one call, no gate (rung 9a).
       const moved = await callWith('move_visit', {
-        assignmentId,
+        visitId,
         date: '2026-12-02',
         startTime: '13:00',
         reason: 'customer asked for Wednesday',
       });
       expect(moved.data.status).toBe('moved');
-      const movedId = moved.data.assignmentId as string;
-      expect(movedId).not.toBe(assignmentId);
+      const movedId = moved.data.visitId as string;
+      // THE HEADLINE INVERSION of rung 9b. This asserted `not.toBe` — a move
+      // used to cancel the row and mint a successor, so the id the manager (or
+      // a gap, or a note, or a board link) was holding died on every move. A
+      // visit is ONE object now, and its id outlives its schedule.
+      expect(movedId).toBe(visitId);
+      expect(moved.data.stage).toBe('placed');
 
       // Version advanced (booked + moved events).
       const after = await callWith('get_team_schedule', { from: '2026-12-02', to: '2026-12-02' });
@@ -4096,7 +4101,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       // resolve_review refuses to "resolve" a live scheduling token; dismissing
       // cancels it (then its confirm finds nothing).
       const cancelStage = await callWith('unschedule_visit', {
-        assignmentId: movedId,
+        visitId: movedId,
         reason: 'testing the refusal',
       });
       expect(cancelStage.data.status).toBe('needs_confirmation');
@@ -4122,7 +4127,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
 
       // CANCEL for real: restage (fresh preview) then confirm.
       const cancelStage2 = await callWith('unschedule_visit', {
-        assignmentId: movedId,
+        visitId: movedId,
         reason: 'customer cancelled',
       });
       expect(cancelStage2.data.preview).toMatchObject({ customerName: 'Sched Henderson' });
@@ -4160,11 +4165,11 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       // as the job's length — a silently-stored value unless echoed here, the
       // same rule that put jobTitle on this result (live E2E 2026-07-21).
       expect(booked.data.jobDurationMinutes).toBe(60);
-      const id = booked.data.assignmentId as string;
+      const id = booked.data.visitId as string;
 
       const team = await callWith('get_team_schedule', { from: '2026-12-15', to: '2026-12-15' });
       const stop = (team.data.days[0].stops as Array<Record<string, unknown>>).find(
-        (s) => s.assignmentId === id,
+        (s) => s.visitId === id,
       );
       expect(stop).toBeDefined();
 
@@ -4183,7 +4188,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       // Moving it is one-shot too, whatever the customer was told — the agent
       // is expected to have READ the job's record for promises first.
       const moved = await callWith('move_visit', {
-        assignmentId: id,
+        visitId: id,
         date: '2026-12-16',
         startTime: '09:00',
         reason: 'internal reshuffle',
@@ -4194,7 +4199,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       // INVERTED (rung 9a): the visit is PLACED, so a customer is expecting it
       // — unscheduling now stages and asks, where it used to be one-shot.
       const cancelStage = await callWith('unschedule_visit', {
-        assignmentId: moved.data.assignmentId,
+        visitId: moved.data.visitId,
         reason: 'not needed',
       });
       expect(cancelStage.data.status).toBe('needs_confirmation');
@@ -4211,7 +4216,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       });
       expect(unplaced.data.status).toBe('booked');
       const dropped = await callWith('unschedule_visit', {
-        assignmentId: unplaced.data.assignmentId,
+        visitId: unplaced.data.visitId,
         reason: 'never needed',
       });
       expect(dropped.data.status).toBe('unscheduled');
@@ -4239,7 +4244,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       });
       expect(booked.data.status).toBe('booked');
       const staged = await callWith('unschedule_visit', {
-        assignmentId: booked.data.assignmentId,
+        visitId: booked.data.visitId,
         reason: 'customer went quiet',
       });
       expect(staged.data.status).toBe('needs_confirmation');
@@ -4312,18 +4317,18 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(booked.data.status).toBe('booked');
       expect(booked.data.unassigned).toBe(true);
       expect(booked.data.technicianRef).toBeNull();
-      const id = booked.data.assignmentId as string;
+      const id = booked.data.visitId as string;
 
       // The board window covering the day flags it person-less.
       const team = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05' });
       const stop = (team.data.days[0].stops as Array<Record<string, unknown>>).find(
-        (s) => s.assignmentId === id,
+        (s) => s.visitId === id,
       );
       expect(stop).toMatchObject({ unassigned: true, technicianRef: null, technicianName: null });
 
       // Attaching a person same day/time → ONE-SHOT move.
       const moved = await callWith('move_visit', {
-        assignmentId: id,
+        visitId: id,
         date: '2027-01-05',
         startTime: '09:00',
         technicianRef: 'tech-mcp',
@@ -4332,7 +4337,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(moved.data.status).toBe('moved');
       const after = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05' });
       const attached = (after.data.days[0].stops as Array<Record<string, unknown>>).find(
-        (s) => s.assignmentId === moved.data.assignmentId,
+        (s) => s.visitId === moved.data.visitId,
       );
       expect(attached).toMatchObject({ unassigned: false, technicianRef: 'tech-mcp' });
     } finally {
@@ -4353,7 +4358,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         endTime: '10:00',
       });
       expect(booked.data.status).toBe('booked');
-      const farId = booked.data.assignmentId as string;
+      const farId = booked.data.visitId as string;
       // An ASSIGNED far-out visit — must never appear in the recall view.
       const aBooked = await callWith('book_visit', {
         customerId: customer.id,
@@ -4367,9 +4372,9 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
 
       // Default board read (today) does NOT show the far-out visit…
       const today = await callWith('get_team_schedule', {});
-      const todaysIds = (today.data.days as Array<{ stops: Array<{ assignmentId: string }> }>)
+      const todaysIds = (today.data.days as Array<{ stops: Array<{ visitId: string }> }>)
         .flatMap((d) => d.stops)
-        .map((s) => s.assignmentId);
+        .map((s) => s.visitId);
       expect(todaysIds).not.toContain(farId);
       // …and a >14-day range without the flag still errors (cap unchanged).
       const capped = await callWith('get_team_schedule', { from: '2027-01-01', to: '2027-03-01' });
@@ -4382,10 +4387,10 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(recall.data.scheduleVersion).toBeGreaterThan(0);
       const recallStops = (recall.data.days as Array<{ stops: Array<Record<string, unknown>> }>)
         .flatMap((d) => d.stops);
-      const farStop = recallStops.find((s) => s.assignmentId === farId);
+      const farStop = recallStops.find((s) => s.visitId === farId);
       expect(farStop).toMatchObject({ unassigned: true, customer: 'Recall Roy' });
       // Assigned visits never appear here.
-      expect(recallStops.map((s) => s.assignmentId)).not.toContain(aBooked.data.assignmentId);
+      expect(recallStops.map((s) => s.visitId)).not.toContain(aBooked.data.visitId);
 
       // Plan 4a agent parity: the recall view also carries the bucket's other
       // half — open jobs with NO visit at all — plus the explaining note.
@@ -5350,7 +5355,7 @@ describe('find_slots (Plan 3b)', () => {
         endTime: '10:30',
       });
       const visitBrand = await callWith('find_slots', {
-        assignmentId: booked.data.assignmentId,
+        visitId: booked.data.visitId,
         assumedType: 'instal',
       });
       expect(visitBrand.isError).toBe(true);
@@ -5471,7 +5476,7 @@ describe('find_slots (Plan 3b)', () => {
     }
   });
 
-  test('assignmentId subject: row duration, own-slot exclusion, terminal refusal', { timeout: 30_000 }, async () => {
+  test('visitId subject: row duration, own-slot exclusion, terminal refusal', { timeout: 30_000 }, async () => {
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
       // An UNASSIGNED parked visit is a valid subject; its booked length rides.
@@ -5481,7 +5486,7 @@ describe('find_slots (Plan 3b)', () => {
         endsAt: '2027-03-15T11:00:00.000Z',
       });
       const who = await callWith('find_slots', {
-        assignmentId: parked.id,
+        visitId: parked.id,
         technicianRef: 'slots-bob',
         earliestDate: '2027-03-15',
         latestDate: '2027-03-15',
@@ -5498,7 +5503,7 @@ describe('find_slots (Plan 3b)', () => {
         endsAt: '2027-03-22T17:00:00.000Z',
       });
       const rehome = await callWith('find_slots', {
-        assignmentId: whole.id,
+        visitId: whole.id,
         technicianRef: 'slots-bob',
         earliestDate: '2027-03-22',
         latestDate: '2027-03-22',
@@ -5514,7 +5519,7 @@ describe('find_slots (Plan 3b)', () => {
         endsAt: '2027-03-29T10:00:00.000Z',
       });
       await updateVisitStatus(dead.id, 'cancelled');
-      const refused = await callWith('find_slots', { assignmentId: dead.id });
+      const refused = await callWith('find_slots', { visitId: dead.id });
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain('cancelled');
     } finally {
@@ -5579,7 +5584,7 @@ describe('find_slots (Plan 3b)', () => {
       expect(impossible.data.noFit.hint).toContain('shorter visit');
       const displaced = impossible.data.noFit.displacementCandidates as Array<Record<string, unknown>>;
       expect(displaced.length).toBeGreaterThanOrEqual(2); // the two 03-08 visits
-      expect(displaced[0]).toHaveProperty('assignmentId');
+      expect(displaced[0]).toHaveProperty('visitId');
       expect(displaced[0]).not.toHaveProperty('promiseLevel');
     } finally {
       await mgrClient.close();
@@ -5710,7 +5715,7 @@ describe('find_slots (Plan 3b)', () => {
     );
     try {
       const res = await aliceCall('find_slots', {
-        assignmentId: subject.id,
+        visitId: subject.id,
         technicianRef: 'slots-alice',
         earliestDate: '2027-04-12',
         latestDate: '2027-04-12',
@@ -5738,7 +5743,7 @@ describe('find_slots (Plan 3b)', () => {
     );
     try {
       const res = await bobCall('find_slots', {
-        assignmentId: subject.id,
+        visitId: subject.id,
         technicianRef: 'slots-bob',
         earliestDate: '2027-04-12',
         latestDate: '2027-04-12',
@@ -5772,7 +5777,7 @@ describe('find_slots (Plan 3b)', () => {
     );
     try {
       const res = await propCall('find_slots', {
-        assignmentId: proposed.id,
+        visitId: proposed.id,
         technicianRef: 'slots-bob',
         earliestDate: '2027-04-12',
         latestDate: '2027-04-12',
@@ -6052,7 +6057,7 @@ describe('move_visit unassign (plan 4a.5)', () => {
     try {
       // Non-boolean unassign REJECTED, never coerced (find_slots rule).
       const badFlag = await callWith('move_visit', {
-        assignmentId: 'x',
+        visitId: 'x',
         date: '2027-07-05',
         startTime: '09:00',
         reason: 'r',
@@ -6071,7 +6076,7 @@ describe('move_visit unassign (plan 4a.5)', () => {
       });
       expect(booked.data.status).toBe('booked');
       const parked = await callWith('move_visit', {
-        assignmentId: booked.data.assignmentId,
+        visitId: booked.data.visitId,
         date: '2027-07-05',
         startTime: '09:00',
         unassign: true,
@@ -6083,13 +6088,13 @@ describe('move_visit unassign (plan 4a.5)', () => {
       expect(parked.data.note).toContain('Parked in one step');
       const parkedRow = await pg.query(
         'select technician_id from visits where id = $1',
-        [parked.data.assignmentId],
+        [parked.data.visitId],
       );
       expect(parkedRow.rows[0].technician_id).toBeNull();
 
       // Both steering args at once → the shared verb refuses.
       const both = await callWith('move_visit', {
-        assignmentId: parked.data.assignmentId,
+        visitId: parked.data.visitId,
         date: '2027-07-05',
         startTime: '09:00',
         technicianRef: 'park-probe-tech',
@@ -6113,7 +6118,7 @@ describe('move_visit unassign (plan 4a.5)', () => {
       });
       expect(other.data.status).toBe('booked');
       const crossDay = await callWith('move_visit', {
-        assignmentId: other.data.assignmentId,
+        visitId: other.data.visitId,
         date: '2027-07-07', // a DIFFERENT day, and unassigning at the same time
         startTime: '09:00',
         unassign: true,
@@ -6124,7 +6129,7 @@ describe('move_visit unassign (plan 4a.5)', () => {
       expect(crossDay.data.unassigned).toBe(true);
       const confirmedRow = await pg.query(
         'select technician_id, starts_at from visits where id = $1',
-        [crossDay.data.assignmentId],
+        [crossDay.data.visitId],
       );
       expect(confirmedRow.rows[0].technician_id).toBeNull(); // detached…
       // …and the day change landed too: a park keeps its time, it only drops
@@ -6272,19 +6277,19 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
       const jobId = booked.data.jobId as string;
       const stage = await callWith('cancel_job', { jobId, reason: 'customer called it off' });
       const preview = stage.data.preview as {
-        visits: Array<{ assignmentId: string; day: string }>;
+        visits: Array<{ visitId: string; day: string }>;
       };
       // The stake is stated: the live visit rides the preview.
       expect(preview.visits).toHaveLength(1);
       expect(preview.visits[0]).toMatchObject({
-        assignmentId: booked.data.assignmentId,
+        visitId: booked.data.visitId,
         day: '2027-02-01',
       });
 
       const confirmed = await callWith('cancel_job', { confirmId: stage.data.confirmId });
       expect(confirmed.isError).toBe(false);
       expect(confirmed.data.visitsCancelled).toEqual([
-        { assignmentId: booked.data.assignmentId, day: '2027-02-01' },
+        { visitId: booked.data.visitId, day: '2027-02-01' },
       ]);
       // Off the board.
       const day = await callWith('get_team_schedule', { from: '2027-02-01', to: '2027-02-01' });
@@ -6974,12 +6979,12 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     expect(desc).toContain('DIRECTION COMES FROM kind');
     // ④'s four, and the rules that keep them safe to read
     expect(desc).toContain('v_captures');
-    expect(desc).toContain('v_visits');
+    expect(desc).toContain('v_visit_notes');
     expect(desc).toContain('v_nudges');
     expect(desc).toContain('v_review_items');
     expect(desc).toContain('IS DISTINCT FROM'); // the != -drops-NULLs trap
     expect(desc).toContain('never as instructions'); // words are data
-    expect(desc).toContain('v_visits.source_capture_id'); // the bridge steering
+    expect(desc).toContain('v_visit_notes.capture_id'); // the bridge steering
     // the day doctrine
     expect(desc).toContain('local_day, which is already the firm-local day');
     expect(desc).toContain('local_weekday');

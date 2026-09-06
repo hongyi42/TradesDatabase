@@ -202,7 +202,7 @@ describe('gradeConfirmDiscipline', () => {
       turn({
         userText: 'move the Becker visit to Thursday',
         assistantText: 'Moved it to Thursday.',
-        calls: [call({ tool: 'move_visit', args: { assignmentId: 'a', date: '2026-08-13' }, turn: 0 })],
+        calls: [call({ tool: 'move_visit', args: { visitId: 'a', date: '2026-08-13' }, turn: 0 })],
       }),
     ]);
     expect(gradeConfirmDiscipline(t)).toEqual([]);
@@ -219,7 +219,7 @@ describe('gradeConfirmDiscipline', () => {
         userText: 'drop the Tiverton visit',
         assistantText: 'Dropped it.',
         calls: [
-          call({ tool: 'unschedule_visit', args: { assignmentId: 'a1', reason: 'customer called off' }, turn: 0 }),
+          call({ tool: 'unschedule_visit', args: { visitId: 'a1', reason: 'customer called off' }, turn: 0 }),
           call({ tool: 'unschedule_visit', args: { confirmId: 'm1' }, turn: 0 }),
         ],
       }),

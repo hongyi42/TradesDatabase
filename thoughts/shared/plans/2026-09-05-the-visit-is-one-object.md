@@ -284,11 +284,41 @@ is unchanged (read back); attach keeps id. `scheduling.test.ts`: `moveVisitRow` 
 :189 length pin unchanged. `boardApi.test.ts`: param names. `boardNotify` moved-between-people from
 `previousTechnicianId`. Table-driven `stageOf`.
 
-### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `grep -rn "assignmentId\|assignment_id\|previousAssignmentId\|rescheduleAssignment" src web scripts --include=*.ts --include=*.js --include=*.mjs | grep -v "\.test\."` → only
-      `src/db/scheduleEvents.ts` and `src/telegram/boardNotify.ts:89` (the kept column)
-- [ ] `npx supabase db reset && npm test`
+### Automated verification — ✅ 2026-09-05
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` — **2544 passed / 12 skipped
+      (2556)**; Phase 1 ended at 2539 / 12 (2551). +5 tests, **0 deleted**: the three reschedule cases were
+      INVERTED into move cases (net 0), and five were added — overlap-leaves-the-visit-put, cannot-move-a-
+      cancelled-visit, the CAS loser, `stageOf` vs `v_schedule.stage`, and the DB guard firing mid-move
+      through `moveVisit` itself. Full suite run twice more to confirm no flake.
+- [x] old identifiers (non-test) → **1**, and it is deliberate: `boardNotify.ts:128` reads
+      `previousAssignmentId` as the FALLBACK for `moved` events already on file (schedule_events is
+      append-only, so those rows are permanent) and for any written during the deploy window by a service
+      still on the old commit. `assignment_id` survives only in `scheduleEvents.ts` (the kept column) and
+      `boardNotify.ts:100` (reading it).
+- [x] `npx supabase db reset && npm test` — both migrations apply from scratch, suite green after
+
+**Beyond the plan's text, and why.** The plan's "Overdue subject" bullet named the mint site and three
+readers but missed the DEDUP PROBE (`watchers.ts:479-487`), which asks the three stores for exact
+`subject_ref` values. Changing the mint alone would have made every historical gap read as never-surfaced
+and re-flagged the entire backlog on the first tick after deploy — 100 open overdue items on the pilot. The
+probe now asks for BOTH spellings and matches either, so legacy bare-id rows still suppress and a moved
+visit still re-detects. Also `moveVisitRow` refuses a cancelled/completed visit: the old cancel-then-insert
+got that for free from the status machine (`cancelled → cancelled` is not a legal edge), and an UPDATE has
+to say it.
+
+**Reviewer findings, fixed.** (1) `plannerSim` built the subject from a hand-formatted time string
+(`…T09:00:00.000Z`) while the watcher mints from the row PostgREST returns (`…T09:00:00+00:00`) — the keys
+never matched, so every sim tick minted a duplicate observation; it now uses the row's own value. (2)
+`boardNotify` read only the new `previousTechnicianId`, so the person who LOST a visit would have stopped
+being notified for every event already on file — a fallback restores it. (3) `attachUnplacedVisit`
+hand-wrote a Supabase query inside `src/schedule/` (CLAUDE.md forbids it) and dropped the explicit
+`status:'confirmed'` the old create carried, which would have left an attached `proposed` row invisible to
+every confirmed-filtered reader; it is now `attachVisitTechnician` in the typed layer. (4) The 23P01 path
+through `moveVisit` was untested — the existing test only reached `resolveMove`'s pre-check. (5) The CAS
+branch was untested and its scope undocumented; the new test uses a ROW LOCK rather than a sleep, because
+the first version raced and failed intermittently. (6) `v_schedule`'s `cancelled` arm was unreachable (the
+view is confirmed + completed by construction) and has been removed, so no reader is told to query a value
+that returns nothing. (7) The two comments the plan named were updated.
 
 ### Live verification (agent-executable) — none until Phase 4. ### Manual verification — none.
 *Continue to Phase 3.*

@@ -23,6 +23,8 @@ import {
   JOB_COST_GAP_SPEC,
   OVERDUE_VISIT_GAP_SPEC,
   type NudgeKindSpec,
+  visitSubjectRef,
+  visitIdOfSubject,
 } from './nudgeKinds.js';
 
 // Pure unit tests — every collaborator injected (lifecycle.test.ts pattern).
@@ -232,7 +234,13 @@ describe('runWatchers — the firm\'s OWN detection thresholds (plan 2026-08-29)
         return obsRow({ subject_ref: input.subjectRef });
       },
     }));
-    expect(observed).toEqual(['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6']); // ALL seven, oldest first
+    // The minted subject is the visit AT ITS TIME (rung 9b, visitSubjectRef):
+    // ids alone stopped being unique per gap once a move kept the id.
+    expect(observed).toEqual(
+      ['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6'].map((id, i) =>
+        visitSubjectRef(id, `2026-08-15T0${i}:00:00.000Z`),
+      ),
+    ); // ALL seven, oldest first
     expect(summary.observationsCreated).toBe(7);
   });
 
@@ -411,7 +419,12 @@ describe('runWatchers', () => {
         return obsRow({ subject_ref: input.subjectRef });
       },
     }));
-    expect(observed).toEqual(['a3', 'a4', 'a5', 'a6']); // fresh only, oldest first, NO cap
+    // a0–a2 were flagged BEFORE the remodel, so their rows carry BARE ids —
+    // and they are still correctly excluded, which is the compatibility this
+    // asserts. The fresh four mint the composite.
+    expect(observed).toEqual(
+      ['a3', 'a4', 'a5', 'a6'].map((id) => visitSubjectRef(id, '2026-08-16T07:00:00.000Z')),
+    ); // fresh only, oldest first, NO cap
     expect(summary.gapsFound).toBe(7);
     expect(summary.freshGaps).toBe(4);
     expect(summary.observationsCreated).toBe(4);
@@ -447,7 +460,11 @@ describe('runWatchers', () => {
         return obsRow({ subject_ref: input.subjectRef });
       },
     }));
-    expect(observed.map((o) => o.subjectRef)).toEqual(['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6']);
+    expect(observed.map((o) => o.subjectRef)).toEqual(
+      ['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6'].map((id, i) =>
+        visitSubjectRef(id, `2026-08-15T0${i}:00:00.000Z`),
+      ),
+    );
     expect(summary.observationsCreated).toBe(7);
     // The tech rides along ADVISORILY when known, and its absence is normal.
     expect(observed[0].technicianId).toBe('tech-1');
@@ -469,8 +486,11 @@ describe('runWatchers', () => {
   test('live: a null create (concurrent notice) is uncounted; ever-flagged is never re-noticed', async () => {
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => [visit({ id: 'a1' }), visit({ id: 'a2', job_id: 'j2' })],
+      // The subject is `<id>@<starts_at>` now — match on the visit it names.
       createObservation: async (input) =>
-        input.subjectRef === 'a1' ? obsRow({ subject_ref: 'a1' }) : null,
+        visitIdOfSubject(input.subjectRef) === 'a1'
+          ? obsRow({ subject_ref: input.subjectRef })
+          : null,
     }));
     expect(summary.observationsCreated).toBe(1); // a2 was noticed concurrently — not counted
     expect(summary.gapsFound).toBe(2);
@@ -768,7 +788,7 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
         return obsRow({ subject_ref: input.subjectRef });
       },
     }));
-    expect(created).toEqual(['a1', 'a2', 'a3']); // ALL fresh, oldest first — brake of 1 unread
+    expect(created.map(visitIdOfSubject)).toEqual(['a1', 'a2', 'a3']); // ALL fresh, oldest first — brake of 1 unread
     expect(summary.observationsCreated).toBe(3);
     expect(summary.tenantErrors).toBe(0);
   });

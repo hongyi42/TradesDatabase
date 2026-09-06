@@ -198,50 +198,50 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L4509 · The quiet-firm skip
 - L4512 · No v_office_messages
 - L4514 · B65-REACH-A-MANAGER
-- L4759 · ON DELETE SET NULL is an UPDATE.
-- L4761 · Naive-local vs real UTC, again. _(2026-09-08)_
-- L4766 · A once-ever index plus stable ids = a detector that fires once, forever.
-- L4773 · A liveness filter can be bypassed by an id rename.
-- L4777 · A compat view bridges the deploy. _(2026-09-05)_
-- L4791 · schedule_events.assignment_id KEEPS ITS NAME this rung.
-- L4794 · The completed-stamp CHECK was dropped.
-- L4881 · A green suite proves nothing when you mass-edit tests.
-- L4886 · A test can pin the bug.
-- L4889 · Reachability is not a compile error.
-- L4959 · A technician's seat agent has NO scheduling verb at any tier.
-- L4962 · Live specimen in the pilot _(2026-09-01)_
-- L4972 · Counting.
-- L4974 · Detection.
-- L4979 · Booking.
-- L4992 · Build 6 (vocabulary): _(2026-09-01)_
-- L4997 · Build 7 (detectors report): _(2026-09-05)_
-- L5007 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L4766 · ON DELETE SET NULL is an UPDATE.
+- L4768 · Naive-local vs real UTC, again. _(2026-09-08)_
+- L4773 · A once-ever index plus stable ids = a detector that fires once, forever.
+- L4780 · A liveness filter can be bypassed by an id rename.
+- L4784 · A compat view bridges the deploy. _(2026-09-05)_
+- L4798 · schedule_events.assignment_id KEEPS ITS NAME this rung.
+- L4801 · The completed-stamp CHECK was dropped.
+- L4888 · A green suite proves nothing when you mass-edit tests.
+- L4893 · A test can pin the bug.
+- L4896 · Reachability is not a compile error.
+- L4966 · A technician's seat agent has NO scheduling verb at any tier.
+- L4969 · Live specimen in the pilot _(2026-09-01)_
+- L4979 · Counting.
+- L4981 · Detection.
+- L4986 · Booking.
+- L4999 · Build 6 (vocabulary): _(2026-09-01)_
+- L5004 · Build 7 (detectors report): _(2026-09-05)_
+- L5014 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L5403 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L5426 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L5473 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L5510 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L5542 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L5547 · Every member row stores the FULL grouped message in question.
-- L5551 · The attribution stamp is an audit link, not a gate.
-- L5555 · The derived stamp requires a capture a badge-holder SPOKE
-- L5559 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L5565 · The follow-up loop has two halves and both had to be written down.
-- L5571 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L5645 · Batching works.
-- L5647 · The follow-up leg works, including the half that fails silently.
-- L5651 · Both attribution paths fired, each in its designed case.
-- L5655 · Escalation fired correctly
-- L5656 · The planner's group-aware pacing is the result worth keeping.
+- L5410 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L5433 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L5480 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L5517 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L5549 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L5554 · Every member row stores the FULL grouped message in question.
+- L5558 · The attribution stamp is an audit link, not a gate.
+- L5562 · The derived stamp requires a capture a badge-holder SPOKE
+- L5566 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L5572 · The follow-up loop has two halves and both had to be written down.
+- L5578 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L5652 · Batching works.
+- L5654 · The follow-up leg works, including the half that fails silently.
+- L5658 · Both attribution paths fired, each in its designed case.
+- L5662 · Escalation fired correctly
+- L5663 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L6008 · Evals:
-- L6015 · Runbooks:
-- L6020 · Decision history with citations:
-- L6024 · This file
+- L6015 · Evals:
+- L6022 · Runbooks:
+- L6027 · Decision history with citations:
+- L6031 · This file
 
 <!-- INDEX:END -->
 

@@ -32,11 +32,12 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 213 documents · 204 live · 9 superseded.
+Regenerate with `npm run decisions:index`. 214 documents · 204 live · 10 superseded.
 
 ## Superseded — do not build on these
 
 - `2026-09-03` ~~[2026-09-03-a-visit-is-not-a-person](shared/plans/2026-09-03-a-visit-is-not-a-person.md)~~ → _replacement not recorded_
+- `2026-09-02` ~~[2026-09-02-a-visit-is-not-a-person](shared/research/2026-09-02-a-visit-is-not-a-person.md)~~ → **[2026-09-06-a-visit-carries-a-crew](shared/research/2026-09-06-a-visit-carries-a-crew.md)**
 - `2026-08-31` ~~[2026-08-31-the-planners-inbox](shared/plans/2026-08-31-the-planners-inbox.md)~~ → **[2026-09-02-the-record-has-authors](shared/plans/2026-09-02-the-record-has-authors.md)**
 - `2026-08-26` ~~[2026-08-26-the-decline-verb](shared/plans/2026-08-26-the-decline-verb.md)~~ → **[2026-08-31-a-gap-is-not-an-ask](shared/plans/2026-08-31-a-gap-is-not-an-ask.md)**
 - `2026-08-22` ~~[2026-08-22-brain-memory-foundations](shared/research/2026-08-22-brain-memory-foundations.md)~~ → **[2026-08-23-memory-architecture-substrate](shared/research/2026-08-23-memory-architecture-substrate.md)**
@@ -48,6 +49,7 @@ Regenerate with `npm run decisions:index`. 213 documents · 204 live · 9 supers
 
 ## Live
 
+- `2026-09-06` `research` [2026-09-06-a-visit-carries-a-crew](shared/research/2026-09-06-a-visit-carries-a-crew.md) `landed` — "Rung 9c — a visit carries a crew: what it takes for ONE visit row to name SEVERAL technicians, and where the…
 - `2026-09-05` `plan` [2026-09-05-fleet-to-openrouter-muse-spark](shared/plans/2026-09-05-fleet-to-openrouter-muse-spark.md) · _draft_ — Move the six-seat fleet from Fireworks/GLM-5.2 to OpenRouter — Muse Spark 1.3 primary, Gemini Flash (floating…
 - `2026-09-05` `plan` [2026-09-05-the-rails-come-out](shared/plans/2026-09-05-the-rails-come-out.md) `describes 1 deleted file` — "Rung 9, part A — delete the promise ladder and the stored window; no schema rail restricts the agent"
 - `2026-09-05` `plan` [2026-09-05-the-visit-is-one-object](shared/plans/2026-09-05-the-visit-is-one-object.md) `describes 1 deleted file` `drift 25` — Rung 9b — the visit is one object: rename assignments→visits, drop the per-note visits table, moves in place,…
@@ -57,7 +59,6 @@ Regenerate with `npm run decisions:index`. 213 documents · 204 live · 9 supers
 - `2026-09-03` `research` [2026-09-03-the-schedule-is-the-managers](shared/research/2026-09-03-the-schedule-is-the-managers.md) `not landed` `describes 8 deleted files` `drift 17` — "Rung 8 — the schedule is the manager's: the demolition footprint of the autonomous solver"
 - `2026-09-02` `plan` [2026-09-02-one-send-verb](shared/plans/2026-09-02-one-send-verb.md) `drift 26` — "Build 6.5 — one generalized `send`: the planner chooses who to talk to, and a message need not be about a ga…
 - `2026-09-02` `plan` [2026-09-02-the-record-has-authors](shared/plans/2026-09-02-the-record-has-authors.md) `drift 21` — "Build 7 — the record has authors: the planner opens its own observations, and a seat's inform can become one"
-- `2026-09-02` `research` [2026-09-02-a-visit-is-not-a-person](shared/research/2026-09-02-a-visit-is-not-a-person.md) `not landed` `describes 1 deleted file` `drift 27` — "Build 8 — a visit is not a person: where the one-person-per-visit assumption lives"
 - `2026-09-02` `research` [2026-09-02-the-detectors-report](shared/research/2026-09-02-the-detectors-report.md) `not landed` `describes 1 deleted file` `drift 29` — "Build 7 — the detectors report: they stop minting; the record is planner-kept. What is left after builds 4,…
 - `2026-09-01` `plan` [2026-09-01-intent-verbs-and-the-doctrine](shared/plans/2026-09-01-intent-verbs-and-the-doctrine.md) `drift 27` — "Build 6 — intent verbs + the doctrine: escalate and leave are deleted, dismiss/recover reach every stage, ho…
 - `2026-09-01` `research` [2026-09-01-one-send-verb](shared/research/2026-09-01-one-send-verb.md) `landed` `drift 25` — "Build 6.5 ground — one send verb: the gap-keyed decision shape, the three delivery paths, the attribution ma…

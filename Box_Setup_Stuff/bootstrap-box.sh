@@ -1315,7 +1315,31 @@ EOF
     # next restart, bot deaf. The s2 canary caught it; keep the canary.
     # Replaced whole (not merged) so a rebuild's leftovers cannot survive here.
     #
-    # messages.inbound.debounceMs 2000 (2026-09-05, user decision): a person who
+    # messages.inbound.debounceMs 2000 (2026-09-05 — set to 2000, briefly raised to
+    # 5000, then RETURNED to 2000 the same evening; the reasoning is the point).
+    #
+    # THE COST IS PER MESSAGE, NOT PER PAIR. scheduleFlush (inbound-debounce.js:126)
+    # RESETS the timer on every new item, so this window is added to EVERY inbound
+    # text before its turn starts, whether or not a second message follows — on top
+    # of a turn already measured at ~8-15s. That is why the window stays small.
+    #
+    # WHAT COVERS THE REST IS `steer`, NOT A LONGER WINDOW. messages.queue.mode
+    # defaults to "steer" (500ms, unset here = vendor default): a message arriving
+    # while a run is active is injected into that run after the current tool calls
+    # and before the next model call — no second turn, no second reply
+    # (https://docs.openclaw.ai/concepts/queue). So the debounce only has to cover
+    # the sliver BEFORE the first turn starts; steer owns everything after it.
+    #
+    # MEASURED, and it is why the first live test looked like a failure: "Hi" then
+    # "What is joy's schedule again" arrived 11.1s apart (gateway log 03:27:45.820
+    # -> 03:27:56.963) and turn 1 had already ENDED at 03:27:54.014 — 2.9s before
+    # the second message landed. Nothing was broken and no window short of ~12s
+    # would have merged them; there was simply no overlap to steer into. Telegram
+    # stamps both messages to the same MINUTE, which is what made the screenshot
+    # look like a bug: ALWAYS read the gateway log's milliseconds, not the chat
+    # clock. Owner ruling 2026-09-05: a 5s wait before every reply is too high a
+    # price for a case steer already handles.
+    # A person who
     # types "hey" / "the pump at 42 elm" / "it's leaking" as three messages
     # otherwise gets THREE turns and three replies, the first answering "hey"
     # before the content has arrived. OpenClaw's default is 0 = off

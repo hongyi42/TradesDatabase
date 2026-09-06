@@ -67,6 +67,27 @@ visits finding from the 9b deploy is deliberately NOT here.
 - **Out of scope** — stale-confirmed visits defeating attach step 2; any-participant ask-of-record; the
   board rebuild; rungs 10–12.
 
+### Amended during Phase 4
+- **The deploy's second window is NOT free, and the plan said it was.** Removing the bridge writes in
+  the same commit the services ship means that between "five services live" and migration 2 the
+  catalog names views that do not exist, new bookings leave the old `v_schedule`'s `technician_ref`
+  empty, and the still-live `no_confirmed_overlap` reads a stale column (a possible FALSE "has NOT
+  moved"). Migration 2 moved to immediately after `live`, before the seat restarts and before any
+  tick. Nothing is papered over; the window is made short and its cost is written down.
+- **The date-eval ground truth counts TRIPS, not people.** The join rewrite turned one crew visit
+  into N rows, so `dayCounts` would have graded the agent's (correct) "1 visit" against a manifest
+  saying 2 — a false failure on every count question covering a crew day. The crew is a subquery now,
+  never a join, in all three eval scripts.
+- **The catalog's worked example must join `v_schedule`.** `v_visit_participants` carries every trip
+  including CANCELLED ones and has no `local_day`, so an example that counted it directly would have
+  taught the agent to report called-off work as work done — a recorded live incident
+  (engineering-memory L1308) — and to bucket evening visits on the wrong UTC day.
+- **A move that loses its only joiner to a race lands a trip with NOBODY on it** (the Phase 2
+  carry-forward). With the bridge gone, `upsertParticipants` is the only thing that puts a person on
+  a visit. The warning and the MCP result now say so outright.
+- **The §9c record's own entries have to be `- **Title**` bullets** or `decisions:index` cannot lift
+  them into the map every session is told to grep.
+
 ### Amended during Phase 3
 - **`unassigned` COUNTS people, it does not name them.** A visit held by a technician whose roster
   row belongs to another tenant is a trip we cannot put a NAME on, not an empty one. Deriving
@@ -442,25 +463,46 @@ SQL/selects on `a.technician_id` → participants; `node --check` each `.mjs`.
 box.sh` rule 5 (+1 sentence: "to send two people, pass technicianRefs"), 2026-09-02 research gets a
 superseded pointer to this plan. `npm run decisions:index`.
 
-**Deploy order** — 0. re-check pilot captures (3-day count) and open cancel tokens; 1. `apply_migration`
-`20260907100000`; read back `count(visit_participants) == count(visits where technician_id not null)`,
-the constraint on `pg_constraint`, all three triggers; probe `visits?select=*,visit_participants(technician_id,technicians(ref))&limit=1`
-→ 200; 2. sync the fork; 3. deploy `TradesDatabase`, `lifecycle-heart`, `Board_Worker` (autoDeploy
-off) and verify all five `live`; 4. `nemoclaw <s> gateway restart` on s2, then s3 s5 s6 s7 s8 (arg
-schemas changed); 5. one clean `lifecycle-heart` tick; 6. `apply_migration` `20260907100100`; read back
-`information_schema.columns` has no `visits.technician_id`, schema md5 pilot == local.
+**Deploy order** — 0. re-check pilot captures (3-day count), open cancel tokens, and
+`select to_regclass('public.assignments')` is null (a surviving 9b compat view would make the column
+drop fail); 1. `apply_migration` `20260907100000`; read back
+`count(visit_participants) == count(visits where technician_id not null)`, the constraint on
+`pg_constraint`, both triggers; probe
+`visits?select=*,visit_participants(technician_id,technicians(ref))&limit=1` → 200 AND
+`visits?select=id,technicians(ref)&limit=1` → 200 (the junction check: a 300 here means the surrogate
+key was lost); 2. sync the fork; 3. deploy `TradesDatabase`, `lifecycle-heart`, `Board_Worker`
+(autoDeploy off) and verify all five `live`; **4. `apply_migration` `20260907100100` IMMEDIATELY** —
+read back `information_schema.columns` has no `visits.technician_id`, schema md5 pilot == local;
+5. `nemoclaw <s> gateway restart` on s2, then s3 s5 s6 s7 s8 (arg schemas changed); 6. one clean
+`lifecycle-heart` tick.
+
+**WHY MIGRATION 2 MOVED UP, and what the remaining window costs** (Phase 4 review). The first
+window — migration 1 applied, services still on the old commit — degrades NOTHING: the column, its
+guard and its index all survive, and the trigger's bridge arm keeps participants true while the old
+code writes the column. The SECOND window, between the services going live and migration 2, is not
+free, because this rung's commit stops writing the bridge column:
+  * the new `SPINE_VIEW_CATALOG` names `technician_refs` and `v_visit_participants`, which do not
+    exist until migration 2 — a planner tick in that window gets 42703/42P01 on a `spine_read`;
+  * visits booked in the window leave `technician_id` NULL, so the still-live OLD `v_schedule`
+    shows `technician_ref` empty for them;
+  * the still-live `no_confirmed_overlap` on `visits` reads a now-stale `technician_id`, so moving
+    a pre-9c visit whose original holder is leaving the crew can be refused with a false
+    "already has a confirmed visit … the visit has NOT moved".
+None of it corrupts data, and all three end the moment migration 2 lands — so the window is made as
+SHORT as possible (migration 2 immediately after `live`, before the seat restarts and before any
+deliberate tick) rather than papered over. Do not run a `lifecycle-heart` tick inside it.
 
 ### Automated verification
-- [ ] `db reset` applies both; `typecheck` · `lint` · `test` · `build`; `node --check` on 5 `.mjs`
-- [ ] db test: `v_schedule` returns ONE row for a two-person visit with both refs in order;
+- [x] `db reset` applies both; `typecheck` · `lint` · `test` · `build`; `node --check` on 5 `.mjs`
+- [x] db test: `v_schedule` returns ONE row for a two-person visit with both refs in order;
       `v_visit_participants` walls the tenant; the catalog pin names the new columns and not `technician_ref`.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP, `RENDER_API_KEY`, `ssh tradesbox`, fork push rights.
-- [ ] The window, stated: between migration 1 and the deploy, old code writes the column and the
-      trigger keeps participants true; between the deploy and migration 2, new code writes the bridge
-      column too, so `v_schedule` and the old guard stay coherent — NOTHING degrades in either window
-      (this is what the bridge buys; review §5).
+- [ ] The window, stated HONESTLY (corrected in Phase 4 review — the original claim that nothing
+      degrades in either window was wrong once the bridge writes were removed in this same commit):
+      window 1 is clean; window 2 costs a broken catalog, empty `technician_ref` on the old view, and
+      a possible false overlap refusal — see **WHY MIGRATION 2 MOVED UP** above. Keep it short.
 - [ ] Steps 1–6 with read-backs. Then on s2 (fresh session ids, the 9b recipe): book "Ben and Joy" on a
       Default-Tenant job → `visit_participants` has 2 rows for ONE visit, one `booked` event with both
       refs; move it → both participant copies moved, `previousTechnicianIds` on the event; s5 (ben) files a

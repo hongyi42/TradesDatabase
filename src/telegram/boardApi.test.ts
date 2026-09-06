@@ -106,7 +106,7 @@ beforeAll(async () => {
   await updateTechnician(t3.id, { telegram_user_id: '900000003', state: 'active' });
 
   // Three confirmed stops on one day via the REAL booking verb: t1, t2, and an
-  // unassigned visit (no technicianRef — Feature A's null technician_id).
+  // unassigned visit (no technicianRef — Feature A's nobody-on-it shape).
   const casa = await createCustomer({
     tenantId,
     name: 'Board Casa',
@@ -655,11 +655,13 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     expect(body.untimed).toBe(true);
     // The row: new id, still untimed, new person; the old row cancelled.
     const { rows } = await pg.query(
-      `select id, starts_at, technician_id from visits where id = $1`,
+      `select v.id, v.starts_at,
+              (select count(*)::int from visit_participants p where p.visit_id = v.id) as crew
+         from visits v where v.id = $1`,
       [body.visitId],
     );
     expect(rows[0].starts_at).toBeNull();
-    expect(rows[0].technician_id).not.toBeNull();
+    expect(rows[0].crew).toBe(1);
     stripAssignmentId = rows[0].id as string; // afterAll cancels the live row
   });
 
@@ -694,11 +696,13 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     const parked = (await detach.json()) as Record<string, unknown>;
     expect(parked.unassigned).toBe(true);
     const { rows } = await pg.query(
-      'select id, starts_at, technician_id from visits where id = $1',
+      `select v.id, v.starts_at,
+              (select count(*)::int from visit_participants p where p.visit_id = v.id) as crew
+         from visits v where v.id = $1`,
       [parked.visitId],
     );
     expect(rows[0].starts_at).toBeNull();
-    expect(rows[0].technician_id).toBeNull();
+    expect(rows[0].crew).toBe(0);
     stripAssignmentId = rows[0].id as string;
   });
 
@@ -720,10 +724,13 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     expect(okBody.status).toBe('preview');
     expect(okBody.attach).toBe(true);
     expect(okBody.requiresConfirmation).toBe(false);
-    const after = await pg.query('select technician_id, status from visits where id = $1', [
+    const after = await pg.query(
+      `select v.status,
+              (select count(*)::int from visit_participants p where p.visit_id = v.id) as crew
+         from visits v where v.id = $1`, [
       stripAssignmentId,
     ]);
-    expect(after.rows[0].technician_id).toBeNull(); // preview wrote nothing
+    expect(after.rows[0].crew).toBe(0); // preview wrote nothing
     expect(after.rows[0].status).toBe('confirmed');
 
     // A PLACED subject refuses at PREVIEW time, not after the picker walk
@@ -827,8 +834,8 @@ describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {
     // would never mint it).
     hostileVisitId = (
       await pg.query<{ id: string }>(
-        `insert into visits (tenant_id, job_id, technician_id, starts_at, ends_at, status)
-         values ($1, $2, null, $3, $4, 'confirmed') returning id`,
+        `insert into visits (tenant_id, job_id, starts_at, ends_at, status)
+         values ($1, $2, $3, $4, 'confirmed') returning id`,
         [tenantId, theirJob.id, `${relDate(11)}T09:00:00Z`, `${relDate(11)}T10:00:00Z`],
       )
     ).rows[0].id;
@@ -1085,18 +1092,23 @@ describe('cross-tenant nested rows never leak through the embedded read', () => 
     // the real booking verbs are tenant-scoped and would never create it.
     // Unassigned + its own day so no_confirmed_overlap cannot fire.
     const inserted = await pg.query<{ id: string }>(
-      `insert into visits
-         (tenant_id, job_id, technician_id, starts_at, ends_at, status)
-       values ($1, $2, null, '${DAY_X1}T09:00:00Z', '${DAY_X1}T10:00:00Z', 'confirmed')
+      `insert into visits (tenant_id, job_id, starts_at, ends_at, status)
+       values ($1, $2, '${DAY_X1}T09:00:00Z', '${DAY_X1}T10:00:00Z', 'confirmed')
        returning id`,
       [tenantId, theirJob.id],
     );
     strandedId = inserted.rows[0].id;
 
     // Second hostile shape, isolating the TECHNICIAN guard: our own job and
-    // customer (so those resolve normally) but technician_id pointing at the
+    // customer (so those resolve normally) but a PARTICIPANT pointing at the
     // other firm's roster row. Without the technician tenant check this
     // discloses their ref + display name.
+    //
+    // Inserted straight into visit_participants (rung 9c): the fill trigger
+    // checks the ROW's tenant against the VISIT's, deliberately not the
+    // technician's — a roster row from another firm is a bug the FK cannot see,
+    // and every reader re-checks before printing a name. That is exactly the
+    // guard under test.
     const ourCustomer = await createCustomer({
       tenantId,
       name: 'Tenant-Safe Casa',
@@ -1118,13 +1130,16 @@ describe('cross-tenant nested rows never leak through the embedded read', () => 
       displayName: 'SECRET Rival Tech',
     });
     const insertedTech = await pg.query<{ id: string }>(
-      `insert into visits
-         (tenant_id, job_id, technician_id, starts_at, ends_at, status)
-       values ($1, $2, $3, '${DAY_X2}T09:00:00Z', '${DAY_X2}T10:00:00Z', 'confirmed')
+      `insert into visits (tenant_id, job_id, starts_at, ends_at, status)
+       values ($1, $2, '${DAY_X2}T09:00:00Z', '${DAY_X2}T10:00:00Z', 'confirmed')
        returning id`,
-      [tenantId, ourJob.id, theirTech.id],
+      [tenantId, ourJob.id],
     );
     strandedTechId = insertedTech.rows[0].id;
+    await pg.query(
+      `insert into visit_participants (tenant_id, visit_id, technician_id) values ($1, $2, $3)`,
+      [tenantId, strandedTechId, theirTech.id],
+    );
 
     // Third hostile shape, isolating the CUSTOMER guard: a job in OUR tenant
     // whose customer_id points at THEIR customer. createJob takes tenantId and
@@ -1138,9 +1153,8 @@ describe('cross-tenant nested rows never leak through the embedded read', () => 
     });
     mismatchedJobId = mismatchedJob.id;
     const insertedCust = await pg.query<{ id: string }>(
-      `insert into visits
-         (tenant_id, job_id, technician_id, starts_at, ends_at, status)
-       values ($1, $2, null, '${DAY_X3}T09:00:00Z', '${DAY_X3}T10:00:00Z', 'confirmed')
+      `insert into visits (tenant_id, job_id, starts_at, ends_at, status)
+       values ($1, $2, '${DAY_X3}T09:00:00Z', '${DAY_X3}T10:00:00Z', 'confirmed')
        returning id`,
       [tenantId, mismatchedJob.id],
     );
@@ -1172,7 +1186,8 @@ describe('cross-tenant nested rows never leak through the embedded read', () => 
       jobTitle: 'Tenant-Safe Job',
       technicianRef: null,
       technicianName: null,
-      // technician_id is SET (just to another firm), so this is not "unassigned".
+      // Somebody IS on it (just from another firm), so this is not "unassigned"
+      // — the count says occupied, the names are withheld.
       unassigned: false,
     });
 
@@ -1255,12 +1270,18 @@ describe('board write path (Phase 3)', () => {
   const assignmentRows = (whereSql: string, params: unknown[] = []) =>
     pg
       .query(
-        `select a.id, a.status, a.technician_id, a.starts_at::text as starts_at, t.ref
-           from visits a left join technicians t on t.id = a.technician_id
+        // LEFT joins through the crew list (rung 9c): callers filter on
+        // `t.ref`, and a trip with nobody on it must still come back with a
+        // null ref — exactly what the old left join to technicians gave.
+        `select a.id, a.status, a.starts_at::text as starts_at, t.ref,
+                (select count(*)::int from visit_participants p2 where p2.visit_id = a.id) as crew
+           from visits a
+           left join visit_participants p on p.visit_id = a.id
+           left join technicians t on t.id = p.technician_id
           where ${whereSql} order by a.created_at`,
         params,
       )
-      .then((r) => r.rows as Array<{ id: string; status: string; technician_id: string | null; starts_at: string; ref: string | null }>);
+      .then((r) => r.rows as Array<{ id: string; status: string; crew: number; starts_at: string; ref: string | null }>);
 
   test('technician slip → 403 managers only; malformed body → 400; empty technicianRef → 400', async () => {
     const resp = await post('/board/api/move', {}, 900000002);
@@ -1354,7 +1375,7 @@ describe('board write path (Phase 3)', () => {
     );
     expect(badFlag.status).toBe(400);
     // Preview echoes the park; commit detaches — SQL read-back is the second
-    // channel: new confirmed row with technician_id NULL, old row cancelled.
+    // channel: new confirmed row with NOBODY on it, old row cancelled.
     const body = { visitId: assignment.id, date: DAY_PARK, startTime: '09:00', unassign: true, reason: 'tech pulled off' };
     const preview = await post('/board/api/move', body, 900000001, true);
     expect(preview.status).toBe(200);
@@ -1367,7 +1388,7 @@ describe('board write path (Phase 3)', () => {
     const [old] = await assignmentRows('a.id = $1', [assignment.id]);
     expect(old.status).toBe('confirmed');
     const parkedRows = await assignmentRows(
-      `a.status = 'confirmed' and a.technician_id is null and a.starts_at::date = '${DAY_PARK}'`,
+      `a.status = 'confirmed' and not exists (select 1 from visit_participants p where p.visit_id = a.id) and a.starts_at::date = '${DAY_PARK}'`,
     );
     expect(parkedRows).toHaveLength(1);
     expect(parkedRows[0].id).toBe(assignment.id);
@@ -1415,7 +1436,7 @@ describe('board write path (Phase 3)', () => {
 
   test('drag-to-assign: commit with technicianRef attaches the person to an unassigned visit', async () => {
     const [unassigned] = await assignmentRows(
-      `a.technician_id is null and a.status = 'confirmed' and a.starts_at = '${DAY_A}T13:00:00Z'`,
+      `not exists (select 1 from visit_participants p where p.visit_id = a.id) and a.status = 'confirmed' and a.starts_at = '${DAY_A}T13:00:00Z'`,
     );
     const resp = await post(
       '/board/api/move',
@@ -1471,7 +1492,7 @@ describe('board write path (Phase 3)', () => {
     // board-t2 still has exactly one confirmed stop in the window.
     const [row] = await assignmentRows('a.id = $1', [assignment.id]);
     expect(row.status).toBe('confirmed');
-    expect(row.technician_id).toBeNull();
+    expect(row.crew).toBe(0);
     // Pinned to DAY_A: t2 also holds the REL companion fixture.
     const t2 = await assignmentRows(
       `t.ref = 'board-t2' and a.status = 'confirmed' and a.starts_at::date = '${DAY_A}'`,
@@ -1580,9 +1601,8 @@ describe('board quick-edit API (plan 4a.5): roster, book, job, detail additions'
     });
     hostileVisitId = (
       await pg.query<{ id: string }>(
-        `insert into visits
-           (tenant_id, job_id, technician_id, starts_at, ends_at, status)
-         values ($1, $2, null, '${HOSTILE_DAY}T09:00:00Z', '${HOSTILE_DAY}T10:00:00Z', 'confirmed')
+        `insert into visits (tenant_id, job_id, starts_at, ends_at, status)
+         values ($1, $2, '${HOSTILE_DAY}T09:00:00Z', '${HOSTILE_DAY}T10:00:00Z', 'confirmed')
          returning id`,
         [tenantId, theirJob.id],
       )
@@ -1651,7 +1671,9 @@ describe('board quick-edit API (plan 4a.5): roster, book, job, detail additions'
     expect(c.status).toBe('booked');
     // SQL read-back: confirmed row for the job, held by board-t2.
     const row = await pg.query(
-      `select a.status, t.ref from visits a join technicians t on t.id = a.technician_id
+      `select a.status, t.ref from visits a
+         join visit_participants p on p.visit_id = a.id
+         join technicians t on t.id = p.technician_id
         where a.id = $1`,
       [c.visitId],
     );
@@ -1712,7 +1734,9 @@ describe('board quick-edit API (plan 4a.5): roster, book, job, detail additions'
         where p.visit_id = $1 order by p.created_at, p.technician_id`,
       [b.visitId],
     );
-    expect(crewRows.rows.map((r) => r.ref)).toEqual(['board-t1', 'board-t2']);
+    // Booked in ONE call, so both share created_at and the id tiebreak decides
+    // the stored order — the crew is a set, not a ranking.
+    expect(crewRows.rows.map((r) => r.ref).sort()).toEqual(['board-t1', 'board-t2']);
 
     // MOVE, replacing the crew with one person.
     const moved = await post(

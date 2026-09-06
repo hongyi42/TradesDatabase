@@ -436,11 +436,12 @@ describe('MCP server', () => {
     expect(cust.rows[0].name).toBe('MCP Cust'); // preview == commit
 
     const vis = await pg.query<{ technician_id: string | null }>(
-      'select technician_id from visits where id = $1',
+      'select technician_id from visit_participants where visit_id = $1',
       [done.data.visitId],
     );
-    // Rung 9b: the person is a real foreign key now, resolved from the badge's
-    // roster ref — not the free TEXT name the per-note table carried.
+    // Rung 9b made the person a real foreign key, resolved from the badge's
+    // roster ref — not the free TEXT name the per-note table carried. Rung 9c
+    // moved it onto the crew list, because a trip can carry more than one.
     expect(vis.rows[0].technician_id).toBe(techMcpId);
 
     // The token is consumed: a repeat confirm reports the note that already
@@ -6249,10 +6250,11 @@ describe('move_visit unassign (plan 4a.5)', () => {
       expect(parked.data.unassigned).toBe(true);
       expect(parked.data.note).toContain('Parked in one step');
       const parkedRow = await pg.query(
-        'select technician_id from visits where id = $1',
+        `select (select count(*)::int from visit_participants p where p.visit_id = v.id) as crew
+           from visits v where v.id = $1`,
         [parked.data.visitId],
       );
-      expect(parkedRow.rows[0].technician_id).toBeNull();
+      expect(parkedRow.rows[0].crew).toBe(0);
 
       // Both steering args at once → the shared verb refuses.
       const both = await callWith('move_visit', {
@@ -6290,10 +6292,12 @@ describe('move_visit unassign (plan 4a.5)', () => {
       expect(crossDay.data.status).toBe('moved');
       expect(crossDay.data.unassigned).toBe(true);
       const confirmedRow = await pg.query(
-        'select technician_id, starts_at from visits where id = $1',
+        `select v.starts_at,
+                (select count(*)::int from visit_participants p where p.visit_id = v.id) as crew
+           from visits v where v.id = $1`,
         [crossDay.data.visitId],
       );
-      expect(confirmedRow.rows[0].technician_id).toBeNull(); // detached…
+      expect(confirmedRow.rows[0].crew).toBe(0); // detached…
       // …and the day change landed too: a park keeps its time, it only drops
       // the person.
       expect(confirmedRow.rows[0].starts_at.toISOString()).toContain('2027-07-07');
@@ -7121,7 +7125,15 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
     // the catalog — fourteen since v_roster_events (build 6.5 Phase 1); the
     // count and the list must move together or the description lies to the model
-    expect(desc).toContain('fifteen views'); // +v_office_messages, build 7
+    expect(desc).toContain('sixteen views'); // +v_visit_participants, rung 9c
+    // v_schedule's crew columns are ARRAYS now, and its singular one is gone —
+    // an agent told `technician_ref` there would write SQL against a column
+    // that does not exist and get a 42703 instead of an answer. (The singular
+    // name survives on v_visit_participants, which really does have one row per
+    // person, so the negative is pinned on v_schedule's own column list.)
+    expect(desc).toContain('stage, technician_refs, technician_names,');
+    expect(desc).not.toContain('stage, technician_ref,');
+    expect(desc).toContain('v_visit_participants(visit_id, technician_ref,');
     // Rung 8: `locked` left v_schedule with pinning. The catalog is the column
     // list the model is SHOWN, so a stale name here would have it write SQL
     // against a column that no longer exists.

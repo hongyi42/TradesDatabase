@@ -18,8 +18,9 @@ export type VisitParticipant = Database['public']['Tables']['visit_participants'
 // not a hierarchy: it is stable, it is not stored anywhere as "primary", and
 // nothing reads it as authority.
 //
-// `visits.technician_id` still exists and is still written, as a DEPLOY BRIDGE
-// only (see 20260907100000). It is dropped by 20260907100100.
+// `visits.technician_id` is GONE (20260907100100). The visit row no longer
+// knows who is on it, and the double-booking guard lives on the participant,
+// where the row knows both WHO and WHEN.
 
 export interface ParticipantRef {
   technicianId: string;
@@ -122,11 +123,13 @@ function crewOf(input: { technicianId?: string | null; technicianIds?: string[] 
 // path that can write a participant whose times disagree with its visit, which
 // is what makes the relocated overlap guard trustworthy.
 
-// UPSERT with ignoreDuplicates, never a plain insert (the insertVisitNote
-// idiom): the deploy-bridge trigger has usually already materialised the first
-// person from `visits.technician_id`, and re-adding somebody already on the
-// crew is a no-op, not an error. It must never become ON CONFLICT DO UPDATE —
-// that would let a caller overwrite the derived times.
+// THE ONLY THING that puts a person on a visit. UPSERT with ignoreDuplicates,
+// never a plain insert (the insertVisitNote idiom): re-adding somebody already
+// on the crew is a no-op, not an error — a redelivered request, or a move that
+// re-states a crew member who was staying. It must never become ON CONFLICT DO
+// UPDATE, which would let a caller overwrite the derived times, and the
+// conflict target must always be NAMED: a bare DO NOTHING arbitrates over the
+// exclusion constraint too and would swallow the double-booking guard.
 export async function upsertParticipants(
   tenantId: string,
   visitId: string,
@@ -203,26 +206,6 @@ export async function setVisitParticipants(
     }
     throw err;
   }
-  // And the bridge column follows the crew. Leaving it naming somebody who has
-  // left would make `v_schedule`, the old guard and every service still on the
-  // old commit report a person who is not on the trip — and the next old-style
-  // `set technician_id = …` would then try to remove a participant row that is
-  // no longer there instead of the one that is (Phase 1 review).
-  const visit = await getVisit(visitId);
-  if (visit) {
-    const bridge = bridgeFor(visit.technician_id, wanted);
-    if (bridge !== visit.technician_id) {
-      const { error } = await getClient()
-        .from('visits')
-        .update({ technician_id: bridge })
-        .eq('id', visitId);
-      if (error) {
-        throw Object.assign(new Error(`setVisitParticipants failed: ${error.message}`), {
-          code: error.code,
-        });
-      }
-    }
-  }
 }
 
 // Rows that HAVE times (plan 4b-2). Every reader whose query filters on
@@ -287,10 +270,6 @@ export async function createVisit(input: CreateVisitInput): Promise<Visit> {
     .insert({
       tenant_id: input.tenantId,
       job_id: input.jobId,
-      // THE DEPLOY BRIDGE, not a lead (20260907100000): the column still exists
-      // until the second migration, the still-running old code reads it, and
-      // the reconcile trigger turns it into participant #1. Dropped in Phase 4.
-      technician_id: crew[0] ?? null,
       starts_at: input.startsAt,
       ends_at: input.endsAt,
       status: input.status ?? 'proposed',
@@ -307,7 +286,9 @@ export async function createVisit(input: CreateVisitInput): Promise<Visit> {
     });
   }
   if (!data) throw new Error('createVisit failed: no row returned');
-  // The rest of the crew. If one of them is already booked elsewhere the
+  // THE CREW. Every one of them, including the first: with the bridge column
+  // gone there is no trigger arm putting anybody on the trip, so this call is
+  // the only thing that does. If one of them is already booked elsewhere the
   // exclusion constraint fires here, AFTER the visit row exists — so delete it
   // and rethrow, or a refused booking would leave a phantom trip nobody asked
   // for. SAFE ONLY HERE: this row is seconds old and nothing points at it yet.
@@ -498,12 +479,6 @@ export async function moveVisitRow(id: string, input: MoveVisitRowInput): Promis
     .update({
       starts_at: input.startsAt,
       ends_at: input.endsAt,
-      // `!== undefined`, not `??`: an explicit null means DETACH, and `??`
-      // would silently resurrect the old technician (plan 4a.5). The column is
-      // the deploy bridge now — the crew itself lives in visit_participants.
-      ...(wanted !== undefined
-        ? { technician_id: bridgeFor(old.technician_id, wanted) }
-        : {}),
       reason: input.reason,
       ...(input.status ? { status: input.status } : {}),
     }) // updated_at is stamped by the DB trigger
@@ -531,19 +506,6 @@ export async function moveVisitRow(id: string, input: MoveVisitRowInput): Promis
     }
   }
   return data;
-}
-
-// The deploy-bridge column's value for a given crew. It is NOT "the first
-// person": if whoever the column already names is still on the trip, they KEEP
-// it. That matters because the reconcile trigger's bridge arm deletes the OLD
-// column-holder's participant row whenever the column changes — so naming a
-// different member of the SAME crew would silently drop a person who is
-// staying, skip the overlap check for them, and let the trip land on top of
-// their own booking. (Found in Phase 1 review, probed.) It also keeps the
-// (created_at, technician_id) tiebreak stable across a pure time-move.
-function bridgeFor(current: string | null, wanted: string[]): string | null {
-  if (current !== null && wanted.includes(current)) return current;
-  return wanted[0] ?? null;
 }
 
 // undefined = "leave the crew alone"; an array = REPLACE it with exactly these
@@ -595,7 +557,6 @@ export async function attachVisitParticipants(
   const { data, error } = await getClient()
     .from('visits')
     .update({
-      technician_id: bridgeFor(old.technician_id, wanted), // the deploy bridge
       reason: input.reason,
       ...(input.status ? { status: input.status } : {}),
     })

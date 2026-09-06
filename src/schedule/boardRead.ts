@@ -36,9 +36,10 @@ import { clampToTechnicianHorizon, horizonDaysFor } from './policy.js';
 // get_team_schedule keeps its own version stamp (it calls latestScheduleVersion
 // directly, not through here), as does boardNotify.
 //
-// Feature A semantics carried over: technician_id is nullable — person-less
-// rows render technicianRef/technicianName null and unassigned:true, and a
-// technician self-view can never contain them (null never equals a viewer id).
+// Feature A semantics carried over: a visit can have NOBODY on it — such rows
+// render technicianRef/technicianName null and unassigned:true, and a
+// technician self-view can never contain them (an empty crew has no member to
+// match the viewer).
 
 export class InvalidRangeError extends Error {}
 

@@ -121,9 +121,14 @@ describe('context spine schema', () => {
   test('visits absorbed the happened-stage columns the per-note table carried', async () => {
     const cols = await columns('visits');
     // From the SCHEDULE half…
-    for (const scheduled of ['starts_at', 'ends_at', 'technician_id', 'status', 'reason']) {
+    for (const scheduled of ['starts_at', 'ends_at', 'status', 'reason']) {
       expect(cols.get(scheduled), `visits.${scheduled}`).toBeDefined();
     }
+    // INVERTED by rung 9c: WHO goes is not a column on the trip. A crew has no
+    // lead, and one nullable FK could only ever hold one of them, so the person
+    // lives in `visit_participants` — where the double-booking guard can see
+    // both the person and the times on one row.
+    expect(cols.get('technician_id'), 'the person moved to visit_participants').toBeUndefined();
     // …and from the REPORT half, which used to live in a second table.
     expect(cols.get('started_at')?.data_type).toBe('timestamp with time zone');
     expect(cols.get('completed_at')?.data_type).toBe('timestamp with time zone');
@@ -204,26 +209,26 @@ describe('context spine schema', () => {
     }
   });
 
-  test('the narrowed overlap guard carries the starts_at predicate (Plan 4b-2)', async () => {
-    const { rows } = await client.query<{ def: string }>(
-      `select pg_get_constraintdef(oid) as def from pg_constraint
-        where conname = 'no_confirmed_overlap'
-          and conrelid = 'public.visits'::regclass`,
+  test('the overlap guard MOVED, and no copy was left behind on visits (rung 9c)', async () => {
+    // The guard needs a row that knows both WHO and WHEN, and a Postgres
+    // exclusion constraint cannot reach a second table — so when the person
+    // moved to visit_participants, the constraint went with them. A surviving
+    // copy on `visits` would be a guard over a column that no longer exists.
+    const { rows: onVisits } = await client.query(
+      `select 1 from pg_constraint
+        where conname = 'no_confirmed_overlap' and conrelid = 'public.visits'::regclass`,
     );
-    expect(rows).toHaveLength(1);
-    // Unplaced rows are demand, not schedule — they must sit OUTSIDE the guard
-    // or tstzrange(null,null) blocks the technician's entire calendar.
-    expect(rows[0].def).toContain('starts_at IS NOT NULL');
-  });
-
-  test('visits carries the no_confirmed_overlap exclusion constraint', async () => {
-    const { rows } = await client.query<{ conname: string; contype: string }>(
-      `select conname, contype from pg_constraint
-        where conname = 'no_confirmed_overlap'
-          and conrelid = 'public.visits'::regclass`,
+    expect(onVisits).toEqual([]);
+    const { rows } = await client.query<{ def: string; contype: string }>(
+      `select contype, pg_get_constraintdef(oid) as def from pg_constraint
+        where conname = 'no_confirmed_overlap_participant'
+          and conrelid = 'public.visit_participants'::regclass`,
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].contype, 'x = exclusion constraint').toBe('x');
+    // Unplaced rows are demand, not schedule — they must sit OUTSIDE the guard
+    // or tstzrange(null,null) blocks the technician's entire calendar.
+    expect(rows[0].def).toContain('starts_at IS NOT NULL');
   });
 
   // ── Rung 9c: the crew, and where the double-booking guard now lives ────────
@@ -244,9 +249,8 @@ describe('context spine schema', () => {
     // demand, not schedule, and tstzrange(null,null) would block a whole
     // calendar.
     expect(rows[0].def).toContain('starts_at IS NOT NULL');
-    // THE BRIDGE IS STILL HERE. 20260907100100 drops it AFTER every service is
-    // live, and this assertion inverts then.
-    expect((await columns('visits')).get('technician_id'), 'the deploy bridge').toBeDefined();
+    // And nothing of it was left on `visits`: the bridge column is dropped by
+    // 20260907100100 (asserted above, where it used to be required).
     const { rows: fk } = await client.query<{ def: string }>(
       `select pg_get_constraintdef(oid) as def from pg_constraint
         where conrelid = 'public.visit_participants'::regclass
@@ -284,6 +288,10 @@ describe('context spine schema', () => {
     expect(rows.filter((r) => /AFTER/.test(r.def)).map((r) => r.tgname)).toEqual([
       'visits_participants_after',
     ]);
+    // Its bridge arm went with the column: it fires on the TIMES and the
+    // status now, and there is no person on `visits` to reconcile.
+    const after = rows.find((r) => r.tgname === 'visits_participants_after');
+    expect(after?.def).not.toContain('technician_id');
     expect(rows.some((r) => /sync|mirror/i.test(r.tgname))).toBe(false);
     const fill = await client.query<{ def: string }>(
       `select pg_get_triggerdef(oid) as def from pg_trigger

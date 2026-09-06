@@ -38,6 +38,12 @@ let tenantId: string;
 let tech: Technician;
 const OTHER_TENANT = '00000000-0000-0000-0000-000000000000';
 
+// WHO IS ON A TRIP, read the only way there is since rung 9c: `visits` has no
+// technician column, so every "is this person on it" assertion goes through the
+// participant list, in the tiebreak order the readers use.
+const crewOfVisit = async (visitId: string): Promise<string[]> =>
+  (await listParticipants(visitId)).map((p) => p.technician_id);
+
 // 2026-11-02 is a Monday; 2026-11-01 (Sunday) is empty in the pattern.
 const WEEKDAYS_ONLY: WeeklyPattern = {
   mon: [['08:00', '17:00']],
@@ -189,7 +195,7 @@ describe('bookVisit', () => {
       endTime: '14:00',
       actorRef: 'manager-test',
     });
-    expect(assignment.technician_id).toBe(helper.id);
+    expect(await crewOfVisit(assignment.id)).toEqual([helper.id]);
     expect(assignment.status).toBe('confirmed');
     // No working pattern configured → the standard ADVISORY warning; the
     // booking itself must never block on it.
@@ -572,7 +578,7 @@ describe('unassigned bookings (technician-optional)', () => {
       actorRef: 'manager-test',
     });
     expect(warning).toBeUndefined();
-    expect(assignment.technician_id).toBeNull();
+    expect(await crewOfVisit(assignment.id)).toEqual([]);
     expect(assignment.status).toBe('confirmed');
   });
 
@@ -588,8 +594,8 @@ describe('unassigned bookings (technician-optional)', () => {
       actorRef: 'manager-test',
     });
     // A DIFFERENT customer at the identical window lands — the exclusion
-    // guard keys on technician_id and NULL never matches; there is no
-    // technician to double-book. The semantic point of Decision 1.
+    // guard keys on the PARTICIPANT, and a trip with nobody on it has no
+    // participant row to collide. The semantic point of Decision 1.
     const b = await bookVisit({
       tenantId,
       customerId: paul.id,
@@ -598,8 +604,8 @@ describe('unassigned bookings (technician-optional)', () => {
       endTime: '11:00',
       actorRef: 'manager-test',
     });
-    expect(a.assignment.technician_id).toBeNull();
-    expect(b.assignment.technician_id).toBeNull();
+    expect(await crewOfVisit(a.assignment.id)).toEqual([]);
+    expect(await crewOfVisit(b.assignment.id)).toEqual([]);
     expect(a.assignment.id).not.toBe(b.assignment.id);
     // The SAME customer at the identical window is refused: unassigned rows
     // escape the DB guard, so a transport retry of a one-shot booking would
@@ -627,7 +633,7 @@ describe('unassigned bookings (technician-optional)', () => {
       endTime: '11:00',
       actorRef: 'manager-test',
     });
-    expect(assignment.technician_id).toBeNull();
+    expect(await crewOfVisit(assignment.id)).toEqual([]);
     const moved = await moveVisit({
       tenantId,
       visitId: assignment.id,
@@ -637,7 +643,7 @@ describe('unassigned bookings (technician-optional)', () => {
       reason: 'assigning Bob',
       actorRef: 'manager-test',
     });
-    expect(moved.visit.technician_id).toBe(tech.id);
+    expect(await crewOfVisit(moved.visit.id)).toEqual([tech.id]);
     expect(moved.visit.status).toBe('confirmed');
     // The attached technician's slot is now guarded: booking Bob into the
     // same window must clash.
@@ -671,7 +677,7 @@ describe('unassigned bookings (technician-optional)', () => {
       reason: 'shift a day',
       actorRef: 'manager-test',
     });
-    expect(reparked.visit.technician_id).toBeNull();
+    expect(await crewOfVisit(reparked.visit.id)).toEqual([]);
   });
 
   test('listUnassignedVisits: confirmed null-tech rows from fromISO on, no upper bound', async () => {
@@ -727,7 +733,7 @@ describe('unassigned bookings (technician-optional)', () => {
 });
 
 describe('detach (unassign) — plan 4a.5', () => {
-  test('moveVisit unassign parks the visit: technician_id NULL, moved event', async () => {
+  test('moveVisit unassign parks the visit: NOBODY on it, moved event', async () => {
     const customer = await createCustomer({ tenantId, name: 'Detach Dana' });
     const { assignment } = await bookVisit({
       tenantId,
@@ -738,7 +744,7 @@ describe('detach (unassign) — plan 4a.5', () => {
       endTime: '10:00',
       actorRef: 'manager-test',
     });
-    expect(assignment.technician_id).toBe(tech.id);
+    expect(await crewOfVisit(assignment.id)).toEqual([tech.id]);
     // Preview first: a park is one-shot — nothing about it is confirm-gated.
     const preview = await previewMoveVisit({
       tenantId,
@@ -763,7 +769,7 @@ describe('detach (unassign) — plan 4a.5', () => {
       reason: 'tech pulled to an emergency',
       actorRef: 'manager-test',
     });
-    expect(moved.visit.technician_id).toBeNull();
+    expect(await crewOfVisit(moved.visit.id)).toEqual([]);
     expect(moved.visit.status).toBe('confirmed');
     // INVERTED by rung 9b: parking no longer cancels a row and mints a
     // replacement — it EDITS the visit, so the id the manager was holding is
@@ -857,7 +863,7 @@ describe('detach (unassign) — plan 4a.5', () => {
       reason: 'park it',
       actorRef: 'manager-test',
     });
-    expect(moved.visit.technician_id).toBeNull();
+    expect(await crewOfVisit(moved.visit.id)).toEqual([]);
   });
 
 });
@@ -931,7 +937,9 @@ describe('untimed bookings + placing them — plan 4b-2, rung 9a', () => {
     const otherPerson = await bookVisit({
       tenantId, jobId: first.job.id, technicianRef: 'helper-hank', actorRef: 'mgr',
     });
-    expect(otherPerson.assignment.technician_id).not.toBe(first.assignment.technician_id);
+    expect(await crewOfVisit(otherPerson.assignment.id)).not.toEqual(
+      await crewOfVisit(first.assignment.id),
+    );
   });
 
   test('moving an untimed visit to real times PLACES it', async () => {
@@ -951,7 +959,7 @@ describe('untimed bookings + placing them — plan 4b-2, rung 9a', () => {
     });
     expect(moved.visit.starts_at).toBe('2026-11-30T09:00:00+00:00');
     expect(moved.visit.ends_at).toBe('2026-11-30T10:30:00+00:00');
-    expect(moved.visit.technician_id).toBe(tech.id);
+    expect(await crewOfVisit(moved.visit.id)).toEqual([tech.id]);
   });
 
   test('placing without endTime uses the job length; errors when that is null too', async () => {
@@ -1184,10 +1192,12 @@ describe('a crew books, moves and is told (rung 9c)', () => {
     const booked = await book(21, '09:00', '11:00', [ben.ref, joy.ref], 'Crew job A');
     expect(booked.technicianRefs).toEqual(['crew-ben', 'crew-joy']);
     expect(booked.technicianNames).toEqual(['Ben Crew', 'Joy Crew']);
-    expect((await listParticipants(booked.assignment.id)).map((p) => p.technician_id)).toEqual([
-      ben.id,
-      joy.id,
-    ]);
+    // The verb REPORTS the order the manager named them in (above). The STORED
+    // order is the (created_at, technician_id) tiebreak, and a crew booked in
+    // one call shares created_at — so the stored crew is a SET, not a ranking.
+    expect(
+      (await listParticipants(booked.assignment.id)).map((p) => p.technician_id).slice().sort(),
+    ).toEqual([ben.id, joy.id].slice().sort());
     // ONE trip on the job, not one per person.
     expect(await listVisitsForJob(booked.job.id)).toHaveLength(1);
     // ONE event, carrying the whole crew.
@@ -1269,7 +1279,7 @@ describe('a crew books, moves and is told (rung 9c)', () => {
       actorRef: 'manager-test',
     });
     // Saying nothing about WHO must not quietly empty a two-person trip.
-    expect(moved.technicianRefs).toEqual(['crew-ben', 'crew-joy']);
+    expect(moved.technicianRefs.slice().sort()).toEqual(['crew-ben', 'crew-joy']);
   });
 
   test('a move is refused BEFORE the write when one crew member is busy at the target', async () => {
@@ -1288,10 +1298,9 @@ describe('a crew books, moves and is told (rung 9c)', () => {
     // Nothing moved, and the crew is untouched.
     const after = await getVisitForTenant(booked.assignment.id, tenantId);
     expect(new Date(after?.starts_at as string).toISOString()).toBe(`${D(26)}T09:00:00.000Z`);
-    expect((await listParticipants(booked.assignment.id)).map((p) => p.technician_id)).toEqual([
-      ben.id,
-      joy.id,
-    ]);
+    expect(
+      (await listParticipants(booked.assignment.id)).map((p) => p.technician_id).slice().sort(),
+    ).toEqual([ben.id, joy.id].slice().sort());
   });
 
   test('reassign-and-move succeeds when the LEAVER is the one busy at the target', async () => {
@@ -1496,12 +1505,55 @@ describe('a crew books, moves and is told (rung 9c)', () => {
     expect(moved.warning).not.toContain('Joy Crew already has');
   });
 
+  test('a race that loses the ONLY joiner leaves the trip UNASSIGNED, and says so', async () => {
+    // The bridge column is gone (rung 9c phase 4), so nothing puts a person on
+    // the trip except the joiner upsert. A reassign whose joiner is lost to a
+    // race therefore lands a moved visit with NOBODY on it — the one outcome a
+    // manager must not have to discover for themselves.
+    const booked = await book(5, '09:00', '11:00', [ben.ref], 'Crew job N');
+    const locker = new Client({ connectionString: process.env.DATABASE_URL });
+    await locker.connect();
+    let moved: Awaited<ReturnType<typeof moveVisit>>;
+    try {
+      await locker.query('begin');
+      await locker.query('select id from visits where id = $1 for update', [booked.assignment.id]);
+      const racer = moveVisit({
+        tenantId,
+        visitId: booked.assignment.id,
+        date: D(5),
+        startTime: '14:00',
+        endTime: '16:00',
+        technicianRefs: [joy.ref], // ben leaves, joy joins
+        reason: 'send joy instead',
+        actorRef: 'manager-test',
+      });
+      for (let i = 0; ; i++) {
+        const { rows } = await locker.query<{ n: number }>(
+          'select count(*)::int as n from pg_stat_activity where cardinality(pg_blocking_pids(pid)) > 0',
+        );
+        if (rows[0].n > 0) break;
+        if (i > 400) throw new Error('the move never blocked on the row lock');
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      await book(5, '14:00', '16:00', [joy.ref], 'Joys race booking 5');
+      await locker.query('commit');
+      moved = await racer;
+    } finally {
+      await locker.end();
+    }
+    expect(new Date(moved.visit.starts_at as string).toISOString()).toBe(`${D(5)}T14:00:00.000Z`);
+    expect(moved.technicianRefs).toEqual([]); // ben left, joy never landed
+    expect(moved.crewNotAdded).toEqual(['crew-joy']);
+    expect(moved.warning).toContain('NOBODY is on this visit now');
+    expect(await listParticipants(booked.assignment.id)).toHaveLength(0);
+  });
+
   test('the cancel preview names EVERY person on a crew visit', async () => {
     const booked = await book(30, '09:00', '11:00', [ben.ref, joy.ref], 'Crew job J');
     const preview = await previewCancelJob(tenantId, booked.job.id);
     const row = preview.visits.find((v) => v.visitId === booked.assignment.id);
-    expect(row?.technicianRefs).toEqual(['crew-ben', 'crew-joy']);
+    expect(row?.technicianRefs?.slice().sort()).toEqual(['crew-ben', 'crew-joy']);
     // The singular field is first-or-null, kept for callers that show one name.
-    expect(row?.technicianRef).toBe('crew-ben');
+    expect(row?.technicianRefs).toContain(row?.technicianRef);
   });
 });

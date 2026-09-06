@@ -739,9 +739,9 @@ const TOOLS = [
 // fix to the direction-comes-from-kind warning, lands on one tool and not the
 // other.
 const SPINE_VIEW_CATALOG =
-  'It CANNOT write, and it can only read these fifteen views (nothing else exists to it): ' +
+  'It CANNOT write, and it can only read these sixteen views (nothing else exists to it): ' +
   'v_schedule(visit_id, local_day, local_weekday, starts_at, ends_at, completed_at, status, ' +
-  'stage, technician_ref, technician_name, job_id, ' +
+  'stage, technician_refs, technician_names, job_id, ' +
   'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
   'schedule that STANDS: confirmed and completed visits only, so count(*) here is real ' +
   'bookings; cancelled visits are NOT in it — they live in ' +
@@ -749,10 +749,23 @@ const SPINE_VIEW_CATALOG =
   "set yet), 'placed' (on the calendar), 'happened' (the trip is done), 'reported' (a field " +
   "note has landed on it). Prefer it over reading status and starts_at yourself — " +
   "\"which visits are committed but not placed\" is `where stage = 'committed'`. " +
+  'ONE ROW PER TRIP, and a trip can carry SEVERAL technicians: technician_refs and ' +
+  'technician_names are ARRAYS (text[]), so a two-person job is one row with two names — ' +
+  "count(*) counts TRIPS. Test membership with `where 'ben-shelton' = any(technician_refs)`, " +
+  'never `technician_ref = …` (there is no such column). When the question is about PEOPLE ' +
+  'rather than trips ("how many visits did Ben go on"), use v_visit_participants, which has ' +
+  'one row per person per trip. ' +
   'v_cancelled_visits(visit_id, local_day, local_weekday, starts_at, ends_at, reason, ' +
-  'updated_at, technician_ref, ' +
-  'technician_name, job_id, job_title, job_type, customer_id, customer_name, city, ' +
+  'updated_at, technician_refs, ' +
+  'technician_names, job_id, job_title, job_type, customer_id, customer_name, city, ' +
   'postal_code), which also says why (reason) and when (updated_at); ' +
+  'v_visit_participants(visit_id, technician_ref, technician_name, created_at, job_id, ' +
+  'starts_at, status) — ONE ROW PER PERSON PER TRIP, for counting or grouping by person. ' +
+  'ALWAYS join it to v_schedule on visit_id: this view carries EVERY trip including CANCELLED ' +
+  'ones, and it has no local_day, so counting or date-filtering it on its own reports ' +
+  'called-off work as work done and buckets evening visits on the wrong day. The shape is ' +
+  "`from v_visit_participants p join v_schedule s on s.visit_id = p.visit_id where " +
+  "s.local_day >= '…'`; " +
   'v_team(ref, display_name, tier, state, seat_exempt, skills, service_cities, availability, ' +
   'created_at); ' +
   'v_jobs(id, title, job_type, status, priority, duration_minutes, price_cents, created_at, ' +
@@ -1206,7 +1219,9 @@ const ADMIN_TOOLS = [
           type: 'string',
           description:
             'One SELECT over the views above. No semicolon, no writes. Example: ' +
-            "select technician_name, count(*) as visits from v_schedule where local_day >= '2026-08-01' group by 1 order by 2 desc",
+            'select p.technician_name, count(*) as visits from v_visit_participants p ' +
+            "join v_schedule s on s.visit_id = p.visit_id where s.local_day >= '2026-08-01' " +
+            'group by 1 order by 2 desc',
         },
         maxRows: {
           type: 'number',
@@ -4572,10 +4587,17 @@ async function dispatch(
                   crewNotAdded: moved.crewNotAdded,
                   crewNotAddedNote:
                     'The visit DID move, but these people are booked elsewhere at the new time ' +
-                    'and are NOT on it. Say both halves to the manager.',
+                    'and are NOT on it. Say both halves to the manager.' +
+                    (moved.technicianRefs.length === 0
+                      ? ' NOBODY is on this visit now — it moved and it is unassigned. Say that ' +
+                        'plainly and ask the manager who should go.'
+                      : ''),
                 }
               : {}),
-            ...(unassignArg ? { unassigned: true } : {}),
+            // CREW-DERIVED, not "did the caller say unassign" (rung 9c): a move
+            // whose joiner was lost to a race can land a trip with nobody on it,
+            // and the agent has to be able to see that.
+            ...(moved.technicianRefs.length === 0 ? { unassigned: true } : {}),
             ...(moved.warning ? { warning: moved.warning } : {}),
             note: unassignArg
               ? 'Parked in one step — the person was taken off; the visit keeps its slot and ' +

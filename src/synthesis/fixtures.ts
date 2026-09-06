@@ -46,7 +46,6 @@ export const visit = (over: Partial<VisitWithTechnician> = {}): VisitWithTechnic
   id: 'visit-1',
   tenant_id: 'tenant-1',
   job_id: 'job-1',
-  technician_id: null,
   starts_at: null,
   ends_at: null,
   status: 'completed',

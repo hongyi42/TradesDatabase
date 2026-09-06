@@ -886,9 +886,9 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
     const summary = await runWatchers(NOW, 'live', baseDeps({
       specs: [OVERDUE_VISIT_GAP_SPEC, secondSpec()],
       listOverdue: async () => [
-        visit({ id: 'a1', job_id: 'j1', technician_id: 'tech-1', ends_at: '2026-08-15T01:00:00.000Z' }),
-        visit({ id: 'a2', job_id: 'j2', technician_id: 'tech-1', ends_at: '2026-08-15T02:00:00.000Z' }),
-        visit({ id: 'a3', job_id: 'j3', technician_id: 'tech-1', ends_at: '2026-08-15T03:00:00.000Z' }),
+        visit({ id: 'a1', job_id: 'j1', visit_participants: [crewOf('tech-1')], ends_at: '2026-08-15T01:00:00.000Z' }),
+        visit({ id: 'a2', job_id: 'j2', visit_participants: [crewOf('tech-1')], ends_at: '2026-08-15T02:00:00.000Z' }),
+        visit({ id: 'a3', job_id: 'j3', visit_participants: [crewOf('tech-1')], ends_at: '2026-08-15T03:00:00.000Z' }),
       ],
       listTeam: async () => [boundTech()],
       createObservation: async (input) => {
@@ -909,7 +909,7 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
     // that has no spec.
     const summary = await runWatchers(NOW, 'live', baseDeps({
       specs: [], // no spec for overdue_visit_gap
-      listOverdue: async () => [visit({ id: 'a1', technician_id: 'tech-1' })],
+      listOverdue: async () => [visit({ id: 'a1', visit_participants: [crewOf('tech-1')] })],
       listTeam: async () => [boundTech()],
       createObservation: async () => {
         throw new Error('must not record an observation for an unregistered kind');
@@ -1072,7 +1072,7 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
     const created: string[] = [];
     await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => Array.from({ length: 5 }, (_, i) =>
-        visit({ id: `a${i}`, job_id: `j${i}`, technician_id: 'tech-1', ends_at: `2026-08-15T0${i}:00:00.000Z` })),
+        visit({ id: `a${i}`, job_id: `j${i}`, visit_participants: [crewOf('tech-1')], ends_at: `2026-08-15T0${i}:00:00.000Z` })),
       listCostCandidates: async () => [candidate(), candidate({ jobId: 'j-cost-2' })],
       listTeam: async () => [boundTech()],
       createObservation: async (input) => {

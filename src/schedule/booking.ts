@@ -816,13 +816,10 @@ export async function previewMoveVisit(input: MoveVisitInput): Promise<MoveVisit
 export interface MoveVisitResult {
   // ONE row, the SAME id it had before (rung 9b). There is no `cancelled`/
   // `created` pair any more: a move edits the visit, so nothing is destroyed
-  // and nothing is minted. `previousTechnicianId` is what the board's push
-  // needs to tell the person who LOST the visit.
+  // and nothing is minted. `previousTechnicianIds` is what the board's push
+  // needs to tell the people who LOST the visit — a LIST since rung 9c, and
+  // the only shape, now that no column names one person.
   visit: Visit;
-  previousTechnicianId: string | null;
-  // Everyone who was on it before, and everyone on it after (rung 9c). The
-  // singular field above is the bridge person and is kept for callers that
-  // still read it; the pushes and the ledger read these.
   previousTechnicianIds: string[];
   technicianRefs: string[];
   participants: ParticipantRef[];
@@ -836,7 +833,6 @@ export interface MoveVisitResult {
 export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult> {
   const { tenantId } = input;
   const r = await resolveMove(input);
-  const previousTechnicianId = r.old.technician_id;
   const previousTechnicianIds = r.currentCrewIds;
   const fromDay = visitDay(r.old);
 
@@ -893,11 +889,16 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
       if ((await overlappingConfirmed(t.id, r.startISO, r.endISO, visit.id)).length > 0) busy.push(t);
     }
     const where = `moved to ${input.date} ${input.startTime}–${r.endTime}, but `;
+    // If the joiners were the WHOLE crew, the trip is now unassigned. Say it:
+    // the move landed, the people did not, and a visit nobody is going on is
+    // not something to leave the manager to discover.
+    const empty = landed.length === 0 ? ' — NOBODY is on this visit now' : '';
     crewWarning =
       busy.length === notAdded.length
-        ? `${where}${crewNames(notAdded)} already has a confirmed visit there — they were NOT added`
+        ? `${where}${crewNames(notAdded)} already has a confirmed visit there — they were NOT added${empty}`
         : `${where}${crewNames(notAdded)} could not be added` +
-          (busy.length > 0 ? ` (${crewNames(busy)} already has a confirmed visit there)` : '');
+          (busy.length > 0 ? ` (${crewNames(busy)} already has a confirmed visit there)` : '') +
+          empty;
   }
 
   await appendScheduleEvent({
@@ -919,7 +920,6 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
 
   return {
     visit,
-    previousTechnicianId,
     previousTechnicianIds,
     technicianRefs: landed.map((t) => t.ref),
     participants: crewRefs(landed),
@@ -1012,7 +1012,6 @@ export interface AttachUnplacedResult {
   // Same shape and same reason as MoveVisitResult: attaching a person edits the
   // visit, so its id survives and the tray row the manager tapped still exists.
   visit: Visit;
-  previousTechnicianId: string | null;
   previousTechnicianIds: string[];
   technicianRefs: string[];
 }
@@ -1085,7 +1084,6 @@ export async function attachUnplacedVisit(
   const { tenantId } = input;
   if (!input.reason?.trim()) throw new Error('reason is required for an attach');
   const { old, crew, currentIds } = await resolveAttachUnplaced(input);
-  const previousTechnicianId = old.technician_id;
 
   // An attach only changes WHO — the visit stays untimed. One guarded UPDATE,
   // so the row the manager tapped in the tray cannot vanish underneath them
@@ -1114,7 +1112,6 @@ export async function attachUnplacedVisit(
   });
   return {
     visit,
-    previousTechnicianId,
     previousTechnicianIds: currentIds,
     technicianRefs: crew.map((t) => t.ref),
   };

@@ -79,12 +79,17 @@ Why this split is powerful:
 ### A typical record's shape
 
 ```
-customers ── (1:N) ── jobs ── (1:N) ── visits
-   │                    │                 │
-   └── each L2 table carries an `attributes` JSON column (L3) ──┘
+customers ── (1:N) ── jobs ── (1:N) ── visits ──< visit_participants >── technicians
+   │                    │                 │            (who is on the trip;
+   └── each L2 table carries an `attributes` JSON column (L3) ──┘   one row per person)
 
 raw_captures (L1)  →  each row links back to the customer / job / visit it informed
                       (raw_text for transcripts/notes; a blob pointer for audio/photos)
+
+visit_participants →  who is on a trip (visit_id, technician_id). A crew of two is ONE
+                      visit with two rows here, never two visits. It carries a synced
+                      copy of the trip's times so the "nobody is booked twice" rule
+                      can live on it.
 
 visit_notes        →  append-only link table (visit_id, capture_id): which capture
                       reported which trip. It SPLITS a completed visit into
@@ -95,14 +100,17 @@ visit_notes        →  append-only link table (visit_id, capture_id): which cap
 - A **customer** is a person/household/site you serve over time.
 - A **job** (work order) is one piece of work at an address; it can span **multiple visits** and
   carry change orders.
-- A **visit** is one trip by one technician. **One row per trip, from the moment it is agreed
+- A **visit** is one trip, by **one or more technicians**. **One row per trip, from the moment it is agreed
   until the note that reports it** (rung 9b, 2026-09-05) — booking, moving, and reporting all edit
   the same row, so a visit's id is stable and anything can point at it. Its lifecycle is *derived
   from what is on the row*, never stored in a status ladder: **committed** (agreed, no time yet) →
   **placed** (on the calendar) → **happened** (done, but nothing on file says so) → **reported**
   (done, and a capture is linked through `visit_notes`), plus **cancelled**. Status is checked
   first, so a note attached to a visit that has not been marked done leaves it at **placed**.
-  Crews of two are counted as one visit; naming the second technician is a later rung.
+  **A trip carries a CREW** (rung 9c, 2026-09-06): who is going lives in `visit_participants`,
+  one row per person, and there is no lead — everybody on a visit is equal, and a note from any
+  one of them reports it for all of them. The double-booking guard lives on that table, because
+  it needs a row that knows both *who* and *when*.
 - A **raw capture** is one verbatim input event, linked to whichever of the above it produced.
 
 > **Design note:** model job `status` as a **state machine** (e.g. `open → in_progress →

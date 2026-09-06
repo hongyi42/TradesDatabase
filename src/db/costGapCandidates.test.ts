@@ -59,15 +59,21 @@ async function mkAssignment(
   tenant = tenantId,
 ): Promise<void> {
   const startsAt = new Date(Date.parse(endsAt) - 3_600_000).toISOString();
-  const { error } = await getClient().from('visits').insert({
-    tenant_id: tenant,
-    job_id: jobId,
-    technician_id: technicianId,
-    status,
-    starts_at: startsAt,
-    ends_at: endsAt,
-  });
+  // The trip first, then WHO went: `visits` has no technician column since rung
+  // 9c, so a fixture puts somebody on a visit the same way the app does.
+  const { data, error } = await getClient()
+    .from('visits')
+    .insert({
+      tenant_id: tenant,
+      job_id: jobId,
+      status,
+      starts_at: startsAt,
+      ends_at: endsAt,
+    })
+    .select('id')
+    .single();
   if (error) throw new Error(`assignment insert failed: ${error.message}`);
+  if (technicianId) await upsertParticipants(tenant, data.id as string, [technicianId]);
 }
 
 beforeAll(async () => {

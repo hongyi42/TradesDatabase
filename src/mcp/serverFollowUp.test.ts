@@ -53,12 +53,18 @@ afterAll(async () => {
   // The trips this note minted must go FIRST. Rung 9b gave a reported visit a
   // real technician foreign key (the per-note table carried a free TEXT name,
   // which referenced nothing), so deleting the roster row while its visits
-  // stand now raises 23503. visit_notes rows cascade with their visit.
+  // stand now raises 23503. Rung 9c moved that key onto `visit_participants`,
+  // so the reach is through the crew list; visit_notes and participant rows
+  // both cascade with their visit.
   await pg.query(
-    `delete from visits
-      where tenant_id = $1
-        and technician_id in (
-          select id from technicians where tenant_id = $1 and ref = 'followup-fail-tech'
+    `delete from visits v
+      where v.tenant_id = $1
+        and exists (
+          select 1 from visit_participants p
+            join technicians t on t.id = p.technician_id
+           where p.visit_id = v.id
+             and t.tenant_id = $1
+             and t.ref = 'followup-fail-tech'
         )`,
     [tenantId],
   );

@@ -210,8 +210,9 @@ export async function listJobsWithCustomerByIds(
 // ask. It also bounds the first-run backfill to the same 72h window the visit
 // detector uses, instead of surfacing every historical job at once.
 //
-// Rows with no technician are DROPPED here: visits.technician_id has been
-// nullable since 20260717120000, and createPendingNudge requires one — there is
+// Rows with NOBODY ON THEM are DROPPED here: a visit's crew can be empty
+// (20260717120000 made the person optional; rung 9c moved it to
+// `visit_participants`), and createPendingNudge requires somebody — there is
 // nobody to ask.
 export type CostGapCandidate = {
   jobId: string;

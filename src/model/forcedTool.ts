@@ -13,7 +13,13 @@ import { recordModelUsage, type CostContext } from '../db/index.js';
 //   openai     → POST /chat/completions     reply: choices[0].message.tool_calls[0]
 //                                                  {function:{arguments: JSON STRING}}
 //
-// Active provider is MODEL_PROVIDER (default 'openai' → GLM-5.2 via Fireworks).
+// Active provider is MODEL_PROVIDER (default 'openai'). 'openai' is a PROTOCOL,
+// not a company: the endpoint comes from INFERENCE_BASE_URL / INFERENCE_MODEL,
+// defaulting to OpenRouter on z-ai/glm-5.3 (migration 2026-08-28). Read the live
+// Render env before asserting what is serving — the constants below are only the
+// fallback. This comment said 'GLM-5.2 via Fireworks' until 2026-09-06, having
+// outlived two provider migrations while contradicting the constants 70 lines
+// down; that account is out of credits and serves nothing.
 // The anthropic path is kept whole so reverting is an env var, not a code change.
 
 export type ModelProvider = 'anthropic' | 'openai';

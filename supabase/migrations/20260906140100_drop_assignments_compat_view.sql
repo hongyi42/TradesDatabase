@@ -1,0 +1,15 @@
+-- Rung 9b, the other half of the deploy pair: remove the `assignments`
+-- compatibility view created by 20260906140000.
+--
+-- ORDER MATTERS, and it is the OPPOSITE of its sibling's:
+--   20260906140000  BEFORE the deploy — the compat view is what keeps the
+--                   still-running old code alive while the five Render services
+--                   roll (three of them do not auto-deploy).
+--   20260906140100  AFTER the deploy — every service is on code that reads and
+--                   writes `visits`, so the bridge has no callers left.
+--
+-- Applying this early is the one wrong order: it 400s every schedule read and
+-- write made by any service still on the old commit. Locally both apply in one
+-- `supabase db reset`, which is the point — the end state is the real schema,
+-- and no test ever sees the bridge.
+drop view if exists assignments;

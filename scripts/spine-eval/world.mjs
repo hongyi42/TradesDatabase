@@ -55,7 +55,7 @@ import { firmToday, titleWeekday } from '../../dist/eval/clock.js';
 import {
   addTimeOff,
   appendRawCapture,
-  createAssignment,
+  createVisit,
   createCustomer,
   createJob,
   createTenant,
@@ -105,10 +105,10 @@ const RESET_TABLES = [
   'customers',
   'jobs',
   'visits',
+  'visit_notes',
   'raw_captures',
   'schedule_entries',
   'dropped_audit',
-  'assignments',
   'technician_time_off',
   'job_type_durations',
   'schedule_events',
@@ -230,7 +230,7 @@ const PILOT_TENANT_SCOPED = [
   'schedule_entries',
   'technician_time_off',
   'job_type_durations',
-  // customers cascades → jobs → visits/assignments (context_spine + scheduling
+  // customers cascades → jobs → visits (context_spine + scheduling
   // migrations), so those need no explicit delete; listed last because the
   // cascade is what makes the order above safe.
   'customers',
@@ -299,7 +299,7 @@ async function resetPilotTenant(spec) {
             `  This is not a bug to work around — dropping the stamps instead would gut\n` +
             `  get_customer_context (src/db/context.ts reads them as a customer's evidence).\n\n` +
             `  To re-anchor an existing pilot world, SHIFT it rather than rebuild it: visit dates are\n` +
-            `  the only anchor-dependent part, and assignments are mutable. Whole-week shifts only\n` +
+            `  the only anchor-dependent part, and visits are mutable. Whole-week shifts only\n` +
             `  (weekday alignment), in two passes (no_confirmed_overlap is a non-deferrable GiST\n` +
             `  exclusion, so a single-pass uniform shift transiently collides).\n` +
             `  To start clean, build into a NEW tenant — which needs its own badge and a container\n` +
@@ -498,7 +498,7 @@ async function applyTenant(t, existing) {
   const visitIds = {};
   for (const v of t.visits) {
     const placed = v.date !== undefined;
-    const row = await createAssignment({
+    const row = await createVisit({
       tenantId: tenant.id,
       jobId: jobIds[v.jobKey],
       technicianId: v.technicianRef === null ? null : techIds[v.technicianRef],

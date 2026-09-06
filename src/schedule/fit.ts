@@ -4,7 +4,7 @@
 // bottom; the Google drive-delta measurement is Phase 2.
 //
 // Time convention: everything here is naive-local HH:MM minute arithmetic on
-// the wall-clock times the schedule stores (assignments are naive-local, see
+// the wall-clock times the schedule stores (visit rows are naive-local, see
 // booking.ts) — no timezone math anywhere. Pattern days resolve via
 // localDayOfWeek(date, 'UTC') exactly like the availability calculator.
 //
@@ -16,11 +16,12 @@
 
 import {
   getTechnicianById,
-  listAssignmentsForTenant,
+  listVisitsForTenant,
+  participantIdsOf,
   listJobsWithCustomerByIds,
   listTeam,
   listTimeOffForTechnician,
-  type PlacedAssignment,
+  type PlacedVisit,
   type JobPriority,
   type Technician,
   type WeeklyPattern,
@@ -317,9 +318,9 @@ const expandDates = (startsOn: string, endsOn: string): string[] => {
 // Clamp an assignment row onto ONE day's HH:MM span. Rows are naive-local;
 // a row spilling past midnight (backfill-sourced) still blocks the morning of
 // the day it runs into (review finding #7 — overlap, not start-day, semantics).
-// PlacedAssignment: every caller feeds range-filtered rows (compiler-checked
+// PlacedVisit: every caller feeds range-filtered rows (compiler-checked
 // since plan 4b-2 — an unplaced row has no span to clamp).
-export function clampRowToDay(row: PlacedAssignment, dateISO: string): VisitSpan | null {
+export function clampRowToDay(row: PlacedVisit, dateISO: string): VisitSpan | null {
   // Compare INSTANTS, never strings: PostgREST renders timestamptz as
   // '…T00:00:00+00:00' (offset suffix, no ms) while locally built literals end
   // '.000Z', and ASCII '+' < '.' misclassifies midnight-aligned rows — a
@@ -342,7 +343,7 @@ export interface AssembleFitContextInput {
   latest: string;
   technicianRef?: string; // pin to one person
   requiredSkills?: string[]; // lowercase; three-state semantics (Decisions)
-  excludeAssignmentId?: string; // the subject row of an assignmentId ask
+  excludeVisitId?: string; // the subject row of an visitId ask
 }
 
 export async function assembleFitContext(input: AssembleFitContextInput): Promise<FitContext> {
@@ -379,14 +380,16 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
   // day it could land on. Rung 9a deleted the range: an untimed visit belongs
   // to no day at all, so it can be budgeted against none of them, and there is
   // nothing to read.
-  const placedRows = await listAssignmentsForTenant(
+  const placedRows = await listVisitsForTenant(
     input.tenantId,
     `${input.earliest}T00:00:00.000Z`,
     addDaysISO(input.latest, 1) + 'T00:00:00.000Z',
     ['confirmed'],
   );
+  // Rows with SOMEBODY on them — a trip nobody is going on occupies nobody's
+  // day (rung 9c: that is the crew list, not a column).
   const rows = placedRows.filter(
-    (r) => r.technician_id !== null && r.id !== input.excludeAssignmentId,
+    (r) => participantIdsOf(r, input.tenantId).length > 0 && r.id !== input.excludeVisitId,
   );
   const jobs = await listJobsWithCustomerByIds(input.tenantId, [
     ...new Set(rows.map((r) => r.job_id)),
@@ -403,7 +406,11 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
     const citiesByDate = new Map<string, Set<string>>();
     const stopsByDate = new Map<string, number>();
     const commitmentsByDate = new Map<string, number>();
-    const mine = rows.filter((r) => r.technician_id === t.id);
+    // A CREW visit occupies BOTH people's days — it is one trip and each of
+    // them is out on it, so it is `mine` for every participant.
+    const mine = rows.filter((r) =>
+      participantIdsOf(r, input.tenantId).includes(t.id),
+    );
     const span = daysBetween(input.earliest, input.latest);
     for (let i = 0; i <= span; i++) {
       const date = addDaysISO(input.earliest, i);
@@ -436,9 +443,10 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
 // (A pinned-last tiebreak sat in the middle until rung 8 — pinning bound only
 // AUTOMATIC scheduling, and there is none.)
 export interface DisplacementCandidate {
-  assignmentId: string;
+  visitId: string;
   customer: string | null;
-  technicianRef: string | null;
+  technicianRef: string | null; // first-or-null; the crew is technicianRefs
+  technicianRefs: string[];
   day: string;
   weekday: string; // server-computed — same no-agent-calendar-math rule
   span: string;
@@ -449,18 +457,18 @@ export async function findDisplacementCandidates(
   earliest: string,
   latest: string,
   limit = 5,
-  excludeAssignmentId?: string,
+  excludeVisitId?: string,
 ): Promise<DisplacementCandidate[]> {
-  // excludeAssignmentId: an assignmentId ask's own subject — "what could move
+  // excludeVisitId: an visitId ask's own subject — "what could move
   // to make room" must never propose moving the visit to make room for itself.
   const rows = (
-    await listAssignmentsForTenant(
+    await listVisitsForTenant(
       tenantId,
       `${earliest}T00:00:00.000Z`,
       addDaysISO(latest, 1) + 'T00:00:00.000Z',
       ['confirmed'],
     )
-  ).filter((r) => r.id !== excludeAssignmentId);
+  ).filter((r) => r.id !== excludeVisitId);
   const jobs = await listJobsWithCustomerByIds(tenantId, [...new Set(rows.map((r) => r.job_id))]);
   const nameByJob = new Map(jobs.map((j) => [j.id, j.customers?.name ?? null]));
   const refCache = new Map<string, string | null>();
@@ -470,18 +478,23 @@ export async function findDisplacementCandidates(
   // is the only ordering the row itself can justify.
   const ordered = [...rows].sort((a, b) => (a.starts_at < b.starts_at ? -1 : 1));
   for (const row of ordered.slice(0, limit)) {
-    let ref: string | null = null;
-    if (row.technician_id) {
-      if (!refCache.has(row.technician_id)) {
-        const t = await getTechnicianById(row.technician_id, tenantId);
-        refCache.set(row.technician_id, t?.ref ?? null);
+    // EVERY person who would be displaced — moving a crew visit moves both of
+    // them, so naming one would understate what the manager is being asked to
+    // disturb.
+    const refs: string[] = [];
+    for (const technicianId of participantIdsOf(row, tenantId)) {
+      if (!refCache.has(technicianId)) {
+        const t = await getTechnicianById(technicianId, tenantId);
+        refCache.set(technicianId, t?.ref ?? null);
       }
-      ref = refCache.get(row.technician_id) ?? null;
+      const ref = refCache.get(technicianId) ?? null;
+      if (ref) refs.push(ref);
     }
     out.push({
-      assignmentId: row.id,
+      visitId: row.id,
       customer: nameByJob.get(row.job_id) ?? null,
-      technicianRef: ref,
+      technicianRef: refs[0] ?? null,
+      technicianRefs: refs,
       day: row.starts_at.slice(0, 10),
       weekday: weekdayLabel(row.starts_at.slice(0, 10)),
       span: `${row.starts_at.slice(11, 16)}–${row.ends_at.slice(11, 16)}`,

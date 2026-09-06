@@ -161,6 +161,22 @@ const str = (body: Record<string, unknown>, key: string): string | undefined =>
     ? (body[key] as string)
     : undefined;
 
+// A crew of roster refs (rung 9c). Absent = the caller said nothing. Present
+// but not a list of non-empty strings is a caller bug — refused with 400 by the
+// routes below, never read as "nobody", which is the same contract the
+// present-but-empty technicianRef checks already enforce. `board.js` sends the
+// singular shorthand and is unchanged.
+const strList = (body: Record<string, unknown>, key: string): string[] | undefined | 'bad' => {
+  const v = body[key];
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v) || v.length === 0) return 'bad';
+  if (v.some((x) => typeof x !== 'string' || (x as string).trim() === '')) return 'bad';
+  return (v as string[]).map((x) => x.trim());
+};
+
+const CREW_LIST_ERROR =
+  'technicianRefs must be a non-empty array of roster refs — omit it entirely to leave the crew alone';
+
 // Board writes never target the past — the SERVER floor under the client
 // gates (final review: stale-tab midnight crossings and hand-crafted calls
 // bypass client checks; the chat surface deliberately keeps its
@@ -231,7 +247,7 @@ export async function handleBoardRequest(
     }
 
     // Tap-into-a-visit detail (both tiers). Technicians resolve ONLY their own
-    // visits — a crafted assignmentId for anyone else's (or an unassigned)
+    // visits — a crafted visitId for anyone else's (or an unassigned)
     // visit 404s exactly like a nonexistent id, so this endpoint reveals
     // nothing their self-filtered day view wouldn't.
     if (pathname === '/board/api/visit' && req.method === 'GET') {
@@ -240,22 +256,22 @@ export async function handleBoardRequest(
         deny(res, auth);
         return;
       }
-      const assignmentId = url.searchParams.get('assignmentId');
-      if (!assignmentId) {
-        json(res, 400, { error: 'assignmentId is required' });
+      const visitId = url.searchParams.get('visitId');
+      if (!visitId) {
+        json(res, 400, { error: 'visitId is required' });
         return;
       }
       // Non-UUID garbage must read exactly like an unknown id — without this,
       // PostgREST's 22P02 (invalid uuid syntax) throws through to a bare 500,
       // letting any authenticated caller spam the server-fault log on demand
       // and denting the 404 uniformity (review finding).
-      if (!/^[0-9a-fA-F-]{36}$/.test(assignmentId)) {
+      if (!/^[0-9a-fA-F-]{36}$/.test(visitId)) {
         json(res, 404, { error: 'visit not found' });
         return;
       }
       const detail = await readVisitDetail(
         auth.tenantId,
-        assignmentId,
+        visitId,
         auth.technician.tier === 'manager' ? null : auth.technician.id,
       );
       if (!detail) {
@@ -373,6 +389,11 @@ export async function handleBoardRequest(
             });
             return;
           }
+          const bookCrew = strList(body, 'technicianRefs');
+          if (bookCrew === 'bad') {
+            json(res, 400, { error: CREW_LIST_ERROR });
+            return;
+          }
           const input = {
             tenantId: auth.tenantId,
             jobId,
@@ -380,6 +401,7 @@ export async function handleBoardRequest(
             ...(startTime ? { startTime } : {}),
             ...(endTime ? { endTime } : {}),
             technicianRef: str(body, 'technicianRef'),
+            ...(bookCrew ? { technicianRefs: bookCrew } : {}),
             actorRef: auth.technician.ref,
           };
           if (preview) {
@@ -389,7 +411,7 @@ export async function handleBoardRequest(
           const booked = await bookVisit(input);
           json(res, 200, {
             status: 'booked',
-            assignmentId: booked.assignment.id,
+            visitId: booked.assignment.id,
             jobId: booked.job.id,
             date,
             startTime,
@@ -483,14 +505,14 @@ export async function handleBoardRequest(
         // the jobId-keyed verbs returned above, so the guard narrows cleanly
         // for the rest (final-review finding: the earlier negative-list guard
         // killed TS narrowing and needed four casts).
-        const assignmentId = str(body, 'assignmentId');
-        if (!assignmentId) {
-          json(res, 400, { error: 'assignmentId is required' });
+        const visitId = str(body, 'visitId');
+        if (!visitId) {
+          json(res, 400, { error: 'visitId is required' });
           return;
         }
         if (pathname === '/board/api/cancel') {
           if (preview) {
-            json(res, 200, await previewUnscheduleVisit(auth.tenantId, assignmentId));
+            json(res, 200, await previewUnscheduleVisit(auth.tenantId, visitId));
             return;
           }
           if (!reason) {
@@ -499,7 +521,7 @@ export async function handleBoardRequest(
           }
           const cancelled = await unscheduleVisit({
             tenantId: auth.tenantId,
-            assignmentId,
+            visitId,
             reason,
             actorRef: auth.technician.ref,
           });
@@ -525,11 +547,19 @@ export async function handleBoardRequest(
             return;
           }
           const attachRef = str(body, 'technicianRef');
+          const attachCrew = strList(body, 'technicianRefs');
+          if (attachCrew === 'bad') {
+            json(res, 400, { error: CREW_LIST_ERROR });
+            return;
+          }
           const detach = body.unassign === true;
-          const attachId = str(body, 'assignmentId');
-          if (!attachId || !reason || (detach ? attachRef !== undefined : !attachRef)) {
+          const attachId = str(body, 'visitId');
+          const namesSomebody = !!attachRef || !!attachCrew;
+          if (!attachId || !reason || (detach ? namesSomebody : !namesSomebody)) {
             json(res, 400, {
-              error: 'assignmentId, reason, and ONE of technicianRef (attach) or unassign:true (park back) are required',
+              error:
+                'visitId, reason, and ONE of technicianRef/technicianRefs (attach) or ' +
+                'unassign:true (park back) are required',
             });
             return;
           }
@@ -544,16 +574,18 @@ export async function handleBoardRequest(
           if (preview) {
             const attachPreview = await previewAttachUnplacedVisit({
               tenantId: auth.tenantId,
-              assignmentId: attachId,
-              technicianRef: detach ? null : (attachRef as string),
+              visitId: attachId,
+              technicianRef: detach ? null : (attachRef ?? null),
+              ...(detach || !attachCrew ? {} : { technicianRefs: attachCrew }),
             });
             json(res, 200, { status: 'preview', attach: true, ...attachPreview });
             return;
           }
           const attached = await attachUnplacedVisit({
             tenantId: auth.tenantId,
-            assignmentId: attachId,
-            technicianRef: detach ? null : (attachRef as string),
+            visitId: attachId,
+            technicianRef: detach ? null : (attachRef ?? null),
+            ...(detach || !attachCrew ? {} : { technicianRefs: attachCrew }),
             reason,
             actorRef: auth.technician.ref,
           });
@@ -562,7 +594,8 @@ export async function handleBoardRequest(
             attach: !detach,
             unassigned: detach,
             untimed: true,
-            assignmentId: attached.created.id,
+            visitId: attached.visit.id,
+            technicianRefs: attached.technicianRefs,
           });
           return;
         }
@@ -588,9 +621,16 @@ export async function handleBoardRequest(
           return;
         }
         const unassign = body.unassign === true;
-        if (unassign && str(body, 'technicianRef')) {
+        const moveCrew = strList(body, 'technicianRefs');
+        if (moveCrew === 'bad') {
+          json(res, 400, { error: CREW_LIST_ERROR });
+          return;
+        }
+        if (unassign && (str(body, 'technicianRef') || moveCrew)) {
           json(res, 400, {
-            error: 'pass technicianRef to attach/reassign OR unassign:true to park — not both',
+            error:
+              'pass technicianRef/technicianRefs to attach/reassign OR unassign:true to park — ' +
+              'not both',
           });
           return;
         }
@@ -600,11 +640,14 @@ export async function handleBoardRequest(
         }
         const input = {
           tenantId: auth.tenantId,
-          assignmentId,
+          visitId,
           date,
           startTime,
           endTime: str(body, 'endTime'),
           technicianRef: str(body, 'technicianRef'), // set = assign/reassign (Feature A attach)
+          // A crew REPLACES whoever is on the visit — the same contract the MCP
+          // layer states, so the two surfaces cannot drift.
+          ...(moveCrew ? { technicianRefs: moveCrew } : {}),
           ...(unassign ? { unassign: true } : {}),
           reason,
           actorRef: auth.technician.ref,
@@ -616,10 +659,10 @@ export async function handleBoardRequest(
         const moved = await moveVisit(input);
         json(res, 200, {
           status: 'moved',
-          // A move ALWAYS produces a placed row (rescheduleAssignment requires
-          // times) — assert instead of widening the payload (plan 4b-2).
-          start: moved.created.starts_at as string,
-          end: moved.created.ends_at as string,
+          // A move ALWAYS lands a placed row (moveVisitRow requires times) —
+          // assert instead of widening the payload (plan 4b-2).
+          start: moved.visit.starts_at as string,
+          end: moved.visit.ends_at as string,
           ...(moved.warning ? { warning: moved.warning } : {}),
         });
         return;

@@ -6,6 +6,13 @@ topic: "Build 8 — a visit is not a person: where the one-person-per-visit assu
 supersedes: docs/engineering-memory.md §8 (one factual claim only — see "Correction" below)
 ---
 
+> **SUPERSEDED IN PART, 2026-09-06.** Its Constraints 1 and 4 and Decisions (a) and (h) were
+> overturned by `thoughts/shared/research/2026-09-06-a-visit-carries-a-crew.md` and built as rung
+> 9c (`thoughts/shared/plans/2026-09-06-a-visit-carries-a-crew.md`). In short: the crew has NO
+> lead — this document still assumed a primary technician — and the `no_confirmed_overlap` guard
+> MOVED onto `visit_participants` rather than staying on `visits`. The survey of where the
+> one-person assumption lives is still the useful half; the design conclusions are not.
+
 **`supersedes:`** This document overturns exactly one recorded fact in `docs/engineering-memory.md`
 §8 (line 4386) and in the memory file `a-visit-is-not-a-person.md`: both say the `visits` table is
 **dormant** because `createVisit` has *"no production caller"*. That is wrong on this branch and was

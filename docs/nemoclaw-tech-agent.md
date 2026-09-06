@@ -191,6 +191,12 @@ the test is now PLACEMENT:
   customer was told, so the agent must READ THE JOB'S RECORD (its calls, emails and notes) for
   a promise BEFORE moving a visit or suggesting a time — and must never claim none was made,
   because it cannot know that without looking.
+- **A trip can carry a CREW** (rung 9c, 2026-09-06). Both verbs take `technicianRefs` — every
+  person going — while `technicianRef` stays as shorthand for one. Two technicians on one job at
+  one time is ONE visit, never two bookings: booked twice they become two trips, each chased and
+  reported separately. On `move_visit` the list REPLACES the crew, so adding a second person means
+  passing BOTH refs. The result carries `crewNote` when more than one person is on it, and
+  `crewNotAdded` when the visit moved but somebody could not come along.
 - `unschedule_visit` is the one scheduling verb that still stages, and only when the visit is
   **PLACED** — it has a real time, so a customer is expecting it. A visit with no time set is
   nobody's appointment yet and drops in one call.
@@ -512,7 +518,8 @@ register side-by-side in the gateway's `mcp.servers`.
   (`schedule_entries.technician_ref`, exact case-sensitive match) — otherwise schedule-assisted
   matching is dead for that person and L1↔badge joins fail. *(The schedule sheet retired
   2026-07-15 with the Telegram-schedule series Plan 1 — the DB owns the schedule
-  (`assignments`, keyed to the roster row by UUID), so the vocabulary contract is now just
+  (the `visits` table — named `assignments` until rung 9b, 2026-09-05 — keyed to the roster
+  row by UUID), so the vocabulary contract is now just
   badge ref ⇔ roster ref ⇔ Composio user_id; there is no sheet column to keep in sync.)*
   The `connector:` prefix is reserved (webhook rejects composite refs that use it). (4) **Refs are unique per tenant — mint
   from full-name slugs or employee ids, never bare first names** (two Janes as `…:jane` would merge

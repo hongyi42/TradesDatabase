@@ -121,20 +121,42 @@
     return DOW[new Date(Date.parse(ymd + 'T00:00:00Z')).getUTCDay()];
   }
 
+  // The crew MINUS the person whose card this is — what "with …" prints, and
+  // the reason a manager can tell one card of a pair from the other.
+  function crewMates(stop) {
+    var refs = stop.technicianRefs || [];
+    var names = stop.technicianNames || [];
+    var out = [];
+    for (var i = 0; i < refs.length; i++) {
+      if (refs[i] !== stop.technicianRef) out.push(names[i] || refs[i]);
+    }
+    return out;
+  }
+
   function stopCard(stop, canAct) {
     // .draggable is what carries touch-action:none — the read-only surfaces
     // (technician view, manager's Mine tab, past weeks AND past days inside
     // the current calendar week) must keep native card-origin scrolling.
     // canAct comes from renderDay: actionable() AND the day not being past.
     return (
-      '<div class="stop' + (canAct ? ' draggable' : '') + '" data-id="' + esc(stop.assignmentId) + '"' +
+      '<div class="stop' + (canAct ? ' draggable' : '') + '" data-id="' + esc(stop.visitId) + '"' +
       ' data-start="' + esc(hhmm(stop.start)) + '" data-end="' + esc(hhmm(stop.end)) + '"' +
-      ' data-ref="' + esc(stop.technicianRef || '') + '">' +
+      ' data-ref="' + esc(stop.technicianRef || '') + '"' +
+      // THE WHOLE CREW, on the card (rung 9c). The team view emits ONE STOP PER
+      // PERSON, so a two-person trip draws two cards that are otherwise
+      // identical — and every write below replaces the crew, not the card. The
+      // drag needs to know who else is on the trip to hand over one person's
+      // place without dropping the others, so the refs ride on the card.
+      ' data-crew="' + esc((stop.technicianRefs || []).join(',')) + '">' +
       '<div class="stop-time">' + esc(hhmm(stop.start)) + '–' + esc(hhmm(stop.end)) + '</div>' +
       '<div class="stop-body"><div class="stop-customer">' +
       esc(stop.customer || 'Unknown customer') +
       '</div>' +
       (stop.address ? '<div class="stop-address">' + esc(stop.address) + '</div>' : '') +
+      // Name the OTHERS, so the two identical cards can be told apart at all.
+      (crewMates(stop).length
+        ? '<div class="stop-crew">with ' + esc(crewMates(stop).join(' · ')) + '</div>'
+        : '') +
       '</div>' +
       (canAct
         ? '<button type="button" class="stop-cancel" aria-label="Unschedule visit">✕</button>'
@@ -475,8 +497,14 @@
     var whenTxt = untimed
       ? 'No time set yet'
       : v.weekday + ' ' + v.date + ' · ' + v.startTime + '–' + v.endTime;
+    // THE TRAY HOLDS TWO DIFFERENT ROWS (rung 9c): a visit with nobody on it,
+    // and an UNTIMED visit that has a full crew — it is here because it sits
+    // on no day, not because it is unmanned. Assign REPLACES the crew, so the
+    // second kind has to say who is already on it or the tap is a trap.
+    var vCrew = v.technicianNames || [];
+    var vCrewRefs = v.technicianRefs || [];
     return (
-      '<div class="bucket-row bucket-visit" data-id="' + esc(v.assignmentId) + '">' +
+      '<div class="bucket-row bucket-visit" data-id="' + esc(v.visitId) + '">' +
       '<div class="bucket-row-txt"><div class="bucket-row-main">' +
       esc(whenTxt) +
       '</div><div class="bucket-row-sub">' +
@@ -484,6 +512,7 @@
         (v.overdue ? 'OVERDUE — the day passed with nobody assigned · ' : '') +
           (v.customer || 'Unknown customer') +
           (v.jobTitle ? ' — ' + v.jobTitle : '') +
+          (vCrew.length ? ' · ' + vCrew.join(' · ') + ' on it' : '') +
           // The row was ALWAYS tappable into the full sheet, but "Assign" was
           // its only visible action, so the edit path read as nonexistent
           // (user finding 2026-07-23) — say it, like the job rows do. Overdue
@@ -497,7 +526,8 @@
       // rescheduling it, which stays a chat job for now.
       (v.overdue
         ? ''
-        : '<button type="button" class="bucket-assign" data-id="' + esc(v.assignmentId) + '"' +
+        : '<button type="button" class="bucket-assign" data-id="' + esc(v.visitId) + '"' +
+          ' data-crew="' + esc(vCrewRefs.join(',')) + '"' +
           (untimed
             ? ' data-tbd="1"'
             : ' data-date="' + esc(v.date) + '"' +
@@ -588,23 +618,35 @@
         var assign = e.target.closest && e.target.closest('.bucket-assign');
         if (assign) {
           openPicker({
-            title: 'Assign unassigned visit',
+            title: (assign.getAttribute('data-crew') || '')
+              ? 'Replace the crew on this visit'
+              : 'Assign unassigned visit',
             allowNone: false,
             date: assign.getAttribute('data-date'),
             onPick: function (ref) {
               if (!ref) return;
+              // The crew ALREADY on this row — Assign replaces it, so the
+              // toast has to name whoever it just took off (rung 9c).
+              var hadRefs = (assign.getAttribute('data-crew') || '')
+                .split(',')
+                .filter(function (r) {
+                  return r;
+                });
               // A time-TBD row attaches WITHOUT inventing a time (plan 4b-2):
               // the visit keeps its day range and stays unplaced.
               if (assign.getAttribute('data-tbd')) {
                 postMove(
                   {
-                    assignmentId: assign.getAttribute('data-id'),
+                    visitId: assign.getAttribute('data-id'),
                     attachUnplaced: true,
-                    technicianRef: ref,
+                    technicianRefs: [ref],
                     reason: 'Assigned from the loose bucket',
                   },
                   function () {
-                    return 'Assigned to ' + rosterName(ref) + ' — time still to be set';
+                    return (
+                      'Assigned to ' + rosterName(ref) + droppedNote(hadRefs, ref) +
+                      ' — time still to be set'
+                    );
                   },
                   null,
                 );
@@ -612,15 +654,15 @@
               }
               postMove(
                 {
-                  assignmentId: assign.getAttribute('data-id'),
+                  visitId: assign.getAttribute('data-id'),
                   date: assign.getAttribute('data-date'),
                   startTime: assign.getAttribute('data-start'),
                   endTime: assign.getAttribute('data-end'),
-                  technicianRef: ref,
+                  technicianRefs: [ref],
                   reason: 'Assigned from the loose bucket',
                 },
                 function () {
-                  return 'Assigned to ' + rosterName(ref);
+                  return 'Assigned to ' + rosterName(ref) + droppedNote(hadRefs, ref);
                 },
                 assign.getAttribute('data-start'),
               );
@@ -721,7 +763,15 @@
           ', ' + esc(hhmm(d.start) + '–' + hhmm(d.end)) + pencil('when'),
       );
     }
-    rows += detailRow('Technician', esc(d.technicianName || 'Unassigned') + pencil('tech'));
+    // THE WHOLE CREW (rung 9c). `technicianName` is the FIRST of the crew, so
+    // a two-person trip used to read "Technician: Ben" — and the pencil below
+    // replaces the crew, which meant Joy came off a trip the sheet never
+    // admitted she was on.
+    var crewNames = d.technicianNames || (d.technicianName ? [d.technicianName] : []);
+    rows += detailRow(
+      crewNames.length > 1 ? 'Crew' : 'Technician',
+      esc(crewNames.length ? crewNames.join(' · ') : 'Unassigned') + pencil('tech'),
+    );
     if (c.phone) {
       // tel: href keeps only digits and + — the display keeps the stored form.
       rows += detailRow(
@@ -790,8 +840,8 @@
     }, 300);
   }
 
-  function openDetail(assignmentId) {
-    fetch('/board/api/visit?assignmentId=' + encodeURIComponent(assignmentId), {
+  function openDetail(visitId) {
+    fetch('/board/api/visit?visitId=' + encodeURIComponent(visitId), {
       headers: authHeaders(),
     })
       .then(function (resp) {
@@ -1089,13 +1139,39 @@
   // The sheet-row editors. Every write goes through the Phase-2 endpoints —
   // the same shared verbs chat drives. NOTE: /job is a ONE-SHOT endpoint;
   // never send it ?preview=1 (it is ignored and would commit).
+  // " — Joy Alvarez came off" — the crew a REPLACE just removed. Silence when
+  // nothing was lost, so a one-person reassign reads exactly as it always did.
+  function droppedNote(wasRefs, keptRef) {
+    var gone = (wasRefs || []).filter(function (r) {
+      return r && r !== keptRef;
+    });
+    if (!gone.length) return '';
+    return (
+      ' — ' +
+      gone
+        .map(function (r) {
+          return rosterName(r);
+        })
+        .join(' · ') +
+      ' came off'
+    );
+  }
+
   function openEditor(kind, d) {
     // Untimed visits (rung 9a): nothing to prefill from — the editors open
     // with today and EMPTY times, and placing means typing real ones.
     var vDate = d.start ? d.start.slice(0, 10) : state.today;
     if (kind === 'tech') {
+      // The picker takes ONE name and the verb REPLACES the crew, so on a
+      // multi-person trip the pick takes the others off. That is a legitimate
+      // edit — it is a SILENT one that is not. Name them in the title.
+      var sheetCrew = d.technicianNames || (d.technicianName ? [d.technicianName] : []);
+      var sheetRefs = d.technicianRefs || (d.technicianRef ? [d.technicianRef] : []);
       openPicker({
-        title: 'Assign technician',
+        title:
+          sheetCrew.length > 1
+            ? 'Replace the crew (' + sheetCrew.join(' · ') + ')'
+            : 'Assign technician',
         allowNone: !d.unassigned,
         currentRef: d.technicianRef,
         date: vDate,
@@ -1109,35 +1185,38 @@
           // day range.
           if (!d.start) {
             var tbdBody = {
-              assignmentId: d.assignmentId,
+              visitId: d.visitId,
               attachUnplaced: true,
               reason: ref ? 'Assigned on the visit sheet' : 'Unassigned on the visit sheet',
             };
-            if (ref) tbdBody.technicianRef = ref;
+            if (ref) tbdBody.technicianRefs = [ref];
             else tbdBody.unassign = true;
             postMove(
               tbdBody,
               function () {
                 return ref
-                  ? 'Assigned to ' + rosterName(ref) + ' — time still to be set'
+                  ? 'Assigned to ' + rosterName(ref) + droppedNote(sheetRefs, ref) +
+                    ' — time still to be set'
                   : 'Now unassigned — back in the loose bucket, time still to be set';
               },
             );
             return;
           }
           var body = {
-            assignmentId: d.assignmentId,
+            visitId: d.visitId,
             date: vDate,
             startTime: hhmm(d.start),
             endTime: hhmm(d.end),
             reason: ref ? 'Assigned on the visit sheet' : 'Unassigned on the visit sheet',
           };
-          if (ref) body.technicianRef = ref;
+          if (ref) body.technicianRefs = [ref];
           else body.unassign = true;
           postMove(
             body,
             function () {
-              return ref ? 'Assigned to ' + rosterName(ref) : 'Now unassigned — nobody on it';
+              return ref
+                ? 'Assigned to ' + rosterName(ref) + droppedNote(sheetRefs, ref)
+                : 'Now unassigned — nobody on it';
             },
           );
         },
@@ -1161,11 +1240,11 @@
           var btn = e.target.closest && e.target.closest('[data-form]');
           if (!btn) return;
           if (btn.getAttribute('data-form') === 'cancel') {
-            openDetail(d.assignmentId);
+            openDetail(d.visitId);
             return;
           }
           var body = {
-            assignmentId: d.assignmentId,
+            visitId: d.visitId,
             date: val(ov, 'qe-date'),
             startTime: val(ov, 'qe-start'),
             endTime: val(ov, 'qe-end'),
@@ -1202,7 +1281,7 @@
         title: d.jobTitle,
         duration: d.jobDurationMinutes,
         onDone: function () {
-          openDetail(d.assignmentId); // same id — a job edit never remints the visit
+          openDetail(d.visitId); // same id — a job edit never remints the visit
         },
       });
     }
@@ -1484,23 +1563,47 @@
     var currentRef = card.getAttribute('data-ref');
     var sameDay = card.closest('.day').getAttribute('data-date') === targetDate;
     var body = {
-      assignmentId: card.getAttribute('data-id'),
+      visitId: card.getAttribute('data-id'),
       date: targetDate,
       startTime: card.getAttribute('data-start'),
       endTime: card.getAttribute('data-end'),
     };
-    // A lane drop assigns/reassigns; a plain day drop keeps the person (or
-    // keeps it unassigned — moveVisit's omitted-ref semantics); an
-    // Unassigned-lane drop PARKS (plan 4a.5 — the detach verb). An already-
-    // parked card dropped on another day's Unassigned lane is a plain day
-    // move (nothing to detach) — the shared same-spot guard below covers the
-    // dropped-where-it-was case for parked cards too.
+    // THE CARD IS ONE PERSON; THE VISIT IS THE WHOLE CREW (rung 9c). Every
+    // write verb REPLACES the crew, so sending this lane's ref alone would
+    // take everyone else off a trip they are still going on — silently, with
+    // no history table to recover from. So the gesture is expressed as crew
+    // ARITHMETIC against the card's own `data-crew`, and only the person whose
+    // card was dragged ever changes.
+    var crew = (card.getAttribute('data-crew') || '').split(',').filter(function (r) {
+      return r;
+    });
+    // Cards rendered before data-crew existed (a stale tab mid-deploy) fall
+    // back to the single ref, which is exactly the pre-9c behaviour.
+    if (!crew.length && currentRef) crew = [currentRef];
+    var others = crew.filter(function (r) {
+      return r !== currentRef;
+    });
+
+    // A lane drop hands THIS person's place to the lane's person; a plain day
+    // drop keeps the crew (moveVisit's omitted-ref semantics); an
+    // Unassigned-lane drop takes THIS PERSON off, and parks the visit only
+    // when nobody is left. An already-parked card dropped on another day's
+    // Unassigned lane is a plain day move (nothing to detach) — the shared
+    // same-spot guard below covers the dropped-where-it-was case too.
     if (unassign && currentRef) {
-      body.unassign = true;
+      if (others.length) body.technicianRefs = others;
+      else body.unassign = true;
     } else if (!unassign && laneRef && laneRef !== currentRef) {
-      body.technicianRef = laneRef;
+      var next = crew.map(function (r) {
+        return r === currentRef ? laneRef : r;
+      });
+      // An UNASSIGNED card has no person to swap out — the lane's person joins.
+      if (next.indexOf(laneRef) === -1) next.push(laneRef);
+      body.technicianRefs = next.filter(function (r, i) {
+        return next.indexOf(r) === i; // dropping Ben into Joy's lane MERGES
+      });
     }
-    if (sameDay && !body.technicianRef && !body.unassign) return; // dropped where it already was
+    if (sameDay && !body.technicianRefs && !body.unassign) return; // dropped where it already was
     // The audit reason tracks what the move ACTUALLY does, not the drop
     // target (final-review finding: an already-unassigned card day-moved via
     // the Unassigned lane was stamped as if it had just been detached).
@@ -1510,20 +1613,26 @@
     postMove(
       body,
       function () {
+        // Say what happened to the CREW, not just to the day: the whole
+        // hazard this flow now guards against is a manager not realising a
+        // second person was on the trip.
+        var stayed = others.length ? ' · ' + others.join(' · ') + ' still on it' : '';
         return (
           'Moved to ' + targetDate + ' ' + body.startTime +
-          (body.technicianRef
-            ? ' — now with ' + (laneLabel || body.technicianRef)
-            : body.unassign
-              ? ' — now unassigned, nobody on it'
-              : '')
+          (body.unassign
+            ? ' — now unassigned, nobody on it'
+            : unassign && body.technicianRefs
+              ? ' — ' + (currentRef || 'that person') + ' off' + stayed
+              : body.technicianRefs
+                ? ' — now with ' + (laneLabel || laneRef) + stayed
+                : '')
         );
       },
     );
   }
 
   function cancelFlow(card) {
-    var body = { assignmentId: card.getAttribute('data-id') };
+    var body = { visitId: card.getAttribute('data-id') };
     apiPost('/board/api/cancel', body, true).then(function (p) {
       if (!p.ok) {
         toast(p.body.error || 'Unschedule failed (' + p.status + ')', true);
@@ -1532,7 +1641,7 @@
       var commit = function () {
         apiPost(
           '/board/api/cancel',
-          { assignmentId: body.assignmentId, reason: 'Unscheduled on the dispatch board' },
+          { visitId: body.visitId, reason: 'Unscheduled on the dispatch board' },
           false,
         )
           .then(function (r) {

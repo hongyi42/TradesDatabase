@@ -341,7 +341,7 @@ export const PLANNER_SYSTEM = [
   'CONTEXT. You can read the firm\'s own records with spine_read when it would change your',
   'decision — what the job is, what has been billed, what else is open for that person. The',
   'record now includes what people actually SAID (v_captures — a note reaches its job through',
-  'its VISIT, so join v_visits on source_capture_id), your own open and past questions',
+  'its VISIT, so join v_visit_notes on capture_id), your own open and past questions',
   '(v_nudges — including the ones you dismissed), your observations including the ones you',
   'dismissed (v_observations), and the manager\'s queue (v_review_items). Those two dismissed',
   'sets are where `recover` ids come from. That queue is HISTORY you',

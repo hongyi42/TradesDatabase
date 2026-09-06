@@ -120,12 +120,12 @@ describe('buildWorldSpec — referential integrity', () => {
 });
 
 describe('buildWorldSpec — every visit is a legal row', () => {
-  it('is fully placed or fully untimed (the createAssignment contract)', () => {
+  it('is fully placed or fully untimed (the createVisit contract)', () => {
     eachTenant((t, _w, anchor) => {
       for (const v of t.visits) {
         // Rung 9a: a visit has a time or it does not — there is no third
         // (windowed) shape, so the rule is that the time fields arrive
-        // together or not at all. createAssignment throws on a half-timed row.
+        // together or not at all. createVisit throws on a half-timed row.
         const parts = [v.date, v.startTime, v.durationMinutes].filter((x) => x !== undefined);
         expect(
           parts.length === 3 || parts.length === 0,

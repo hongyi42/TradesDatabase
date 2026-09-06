@@ -1,4 +1,10 @@
-import { factSourceIds, isFactBundle, type CustomerContext, type Json } from '../db/index.js';
+import {
+  factSourceIds,
+  isFactBundle,
+  participantsOf,
+  type CustomerContext,
+  type Json,
+} from '../db/index.js';
 
 // A single grounded claim: a statement the synthesizer made, paired with the L1
 // capture id it is sourced from. captureId must reference a real capture in the
@@ -62,7 +68,7 @@ export function serializeContextForPrompt(context: CustomerContext): string {
     ? (upcomingVisits ?? [])
         .map(
           (u) =>
-            `- [upcoming ${u.assignmentId}] ${u.jobTitle ?? '(untitled)'} ` +
+            `- [upcoming ${u.visitId}] ${u.jobTitle ?? '(untitled)'} ` +
             (u.untimed
               ? 'booked, but NO time set yet — say exactly that'
               : `${u.phrase} ${u.startTime ?? ''}${u.endTime ? `–${u.endTime}` : ''}`) +
@@ -75,7 +81,7 @@ export function serializeContextForPrompt(context: CustomerContext): string {
     ? recentVisits
         .map(
           (v) =>
-            `- [visit ${v.id}] tech=${v.technician_name ?? '—'} ` +
+            `- [visit ${v.id}] tech=${participantsOf(v).map((p) => p.displayName).join(' + ') || '—'} ` +
             `labor=${v.labor_hours ?? '—'} source_capture=${v.source_capture_id ?? '—'} ` +
             `attributes=${attrs(v.attributes)}`,
         )

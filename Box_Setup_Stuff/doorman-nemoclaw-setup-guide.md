@@ -492,7 +492,29 @@ curl \-s \-o /dev/null \-w 'HTTP %{http\_code} in %{time\_total}s\\n' \\
 
 nemoclaw onboard      \# if port 8080 is blocked: sudo kill \<PID\>; sudo lsof \-i :8080; re-run
 
-> **Provider update 2026-08-15 — inference now routes to Fireworks Fast.** The route was
+> **Provider update 2026-09-05 — inference routes to OpenRouter, through a PRESET.** Fireworks
+> ran out of credits on 2026-09-04 and the fleet moved (plan:
+> `thoughts/shared/plans/2026-09-05-fleet-to-openrouter-muse-spark.md`). Provider:
+> `openshell provider create -g nemoclaw --name openrouter-prod --type openai --config
+> OPENAI_BASE_URL=https://openrouter.ai/api/v1 --credential OPENAI_API_KEY` (bare credential key =
+> env lookup — export the value from `/etc/nemoclaw/openrouter.env` first; never argv). Route:
+> `openshell inference set -g nemoclaw --provider openrouter-prod --model @preset/trades-seats
+> --no-verify`. The model id is an OpenRouter **preset** — the gateway can carry exactly one
+> model string and rewrites every request's `model` to it, so the preset is how a second lane
+> reaches the seats at all: it serves `google/gemini-3.8-flash` (primary since the 2026-09-05 evening decision) and, if that errors, falls through to
+> `meta/muse-spark-1.3` **per request, inside OpenRouter** (no state; the next request is
+> on Gemini again the moment Google recovers). `--no-verify` because a preset slug is not a listed
+> model; the medic's free balance check proves endpoint+key instead. **There is no rollback
+> provider** — `fireworks-prod` (credit-dead), `deepinfra-prod`, `nvidia-prod`, `nebius-trial`,
+> `anthropic-eval` remain registered but inert. The seat's own model entry (honest id,
+> per-tier context window, image input, `compat.supportsReasoningEffort`) is written by
+> `bootstrap-box.sh wire <AGENT>` with `NEMOCLAW_CTX_WINDOW` — onboard still runs on
+> `nvidia-prod` / `z-ai/glm-5.2` and `wire` rewrites it. The medic (v6) holds this route,
+> checks the key's balance every 5 min for free, probes a real tool call hourly, logs which lane
+> served (`served=`), and probes the Muse lane directly once a day. Recovery:
+> `docs/inference-recovery-runbook.md`.
+>
+> **Provider update 2026-08-15 (HISTORY — superseded above) — inference routed to Fireworks Fast.** The route was
 > flipped from DeepInfra to Fireworks' GLM-5.2 fast router (same weights, ~2.4x faster wall
 > clock; full trial in `thoughts/shared/research/2026-08-14-glm-5.2-inference-provider-options.md`):
 > `openshell provider create -g nemoclaw --name fireworks-prod --type openai --config
@@ -520,17 +542,19 @@ nemoclaw onboard      \# if port 8080 is blocked: sudo kill \<PID\>; sudo lsof \
 > cap (32) rate-limits any busy agent with `ResourceExhausted: Worker local total request limit
 > reached (N/32)`. This actually bit Judy's s3 on 2026-07-08 (re-onboard landed on the NVIDIA
 > default; the flip was skipped). Guard: `nemoclaw-inference-medic.{sh,service,timer}` (installed on
-> trades-box-1, copies in this repo) re-asserts `fireworks-prod /
-> accounts/fireworks/routers/glm-5p2-fast` on boot + every 5 min, so drift self-heals — but still
-> run the flip by hand right after an onboard so you're not waiting on the timer. Check the live
-> route any time with `openshell inference get`.
+> trades-box-1, copies in this repo) re-asserts `openrouter-prod /
+> @preset/trades-seats` on boot + every 5 min (since 2026-09-05; Fireworks before that), so drift
+> self-heals — but still run the flip by hand right after an onboard so you're not waiting on
+> the timer. Check the live route any time with `openshell inference get`.
 >
-> The medic only calls the provider healthy if a **real tool call** comes back (v4, 2026-08-12),
-> and it has **no fallback by design** (v5) — it asserts the route and reports, it does not
-> reroute. See `nemoclaw-inference-medic.sh` and the medic entry in
-> `doorman-architecture-memory.md` for why the old NVIDIA fallback was removed rather than fixed.
+> The medic only calls the route healthy if a **real tool call** comes back (v4, 2026-08-12),
+> and **it never reroutes** (v5) — it asserts the route and reports. Since v6 (2026-09-05) the
+> second lane lives in the OpenRouter preset itself, chained per request by the vendor, and the
+> medic verifies that lane directly once a day. See `nemoclaw-inference-medic.sh` and the medic
+> entry in `doorman-architecture-memory.md` for why the old NVIDIA fallback was removed rather
+> than fixed.
 
-Answer the prompts: provider **1 (NVIDIA Endpoints)**; API key (reuses stored / paste `nvapi-…`); cloud model: **the target model is the GLM line — `z-ai/glm-5.2` as of 2026-07-02** (Nemotron-3 Super proved too weak; don't pick it. GLM-5.1 was retired by NVIDIA — 410s). If the GLM model isn't offered in the onboard menu, pick anything and set it afterward with `nemoclaw inference set --provider nvidia-prod --model z-ai/glm-5.2 --sandbox <AGENT>` (the supported path — updates the gateway route + all openclaw.json refs). **Confirm the exact id first** against the live catalog **from the HOST** — `curl -s https://integrate.api.nvidia.com/v1/models` is public, no key (nemoclaw's `--verify` can't reach NVIDIA from inside the gateway container; it fails on connection, not auth). Then: **Sandbox name \= `<AGENT>`**; Apply config **Y**; Brave search **N**; messaging channel (e.g. Telegram — paste bot token \+ your user ID); Resource profile **2 (gamer 25%)**; Policy tier **Enter**; Presets **Enter**. First build ≈ 8 min.
+Answer the prompts: provider **1 (NVIDIA Endpoints)**; API key (reuses stored / paste `nvapi-…`); cloud model: **the target model is the GLM line — `z-ai/glm-5.2` as of 2026-07-02** (Nemotron-3 Super proved too weak; don't pick it. GLM-5.1 was retired by NVIDIA — 410s). If the GLM model isn't offered in the onboard menu, pick anything and set it afterward with `nemoclaw inference set --provider nvidia-prod --model z-ai/glm-5.2 --sandbox <AGENT>` (the supported path AT ONBOARD TIME — updates the gateway route + all openclaw.json refs; **never run it against a seat `wire` has already configured**, it would overwrite the model entry with the routed preset slug and drop maxTokens/image-input/reasoning-effort — see `doorman-architecture-memory.md`). **Confirm the exact id first** against the live catalog **from the HOST** — `curl -s https://integrate.api.nvidia.com/v1/models` is public, no key (nemoclaw's `--verify` can't reach NVIDIA from inside the gateway container; it fails on connection, not auth). Then: **Sandbox name \= `<AGENT>`**; Apply config **Y**; Brave search **N**; messaging channel (e.g. Telegram — paste bot token \+ your user ID); Resource profile **2 (gamer 25%)**; Policy tier **Enter**; Presets **Enter**. First build ≈ 8 min.
 
 nemoclaw list
 
@@ -561,7 +585,8 @@ auto-shifts). Every future seat should use this instead of the interactive wizar
    heredoc quoting mangled it once (rejected by Telegram, cost a full debug cycle).
 2. Run: `export NVIDIA_INFERENCE_API_KEY=nvapi-…` (required unconditionally in non-interactive
    mode, no stored-key reuse) + `NEMOCLAW_MESSAGING_PLAN_B64=$(cat <planfile>)` +
-   `NEMOCLAW_MODEL=z-ai/glm-5.2` **+ `export TELEGRAM_BOT_TOKEN=<token>` — this last one is
+   `NEMOCLAW_MODEL=z-ai/glm-5.2` (onboard-time only — it must be an id NVIDIA lists; `wire`
+   rewrites the seat's model entry to `google/gemini-3.8-flash` afterwards, 2026-09-05) **+ `export TELEGRAM_BOT_TOKEN=<token>` — this last one is
    LOAD-BEARING and was missing from this recipe until 2026-07-11**, then
    `nemoclaw onboard --non-interactive --yes --name <AGENT> --no-gpu --yes-i-accept-third-party-software`.
 

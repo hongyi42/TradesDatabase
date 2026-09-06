@@ -1,4 +1,4 @@
-import type { Customer, Job, Visit, RawCapture, CustomerContext } from '../db/index.js';
+import type { Customer, Job, VisitWithTechnician, RawCapture, CustomerContext } from '../db/index.js';
 
 // Shared, in-memory test fixtures for the synthesis layer. Synthesis is pure over
 // a CustomerContext, so tests build literal rows here — no DB required. Each
@@ -42,18 +42,35 @@ export const job = (over: Partial<Job> = {}): Job => ({
   ...over,
 });
 
-export const visit = (over: Partial<Visit> = {}): Visit => ({
+export const visit = (over: Partial<VisitWithTechnician> = {}): VisitWithTechnician => ({
   id: 'visit-1',
   tenant_id: 'tenant-1',
   job_id: 'job-1',
-  technician_name: 'Jane',
-  scheduled_at: null,
+  starts_at: null,
+  ends_at: null,
+  status: 'completed',
+  reason: null,
   started_at: null,
-  completed_at: null,
+  completed_at: '2026-06-03T09:00:00.000Z',
   labor_hours: 1.5,
   attributes: { workPerformed: 'inspected unit' },
   source_capture_id: 'cap-a',
   created_at: '2026-06-03T00:00:00.000Z',
+  updated_at: '2026-06-03T00:00:00.000Z',
+  // The crew, the way every reader sees it since rung 9c.
+  visit_participants: [
+    {
+      technician_id: 'tech-jane',
+      created_at: '2026-06-03T00:00:00.000Z',
+      tenant_id: 'tenant-1',
+      technicians: {
+        id: 'tech-jane',
+        ref: 'jane',
+        display_name: 'Jane',
+        tenant_id: 'tenant-1',
+      },
+    },
+  ],
   ...over,
 });
 

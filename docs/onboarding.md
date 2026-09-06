@@ -227,12 +227,44 @@ reaches the reader.
 
 ### 4d. Scheduling — the biggest subsystem
 
-The database owns the schedule (`assignments` table). A Google Sheet used to be an input; it isn't
+The database owns the schedule (the `visits` table). A Google Sheet used to be an input; it isn't
 anymore.
 
-**A visit has a time or it does not** — that is the whole state model. A visit with both
-timestamps is *placed*; one with neither is *untimed*: committed work waiting in the unscheduled
-queue, ordered oldest-first. There is no third shape.
+**One visit is one row, from agreed to reported** (rung 9b, 2026-09-05). There used to be two
+tables that both meant "visit" and never joined: `assignments`, which the booking tools wrote, and
+a second `visits` table that minted a fresh row per field note and nothing ever scheduled. They
+are now one object called `visits`, and every id survives a move, because a move EDITS the row
+instead of cancelling it and inserting a successor.
+
+**A trip carries a crew** (rung 9c, 2026-09-06). Who is going is not a column on the visit — it is
+`visit_participants`, one row per person. Two technicians on one job at one time is ONE visit with
+two participants, not two visits, and there is **no lead**: everybody on it is equal, either of
+them reporting it closes it for both, and it raises ONE gap when nobody does. Where a surface has
+to name exactly one of them (a gap has to be addressed to somebody) it takes a stable tiebreak,
+never a rank. The "nobody is booked twice" exclusion constraint moved onto that table with them,
+because the guard needs a row that knows both *who* and *when*.
+
+**A visit has a time or it does not** — that is still the whole state model on the schedule side.
+The full lifecycle is *derived* from the row, never stored:
+
+| stage | what is on the row | in plain words |
+|---|---|---|
+| `committed` | `confirmed`, no times | agreed, waiting in the unscheduled queue (oldest-first) |
+| `placed` | `confirmed`, both times | on the calendar |
+| `happened` | `completed`, no linked capture | done, but nothing on file says so |
+| `reported` | `completed` **and** a `visit_notes` row | done, and here is the capture that says so |
+| `cancelled` | `cancelled` | called off |
+
+The status column is read first, so linking a note to a visit nobody has marked done leaves it
+at `placed`. (In practice a technician's note filed after the visit's start does both at once: it
+links, then flips the status. A note filed *before* the start, or one arriving from a customer,
+only links.)
+
+A field note ATTACHES to the trip it reports rather than minting its own row: the job's visit on
+the note's own firm-local day (one the filer is ON, or nobody's; nearest start breaks a tie), else
+the job's single live visit, else — for a technician channel only — a new one, already happened.
+Attaching is channel-blind so a customer's own email is evidence about the trip it answers;
+creating and reporting are not.
 
 A **promise ladder** (`none`/`day`/`time_only`/`time`, plus a stored `earliest_date..latest_date`
 window) used to sit here and was the central concept. **Both were deleted in rung 9a

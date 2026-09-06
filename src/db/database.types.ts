@@ -34,105 +34,6 @@ export type Database = {
   }
   public: {
     Tables: {
-      assignments: {
-        Row: {
-          created_at: string
-          ends_at: string | null
-          id: string
-          job_id: string
-          reason: string | null
-          source_capture_id: string | null
-          starts_at: string | null
-          status: Database["public"]["Enums"]["assignment_status"]
-          technician_id: string | null
-          tenant_id: string
-          updated_at: string
-        }
-        Insert: {
-          created_at?: string
-          ends_at?: string | null
-          id?: string
-          job_id: string
-          reason?: string | null
-          source_capture_id?: string | null
-          starts_at?: string | null
-          status?: Database["public"]["Enums"]["assignment_status"]
-          technician_id?: string | null
-          tenant_id: string
-          updated_at?: string
-        }
-        Update: {
-          created_at?: string
-          ends_at?: string | null
-          id?: string
-          job_id?: string
-          reason?: string | null
-          source_capture_id?: string | null
-          starts_at?: string | null
-          status?: Database["public"]["Enums"]["assignment_status"]
-          technician_id?: string | null
-          tenant_id?: string
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "assignments_job_id_fkey"
-            columns: ["job_id"]
-            isOneToOne: false
-            referencedRelation: "jobs"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "assignments_job_id_fkey"
-            columns: ["job_id"]
-            isOneToOne: false
-            referencedRelation: "v_cancelled_visits"
-            referencedColumns: ["job_id"]
-          },
-          {
-            foreignKeyName: "assignments_job_id_fkey"
-            columns: ["job_id"]
-            isOneToOne: false
-            referencedRelation: "v_jobs"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "assignments_job_id_fkey"
-            columns: ["job_id"]
-            isOneToOne: false
-            referencedRelation: "v_schedule"
-            referencedColumns: ["job_id"]
-          },
-          {
-            foreignKeyName: "assignments_source_capture_id_fkey"
-            columns: ["source_capture_id"]
-            isOneToOne: false
-            referencedRelation: "raw_captures"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "assignments_source_capture_id_fkey"
-            columns: ["source_capture_id"]
-            isOneToOne: false
-            referencedRelation: "v_captures"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "assignments_technician_id_fkey"
-            columns: ["technician_id"]
-            isOneToOne: false
-            referencedRelation: "technicians"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "assignments_tenant_id_fkey"
-            columns: ["tenant_id"]
-            isOneToOne: false
-            referencedRelation: "tenants"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       call_ingest: {
         Row: {
           attempts: number
@@ -1727,8 +1628,15 @@ export type Database = {
             foreignKeyName: "raw_captures_visit_id_fkey"
             columns: ["visit_id"]
             isOneToOne: false
-            referencedRelation: "v_visits"
-            referencedColumns: ["id"]
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["visit_id"]
+          },
+          {
+            foreignKeyName: "raw_captures_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["visit_id"]
           },
           {
             foreignKeyName: "raw_captures_visit_id_fkey"
@@ -2076,22 +1984,22 @@ export type Database = {
             foreignKeyName: "schedule_events_assignment_id_fkey"
             columns: ["assignment_id"]
             isOneToOne: false
-            referencedRelation: "assignments"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "schedule_events_assignment_id_fkey"
-            columns: ["assignment_id"]
-            isOneToOne: false
             referencedRelation: "v_cancelled_visits"
-            referencedColumns: ["assignment_id"]
+            referencedColumns: ["visit_id"]
           },
           {
             foreignKeyName: "schedule_events_assignment_id_fkey"
             columns: ["assignment_id"]
             isOneToOne: false
             referencedRelation: "v_schedule"
-            referencedColumns: ["assignment_id"]
+            referencedColumns: ["visit_id"]
+          },
+          {
+            foreignKeyName: "schedule_events_assignment_id_fkey"
+            columns: ["assignment_id"]
+            isOneToOne: false
+            referencedRelation: "visits"
+            referencedColumns: ["id"]
           },
           {
             foreignKeyName: "schedule_events_tenant_id_fkey"
@@ -2370,45 +2278,187 @@ export type Database = {
         }
         Relationships: []
       }
+      visit_notes: {
+        Row: {
+          capture_id: string
+          created_at: string
+          tenant_id: string
+          visit_id: string
+        }
+        Insert: {
+          capture_id: string
+          created_at?: string
+          tenant_id: string
+          visit_id: string
+        }
+        Update: {
+          capture_id?: string
+          created_at?: string
+          tenant_id?: string
+          visit_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "visit_notes_capture_id_fkey"
+            columns: ["capture_id"]
+            isOneToOne: false
+            referencedRelation: "raw_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "visit_notes_capture_id_fkey"
+            columns: ["capture_id"]
+            isOneToOne: false
+            referencedRelation: "v_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "visit_notes_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "visit_notes_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["visit_id"]
+          },
+          {
+            foreignKeyName: "visit_notes_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["visit_id"]
+          },
+          {
+            foreignKeyName: "visit_notes_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "visits"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      visit_participants: {
+        Row: {
+          created_at: string
+          ends_at: string | null
+          id: string
+          starts_at: string | null
+          status: Database["public"]["Enums"]["visit_status"]
+          technician_id: string
+          tenant_id: string
+          visit_id: string
+        }
+        Insert: {
+          created_at?: string
+          ends_at?: string | null
+          id?: string
+          starts_at?: string | null
+          status?: Database["public"]["Enums"]["visit_status"]
+          technician_id: string
+          tenant_id: string
+          visit_id: string
+        }
+        Update: {
+          created_at?: string
+          ends_at?: string | null
+          id?: string
+          starts_at?: string | null
+          status?: Database["public"]["Enums"]["visit_status"]
+          technician_id?: string
+          tenant_id?: string
+          visit_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "visit_participants_technician_id_fkey"
+            columns: ["technician_id"]
+            isOneToOne: false
+            referencedRelation: "technicians"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "visit_participants_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "visit_participants_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["visit_id"]
+          },
+          {
+            foreignKeyName: "visit_participants_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["visit_id"]
+          },
+          {
+            foreignKeyName: "visit_participants_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "visits"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       visits: {
         Row: {
           attributes: Json
           completed_at: string | null
           created_at: string
+          ends_at: string | null
           id: string
           job_id: string
           labor_hours: number | null
-          scheduled_at: string | null
+          reason: string | null
           source_capture_id: string | null
           started_at: string | null
-          technician_name: string | null
+          starts_at: string | null
+          status: Database["public"]["Enums"]["visit_status"]
           tenant_id: string
+          updated_at: string
         }
         Insert: {
           attributes?: Json
           completed_at?: string | null
           created_at?: string
+          ends_at?: string | null
           id?: string
           job_id: string
           labor_hours?: number | null
-          scheduled_at?: string | null
+          reason?: string | null
           source_capture_id?: string | null
           started_at?: string | null
-          technician_name?: string | null
+          starts_at?: string | null
+          status?: Database["public"]["Enums"]["visit_status"]
           tenant_id: string
+          updated_at?: string
         }
         Update: {
           attributes?: Json
           completed_at?: string | null
           created_at?: string
+          ends_at?: string | null
           id?: string
           job_id?: string
           labor_hours?: number | null
-          scheduled_at?: string | null
+          reason?: string | null
           source_capture_id?: string | null
           started_at?: string | null
-          technician_name?: string | null
+          starts_at?: string | null
+          status?: Database["public"]["Enums"]["visit_status"]
           tenant_id?: string
+          updated_at?: string
         }
         Relationships: [
           {
@@ -2440,14 +2490,14 @@ export type Database = {
             referencedColumns: ["job_id"]
           },
           {
-            foreignKeyName: "visits_source_capture_fk"
+            foreignKeyName: "visits_source_capture_id_fkey"
             columns: ["source_capture_id"]
             isOneToOne: false
             referencedRelation: "raw_captures"
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "visits_source_capture_fk"
+            foreignKeyName: "visits_source_capture_id_fkey"
             columns: ["source_capture_id"]
             isOneToOne: false
             referencedRelation: "v_captures"
@@ -2686,7 +2736,6 @@ export type Database = {
       }
       v_cancelled_visits: {
         Row: {
-          assignment_id: string | null
           city: string | null
           customer_id: string | null
           customer_name: string | null
@@ -2699,9 +2748,10 @@ export type Database = {
           postal_code: string | null
           reason: string | null
           starts_at: string | null
-          technician_name: string | null
-          technician_ref: string | null
+          technician_names: string[] | null
+          technician_refs: string[] | null
           updated_at: string | null
+          visit_id: string | null
         }
         Relationships: []
       }
@@ -3127,8 +3177,8 @@ export type Database = {
       }
       v_schedule: {
         Row: {
-          assignment_id: string | null
           city: string | null
+          completed_at: string | null
           customer_id: string | null
           customer_name: string | null
           ends_at: string | null
@@ -3139,10 +3189,12 @@ export type Database = {
           local_day: string | null
           local_weekday: string | null
           postal_code: string | null
+          stage: string | null
           starts_at: string | null
-          status: Database["public"]["Enums"]["assignment_status"] | null
-          technician_name: string | null
-          technician_ref: string | null
+          status: Database["public"]["Enums"]["visit_status"] | null
+          technician_names: string[] | null
+          technician_refs: string[] | null
+          visit_id: string | null
         }
         Relationships: []
       }
@@ -3192,32 +3244,49 @@ export type Database = {
         }
         Relationships: []
       }
-      v_visits: {
+      v_visit_notes: {
         Row: {
+          capture_id: string | null
           created_at: string | null
-          id: string | null
           job_id: string | null
-          labor_hours: number | null
-          source_capture_id: string | null
-          technician_name: string | null
-        }
-        Insert: {
-          created_at?: string | null
-          id?: string | null
-          job_id?: string | null
-          labor_hours?: number | null
-          source_capture_id?: string | null
-          technician_name?: string | null
-        }
-        Update: {
-          created_at?: string | null
-          id?: string | null
-          job_id?: string | null
-          labor_hours?: number | null
-          source_capture_id?: string | null
-          technician_name?: string | null
+          visit_id: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "visit_notes_capture_id_fkey"
+            columns: ["capture_id"]
+            isOneToOne: false
+            referencedRelation: "raw_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "visit_notes_capture_id_fkey"
+            columns: ["capture_id"]
+            isOneToOne: false
+            referencedRelation: "v_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "visit_notes_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["visit_id"]
+          },
+          {
+            foreignKeyName: "visit_notes_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["visit_id"]
+          },
+          {
+            foreignKeyName: "visit_notes_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "visits"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "visits_job_id_fkey"
             columns: ["job_id"]
@@ -3246,19 +3315,67 @@ export type Database = {
             referencedRelation: "v_schedule"
             referencedColumns: ["job_id"]
           },
+        ]
+      }
+      v_visit_participants: {
+        Row: {
+          created_at: string | null
+          job_id: string | null
+          starts_at: string | null
+          status: Database["public"]["Enums"]["visit_status"] | null
+          technician_name: string | null
+          technician_ref: string | null
+          visit_id: string | null
+        }
+        Relationships: [
           {
-            foreignKeyName: "visits_source_capture_fk"
-            columns: ["source_capture_id"]
+            foreignKeyName: "visit_participants_visit_id_fkey"
+            columns: ["visit_id"]
             isOneToOne: false
-            referencedRelation: "raw_captures"
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["visit_id"]
+          },
+          {
+            foreignKeyName: "visit_participants_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["visit_id"]
+          },
+          {
+            foreignKeyName: "visit_participants_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "visits"
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "visits_source_capture_fk"
-            columns: ["source_capture_id"]
+            foreignKeyName: "visits_job_id_fkey"
+            columns: ["job_id"]
             isOneToOne: false
-            referencedRelation: "v_captures"
+            referencedRelation: "jobs"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "visits_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "visits_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "visits_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
           },
         ]
       }
@@ -3323,7 +3440,6 @@ export type Database = {
       }
     }
     Enums: {
-      assignment_status: "proposed" | "confirmed" | "cancelled" | "completed"
       capture_channel:
         | "technician_voice"
         | "technician_photo"
@@ -3374,6 +3490,7 @@ export type Database = {
         | "offboarding"
         | "offboarded"
       technician_tier: "manager" | "technician"
+      visit_status: "proposed" | "confirmed" | "cancelled" | "completed"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -3504,7 +3621,6 @@ export const Constants = {
   },
   public: {
     Enums: {
-      assignment_status: ["proposed", "confirmed", "cancelled", "completed"],
       capture_channel: [
         "technician_voice",
         "technician_photo",
@@ -3559,6 +3675,7 @@ export const Constants = {
         "offboarded",
       ],
       technician_tier: ["manager", "technician"],
+      visit_status: ["proposed", "confirmed", "cancelled", "completed"],
     },
   },
 } as const

@@ -5,7 +5,7 @@ import {
   listJobIdsWithCostEvents,
   findOpenReviewItemsByKind,
   getTenant,
-  listAssignmentsByIds,
+  listVisitsByIds,
   listEverFlaggedSubjectRefs,
   listJobStampedCaptureTimes,
   listJobsWithCustomerByIds,
@@ -13,10 +13,11 @@ import {
   listNudgesByStatus,
   listObservationsByStatus,
   listObservedSubjectRefs,
-  listOverdueConfirmedAssignments,
+  listOverdueConfirmedVisits,
+  participantsOf,
   listTeam,
   listTenantIdsWithTelegramBindings,
-  listVisitTimesForJobs,
+  listNoteTimesForJobs,
   readSettingsTolerantly,
   resolveOpenReviewItemFor,
 } from '../db/index.js';
@@ -25,6 +26,9 @@ import {
   specFor,
   type NudgeKindSpec,
   type SweepFacts,
+  visitSubjectRef,
+  visitIdOfSubject,
+  visitSubjectCandidates,
 } from './nudgeKinds.js';
 // No cycle: nudgeQueue imports only from src/db and composeCopy.
 import { MAX_DELIVERY_ATTEMPTS, MAX_SERVE_COUNT } from '../control/nudgeQueue.js';
@@ -54,7 +58,7 @@ import { naiveLocalISO } from '../schedule/booking.js';
 // Restraint machinery (each line guards the manager's attention, the scarce
 // resource):
 //   - the 72h look-back means the historical backlog NEVER surfaces;
-//   - the cap meters FRESH gaps only (ever-flagged assignments are filtered
+//   - the cap meters FRESH gaps only (ever-flagged visits are filtered
 //     out via one batched read BEFORE capping — final-review fix: without it,
 //     stale flagged-but-unfilled gaps occupy the slots and starve new gaps);
 //   - once per assignment EVER (uq_observations_subject_ever owns this since
@@ -193,13 +197,13 @@ const MAX_FLOOR_REACH_MS = 7 * 24 * 3_600_000;
 export interface WatcherDeps {
   listTenants?: typeof listTenantIdsWithTelegramBindings;
   getTenant?: typeof getTenant;
-  listOverdue?: typeof listOverdueConfirmedAssignments;
+  listOverdue?: typeof listOverdueConfirmedVisits;
   listCaptureTimes?: typeof listJobStampedCaptureTimes;
-  listVisitTimes?: typeof listVisitTimesForJobs;
+  listNoteTimes?: typeof listNoteTimesForJobs;
   listTeam?: typeof listTeam;
   listJobs?: typeof listJobsWithCustomerByIds;
   listEverFlagged?: typeof listEverFlaggedSubjectRefs;
-  listAssignments?: typeof listAssignmentsByIds;
+  listAssignments?: typeof listVisitsByIds;
   findOpenGaps?: typeof findOpenReviewItemsByKind;
   resolveGap?: typeof resolveOpenReviewItemFor;
   // Detection-records seams (plan 2026-08-31): the mint writes observations.
@@ -275,13 +279,13 @@ export async function runWatchers(
 ): Promise<WatchersSummary> {
   const listTenants = deps.listTenants ?? listTenantIdsWithTelegramBindings;
   const get = deps.getTenant ?? getTenant;
-  const listOverdue = deps.listOverdue ?? listOverdueConfirmedAssignments;
+  const listOverdue = deps.listOverdue ?? listOverdueConfirmedVisits;
   const listCaptureTimes = deps.listCaptureTimes ?? listJobStampedCaptureTimes;
-  const listVisitTimes = deps.listVisitTimes ?? listVisitTimesForJobs;
+  const listNoteTimes = deps.listNoteTimes ?? listNoteTimesForJobs;
   const team = deps.listTeam ?? listTeam;
   const listJobs = deps.listJobs ?? listJobsWithCustomerByIds;
   const listEverFlagged = deps.listEverFlagged ?? listEverFlaggedSubjectRefs;
-  const listAssignments = deps.listAssignments ?? listAssignmentsByIds;
+  const listAssignments = deps.listAssignments ?? listVisitsByIds;
   const findOpenGaps = deps.findOpenGaps ?? findOpenReviewItemsByKind;
   const resolveGap = deps.resolveGap ?? resolveOpenReviewItemFor;
   const createObs = deps.createObservation ?? createObservation;
@@ -448,7 +452,7 @@ export async function runWatchers(
         const ids = [...jobIds];
         const [captures, visits] = await Promise.all([
           listCaptureTimes(tenantId, ids, floorUtcIso),
-          listVisitTimes(tenantId, ids, floorUtcIso),
+          listNoteTimes(tenantId, ids, floorUtcIso),
         ]);
         const note = (jobId: string | null, utcIso: string): void => {
           if (!jobId) return;
@@ -475,27 +479,39 @@ export async function runWatchers(
       // re-discovering itself). Read in both modes: freshGaps is the number
       // the shadow→live flip decision needs, since it is exactly what live
       // would act on.
-      const gapIds = gaps.map((g) => g.id);
+      // BOTH spellings of every subject (rung 9b): the bare id every row
+      // written before the remodel used, and the `<id>@<starts_at>` composite
+      // written since. Probing only the new one would read the whole existing
+      // backlog as never-surfaced and re-flag it on the first tick after the
+      // deploy; probing only the old one would lose the re-detection the
+      // composite exists to restore.
+      const subjectsOf = (g: { id: string; starts_at: string | null }) =>
+        visitSubjectCandidates(g.id, g.starts_at);
+      const probeRefs = [...new Set(gaps.flatMap(subjectsOf))];
       const [flaggedRefs, nudgedRefs, observedRefs] = await Promise.all([
-        listEverFlagged(tenantId, 'overdue_visit_gap', gapIds),
-        listNudged(tenantId, 'overdue_visit_gap', gapIds),
+        listEverFlagged(tenantId, 'overdue_visit_gap', probeRefs),
+        listNudged(tenantId, 'overdue_visit_gap', probeRefs),
         // The store that owns "noticed once, ever" from here on; the older two
         // keep pre-split history from re-surfacing (plan 2026-08-31).
-        listObserved(tenantId, 'overdue_visit_gap', gapIds),
+        listObserved(tenantId, 'overdue_visit_gap', probeRefs),
       ]);
       const everSurfaced = new Set([...flaggedRefs, ...nudgedRefs, ...observedRefs]);
-      const fresh = gaps.filter((g) => !everSurfaced.has(g.id));
+      const fresh = gaps.filter((g) => !subjectsOf(g).some((ref) => everSurfaced.has(ref)));
       summary.freshGaps += fresh.length;
 
       if (mode === 'shadow') continue; // counts only — nothing written, nobody pushed
 
       // Auto-resolve: the ONE judgment the sweep keeps (build 5, user ruling
       // 5) — a manager's queue item whose ask has since been satisfied closes
-      // itself. Only kinds whose subject IS a visit belong in an assignments
+      // itself. Only kinds whose subject IS a visit belong in a visits
       // lookup: a job-scoped kind's subject_ref is a JOB id.
       const statusSubjects = [
         ...new Set(
-          openGaps.filter((g) => g.spec.subjectIsVisit).map((g) => g.item.subject_ref),
+          openGaps
+            .filter((g) => g.spec.subjectIsVisit)
+            // The subject carries the visit's TIME as well as its id — the DB
+            // read wants the id (rung 9b, visitSubjectRef).
+            .map((g) => visitIdOfSubject(g.item.subject_ref)),
         ),
       ];
       const statusById = new Map(
@@ -594,13 +610,22 @@ export async function runWatchers(
           const job = jobById.get(g.job_id);
           const title = job?.title ?? 'a job';
           const customer = job?.customers?.name ?? 'unknown customer';
-          const tech = g.technician_id ? techById.get(g.technician_id) : undefined;
+          // ONE gap for the TRIP, addressed to ONE of its people (rung 9c). A
+          // crew has no lead, so the addressee is the participant added first —
+          // a stable tiebreak, not a hierarchy. The whole crew rides in the
+          // context so the planner can see who else was there and message any
+          // of them; only the named one is the ask of record.
+          const crew = participantsOf(g, tenantId);
+          const tech = crew[0] ? techById.get(crew[0].technicianId) : undefined;
           const obs = await createObs({
             tenantId,
             // From the SPEC, never a literal — the forget-spot the registry
             // exists to remove.
             kind: overdueSpec.kind,
-            subjectRef: g.id,
+            // The visit AT THIS TIME. Its id now survives a move, so keying on
+            // the id alone would make the once-ever index permanent silence for
+            // a visit that slid and went overdue again (rung 9b).
+            subjectRef: visitSubjectRef(g.id, g.starts_at),
             technicianId: tech?.id ?? null,
             // Everything the planner's view and a later send will ever need —
             // the same shape nudges.context has always carried; the send
@@ -609,7 +634,19 @@ export async function runWatchers(
               customerName: customer,
               jobTitle: title,
               ...(tech ? { technicianRef: tech.ref, technicianName: tech.display_name } : {}),
-              assignmentId: g.id,
+              // Names come from the ROSTER read, the same source the addressee
+              // above uses — two name sources for one crew is how a gap ends up
+              // addressed to "Ben Shelton" while listing "ben-shelton". The
+              // embed's own copy is the fallback, so nobody drops off the list.
+              ...(crew.length > 0
+                ? {
+                    participants: crew.map((p) => {
+                      const t = techById.get(p.technicianId);
+                      return { ref: t?.ref ?? p.ref, name: t?.display_name ?? p.displayName };
+                    }),
+                  }
+                : {}),
+              visitId: g.id,
               jobId: g.job_id,
               startsAtLocal: g.starts_at,
               endsAtLocal: g.ends_at,

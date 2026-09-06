@@ -1,3 +1,4 @@
+import { visitIdOfSubject } from '../jobs/nudgeKinds.js';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { createTenant } from '../db/tenants.js';
@@ -220,8 +221,13 @@ describe('corpus seeds cleanly (loop, no model)', () => {
         expect(obsById.get(row.id), `${s.id}: asked observation twin`).toBe('asked');
       }
       for (const row of [...rows, ...obsRows]) {
-        const pin = row.kind === 'overdue_visit_gap' ? seeded.assignmentId : seeded.jobId;
-        expect(row.subject_ref, `${s.id}: subject_ref pinned by kind`).toBe(pin);
+        // A visit gap's subject is the visit AT ITS TIME since rung 9b; a job
+        // gap's is still the bare job id. Parse before comparing, so this pins
+        // WHICH ROW the gap is about without re-encoding the key's format.
+        const pin = row.kind === 'overdue_visit_gap' ? seeded.visitId : seeded.jobId;
+        const got =
+          row.kind === 'overdue_visit_gap' ? visitIdOfSubject(row.subject_ref) : row.subject_ref;
+        expect(got, `${s.id}: subject_ref pinned by kind`).toBe(pin);
       }
     }
   }, 120_000);

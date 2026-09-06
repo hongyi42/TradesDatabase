@@ -171,11 +171,14 @@ nemoclaw onboard — answers (guide §4):
   cloud model           z-ai/glm-5.2  — if absent from the menu, pick anything and fix after:
                           nemoclaw inference set --provider nvidia-prod --model z-ai/glm-5.2 --sandbox <AGENT>
                         confirm the exact id first (from the HOST): curl -s https://integrate.api.nvidia.com/v1/models
-  AFTER onboard (REQUIRED): flip to the metered production route — NVIDIA's free tier rate-limits
+  AFTER onboard (REQUIRED): flip to the production route — NVIDIA's free tier rate-limits
                         ("Worker local total request limit reached"):
-                          openshell inference set -g nemoclaw --provider fireworks-prod --model accounts/fireworks/routers/glm-5p2-fast
-                        (rollback = deepinfra-prod / zai-org/GLM-5.2; self-healed on boot + every 5 min by
-                        nemoclaw-inference-medic.timer; verify: openshell inference get)
+                          openshell inference set -g nemoclaw --provider openrouter-prod --model @preset/trades-seats --no-verify
+                        (2026-09-05: the OpenRouter PRESET carries Gemini 3.8 Flash -> Muse Spark 1.3 as the
+                        vendor's own per-request fallback; there is NO rollback provider to flip to. The
+                        medic re-asserts this route on boot + every 5 min and never reroutes. Verify:
+                        openshell inference get. The seat's model entry is written by `wire`, not here.
+                        Recovery: docs/inference-recovery-runbook.md)
   sandbox name          <AGENT>  (e.g. s1)
   apply config          Y
   Brave search          N
@@ -282,9 +285,9 @@ phase_provision() {
   [ "$found" = 1 ] || fail "no getUpdates polling within 180s — check docker logs $cid"
   ok "bridge polling"
 
-  log "route flip: onboard resets the gateway to NVIDIA free tier — re-assert Fireworks (§4 note; medic also heals within 5 min)"
-  run_osh inference set -g nemoclaw --provider fireworks-prod --model accounts/fireworks/routers/glm-5p2-fast \
-    && ok "fireworks-prod / accounts/fireworks/routers/glm-5p2-fast" \
+  log "route flip: onboard resets the gateway to NVIDIA free tier — re-assert the OpenRouter preset (§4 note; medic also heals within 5 min)"
+  run_osh inference set -g nemoclaw --provider openrouter-prod --model @preset/trades-seats --no-verify \
+    && ok "openrouter-prod / @preset/trades-seats" \
     || echo "    ! route flip failed — nemoclaw-inference-medic will self-heal, or run it by hand"
 
   cat <<EOF
@@ -551,6 +554,22 @@ phase_ocpin() {
 phase_wire() {
   need_not_root
   local agent="${1:-}"; [ -n "$agent" ] || fail "usage: ./bootstrap-box.sh wire <AGENT>"
+  # Context window declared to openclaw for this seat (2026-09-05, user ruling):
+  # 131072 for technician seats, 262144 for MANAGER seats ("double for managers —
+  # they do the intense work"). The tier lives in the roster (technicians.tier in
+  # the pilot DB), not on the box, so the operator passes it:
+  #   NEMOCLAW_CTX_WINDOW=262144 ./bootstrap-box.sh wire s2
+  # Bigger is not free: every call re-sends the session, and a long session's
+  # first call after an idle gap is uncached input at full price.
+  # REQUIRED, no default (2026-09-05): five of the six seats are manager tier, so a
+  # default of 131072 was wrong more often than right — and a re-wire for an unrelated
+  # reason (doctrine refresh, plugin update, the next model flip) would silently halve a
+  # manager's window, upload it, restart the gateway and print `ok ... ctx=131072`. The
+  # `cmp -s` guard treats that downgrade as a legitimate change. A wrong window must
+  # never be the silent outcome; make the operator name the tier every time.
+  local ctx="${NEMOCLAW_CTX_WINDOW:-}"
+  [ -n "$ctx" ] || fail "NEMOCLAW_CTX_WINDOW is required — 262144 for a MANAGER seat, 131072 for a TECHNICIAN seat (tier lives in technicians.tier in the pilot DB). e.g. NEMOCLAW_CTX_WINDOW=262144 ./bootstrap-box.sh wire $agent"
+  case "$ctx" in *[!0-9]*) fail "NEMOCLAW_CTX_WINDOW must be an integer (got '$ctx')";; esac
 
   log "egress policy (§5a)"
   cat > "$HOME/trades-spine-doorman-egress-policy.yaml" <<'EOF'
@@ -703,6 +722,10 @@ silently and never ask permission for a reversible internal change.
    is not settled ("book them in, we'll find a slot"), pass NONE of the three: the visit
    books UNTIMED and waits in the unscheduled queue until someone places it with a normal
    move_visit. Booking untimed is never your own choice when a day or time was stated.
+   To send TWO PEOPLE on one trip, pass technicianRefs with every ref — that is ONE visit
+   carrying a crew, not two bookings, and booking it twice makes two trips that each get
+   chased and reported separately. On move_visit, technicianRefs REPLACES the crew: to add
+   somebody to a visit, pass BOTH refs, or the one already on it comes off.
    There is no way to store "sometime next week" — that is a conversation, not a field. If
    the manager wants a slot in a rough window, ask the office (the planner knows how this
    firm schedules) or use find_slots, then book a real time.
@@ -1265,8 +1288,86 @@ EOF
     # skills.slice(0, max(0, n)), so 0 really is none (default 150). We ship 15
     # stock plugin-skills — meme-maker, notion, python-debugpy, tmux, weather … —
     # none of which relate to a trades business. Worth ~1,225 tokens per call.
-    jq --argjson deny "$ts_deny" '
+    #
+    # THE MODEL ENTRY (2026-09-05, the OpenRouter switch — plan
+    # thoughts/shared/plans/2026-09-05-fleet-to-openrouter-muse-spark.md). The
+    # gateway route (`openshell inference set`) decides what SERVES; this entry is
+    # what openclaw BELIEVES about it, and four of its fields change behaviour:
+    #   id/name          honest — google/gemini-3.8-flash is the preset's primary (since
+    #                    the 2026-09-05 evening decision, after both date evals; Muse
+    #                    Spark 1.3 is the fallback and was the morning's id). The old
+    #                    entry said z-ai/glm-5.2 while Fireworks served glm-5p2-fast;
+    #                    s3 said nemotron). Fallback turns still show this id in
+    #                    trajectories — the medic journal's served= is the truth.
+    #   input            ["text","image"]: photos reach the model (both lanes are multimodal).
+    #   contextWindow    $ctx (per-tier, see the top of this phase).
+    #   maxTokens        8192: reasoning is MANDATORY on both lanes and shares the
+    #                    completion budget; 4096 was tuned for GLM.
+    #   compat.supportsReasoningEffort  the switch that lets openclaw SEND
+    #                    reasoning_effort at all (openai-completions:786 — emitted
+    #                    only when model.reasoning && this flag). thinkingDefault
+    #                    "adaptive" then maps to "medium", and `/think <level>`
+    #                    overrides per message. supportedReasoningEfforts: all six, accepted
+    #                    by both lanes (probed 2026-09-05).
+    # compat is a STRICT object in openclaw 2026.6.34's config schema
+    # (plugin-sdk/config-schema.d.ts): only supportsStore/PromptCacheKey/
+    # DeveloperRole/ReasoningEffort/UsageInStreaming/Tools/StrictMode,
+    # requiresStringContent, strictMessageKeys, visibleReasoningDetailTypes,
+    # supportedReasoningEfforts, reasoningEffortMap, maxTokensField,
+    # thinkingFormat. Anything else — `supportsParallelToolCalls` was tried on
+    # 2026-09-05 — is "compat: Invalid input" and the gateway CRASH-LOOPS on the
+    # next restart, bot deaf. The s2 canary caught it; keep the canary.
+    # Replaced whole (not merged) so a rebuild's leftovers cannot survive here.
+    #
+    # messages.inbound.debounceMs 2000 (2026-09-05 — set to 2000, briefly raised to
+    # 5000, then RETURNED to 2000 the same evening; the reasoning is the point).
+    #
+    # THE COST IS PER MESSAGE, NOT PER PAIR. scheduleFlush (inbound-debounce.js:126)
+    # RESETS the timer on every new item, so this window is added to EVERY inbound
+    # text before its turn starts, whether or not a second message follows — on top
+    # of a turn already measured at ~8-15s. That is why the window stays small.
+    #
+    # WHAT COVERS THE REST IS `steer`, NOT A LONGER WINDOW. messages.queue.mode
+    # defaults to "steer" (500ms, unset here = vendor default): a message arriving
+    # while a run is active is injected into that run after the current tool calls
+    # and before the next model call — no second turn, no second reply
+    # (https://docs.openclaw.ai/concepts/queue). So the debounce only has to cover
+    # the sliver BEFORE the first turn starts; steer owns everything after it.
+    #
+    # MEASURED, and it is why the first live test looked like a failure: "Hi" then
+    # "What is joy's schedule again" arrived 11.1s apart (gateway log 03:27:45.820
+    # -> 03:27:56.963) and turn 1 had already ENDED at 03:27:54.014 — 2.9s before
+    # the second message landed. Nothing was broken and no window short of ~12s
+    # would have merged them; there was simply no overlap to steer into. Telegram
+    # stamps both messages to the same MINUTE, which is what made the screenshot
+    # look like a bug: ALWAYS read the gateway log's milliseconds, not the chat
+    # clock. Owner ruling 2026-09-05: a 5s wait before every reply is too high a
+    # price for a case steer already handles.
+    # A person who
+    # types "hey" / "the pump at 42 elm" / "it's leaking" as three messages
+    # otherwise gets THREE turns and three replies, the first answering "hey"
+    # before the content has arrived. OpenClaw's default is 0 = off
+    # (resolveInboundDebounceMs: override ?? byChannel ?? base ?? 0), and no seat
+    # ever carried a `messages` block. 2000 is the vendor's own example. Known
+    # limit, from https://docs.openclaw.ai/concepts/messages ("Debounce applies to
+    # text-only messages; media/attachments flush immediately"): the window holds TEXT ONLY — a
+    # photo flushes immediately, so photo-then-question is still two turns (the
+    # 2026-09-05 mango-cake turn: 44s, three shell probes + a second vision call
+    # to re-find an image already in the transcript as MediaPath). That one is a
+    # doctrine fix, not a config one. Top-level key => wiped by a rebuild, so it
+    # lives here for the same reason tools.deny does.
+    jq --argjson deny "$ts_deny" --argjson ctx "$ctx" '
       (.agents.defaults.thinkingDefault) = "adaptive"
+      | (.agents.defaults.model) = ((.agents.defaults.model // {})
+          # openclaw accepts BOTH the object form and a bare string. Indexing a
+          # string with .primary is a jq type error (exit 5), which under
+          # `set -euo pipefail` aborts the whole wire phase after the temp dir is
+          # made — with a raw jq error and no hint. A seat can carry the string
+          # form from a hand fix or an older generator (the bootstrap-copy-drift
+          # trap), so normalize before assigning.
+          | (if type == "string" then {primary: .} else . end)
+          | .primary = "inference/google/gemini-3.8-flash")
+      | (.messages) = ((.messages // {}) | .inbound = ((.inbound // {}) | .debounceMs = 2000))
       | (.tools) = ((.tools // {}) | .deny = (((.deny // []) + $deny) | unique))
       | (.tools.toolSearch) = false
       | (.skills) = ((.skills // {}) | .limits = ((.limits // {}) | .maxSkillsInPrompt = 0))
@@ -1276,12 +1377,29 @@ EOF
       | (.models.providers) = ((.models.providers // {}) | with_entries(
           .value.models = ((.value.models // []) | map(.reasoning = true))
         ))
+      | (.models.providers.inference) = ((.models.providers.inference
+            // {baseUrl:"https://inference.local/v1", apiKey:"unused", api:"openai-completions"})
+          | .models = [{
+              id: "google/gemini-3.8-flash",
+              name: "inference/google/gemini-3.8-flash",
+              reasoning: true,
+              input: ["text","image"],
+              cost: {input:0, output:0, cacheRead:0, cacheWrite:0},
+              contextWindow: $ctx,
+              maxTokens: 8192,
+              compat: {
+                supportsPromptCacheKey: true,
+                supportsReasoningEffort: true,
+                supportedReasoningEfforts: ["minimal","low","medium","high","xhigh","max"]
+              },
+              api: "openai-completions"
+            }])
     ' "$ts_tmp/oc.json" > "$ts_tmp/oc.new"
     # Compare against what is already there rather than probing one field: the
     # settings applied here have grown over time, and a single-field guard would
     # skip a box that has some of them but not the rest.
     if cmp -s "$ts_tmp/oc.json" "$ts_tmp/oc.new"; then
-      ok "tool trim + reasoning already applied"
+      ok "tool trim + model entry (google/gemini-3.8-flash, ctx ${ctx}) already applied"
       rm -rf "$ts_tmp"
     else
       ts_h=$(sha256sum "$ts_tmp/oc.new" | awk '{print $1}')
@@ -1290,7 +1408,7 @@ EOF
       nemoclaw "$agent" exec --no-tty -- chmod 660 /sandbox/.openclaw/openclaw.json /sandbox/.openclaw/.config-hash </dev/null
       nemoclaw "$agent" gateway restart </dev/null >/dev/null 2>&1 || true
       rm -rf "$ts_tmp"
-      ok "denied ${ts_deny} (both placements); thinking=adaptive; reasoning=true"
+      ok "denied ${ts_deny} (both placements); thinking=adaptive; model=google/gemini-3.8-flash ctx=${ctx} maxTokens=8192 image-input=on reasoning-effort=on; inbound debounce=2000ms"
     fi
   else
     echo "    WARN: no running container for ${agent} — apply the tool deny + reasoning flags manually"
@@ -1411,6 +1529,12 @@ phase_verify() {
     else echo "    ✗ $u NOT active"; warn=$((warn+1)); fi
   done
   systemctl is-enabled nemoclaw-boot.service >/dev/null 2>&1 && ok "nemoclaw-boot.service enabled" || { echo "    ✗ nemoclaw-boot.service not enabled"; warn=$((warn+1)); }
+  # The inference medic's OpenRouter key (2026-09-05). The unit tolerates its
+  # absence (EnvironmentFile=-) so a rebuilt box does not page "down" every 5
+  # minutes — but then the balance check and the daily fallback probe SKIP, and
+  # the journal says NO BALANCE WATCH. Say it here too, where someone is looking.
+  if [ -f /etc/nemoclaw/openrouter.env ]; then ok "/etc/nemoclaw/openrouter.env present (medic balance check + fallback probe armed)"; pass=$((pass+1));
+  else echo "    ✗ /etc/nemoclaw/openrouter.env missing — medic balance check + fallback probe will SKIP (NO BALANCE WATCH). Install: docs/inference-recovery-runbook.md §3"; warn=$((warn+1)); fi
 
   log "recycler (installed by the recycler phase; kicked by badge-pull, no timer)"
   if [ -f /etc/systemd/system/sandbox-recycler.service ] && [ -x /usr/local/sbin/recycle-sandbox.sh ]; then

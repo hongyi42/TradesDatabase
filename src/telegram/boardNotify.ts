@@ -1,11 +1,12 @@
 import {
-  getAssignmentForTenant,
+  getVisitForTenant,
   getTechnicianById,
+  listParticipants,
   isInactiveState,
   latestScheduleVersion,
   listScheduleEventsSince,
   listTenantIdsWithTelegramBindings,
-  type Assignment,
+  type Visit,
   type ScheduleEvent,
   type Technician,
 } from '../db/index.js';
@@ -18,12 +19,17 @@ import { sendBoardMessage } from './boardBot.js';
 // poll tick gets ONE digest instead (a freeze commit would otherwise machine-
 // gun each technician with a push per placed visit).
 //
-// Two null-technician realities (Feature A):
-//  - assignment.technician_id can be NULL (unassigned booking/move) — there is
+// Two nobody-on-it realities (Feature A):
+//  - a visit can have NO participants (unassigned booking/move) — there is
 //    nobody to notify for that side; skip cleanly, never crash.
-//  - a `moved` event hangs off the NEW row, so a reassignment must ALSO notify
-//    the person the visit was taken FROM: detail.previousAssignmentId points at
-//    the old (cancelled) row, which still holds the old technician_id.
+//  - a `moved` event hangs off the visit itself (rung 9b: a move EDITS the row,
+//    so there is no "new row"), and a reassignment must ALSO notify the people
+//    it was taken FROM: detail.previousTechnicianIds names them directly, since
+//    the row no longer remembers who held it a moment ago.
+//
+// Rung 9c: a trip can carry a CREW, so every one of these is a loop. Both
+// people on a two-person visit hear it moved; a reassignment tells the joiner
+// and the leaver separately, and somebody on both sides hears it once.
 
 interface Push {
   userId: string;
@@ -55,25 +61,31 @@ function digestText(pushes: Push[]): string {
 // A push must never render 'undefined–undefined' at a technician. An UNTIMED
 // visit (rung 9a) has neither a day nor times, so `when` collapses to one
 // honest phrase instead of pairing two placeholders.
-const day = (row: Assignment): string => row.starts_at?.slice(0, 10) ?? 'no date yet';
-const span = (row: Assignment): string =>
+const day = (row: Visit): string => row.starts_at?.slice(0, 10) ?? 'no date yet';
+const span = (row: Visit): string =>
   row.starts_at && row.ends_at
     ? `${row.starts_at.slice(11, 16)}–${row.ends_at.slice(11, 16)}`
     : 'time not set';
 // "2026-10-20, 09:00–10:00" for a placed visit; "no time set yet" when there
 // is nothing to say.
-const when = (row: Assignment): string =>
+const when = (row: Visit): string =>
   row.starts_at ? `${day(row)}, ${span(row)}` : 'no time set yet';
 
 const detailStr = (detail: Record<string, unknown>, key: string): string | null =>
   typeof detail[key] === 'string' ? (detail[key] as string) : null;
 
-async function technicianOf(
-  row: Assignment | null,
+// ONE definition of "a person we may still message", by id. Both callers go
+// through it: the visit's current holder, and — since rung 9b, where a move
+// edits the row instead of replacing it — the previous holder named on the
+// event. Resolving the previous one directly with getTechnicianById would skip
+// the liveness filter below, which is exactly how an offboarded person's phone
+// keeps receiving schedule details.
+async function liveTechnician(
+  technicianId: string | null | undefined,
   tenantId: string,
 ): Promise<Technician | null> {
-  if (!row?.technician_id) return null; // unassigned — nobody to notify
-  const tech = await getTechnicianById(row.technician_id, tenantId);
+  if (!technicianId) return null; // unassigned — nobody to notify
+  const tech = await getTechnicianById(technicianId, tenantId);
   // Deactivation revokes the badge and board access but does NOT clear
   // telegram_user_id — the liveness filter every other Telegram surface
   // applies must hold here too, or offboarding a person (and reassigning
@@ -82,57 +94,101 @@ async function technicianOf(
   return tech && !isInactiveState(tech.state) ? tech : null;
 }
 
+// EVERY person on the trip, live-filtered (rung 9c). A crew visit is one trip
+// and two people, and both of them need telling — before this, only whoever
+// held the visit's single column ever heard anything.
+async function liveParticipants(row: Visit | null, tenantId: string): Promise<Technician[]> {
+  if (!row) return [];
+  const out: Technician[] = [];
+  for (const p of await listParticipants(row.id)) {
+    const t = await liveTechnician(p.technician_id, tenantId);
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+// The people named on a `moved` event as holding the visit BEFORE it moved.
+// Three vintages, newest first: the rung-9c list, the rung-9b single id, and
+// the pre-9b predecessor ROW. schedule_events is append-only, so all three are
+// permanent and each fallback is load-bearing — without them the person who
+// LOST a visit silently stops being told.
+async function previousHolders(
+  detail: Record<string, unknown>,
+  tenantId: string,
+): Promise<Technician[]> {
+  const ids = detail.previousTechnicianIds;
+  if (Array.isArray(ids)) {
+    const out: Technician[] = [];
+    for (const id of ids) {
+      const t = typeof id === 'string' ? await liveTechnician(id, tenantId) : null;
+      if (t) out.push(t);
+    }
+    return out;
+  }
+  const single = detailStr(detail, 'previousTechnicianId');
+  if (single) {
+    const t = await liveTechnician(single, tenantId);
+    return t ? [t] : [];
+  }
+  const prevRowId = detailStr(detail, 'previousAssignmentId');
+  const oldRow = prevRowId ? await getVisitForTenant(prevRowId, tenantId) : null;
+  return liveParticipants(oldRow, tenantId);
+}
+
 // The pushes one event produces. Best-effort resolution: a vanished row or an
 // unbound person simply yields fewer pushes, never an error.
 async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
   const detail = (ev.detail ?? {}) as Record<string, unknown>;
-  const row = ev.assignment_id ? await getAssignmentForTenant(ev.assignment_id, tenantId) : null;
-  const tech = await technicianOf(row, tenantId);
+  const row = ev.assignment_id ? await getVisitForTenant(ev.assignment_id, tenantId) : null;
+  const crew = await liveParticipants(row, tenantId);
   const out: Push[] = [];
 
   switch (ev.kind) {
     case 'booked': {
-      if (tech?.telegram_user_id && row) {
-        out.push({
-          userId: tech.telegram_user_id,
-          text: `New visit on your schedule: ${when(row)}.`,
-        });
+      for (const tech of crew) {
+        if (tech.telegram_user_id && row) {
+          out.push({
+            userId: tech.telegram_user_id,
+            text: `New visit on your schedule: ${when(row)}.`,
+          });
+        }
       }
       break;
     }
     case 'moved': {
       const fromDay = detailStr(detail, 'fromDay') ?? '?';
       const toDay = detailStr(detail, 'toDay') ?? (row ? day(row) : '?');
-      const prevId = detailStr(detail, 'previousAssignmentId');
-      const oldRow = prevId ? await getAssignmentForTenant(prevId, tenantId) : null;
-      const oldTech = await technicianOf(oldRow, tenantId);
-      if (tech && oldTech && tech.id === oldTech.id) {
-        // Same person, different slot — one message, not an add + a remove.
-        if (tech.telegram_user_id && row) {
-          out.push({
-            userId: tech.telegram_user_id,
-            text: `Your visit moved: ${fromDay} → ${row.starts_at ? `${toDay}, now ${span(row)}` : 'no time set yet'}.`,
-          });
-        }
-        break;
-      }
-      if (tech?.telegram_user_id && row) {
+      // Rung 9b: a move EDITS the visit, so there is no predecessor row to
+      // fetch — `row` IS the moved visit, before and after. What the push needs
+      // is who HELD it, which the event carries directly.
+      const before = await previousHolders(detail, tenantId);
+      const beforeIds = new Set(before.map((t) => t.id));
+      const afterIds = new Set(crew.map((t) => t.id));
+      // Three populations, one message each. Somebody on BOTH sides gets one
+      // "your visit moved", never an add plus a remove; somebody only on the
+      // new side is a joiner; somebody only on the old side lost it.
+      for (const tech of crew) {
+        if (!tech.telegram_user_id || !row) continue;
         out.push({
           userId: tech.telegram_user_id,
-          text: `A visit landed on your schedule: ${when(row)}.`,
+          text: beforeIds.has(tech.id)
+            ? `Your visit moved: ${fromDay} → ${row.starts_at ? `${toDay}, now ${span(row)}` : 'no time set yet'}.`
+            : `A visit landed on your schedule: ${when(row)}.`,
         });
       }
-      if (oldTech?.telegram_user_id) {
+      for (const tech of before) {
+        if (!tech.telegram_user_id || afterIds.has(tech.id)) continue;
         out.push({
-          userId: oldTech.telegram_user_id,
+          userId: tech.telegram_user_id,
           text: `Your ${fromDay} visit was moved off your schedule.`,
         });
       }
       break;
     }
     case 'cancelled': {
-      if (tech?.telegram_user_id) {
-        const cancelledDay = detailStr(detail, 'day') ?? (row ? day(row) : 'upcoming');
+      const cancelledDay = detailStr(detail, 'day') ?? (row ? day(row) : 'upcoming');
+      for (const tech of crew) {
+        if (!tech.telegram_user_id) continue;
         out.push({
           userId: tech.telegram_user_id,
           text: `Your ${cancelledDay} visit was cancelled.`,
@@ -141,10 +197,11 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
       break;
     }
     case 'move_failed': {
-      // The event hangs off the OLD row (booking.ts) — its person should hear
-      // that the visit is stranded.
-      if (tech?.telegram_user_id) {
-        const toDay = detailStr(detail, 'toDay') ?? 'a new day';
+      // The event hangs off the OLD row (booking.ts) — everyone on it should
+      // hear that the visit is stranded.
+      const toDay = detailStr(detail, 'toDay') ?? 'a new day';
+      for (const tech of crew) {
+        if (!tech.telegram_user_id) continue;
         out.push({
           userId: tech.telegram_user_id,
           text: `A reschedule of your visit (to ${toDay}) failed — it is currently UNSCHEDULED; check the board.`,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import type { PlacedAssignment } from '../db/assignments.js';
+import type { PlacedVisitWithParticipants } from '../db/visits.js';
 import type { JobWithCustomer } from '../db/jobs.js';
 import type { Observation } from '../db/observations.js';
 import type { ReviewItem } from '../db/reviewItems.js';
@@ -23,6 +23,8 @@ import {
   JOB_COST_GAP_SPEC,
   OVERDUE_VISIT_GAP_SPEC,
   type NudgeKindSpec,
+  visitSubjectRef,
+  visitIdOfSubject,
 } from './nudgeKinds.js';
 
 // Pure unit tests — every collaborator injected (lifecycle.test.ts pattern).
@@ -38,7 +40,22 @@ const NOW = '2026-08-16T12:00:00.000Z';
 
 const tenant = (timezone: string): Tenant => ({ id: 't1', timezone }) as unknown as Tenant;
 
-function visit(over: Partial<PlacedAssignment>): PlacedAssignment {
+// One participant embed, shaped exactly as the readers return it.
+function crewOf(technicianId: string, createdAt = '2026-08-01T00:00:00.000Z') {
+  return {
+    technician_id: technicianId,
+    created_at: createdAt,
+    tenant_id: 't1',
+    technicians: {
+      id: technicianId,
+      ref: technicianId,
+      display_name: technicianId,
+      tenant_id: 't1',
+    },
+  };
+}
+
+function visit(over: Partial<PlacedVisitWithParticipants>): PlacedVisitWithParticipants {
   return {
     id: 'a1',
     tenant_id: 't1',
@@ -51,8 +68,11 @@ function visit(over: Partial<PlacedAssignment>): PlacedAssignment {
     reason: null,
     created_at: '2026-08-01T00:00:00.000Z',
     updated_at: '2026-08-01T00:00:00.000Z',
+    // Rung 9c: a visit carries its crew. Empty = nobody on it; the crew cases
+    // pass their own participants.
+    visit_participants: [],
     ...over,
-  } as unknown as PlacedAssignment;
+  } as unknown as PlacedVisitWithParticipants;
 }
 
 function openItem(over: Partial<ReviewItem>): ReviewItem {
@@ -77,7 +97,7 @@ function baseDeps(over: Partial<WatcherDeps> = {}): WatcherDeps {
     getTenant: async () => tenant('UTC'),
     listOverdue: async () => [],
     listCaptureTimes: async () => [],
-    listVisitTimes: async () => [],
+    listNoteTimes: async () => [],
     listTeam: async () => [],
     listJobs: async () => [],
     listEverFlagged: async () => [],
@@ -164,7 +184,7 @@ describe('runWatchers — the firm\'s OWN detection thresholds (plan 2026-08-29)
   const windowFiltered = (t: string, from: string, to: string) =>
     [visit({ id: `a-${t}`, job_id: `j-${t}`, ends_at: ENDS_TWO_HOURS_AGO })].filter(
       // `.gte(from)` / `.lt(to)` — upper bound EXCLUSIVE, matching
-      // listOverdueConfirmedAssignments. `<=` would agree on today's fixture and
+      // listOverdueConfirmedVisits. `<=` would agree on today's fixture and
       // silently disagree on one placed exactly on `to`.
       (v) => v.ends_at! >= from && v.ends_at! < to,
     );
@@ -232,7 +252,13 @@ describe('runWatchers — the firm\'s OWN detection thresholds (plan 2026-08-29)
         return obsRow({ subject_ref: input.subjectRef });
       },
     }));
-    expect(observed).toEqual(['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6']); // ALL seven, oldest first
+    // The minted subject is the visit AT ITS TIME (rung 9b, visitSubjectRef):
+    // ids alone stopped being unique per gap once a move kept the id.
+    expect(observed).toEqual(
+      ['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6'].map((id, i) =>
+        visitSubjectRef(id, `2026-08-15T0${i}:00:00.000Z`),
+      ),
+    ); // ALL seven, oldest first
     expect(summary.observationsCreated).toBe(7);
   });
 
@@ -352,7 +378,7 @@ describe('runWatchers', () => {
         { job_id: 'j1', captured_at: '2026-08-16T08:30:00.000Z' },
         { job_id: 'j2', captured_at: '2026-08-16T06:30:00.000Z' },
       ],
-      listVisitTimes: async () => [{ job_id: 'j3', created_at: '2026-08-16T07:30:00.000Z' }],
+      listNoteTimes: async () => [{ job_id: 'j3', created_at: '2026-08-16T07:30:00.000Z' }],
     }));
     expect(summary.gapsFound).toBe(1);
     expect(summary.freshGaps).toBe(1);
@@ -411,7 +437,12 @@ describe('runWatchers', () => {
         return obsRow({ subject_ref: input.subjectRef });
       },
     }));
-    expect(observed).toEqual(['a3', 'a4', 'a5', 'a6']); // fresh only, oldest first, NO cap
+    // a0–a2 were flagged BEFORE the remodel, so their rows carry BARE ids —
+    // and they are still correctly excluded, which is the compatibility this
+    // asserts. The fresh four mint the composite.
+    expect(observed).toEqual(
+      ['a3', 'a4', 'a5', 'a6'].map((id) => visitSubjectRef(id, '2026-08-16T07:00:00.000Z')),
+    ); // fresh only, oldest first, NO cap
     expect(summary.gapsFound).toBe(7);
     expect(summary.freshGaps).toBe(4);
     expect(summary.observationsCreated).toBe(4);
@@ -423,7 +454,9 @@ describe('runWatchers', () => {
       visit({
         id: `a${i}`,
         job_id: `j${i}`,
-        technician_id: i === 0 ? 'tech-1' : null,
+        // WHO is on the trip lives in the crew list now (rung 9c) — the
+        // detector reads participants, not a column.
+        visit_participants: i === 0 ? [crewOf('tech-1')] : [],
         starts_at: `2026-08-15T0${i}:00:00.000Z`,
         ends_at: `2026-08-15T0${i + 1}:00:00.000Z`,
       }),
@@ -447,7 +480,11 @@ describe('runWatchers', () => {
         return obsRow({ subject_ref: input.subjectRef });
       },
     }));
-    expect(observed.map((o) => o.subjectRef)).toEqual(['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6']);
+    expect(observed.map((o) => o.subjectRef)).toEqual(
+      ['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6'].map((id, i) =>
+        visitSubjectRef(id, `2026-08-15T0${i}:00:00.000Z`),
+      ),
+    );
     expect(summary.observationsCreated).toBe(7);
     // The tech rides along ADVISORILY when known, and its absence is normal.
     expect(observed[0].technicianId).toBe('tech-1');
@@ -466,11 +503,102 @@ describe('runWatchers', () => {
     expect(observed[1].context).not.toHaveProperty('technicianRef'); // absent, not null
   });
 
+  test('live: an unreported CREW visit raises ONE gap, addressed to one of them, listing both', async () => {
+    const observed: Array<{ technicianId: string | null; context: Record<string, unknown> }> = [];
+    const crewVisit = visit({
+      id: 'crew-1',
+      job_id: 'jc',
+      // benFirst was added first, so he is the addressee — a tiebreak, not a
+      // rank. Joy's created_at is later.
+      visit_participants: [
+        crewOf('tech-ben', '2026-08-01T00:00:00.000Z'),
+        crewOf('tech-joy', '2026-08-01T00:00:01.000Z'),
+      ],
+    });
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listOverdue: async () => [crewVisit],
+      listTeam: async () =>
+        [
+          { id: 'tech-ben', ref: 'ben-shelton', display_name: 'Ben Shelton' },
+          { id: 'tech-joy', ref: 'manager-joy', display_name: 'Joy Manager' },
+        ] as unknown as Technician[],
+      listJobs: async (_t, ids) =>
+        ids.map((id) => ({
+          id,
+          tenant_id: 't1',
+          title: 'Two-person lift',
+          customers: { name: 'Henderson' },
+        }) as unknown as JobWithCustomer),
+      createObservation: async (input) => {
+        observed.push({
+          technicianId: input.technicianId,
+          context: input.context as Record<string, unknown>,
+        });
+        return obsRow({ subject_ref: input.subjectRef });
+      },
+    }));
+    // ONE gap for ONE trip — not one per person.
+    expect(summary.observationsCreated).toBe(1);
+    expect(observed).toHaveLength(1);
+    expect(observed[0].technicianId).toBe('tech-ben');
+    expect(observed[0].context).toMatchObject({
+      technicianRef: 'ben-shelton',
+      technicianName: 'Ben Shelton',
+      participants: [
+        { ref: 'ben-shelton', name: 'Ben Shelton' },
+        { ref: 'manager-joy', name: 'Joy Manager' },
+      ],
+    });
+  });
+
+  test('live: a note by the OTHER crew member still suppresses the gap', async () => {
+    // The freshness test is JOB-scoped and has no technician dimension at all,
+    // so either person's note counts as activity on the trip. That is a
+    // property worth pinning, not an accident: the whole point of one visit
+    // carrying a crew is that ONE report closes it for everybody.
+    const crewVisit = visit({
+      id: 'crew-2',
+      job_id: 'jc2',
+      visit_participants: [
+        crewOf('tech-ben', '2026-08-01T00:00:00.000Z'),
+        crewOf('tech-joy', '2026-08-01T00:00:01.000Z'),
+      ],
+    });
+    // CONTROL: the same crew trip with NO note raises one gap.
+    const control = await runWatchers(NOW, 'live', baseDeps({
+      listOverdue: async () => [crewVisit],
+      listNoteTimes: async () => [],
+      createObservation: async (input) => obsRow({ subject_ref: input.subjectRef }),
+    }));
+    expect(control.observationsCreated).toBe(1);
+
+    // Joy — the participant who is NOT the gap's addressee — filed a note after
+    // the visit ended. A DIFFERENT trip, because the once-ever index would
+    // silence a re-run of the one above for its own reason.
+    const reported = visit({
+      id: 'crew-3',
+      job_id: 'jc3',
+      visit_participants: [
+        crewOf('tech-ben', '2026-08-01T00:00:00.000Z'),
+        crewOf('tech-joy', '2026-08-01T00:00:01.000Z'),
+      ],
+    });
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listOverdue: async () => [reported],
+      listNoteTimes: async () => [{ job_id: 'jc3', created_at: '2026-08-16T09:00:00.000Z' }],
+      createObservation: async (input) => obsRow({ subject_ref: input.subjectRef }),
+    }));
+    expect(summary.observationsCreated).toBe(0);
+  });
+
   test('live: a null create (concurrent notice) is uncounted; ever-flagged is never re-noticed', async () => {
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => [visit({ id: 'a1' }), visit({ id: 'a2', job_id: 'j2' })],
+      // The subject is `<id>@<starts_at>` now — match on the visit it names.
       createObservation: async (input) =>
-        input.subjectRef === 'a1' ? obsRow({ subject_ref: 'a1' }) : null,
+        visitIdOfSubject(input.subjectRef) === 'a1'
+          ? obsRow({ subject_ref: input.subjectRef })
+          : null,
     }));
     expect(summary.observationsCreated).toBe(1); // a2 was noticed concurrently — not counted
     expect(summary.gapsFound).toBe(2);
@@ -508,7 +636,7 @@ describe('runWatchers', () => {
       ],
       listCaptureTimes: async () => [{ job_id: 'j9', captured_at: '2026-08-15T11:00:00.000Z' }],
       listAssignments: async () => [
-        visit({ id: 'a-cancelled', status: 'cancelled' } as Partial<PlacedAssignment>),
+        visit({ id: 'a-cancelled', status: 'cancelled' } as Partial<PlacedVisitWithParticipants>),
         visit({ id: 'a-still-open', job_id: 'j8' }),
       ],
       resolveGap: async (_t, _kind, subjectRef, _status, resolution) => {
@@ -541,7 +669,7 @@ describe('runWatchers', () => {
       // Activity BEFORE the flag (09:00 < 10:00) — what the planner escalated despite.
       listCaptureTimes: async () => [{ job_id: 'j-esc', captured_at: '2026-08-16T09:00:00.000Z' }],
       listAssignments: async () => [
-        visit({ id: 'a-esc', status: 'completed' } as Partial<PlacedAssignment>),
+        visit({ id: 'a-esc', status: 'completed' } as Partial<PlacedVisitWithParticipants>),
       ],
       resolveGap: async (_t, _k, subjectRef) => {
         resolved.push(subjectRef);
@@ -758,9 +886,9 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
     const summary = await runWatchers(NOW, 'live', baseDeps({
       specs: [OVERDUE_VISIT_GAP_SPEC, secondSpec()],
       listOverdue: async () => [
-        visit({ id: 'a1', job_id: 'j1', technician_id: 'tech-1', ends_at: '2026-08-15T01:00:00.000Z' }),
-        visit({ id: 'a2', job_id: 'j2', technician_id: 'tech-1', ends_at: '2026-08-15T02:00:00.000Z' }),
-        visit({ id: 'a3', job_id: 'j3', technician_id: 'tech-1', ends_at: '2026-08-15T03:00:00.000Z' }),
+        visit({ id: 'a1', job_id: 'j1', visit_participants: [crewOf('tech-1')], ends_at: '2026-08-15T01:00:00.000Z' }),
+        visit({ id: 'a2', job_id: 'j2', visit_participants: [crewOf('tech-1')], ends_at: '2026-08-15T02:00:00.000Z' }),
+        visit({ id: 'a3', job_id: 'j3', visit_participants: [crewOf('tech-1')], ends_at: '2026-08-15T03:00:00.000Z' }),
       ],
       listTeam: async () => [boundTech()],
       createObservation: async (input) => {
@@ -768,7 +896,7 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
         return obsRow({ subject_ref: input.subjectRef });
       },
     }));
-    expect(created).toEqual(['a1', 'a2', 'a3']); // ALL fresh, oldest first — brake of 1 unread
+    expect(created.map(visitIdOfSubject)).toEqual(['a1', 'a2', 'a3']); // ALL fresh, oldest first — brake of 1 unread
     expect(summary.observationsCreated).toBe(3);
     expect(summary.tenantErrors).toBe(0);
   });
@@ -781,7 +909,7 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
     // that has no spec.
     const summary = await runWatchers(NOW, 'live', baseDeps({
       specs: [], // no spec for overdue_visit_gap
-      listOverdue: async () => [visit({ id: 'a1', technician_id: 'tech-1' })],
+      listOverdue: async () => [visit({ id: 'a1', visit_participants: [crewOf('tech-1')] })],
       listTeam: async () => [boundTech()],
       createObservation: async () => {
         throw new Error('must not record an observation for an unregistered kind');
@@ -944,7 +1072,7 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
     const created: string[] = [];
     await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => Array.from({ length: 5 }, (_, i) =>
-        visit({ id: `a${i}`, job_id: `j${i}`, technician_id: 'tech-1', ends_at: `2026-08-15T0${i}:00:00.000Z` })),
+        visit({ id: `a${i}`, job_id: `j${i}`, visit_participants: [crewOf('tech-1')], ends_at: `2026-08-15T0${i}:00:00.000Z` })),
       listCostCandidates: async () => [candidate(), candidate({ jobId: 'j-cost-2' })],
       listTeam: async () => [boundTech()],
       createObservation: async (input) => {

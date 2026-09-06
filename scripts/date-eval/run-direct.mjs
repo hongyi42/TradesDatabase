@@ -59,13 +59,18 @@ const one = async (sql, params) => (await client.query(sql, params)).rows;
 const [{ id: tenantId }] = await one('select id from tenants where name = $1', [manifest.tenant]);
 const visits = await one(
   `select (a.starts_at at time zone 'UTC')::date::text as day,
-          coalesce(t.ref, 'UNASSIGNED') as tech,
+          -- ONE ROW PER TRIP (rung 9c): the crew is a subquery, never a join,
+          -- or a two-person visit prints twice and counts twice.
+          coalesce(
+            (select min(t.ref) from visit_participants vp
+               join technicians t on t.id = vp.technician_id
+              where vp.visit_id = a.id),
+            'UNASSIGNED') as tech,
           c.name as customer, j.title as title,
           to_char(a.starts_at at time zone 'UTC', 'HH24:MI') as start_local
-   from assignments a
+   from visits a
    join jobs j on j.id = a.job_id
    join customers c on c.id = j.customer_id
-   left join technicians t on t.id = a.technician_id
    where a.tenant_id = $1 and a.status in ('confirmed', 'completed') and a.starts_at is not null
    order by a.starts_at`,
   [tenantId],
@@ -77,11 +82,13 @@ const timeOff = await one(
   [tenantId, manifest.today],
 );
 const windows = await one(
-  `select c.name as customer, j.title as title, coalesce(t.ref, null) as tech
-   from assignments a
+  `select c.name as customer, j.title as title,
+          (select min(t.ref) from visit_participants vp
+             join technicians t on t.id = vp.technician_id
+            where vp.visit_id = a.id) as tech
+   from visits a
    join jobs j on j.id = a.job_id
    join customers c on c.id = j.customer_id
-   left join technicians t on t.id = a.technician_id
    where a.tenant_id = $1 and a.starts_at is null and a.status = 'confirmed'
    order by a.created_at`,
   [tenantId],

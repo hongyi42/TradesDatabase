@@ -5,7 +5,11 @@ export type ScheduleEvent = Database['public']['Tables']['schedule_events']['Row
 
 export interface AppendScheduleEventInput {
   tenantId: string;
-  assignmentId?: string | null;
+  // The visit this event is about. The COLUMN is still `assignment_id`
+  // (rung 9b: schedule_events is append-only and a column has no compatibility
+  // bridge, so renaming it would 400 every schedule write made by code still on
+  // the old commit during a deploy). The input says what it means.
+  visitId?: string | null;
   kind: string; // booked|moved|move_failed|cancelled|completed|backfilled (Plan 2+ adds more)
   actorRef?: string | null; // roster ref of the person who drove it, or 'system'
   detail?: Json;
@@ -20,7 +24,7 @@ export async function appendScheduleEvent(
     .from('schedule_events')
     .insert({
       tenant_id: input.tenantId,
-      assignment_id: input.assignmentId ?? null,
+      assignment_id: input.visitId ?? null,
       kind: input.kind,
       actor_ref: input.actorRef ?? null,
       detail: input.detail ?? {},

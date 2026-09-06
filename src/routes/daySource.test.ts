@@ -5,7 +5,7 @@ import { setTenantSeats } from '../db/tenants.js';
 import { insertTechnician, type Technician } from '../db/technicians.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
-import { createAssignment, updateAssignmentStatus } from '../db/assignments.js';
+import { createVisit, updateVisitStatus } from '../db/visits.js';
 import { listDayStops } from './daySource.js';
 
 // Integration against the LOCAL stack, self-cleaning (pattern:
@@ -43,7 +43,7 @@ beforeAll(async () => {
   const cust = await createCustomer({
     tenantId,
     name: 'Asg Customer',
-    addressLine1: '77 Assignment Ave',
+    addressLine1: '77 Visit Ave',
     city: 'Clovis',
     state: 'CA',
     postalCode: '93611',
@@ -62,7 +62,7 @@ beforeAll(async () => {
   const jobB = await createJob({ tenantId, customerId: cust.id, title: 'B' });
   const jobC = await createJob({ tenantId, customerId: noAddr.id, title: 'C' });
   const confirmed = (jobId: string, startISO: string, endISO: string) =>
-    createAssignment({
+    createVisit({
       tenantId,
       jobId,
       technicianId: tech.id,
@@ -73,17 +73,17 @@ beforeAll(async () => {
   await confirmed(jobA.id, `${D1}T18:00:00.000Z`, `${D1}T20:00:00.000Z`); // late, inserted first
   await confirmed(jobEarly.id, `${D1}T15:00:00.000Z`, `${D1}T17:00:00.000Z`);
   await confirmed(jobC.id, `${D3}T15:00:00.000Z`, `${D3}T17:00:00.000Z`);
-  const toCancel = await createAssignment({
+  const toCancel = await createVisit({
     tenantId,
     jobId: jobB.id,
     technicianId: tech.id,
     startsAt: `${D2}T16:00:00.000Z`,
     endsAt: `${D2}T18:00:00.000Z`,
   });
-  await updateAssignmentStatus(toCancel.id, 'cancelled', 'test');
+  await updateVisitStatus(toCancel.id, 'cancelled', 'test');
   // Overnight booking STARTING the day before D1 but ending inside it — the
   // overlap query returns it; the day clamp must keep it out of [D1..] results.
-  await createAssignment({
+  await createVisit({
     tenantId,
     jobId: jobB.id,
     technicianId: tech.id,
@@ -107,7 +107,7 @@ describe('listDayStops (assignments — the only source)', () => {
     expect(d1.stops.map((s) => s.label)).toEqual(['Early Bird', 'Asg Customer']);
     expect(d1.stops[1]).toMatchObject({
       label: 'Asg Customer',
-      address: '77 Assignment Ave, Clovis, CA, 93611',
+      address: '77 Visit Ave, Clovis, CA, 93611',
       // timestamptz reads back as +00:00, not the Z form it was written with
       scheduledStart: expect.stringMatching(new RegExp(`^${D1}T18:00:00`)) as unknown as string,
     });

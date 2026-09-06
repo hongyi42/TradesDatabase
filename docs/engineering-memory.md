@@ -18,222 +18,241 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 ## What is in here
 
-191 entries — the map this file never had. Jump by line number, or grep the title.
+210 entries — the map this file never had. Jump by line number, or grep the title.
 
 **1. How we work (process rules)**
 
-- L242 · Every code change goes through a PR before main _(2026-07-12)_
-- L247 · RPI workflow
-- L250 · Box_Setup_Stuff/ is not documentation — it's the only context a host-side Claude gets
-- L254 · Decision briefs follow ONE layout _(2026-08-26)_
-- L264 · Verify vendor claims against live docs, cite URLs
-- L266 · Never paste badge plaintext anywhere _(2026-07-03)_
-- L268 · Concurrent sessions share a checkout at their peril _(2026-08-15)_
-- L274 · A new table that references ONLY tenants escapes every cleanup cascade _(2026-08-15)_
+- L261 · Every code change goes through a PR before main _(2026-07-12)_
+- L266 · RPI workflow
+- L269 · Box_Setup_Stuff/ is not documentation — it's the only context a host-side Claude gets
+- L273 · Decision briefs follow ONE layout _(2026-08-26)_
+- L283 · Verify vendor claims against live docs, cite URLs
+- L285 · Never paste badge plaintext anywhere _(2026-07-03)_
+- L287 · Concurrent sessions share a checkout at their peril _(2026-08-15)_
+- L293 · Two operators on trades-box-1 at once is an outage waiting to happen _(2026-09-05)_
+- L302 · Never size anything from the pilot's accumulated state — including inference cost _(2026-08-26)_
+- L310 · A new table that references ONLY tenants escapes every cleanup cascade _(2026-08-15)_
 
 **2. Product principles (user decisions — don't re-litigate, do cite when relevant)**
 
-- L286 · Agent-first framing + the intelligent-spine direction _(2026-08-15)_
-- L314 · Nudge frequency is paced by URGENCY, never capped _(2026-08-18)_
-- L369 · The spine is not the books _(2026-08-15)_
-- L382 · The money layer is workflow-agnostic — never pilot-fitted _(2026-08-15)_
-- L392 · Telegram is the entire UI _(2026-07-03)_
-- L402 · A schedule READ renders the booked order; it never re-derives one _(2026-07-31)_
-- L422 · Vocabulary must track what actually gates _(2026-07-23)_
-- L430 · Two access tiers, manager and technician _(2026-07-02)_
-- L437 · Seat-based licensing _(2026-07-02)_
-- L441 · EXPLORATORY direction — software-for-physical-data exchange _(2026-07-26)_
-- L458 · Spine scope boundary _(2026-07-06)_
-- L463 · Confirmation doctrine _(2026-07-17)_
-- L477 · REJECTED direction — do not propose again: _(2026-07-15)_
-- L481 · Agent model: _(2026-08-15)_
-- L550 · Candidate seat model, MEASURED but NOT adopted (2026-08-24) — Gemini 3.7 Flash. _(2026-08-24)_
-- L691 · Homogeneous memory collapses retrieval
-- L694 · Context collapse / brevity bias
-- L698 · Hint leakage
-- L729 · Push the keys, pull the content.
-- L735 · Only accumulate what something can later falsify.
-- L739 · Traces are not memory.
-- L742 · Append-only, never model-rewritten.
-- L744 · Keep it out of the record.
-- L752 · Field notes record one-shot; standing facts still confirm _(2026-08-21)_
-- L787 · A mixed batch confirms as a whole _(2026-08-21)_
-- L887 · Independent rollback of the technician-facing voice.
-- L889 · Per-gap failure isolation.
-- L925 · ONE ask.
-- L927 · The queue is the resting place, not a staging area.
-- L929 · escalated presumes a second party.
-- L932 · Detection is one query:
+- L322 · Agent-first framing + the intelligent-spine direction _(2026-08-15)_
+- L350 · Nudge frequency is paced by URGENCY, never capped _(2026-08-18)_
+- L405 · The spine is not the books _(2026-08-15)_
+- L418 · The money layer is workflow-agnostic — never pilot-fitted _(2026-08-15)_
+- L428 · Telegram is the entire UI _(2026-07-03)_
+- L438 · A schedule READ renders the booked order; it never re-derives one _(2026-07-31)_
+- L458 · Vocabulary must track what actually gates _(2026-07-23)_
+- L466 · Two access tiers, manager and technician _(2026-07-02)_
+- L473 · Seat-based licensing _(2026-07-02)_
+- L477 · EXPLORATORY direction — software-for-physical-data exchange _(2026-07-26)_
+- L494 · Spine scope boundary _(2026-07-06)_
+- L499 · Confirmation doctrine _(2026-07-17)_
+- L513 · REJECTED direction — do not propose again: _(2026-07-15)_
+- L517 · Agent model: _(2026-08-15)_
+- L590 · Candidate seat model, MEASURED but NOT adopted (2026-08-24) — Gemini 3.7 Flash. _(2026-08-24)_
+- L731 · Homogeneous memory collapses retrieval
+- L734 · Context collapse / brevity bias
+- L738 · Hint leakage
+- L769 · Push the keys, pull the content.
+- L775 · Only accumulate what something can later falsify.
+- L779 · Traces are not memory.
+- L782 · Append-only, never model-rewritten.
+- L784 · Keep it out of the record.
+- L792 · Field notes record one-shot; standing facts still confirm _(2026-08-21)_
+- L827 · A mixed batch confirms as a whole _(2026-08-21)_
+- L927 · Independent rollback of the technician-facing voice.
+- L929 · Per-gap failure isolation.
+- L965 · ONE ask.
+- L967 · The queue is the resting place, not a staging area.
+- L969 · escalated presumes a second party.
+- L972 · Detection is one query:
 
 **3. Environments & infrastructure**
 
-- L1010 · A CRON service cannot be deployed by commit id at all. _(2026-08-20)_
-- L1018 · Nothing auto-applies DB migrations to the pilot.
-- L1022 · Deploy-before-migration _(2026-07-19)_
-- L1025 · A new tool surface silently bypasses whatever doctrine rule did not name it — twice now. _(2026-08-06)_
-- L1055 · local_weekday did not close it — resolve_date week ranges were the real hole (2026-08-06). _(2026-08-06)_
-- L1073 · A HOOK plugin is not installed until the GATEWAY's startup line says so (2026-08-06). _(2026-08-06)_
-- L1084 · openclaw plugins install — the VENDOR's own CLI — trips the config-hash trap (2026-08-06). _(2026-08-06)_
-- L1092 · gateway restart does NOT re-render config from sandboxes.json _(2026-08-19)_
-- L1099 · DOCTRINE — the manager is NEVER a verification layer for dates (owner decision, 2026-08-11). _(2026-08-11)_
-- L1127 · WHY the guard was deaf, and proof the version upgrade fixes it (2026-08-12). _(2026-08-12)_
-- L1188 · Guard v0.3.0 fixes both eval-found detector defects (2026-08-12, PR #124). _(2026-08-12)_
-- L1355 · Eval truth-set conventions (2026-08-13 adjudication, five grader bugs): _(2026-08-13)_
-- L1423 · medic v4+v5 are DEPLOYED as of 2026-08-13 19:54:23Z — the NVIDIA failover can no longer fire. _(2026-08-13)_
-- L1502 · Ops alerting: the verdict now leaves the box (2026-08-12). _(2026-08-12)_
-- L1572 · The ladder cannot see the MONEY LEDGER — and a money-only answer leaves the nudge open _(2026-08-19)_
-- L1644 · Stage-1 shadow CONFIRMED on the pilot (2026-08-18T00:05Z). _(2026-08-18)_
-- L1676 · USER DECISION 2026-08-18 — DeepInfra is being RETIRED; Fireworks replaces its inference key. _(2026-08-18)_
-- L1703 · Stage 1 is PROVEN END TO END IN PRODUCTION (2026-08-18 23:10-23:17Z, first clean run). _(2026-08-18)_
-- L1831 · nemoclaw list shows the ONBOARDING RECORD, not the live inference route (2026-08-06). _(2026-08-06)_
-- L1863 · revoke ... from public does NOT revoke anon/authenticated on a new function. _(2026-08-06)_
+- L1050 · A CRON service cannot be deployed by commit id at all. _(2026-08-20)_
+- L1058 · Nothing auto-applies DB migrations to the pilot.
+- L1062 · Deploy-before-migration _(2026-07-19)_
+- L1065 · A new tool surface silently bypasses whatever doctrine rule did not name it — twice now. _(2026-08-06)_
+- L1095 · local_weekday did not close it — resolve_date week ranges were the real hole (2026-08-06). _(2026-08-06)_
+- L1113 · A HOOK plugin is not installed until the GATEWAY's startup line says so (2026-08-06). _(2026-08-06)_
+- L1124 · openclaw plugins install — the VENDOR's own CLI — trips the config-hash trap (2026-08-06). _(2026-08-06)_
+- L1132 · gateway restart does NOT re-render config from sandboxes.json _(2026-08-19)_
+- L1139 · DOCTRINE — the manager is NEVER a verification layer for dates (owner decision, 2026-08-11). _(2026-08-11)_
+- L1167 · WHY the guard was deaf, and proof the version upgrade fixes it (2026-08-12). _(2026-08-12)_
+- L1228 · Guard v0.3.0 fixes both eval-found detector defects (2026-08-12, PR #124). _(2026-08-12)_
+- L1395 · Eval truth-set conventions (2026-08-13 adjudication, five grader bugs): _(2026-08-13)_
+- L1463 · medic v4+v5 are DEPLOYED as of 2026-08-13 19:54:23Z — the NVIDIA failover can no longer fire. _(2026-08-13)_
+- L1542 · Ops alerting: the verdict now leaves the box (2026-08-12). _(2026-08-12)_
+- L1612 · The ladder cannot see the MONEY LEDGER — and a money-only answer leaves the nudge open _(2026-08-19)_
+- L1684 · Stage-1 shadow CONFIRMED on the pilot (2026-08-18T00:05Z). _(2026-08-18)_
+- L1716 · USER DECISION 2026-08-18 — DeepInfra is being RETIRED; Fireworks replaces its inference key. _(2026-08-18)_
+- L1743 · Stage 1 is PROVEN END TO END IN PRODUCTION (2026-08-18 23:10-23:17Z, first clean run). _(2026-08-18)_
+- L1871 · nemoclaw list shows the ONBOARDING RECORD, not the live inference route (2026-08-06). _(2026-08-06)_
+- L1903 · revoke ... from public does NOT revoke anon/authenticated on a new function. _(2026-08-06)_
 
 **4. Live-state snapshot (as of 2026-08-24 — verify before relying)**
 
-- L1907 · The ladder is complete through ⑤ — all five stages merged AND deployed (2026-08-24). _(2026-08-24)_
-- L1916 · Model routing differs BY RENDER SERVICE (verified 2026-08-24). _(2026-08-24)_
-- L1941 · The Render estate — six services, two of them behind main (API-read 2026-08-24). _(2026-08-24)_
-- L1978 · What the brain has produced on the pilot: proven machinery, empty corpus (2026-08-24). _(2026-08-24)_
-- L1989 · In flight, NOT on main: the one-call collapse _(2026-08-24)_
-- L1994 · Tenants on the pilot DB — FOUR, not two (2026-08-24). _(2026-08-24)_
-- L2006 · The demo schedule has run out — re-shift before the next demo (2026-08-24). _(2026-08-24)_
-- L2012 · Roster: 31 technician rows, and the flag is a STATE, not a boolean (2026-08-24). _(2026-08-24)_
-- L2019 · Sandbox map on trades-box-1 (2026-08-24) _(2026-08-24)_
-- L2032 · sandbox_pool is a partial ledger, not the pool — never answer "which seats exist" from it.
-- L2037 · Board:
-- L2050 · Live: _(2026-07-20)_
-- L2398 · Deferred / backlog (each has an owner-stated reason — check before resurrecting): _(2026-07-25)_
-- L2638 · FIXED 2026-07-30 — agent turns took 60–80s; cause was ONE tool's schema. _(2026-07-30)_
-- L2710 · Dated debts (reviewed 2026-08-24): _(2026-08-24)_
-- L2733 · Pending human tests:
-- L2790 · Money's structure in the spine is load-bearing for FUTURE BUSINESS ANALYTICS _(2026-08-19)_
+- L1952 · The ladder is complete through ⑤ — all five stages merged AND deployed (2026-08-24). _(2026-08-24)_
+- L1961 · Model routing differs BY RENDER SERVICE (verified 2026-08-24). _(2026-08-24)_
+- L1986 · The Render estate — six services, two of them behind main (API-read 2026-08-24). _(2026-08-24)_
+- L2024 · What the brain has produced on the pilot: proven machinery, empty corpus (2026-08-24). _(2026-08-24)_
+- L2035 · In flight, NOT on main: the one-call collapse _(2026-08-24)_
+- L2040 · Tenants on the pilot DB — FOUR, not two (2026-08-24). _(2026-08-24)_
+- L2052 · The demo schedule has run out — re-shift before the next demo (2026-08-24). _(2026-08-24)_
+- L2058 · Roster: 31 technician rows, and the flag is a STATE, not a boolean (2026-08-24). _(2026-08-24)_
+- L2065 · Sandbox map on trades-box-1 (2026-08-24) _(2026-08-24)_
+- L2078 · sandbox_pool is a partial ledger, not the pool — never answer "which seats exist" from it.
+- L2083 · Board:
+- L2096 · Live: _(2026-07-20)_
+- L2444 · Deferred / backlog (each has an owner-stated reason — check before resurrecting): _(2026-07-25)_
+- L2714 · FIXED 2026-07-30 — agent turns took 60–80s; cause was ONE tool's schema. _(2026-07-30)_
+- L2786 · Dated debts (reviewed 2026-08-24): _(2026-08-24)_
+- L2809 · Pending human tests:
+- L2866 · Money's structure in the spine is load-bearing for FUTURE BUSINESS ANALYTICS _(2026-08-19)_
 
 **5. The walls — traps by the time you'd hit them**
 
-- L2835 · md5 a box-local bootstrap-box.sh against the repo before running it
-- L2838 · wire needs the WHOLE Box_Setup_Stuff/ tree
-- L2840 · 4 of the 9 AGENTS.md blocks are append-once
-- L2843 · s2 is the canary and must stay the most up-to-date seat
-- L2884 · Concurrent local stacks are the top cause of phantom test failures on this machine.
-- L2909 · Retuning a constant is retroactive.
-- L2912 · TEST ROT — hit three times in one day.
-- L2932 · A tool DESCRIPTION change is not deploy-only; a result-side field is. _(2026-07-31)_
-- L2954 · A sandbox can hold a badge the doorman no longer knows — and nothing says so. _(2026-08-04)_
-- L2982 · Credentials inject into a sandbox's process env at container launch ONLY.
-- L3000 · NEVER change a sandbox's openclaw.json with openclaw config patch. _(2026-07-30)_
-- L3038 · nemoclaw rebuild can destroy the sandbox's device private key
-- L3043 · The placeholder versioning trap:
-- L3047 · nemoclaw onboard/rebuild resets the gateway inference route
-- L3050 · Tool VOCABULARY lives in three places, and one of them self-reapplies. _(2026-07-25)_
-- L3058 · There is NO per-tool allowlist file
-- L3063 · The Telegram sender allowlist lives in TWO places
-- L3066 · Never health-check via nemoclaw <s> agent
-- L3069 · Trust box evidence over vendor status pages
-- L3071 · DeepInfra balance runs out roughly monthly and NOTHING alerts on it _(2026-07-11)_
-- L3084 · A deactivated seat's bot goes silent but alive
-- L3089 · Don't verify badges by extracting them from /proc/<pid>/environ
-- L3103 · CLI chat probes run on the EMBEDDED agent, not the gateway _(2026-07-23)_
-- L3131 · /hooks/agent (the gateway's HTTP webhook) CANNOT drive an agent turn on this box.
-- L3157 · A status gate outlives its truth — date it, or delete it. _(2026-08-06)_
-- L3167 · Resolve merge state with merge-base, never by eyeballing git log on a feature branch. _(2026-08-06)_
-- L3176 · When inbound email "stops working", check the webhook subscription FIRST
-- L3216 · npm test truncates the local stack, and that wipes the spine-eval world.
-- L3222 · An eval's own fixtures collide unless each scenario owns its rows AND its people. _(2026-08-12)_
-- L3229 · Fixture data must look like customer data.
-- L3234 · A missing BOARD_BOT_HANDLE makes the agent invent board links. _(2026-07-22)_
-- L3241 · resolve_date now has calendar-PERIOD modes _(2026-08-12)_
-- L3322 · Design consequence worth reusing: make the cheap tier the control group.
-- L3326 · The pilot DB is an accepted test-write target (user decision, 2026-08-12) _(2026-08-12)_
-- L3336 · L1 PINS L2: a stamped capture makes its customer permanently undeletable. _(2026-08-12)_
-- L3357 · A new tenant in the pilot silently enlists in the lifecycle cron.
-- L3408 · No reachable technician, so rung 1 can never mint a nudge. _(2026-08-19)_
-- L3414 · Nothing is fresh any more, and nothing new is arriving. _(2026-08-24)_
+- L2911 · md5 a box-local bootstrap-box.sh against the repo before running it
+- L2914 · wire needs the WHOLE Box_Setup_Stuff/ tree
+- L2916 · 4 of the 9 AGENTS.md blocks are append-once
+- L2919 · s2 is the canary and must stay the most up-to-date seat
+- L2960 · Concurrent local stacks are the top cause of phantom test failures on this machine.
+- L2985 · Retuning a constant is retroactive.
+- L2988 · TEST ROT — hit three times in one day.
+- L3008 · A tool DESCRIPTION change is not deploy-only; a result-side field is. _(2026-07-31)_
+- L3030 · A sandbox can hold a badge the doorman no longer knows — and nothing says so. _(2026-08-04)_
+- L3058 · Credentials inject into a sandbox's process env at container launch ONLY.
+- L3084 · NEVER change a sandbox's openclaw.json with openclaw config patch. _(2026-07-30)_
+- L3122 · nemoclaw rebuild can destroy the sandbox's device private key
+- L3127 · The placeholder versioning trap:
+- L3131 · nemoclaw onboard/rebuild resets the gateway inference route
+- L3134 · Tool VOCABULARY lives in three places, and one of them self-reapplies. _(2026-07-25)_
+- L3142 · There is NO per-tool allowlist file
+- L3147 · The Telegram sender allowlist lives in TWO places
+- L3150 · Never health-check via nemoclaw <s> agent
+- L3153 · Trust box evidence over vendor status pages
+- L3155 · DeepInfra balance runs out roughly monthly and NOTHING alerts on it _(2026-07-11)_
+- L3168 · A deactivated seat's bot goes silent but alive
+- L3173 · Don't verify badges by extracting them from /proc/<pid>/environ
+- L3187 · CLI chat probes run on the EMBEDDED agent, not the gateway _(2026-07-23)_
+- L3215 · /hooks/agent (the gateway's HTTP webhook) CANNOT drive an agent turn on this box.
+- L3241 · A status gate outlives its truth — date it, or delete it. _(2026-08-06)_
+- L3251 · Resolve merge state with merge-base, never by eyeballing git log on a feature branch. _(2026-08-06)_
+- L3260 · When inbound email "stops working", check the webhook subscription FIRST
+- L3300 · npm test truncates the local stack, and that wipes the spine-eval world.
+- L3306 · An eval's own fixtures collide unless each scenario owns its rows AND its people. _(2026-08-12)_
+- L3313 · Fixture data must look like customer data.
+- L3318 · A missing BOARD_BOT_HANDLE makes the agent invent board links. _(2026-07-22)_
+- L3325 · resolve_date now has calendar-PERIOD modes _(2026-08-12)_
+- L3406 · Design consequence worth reusing: make the cheap tier the control group.
+- L3410 · The pilot DB is an accepted test-write target (user decision, 2026-08-12) _(2026-08-12)_
+- L3420 · L1 PINS L2: a stamped capture makes its customer permanently undeletable. _(2026-08-12)_
+- L3441 · A new tenant in the pilot silently enlists in the lifecycle cron.
+- L3492 · No reachable technician, so rung 1 can never mint a nudge. _(2026-08-19)_
+- L3498 · Nothing is fresh any more, and nothing new is arriving. _(2026-08-24)_
 
 **6a. The build order — the harness rebuild (2026-08-28 → )**
 
-- L3541 · The seats are an eye.
-- L3544 · AUTHORSHIP: the seat PROPOSES, the planner RECORDS.
-- L3549 · SCOPE: build 7 is the subject decision + authorship.
-- L3600 · It cost one line of code.
-- L3604 · The metric does not widen.
-- L3618 · Volume.
-- L3622 · The quiet-firm skip becomes materially more reachable.
-- L3699 · A looked-up citation stamps NO capture id.
-- L3702 · THE PLANNER COULD CITE ITSELF
-- L3707 · ACCEPTED RESIDUE:
-- L3711 · ORDERING:
-- L3718 · The regression this phase introduced and review caught:
-- L3778 · The turn ceiling binds before the clock.
-- L3781 · A 15-minute tick eats the cadence behind it. _(2026-08-29)_
-- L3821 · MIN_TURN_BUDGET_MS = 15_000
-- L3826 · MAX_TOOL_CALL_MS = 90_000
-- L3843 · Context exhaustion is now the de-facto outer limit.
-- L3847 · The model is NOT told its remaining time
-- L3934 · Doctrine, not a code-enforced phase
-- L3936 · Churn: no brake
-- L3938 · Crowding out: watched, not prevented.
-- L4003 · No cap on the NUMBER of memory files, or on total bytes per firm.
-- L4009 · write_memory has NO mode gate
-- L4039 · The record grows without bound.
-- L4044 · The planner curates it.
-- L4049 · Detectors stay ours, and that is the point.
-- L4053 · The detector must not be the only way a gap opens.
-- L4111 · NUDGES_MODE is RETIRED
-- L4146 · agent informs the office
-- L4152 · agent asks the office _(2026-09-01)_
-- L4167 · the office reaches an agent
-- L4178 · seat-to-seat informs
-- L4226 · A partial index is only usable when the query IMPLIES its predicate.
-- L4339 · Durability.
-- L4341 · Observability.
-- L4401 · 1 · the firm's roster.
-- L4403 · 2 · who you can reach.
-- L4405 · 3 · a message need not be about a gap.
-- L4407 · 4 · one verb.
-- L4410 · 5 · seeing what you sent.
-- L4422 · as: 'board'
-- L4425 · Several addressees on one message
-- L4428 · The quiet-firm skip
-- L4431 · No v_office_messages
-- L4433 · B65-REACH-A-MANAGER
-- L4620 · A green suite proves nothing when you mass-edit tests.
-- L4625 · A test can pin the bug.
-- L4628 · Reachability is not a compile error.
-- L4632 · created_at now means the VISIT's age, not the row's
-- L4685 · A technician's seat agent has NO scheduling verb at any tier.
-- L4688 · Live specimen in the pilot _(2026-09-01)_
-- L4698 · Counting.
-- L4700 · Detection.
-- L4704 · Booking.
-- L4717 · Build 6 (vocabulary): _(2026-09-01)_
-- L4722 · Build 7 (detectors report):
-- L4728 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L3633 · The seats are an eye.
+- L3636 · AUTHORSHIP: the seat PROPOSES, the planner RECORDS.
+- L3641 · SCOPE: build 7 is the subject decision + authorship.
+- L3692 · It cost one line of code.
+- L3696 · The metric does not widen.
+- L3710 · Volume.
+- L3714 · The quiet-firm skip becomes materially more reachable.
+- L3791 · A looked-up citation stamps NO capture id.
+- L3794 · THE PLANNER COULD CITE ITSELF
+- L3799 · ACCEPTED RESIDUE:
+- L3803 · ORDERING:
+- L3810 · The regression this phase introduced and review caught:
+- L3870 · The turn ceiling binds before the clock.
+- L3873 · A 15-minute tick eats the cadence behind it. _(2026-08-29)_
+- L3913 · MIN_TURN_BUDGET_MS = 15_000
+- L3918 · MAX_TOOL_CALL_MS = 90_000
+- L3935 · Context exhaustion is now the de-facto outer limit.
+- L3939 · The model is NOT told its remaining time
+- L4026 · Doctrine, not a code-enforced phase
+- L4028 · Churn: no brake
+- L4030 · Crowding out: watched, not prevented.
+- L4095 · No cap on the NUMBER of memory files, or on total bytes per firm.
+- L4101 · write_memory has NO mode gate
+- L4131 · The record grows without bound.
+- L4136 · The planner curates it.
+- L4141 · Detectors stay ours, and that is the point.
+- L4145 · The detector must not be the only way a gap opens.
+- L4203 · NUDGES_MODE is RETIRED
+- L4238 · agent informs the office
+- L4244 · agent asks the office _(2026-09-01)_
+- L4259 · the office reaches an agent
+- L4270 · seat-to-seat informs
+- L4318 · A partial index is only usable when the query IMPLIES its predicate.
+- L4431 · Durability.
+- L4433 · Observability.
+- L4493 · 1 · the firm's roster.
+- L4495 · 2 · who you can reach.
+- L4497 · 3 · a message need not be about a gap.
+- L4499 · 4 · one verb.
+- L4502 · 5 · seeing what you sent.
+- L4514 · as: 'board'
+- L4517 · Several addressees on one message
+- L4520 · The quiet-firm skip
+- L4523 · No v_office_messages
+- L4525 · B65-REACH-A-MANAGER
+- L4707 · TRAP — nemoclaw <s> status LIES about the gateway right after a restart.
+- L4739 · A visit carries a CREW, and a crew has no lead
+- L4744 · The double-booking guard MOVED with the person
+- L4758 · A composite PK on a link table makes PostgREST synthesise a junction
+- L4766 · A bare ON CONFLICT DO NOTHING swallows an exclusion constraint
+- L4770 · Moving a filter from SQL into JS meets PostgREST's max_rows
+- L4774 · A derived column needs its trigger on UPDATE too, and a FOR SHARE on the parent
+- L4779 · Order is load-bearing in two different places
+- L4785 · Deploy shape: an additive migration BEFORE the code, the drop AFTER
+- L4899 · ON DELETE SET NULL is an UPDATE.
+- L4901 · Naive-local vs real UTC, again. _(2026-09-08)_
+- L4906 · A once-ever index plus stable ids = a detector that fires once, forever.
+- L4913 · A liveness filter can be bypassed by an id rename.
+- L4917 · A compat view bridges the deploy. _(2026-09-05)_
+- L4931 · schedule_events.assignment_id KEEPS ITS NAME this rung.
+- L4934 · The completed-stamp CHECK was dropped.
+- L4943 · RECORDED, NOT FIXED — a crew edit is three HTTP round trips and is NOT atomic.
+- L4953 · RECORDED, NOT FIXED — the tray became an unbounded full-table read.
+- L5039 · A green suite proves nothing when you mass-edit tests.
+- L5044 · A test can pin the bug.
+- L5047 · Reachability is not a compile error.
+- L5117 · A technician's seat agent has NO scheduling verb at any tier.
+- L5120 · Live specimen in the pilot _(2026-09-01)_
+- L5130 · Counting.
+- L5132 · Detection.
+- L5137 · Booking.
+- L5150 · Build 6 (vocabulary): _(2026-09-01)_
+- L5155 · Build 7 (detectors report): _(2026-09-05)_
+- L5165 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L5123 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L5146 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L5193 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L5230 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L5262 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L5267 · Every member row stores the FULL grouped message in question.
-- L5271 · The attribution stamp is an audit link, not a gate.
-- L5275 · The derived stamp requires a capture a badge-holder SPOKE
-- L5279 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L5285 · The follow-up loop has two halves and both had to be written down.
-- L5291 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L5365 · Batching works.
-- L5367 · The follow-up leg works, including the half that fails silently.
-- L5371 · Both attribution paths fired, each in its designed case.
-- L5375 · Escalation fired correctly
-- L5376 · The planner's group-aware pacing is the result worth keeping.
+- L5561 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L5584 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L5631 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L5668 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L5700 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L5705 · Every member row stores the FULL grouped message in question.
+- L5709 · The attribution stamp is an audit link, not a gate.
+- L5713 · The derived stamp requires a capture a badge-holder SPOKE
+- L5717 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L5723 · The follow-up loop has two halves and both had to be written down.
+- L5729 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L5803 · Batching works.
+- L5805 · The follow-up leg works, including the half that fails silently.
+- L5809 · Both attribution paths fired, each in its designed case.
+- L5813 · Escalation fired correctly
+- L5814 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L5557 · Evals:
-- L5564 · Runbooks:
-- L5569 · Decision history with citations:
-- L5573 · This file
+- L6166 · Evals:
+- L6173 · Runbooks:
+- L6178 · Decision history with citations:
+- L6182 · This file
 
 <!-- INDEX:END -->
 
@@ -271,6 +290,23 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   half-edited `server.ts`). The CLAUDE.md worktree rule exists for parallel /implement runs —
   apply it to ANY two sessions that might touch code on one branch, and prefer `git add <paths>`
   over `-a` when another session may be active.
+- **Two operators on trades-box-1 at once is an outage waiting to happen** (2026-09-05). Four
+  keys carry `sudo` there — the user's `tradebox1_key`, `yutao`, Joy's `jc0329@…`, and
+  `tradesbox automation` (badge-pull) — and Yutao runs committed box procedures directly. His
+  gateway adoption at 00:58 PDT killed all six sandboxes while another session was reading
+  them, and for ten minutes it looked like that session's doing. Before any `sudo`, restart or
+  route change on the box: `loginctl list-sessions` (show `RemoteHost`) and
+  `journalctl _COMM=sshd --since -1h` for a second key, and say so in chat. When the box
+  changes under you: `journalctl _COMM=sudo --since today`, then map the sshd fingerprint to
+  `authorized_keys` (`ssh-keygen -lf`) BEFORE suspecting yourself or an intruder.
+- **Never size anything from the pilot's accumulated state — including inference cost** (user,
+  four times: 2026-08-26 ×2, 08-31, 09-05). The box and the pilot DB are a test suite; their
+  session sizes, counts, hit rates and daily spend describe how WE poked at them, not a real
+  firm. What is fine: vendor prices, hardware constants, config defaults, code-derived rules, and
+  the measured shape of ONE driven turn or probe (tokens per call, cache hit on a repeat). What is
+  not: `cost_events` daily totals, "typical active day", any monthly projection built on them.
+  When a number depends on real usage: stress-test it, read the rule from the code, or say you
+  do not know. Standing authorisation to stress-test the box exists.
 - **A new table that references ONLY `tenants` escapes every cleanup cascade** (2026-08-15,
   firm-profile review): the eval world reset, `seed.mjs`'s truncateSpine, and the test-suite
   truncates all clear spine tables and let `cascade` catch dependents — but they deliberately
@@ -500,7 +536,11 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   to invoke a LoRA model that failed to load". So 412 is an ACCOUNT-STATUS code, not
   specifically a spend cap, and it has a non-billing cause — which matters because the fleet
   routes through a *router* id. Check billing first either way.
-  Current: **GLM-5.2 via FIREWORKS FAST**
+  **↳ SUPERSEDED 2026-09-05: the fleet is on `openrouter-prod / @preset/trades-seats` (Muse
+  Spark 1.3 → Gemini Flash, chained by OpenRouter per request) — see "The OpenRouter switch —
+  the fleet (2026-09-05)" in §6 and `docs/inference-recovery-runbook.md`. There is no rollback
+  provider any more; the block below is the 2026-08-15 → 09-05 record.**
+  Was: **GLM-5.2 via FIREWORKS FAST**
   (`fireworks-prod / accounts/fireworks/routers/glm-5p2-fast`, switched 2026-08-15 — spine
   Render env + fleet route + medic all flipped and verified: fireworks `cost_events` rows with
   the cached split landed 18:13Z, medic tick "serving verified (tool call returned)" 18:17Z).
@@ -523,7 +563,7 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   2× list-price ratio. Latency comparisons are unaffected (Nebius numbers already include the
   prefix-cache speedup). Console "prompt presets" = playground templates, not caching.
   **Provider-trial verdict (2026-08-15, full record in the research doc): GLM-5.2 on
-  FIREWORKS FAST — now PRODUCTION (deployed 2026-08-15, see Current above)** — 57/59 spine
+  FIREWORKS FAST — PRODUCTION 2026-08-15 → 2026-09-05 (see the superseded block above)** — 57/59 spine
   eval (≡ 59/59 anchor-adjusted), wall p50 7.8s (2.4× DeepInfra),
   billed cache $0.21/M but **per-replica: a stable `prompt_cache_key`+`user` is MANDATORY** or
   hits are routing luck. **the GPT-5.6 FAMILY is RULED OUT on this toolset (Terra medium, unthrottled: 31/59 with the identical failure signature — 10× price, +1 scenario; console-verified caching is excellent (~96% hits, Luna 4 runs billed $0.88) but economics don't fix discipline)**. Luna detail: none/medium/xhigh scored
@@ -1872,7 +1912,10 @@ were unreachable when those items were created, the per-tick routing cap deferre
   explicitly; compare `tenant_cost_detail`, which is correctly `postgres|service_role` only.**
 - **anon-readable tables on the pilot are a DELIBERATE posture (owner, 2026-08-06) — do not
   "fix" them.** Measured that day: with RLS off and `anon` granted SELECT, `customers`, `jobs`,
-  `assignments`, `technicians`, `tenants`, `visits` and `raw_captures` are readable with the
+  `assignments`, `technicians`, `tenants`, `visits` and `raw_captures` *(⚠ rung 9b, 2026-09-05:
+  `assignments` and `visits` are no longer two tables — the schedule was renamed to `visits` and
+  the compat view named `assignments` is dropped by `20260906140100`; re-check this posture list
+  after that migration)* are readable with the
   publishable key; `cost_events`, `call_ingest` and `query_audit` are not (RLS on). The owner
   confirms RLS-off is intentional here, and the mitigation is that the anon key appears nowhere in
   this project — so this is exposure-by-key-disclosure, not open data. **Treat the anon key as a
@@ -1891,8 +1934,10 @@ were unreachable when those items were created, the per-tick routing cap deferre
 - Schedule times are stored **naive-local** (wall-clock written as-if-UTC) — deliberate
   (see [thoughts/shared/plans/2026-07-14-schedule-core-on-assignments.md](../thoughts/shared/plans/2026-07-14-schedule-core-on-assignments.md)).
   Availability checks pass timezone `'UTC'`. Revisit if a tenant spans timezones.
-- `rescheduleAssignment` creates the new row as `'proposed'` by default while every reader
-  filters `['confirmed']` — moves MUST pass `status:'confirmed'`.
+- ⚠ **RETIRED by rung 9b (2026-09-05).** It read: *"`rescheduleAssignment` creates the new row as
+  `'proposed'` by default while every reader filters `['confirmed']` — moves MUST pass
+  `status:'confirmed'`."* There is no `rescheduleAssignment` and a move creates no row: it is one
+  UPDATE through `moveVisitRow` (`src/db/visits.ts`), and the visit keeps its status and its id.
 
 ## 4. Live-state snapshot (as of 2026-08-24 — verify before relying)
 
@@ -1974,7 +2019,8 @@ were unreachable when those items were created, the per-tick routing cap deferre
   `TEAM_LEAD_TOOLS` are added together. `spine_read` now exposes
   **twelve** views — the four ④ additions (`v_captures`, `v_visits`, `v_nudges`,
   `v_review_items`) joined the original eight, so any "eight views" claim elsewhere in this file
-  is pre-④ history.
+  is pre-④ history. *(⚠ rung 9b, 2026-09-05: `v_visits` was replaced by `v_visit_notes`. Still
+  twelve; the name in any pre-9b text is the only thing that changed.)*
 - **What the brain has produced on the pilot: proven machinery, empty corpus (2026-08-24).**
   Exact counts at 20:39Z. `nudges` 12 (5 answered · 6 escalated · 1 failed ·
   **zero open**); `nudge_decisions` 38 and `review_items` 161, both still growing today;
@@ -2596,9 +2642,11 @@ above), and the demo schedule window it describes has expired.
   to get the correct date, as per the rules."* → `resolve_date {dayShift:1}` →
   `{date:2026-08-04, today:2026-08-03}` → 8 stops. Correct.
   **Remaining gap: s5/s6/s7/s8 carry the identical block but have not run a date-shaped turn.**
-  **Schema note for anyone verifying a schedule answer against the DB: the schedule lives in
-  `assignments` (`starts_at`, `status='confirmed'`), NOT in `visits`** — `visits.scheduled_at` is
-  effectively unused (7 rows, all NULL), so querying `visits` makes a full schedule look empty.
+  ⚠ **Schema note REVERSED by rung 9b (2026-09-05) — the old text said the schedule lives in
+  `assignments`, NOT in `visits`. It is now the exact opposite: `visits` IS the schedule**
+  (`starts_at`, `status='confirmed'`), `assignments` is a compat view that the deploy's second
+  migration drops, and `visits.scheduled_at` no longer exists. Verify schedule answers against
+  `visits` or `v_schedule`.
   **UTC-TIMESTAMP TRAP (found while fixing the above).** Every inbound Telegram turn carries
   `"timestamp": "Tue 2026-08-04 00:57 UTC"` in the conversation-info block — the ONLY date-shaped
   string in a first-turn context, weekday included, and it is **UTC**. Both tenants are
@@ -2635,6 +2683,34 @@ above), and the demo schedule window it describes has expired.
   decision — Nemotron quality rules out flash-tier models). Original mechanics, revert recipe and
   citations:
   [thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md](../thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md).
+- **2026-09-05 — "Programmatic tool calling" assessed as a latency lever: NOT reachable as the
+  Anthropic feature, and OpenClaw's Code Mode is the tool-search bridge above under a new name.**
+  Anthropic's programmatic tool calling (Claude writes code that calls tools inside the
+  code-execution container; intermediate results never enter context) is Claude-only, on the Claude
+  API / Claude Platform on AWS / Foundry, needs the `code_execution_20260120` tool, and cannot call
+  MCP-connector tools
+  (https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling).
+  OpenRouter executes nothing server-side — "The LLM does not call the tools directly"
+  (https://openrouter.ai/docs/guides/features/tool-calling) — and the installed OpenClaw 2026.6.34
+  has zero references to `allowed_callers` / `code_execution` in `dist/`, so the seats could not
+  reach it even on a Claude model. OpenClaw's own equivalent is `tools.codeMode` (present in
+  2026.6.34: QuickJS-WASI runtime, the model writes a JS program per turn; the only `mode` is
+  `"only"` — every tool hidden behind `exec`/`wait`; the quick index "omits descriptions, full
+  schemas, MCP entries", so `trades-spine__*` must be found via `catalog.search()` and its
+  doctrine-carrying descriptions via `describe()`; Muse is not in the `auto` preferred list;
+  https://docs.openclaw.ai/tools/code-mode). That is the surface measured 2026-08-04 above
+  (32–139s vs 4–13s, `resolve_date` skipped) and the one Nemotron could not drive at all.
+  **Measured turn shapes 2026-09-05 (s2/s5/eval transcripts): zero assistant messages with 2+ tool
+  calls on any seat** — Muse never emits parallel calls, so OpenClaw's parallel execution buys
+  nothing; real chains are DEPENDENT (s5: `record_field_note` → `needs_identity` →
+  `find_customer` → `record_field_note` = 4 model calls; dated schedule reads: `resolve_date` →
+  read). Code mode would save one model call (+3–5s each) per link of such a chain, but costs a
+  code cell on the majority one-tool turns and collapses the two-step confirm gate into one program
+  — the server enforces only a 15-min TTL on staged confirms (`server.ts` "confirmation expired"),
+  never that a human message intervened. **Decision: keep direct tools.** The round-trip savings
+  belong in the SPINE — fold the lookup into the tool that needs it (`record_field_note` resolving
+  a customer name server-side; schedule reads/booking accepting the spoken day and returning the
+  resolved `phrase`) — the same lesson as "put it in the data, not in a rule".
 - **FIXED 2026-07-30 — agent turns took 60–80s; cause was ONE tool's schema.** Every request
   compiles each tool's `parameters` JSON-Schema into a constrained-decoding grammar *before the
   first token* (the router converts tools to `response_format: structural_tag`, not native
@@ -2997,6 +3073,14 @@ Two mechanics that bite every time: **`wire` needs the whole tree** (the weekday
   healthy or not (s3 and s5 took ~10s blips as bystanders on 2026-08-12). So: before any manual
   container restart, run the medic (or check the token's `exp`) — the credential-restart rule
   above still applies, it just needs a valid sandbox token to survive the restart.
+  **Hit again 2026-09-05 00:58 PDT — a GATEWAY restart is a container restart for every seat.**
+  The committed systemd adoption (`pkill openshell-gateway` → `systemctl enable --now`,
+  25d15ee/5ca763d) had the new gateway "resume" all six sandboxes and immediately re-provision
+  them (docker: SIGTERM ×6, then SIGKILL ×6 ten seconds later). s2/s3/s5 came back on their
+  own; s6/s7/s8 looped on `ExpiredSignature` (revive counter reached 20) until the medic ran
+  eight minutes later. `sandbox-token-medic.service` is `Before=nemoclaw-boot.service`, so it
+  only protects a REBOOT — a hand-run gateway restart gets no re-mint. So: **run the token
+  medic BEFORE restarting the gateway**, and expect every seat to blip regardless.
 - **NEVER change a sandbox's `openclaw.json` with `openclaw config patch`.** It writes the file
   but does NOT update nemoclaw's `.config-hash`, so the next `gateway restart` fails
   `GATEWAY_UNSAFE_CONFIG_PATH` and leaves the gateway DOWN (3 bots went down learning this on
@@ -3343,8 +3427,8 @@ mechanism in [long-running-task-batching.md](long-running-task-batching.md).
   **Consequence: any world built in a database you cannot truncate is BUILD-ONCE.** Dropping the
   stamps to regain deletability is not a fix — `src/db/context.ts` reads them as a customer's
   evidence, so `get_customer_context` would go blind. To re-anchor an existing world, **shift it
-  rather than rebuild it**: visit dates are the only anchor-dependent part and `assignments` is
-  mutable. Whole-week shifts only (weekday alignment), in two passes (`no_confirmed_overlap` is a
+  rather than rebuild it**: visit dates are the only anchor-dependent part and the schedule table
+  is mutable (named `assignments` when this was written; `visits` since rung 9b, 2026-09-05). Whole-week shifts only (weekday alignment), in two passes (`no_confirmed_overlap` is a
   non-deferrable GiST exclusion, so a single-pass uniform shift transiently collides).
 - **The pilot's migration LEDGER is incomplete — don't diagnose its schema from
   `list_migrations`.** On 2026-08-12 the ledger was missing four migrations that exist locally
@@ -3484,22 +3568,30 @@ what to do. Attention curation is a WEIGHTING, never a gate (user, 2026-08-28).
 7  the record has authors        the planner opens its own; the seats are an eye  [BUILT 2026-09-02]
 8  the schedule is the manager's  DEMOLISH the solver ritual + pinning   [BUILT 2026-09-04; §8b below]
 9a the rails come out            promise ladder + stored window DELETED  [BUILT 2026-09-05; §8 below]
-9b the visit is one object        committed→placed→happened→reported; absorbs old 8   [user 2026-09-03]
-10 the call commits a visit       the extractor may create an UNPLACED visit   [user 2026-09-03]
+9b the visit is one object        committed→placed→happened→reported; absorbs old 8  [DEPLOYED 2026-09-06; §9b]
+9c a visit carries a crew         visit_participants; the guard moves with the person; NO lead  [DEPLOYED 2026-09-06; §9c]
+10 inbound commits a visit        CALL **AND EMAIL** → extractor creates UNPLACED  [user 2026-09-05]
 11 the planner learns the schedule  recommends; passes the firm's pattern to seats   [user 2026-09-03]
 12 new eyes                       contradiction detectors — ours, SQL, cheap   [was 9; now on ONE visit]
 ```
 
 **Hard dependencies:** 1 < 5 · 4 < 6 · 6 < 7 · 2 < 3 · 6.5 < 7 · 7 < 9 · 8 < 9 · 9a < 9b ·
-9b < 10 · 9b < 12 (9b changes what a gap's SUBJECT is — a visit id — so every detector after it
-reads one visit).
+9b < 9c · 9b < 10 · 9b < 12 (9b changes what a gap's SUBJECT is — a visit id — so every detector
+after it reads one visit). **9c and 10 are INDEPENDENT of each other** — both only need 9b.
+
+**THE BOARD IS REBUILT AFTER THE WHOLE SCHEDULE STORY, not per rung (user, 2026-09-06):** *"We'll be
+rebuilding the board after we build the entire schedule rung."* So do NOT spend effort keeping
+`web/board/` pretty through 9c/10/11 — keep it WORKING (it is the manager's hands) and let the
+rebuild absorb the UX. This is also why 9b's Telegram-board manual check was closed as deferred
+rather than run.
 
 **Rung 9 SPLIT at plan review (2026-09-05):** the ruling that killed the window turned rung 9 into
 two independent pieces. **9a — the rails come out** deletes the promise ladder and the stored
 window and touches no table structure beyond dropping four columns; it is BUILT. **9b — the visit
 is one object** is the L2 remodel (`assignments` and `visits` become one object with a
 committed→placed→happened→reported lifecycle, absorbing multi-technician from the old rung 8), and
-is unstarted. Splitting them meant 9a could land and deploy without waiting on the table merge.
+is BUILT as of 2026-09-05 — minus multi-technician, which was split out again as **9c** (see §9b).
+Splitting them meant 9a could land and deploy without waiting on the table merge.
 
 **The ladder was REWRITTEN 2026-09-03 (user) — see §8 below for why.** The original rung 8 ("a visit
 is not a person", researched + planned 2026-09-02/03) is SUPERSEDED: it patched the reading layer of
@@ -4511,16 +4603,17 @@ same job… we're really just trying to have the users fit to our reality of sch
 SUPERSEDED. What replaces it is rungs 8–11 in the ladder above; the research stands and most of it is
 rung 9's research.
 
-**Two corrections to the text below, found by that research (do not re-derive):**
-1. `visits` is NOT dormant. `recordFieldNote:267` calls `createVisit` on every matched field note,
-   from all three inbound routes, and `listVisitTimesForJobs` feeds the detector's own freshness
-   test. What is true is narrower: `visits` is not the SCHEDULE. **The word "visit" names two unlinked
-   tables** — `assignments` (the schedule; every `*_visit` tool writes here) and `visits` (the L2
-   object of the spine design, written per NOTE, with a `scheduled_at` column that nothing sets).
-   Design doc line 93 — *"A visit is one trip by one technician"* — is where every singular
-   technician column comes from.
-2. Reschedule is cancel + insert with a NEW id (`rescheduleAssignment`), so an assignment id can
-   never name a visit across a move.
+**Two corrections to the text below, found by that research — ⚠ BOTH SUPERSEDED BY RUNG 9b
+(2026-09-05), which is precisely the thing that fixed them. Do not carry them forward; they are
+kept only so the reasoning that led to 9b stays legible:**
+1. ~~`visits` is NOT dormant. `recordFieldNote:267` calls `createVisit` on every matched field note…
+   What is true is narrower: `visits` is not the SCHEDULE. **The word "visit" names two unlinked
+   tables** — `assignments` (the schedule) and `visits` (written per NOTE, with a `scheduled_at`
+   column that nothing sets).~~ **There is now ONE table.** `assignments` was renamed to `visits`,
+   the per-note table was dropped, and a note LINKS its trip through `visit_notes`.
+2. ~~Reschedule is cancel + insert with a NEW id (`rescheduleAssignment`), so an assignment id can
+   never name a visit across a move.~~ **A move is an UPDATE in place and the id survives it** —
+   which is exactly the id this section's rung-8 text says does not exist.
 
 **AMENDED 2026-09-05 (user) — the WINDOW dies too; no schema rail restricts the agent.** *"We're
 getting rid of the window also. I want the manager agent to simply be an assistant that has access
@@ -4543,7 +4636,7 @@ alongside the stored window is the obvious mistake here.
 **What replaces the rails is DOCTRINE, and it is real scope for rung 9** — not just deletions. The
 agent must look for promises **in the record** before it edits the schedule or makes a suggestion:
 the calls, emails and notes in L1 (`v_captures`, bridged to the job via
-`v_visits.source_capture_id`). That is build 6's "cite what you looked up" applied to scheduling.
+`v_visits.source_capture_id` — since rung 9b, `v_visit_notes`). That is build 6's "cite what you looked up" applied to scheduling.
 The agent is **reactive** — it edits only when asked and never initiates; the PLANNER recommending
 is rung 11, a different thing.
 
@@ -4578,7 +4671,333 @@ ladder was a workaround for that CHECK. Removing the CHECK removes the reason th
 because we are operating in a test suite and nothing is in production right now."* Destructive is
 permitted, consistent with the L1 waiver recorded above.
 
-### ✅ BUILT 2026-09-05 — rung 9a, "the rails come out" (branch `rung9a/the-rails-come-out`)
+### ✅ BUILT **AND DEPLOYED** 2026-09-06 — rung 9c, "a visit carries a crew" (merged as `bd50ab1`, PR #208)
+
+**DEPLOYED to the pilot 2026-09-06, 20:11–20:20Z.** Order run, and it is the 9a/9b idiom:
+additive migration → fork sync → deploy → drop migration → seat restarts → live E2E.
+
+| # | step | evidence |
+|---|---|---|
+| 0 | preflight | no technician held two overlapping confirmed timed visits, so the backfill could not trip the relocated guard; `assignments` relic already gone; `btree_gist` present; only `v_schedule` + `v_cancelled_visits` depended on the column |
+| 1 | `20260907100000` (additive) | **390 participants from 390 visits**, 0 desynced, 0 cross-tenant, 0 left at the `proposed` default (the fill trigger ran on every row) |
+| 1b | PostgREST probes | `visits?select=id,technicians(ref)` → **200**. This is the one that had to be checked: a composite PK would have answered 300 `PGRST201` and broken the still-running old code for the whole window |
+| 2 | fork sync + 5 deploys | all five `live` on `bd50ab1`; web `/health` confirmed it |
+| 3 | `20260907100100` (the drop) | `visits.technician_id` gone, only `no_confirmed_overlap_participant` left, 3 triggers, `technician_refs` on both views, **0 grants leaked to anon/authenticated**, 3 to `spine_reader` |
+| 4 | seat gateways | s2 canary first, then s3 s5 s6 s7 s8 |
+| 5 | live E2E through s2 | "Both Ben and Joy are going" → **ONE visit, crew of two**, 0 desynced. `v_schedule` returns one row with `{ben-shelton, manager-joy}`; `v_visit_participants` returns two |
+| 6 | the guard, provoked live | a rolled-back probe tried to put Ben on an overlapping trip: **23P01**, refused, zero residue |
+| 7 | `lifecycle-heart` | five consecutive ticks `ok: true`, watchers `live`, all alarms 0 |
+
+- **TRAP — `nemoclaw <s> recover` REWRITES THE GLOBAL INFERENCE ROUTE (2026-09-06, hit live during
+  the 9c seat pass).** s3's gateway did not come back from `gateway restart`, so `nemoclaw s3
+  recover` was run. It recovered the gateway AND said: *"gateway inference route
+  (openrouter-prod/@preset/trades-seats) differs from the recorded route for sandbox 's3'
+  (nvidia-prod/nvidia/nemotron-3-super-120b-a12b). Aligning the gateway to nvidia-prod…"* — and it
+  aligned the **whole fleet's** route, not s3's: `openshell inference get -g nemoclaw` then read
+  `nvidia-prod / nemotron-3-super-120b-a12b`. The per-sandbox "recorded route" is stale (pre-2026-09-05)
+  and `recover` treats it as truth. **The fix it prints is WRONG** — `nemoclaw inference set
+  --provider openrouter-prod` is rejected with *"Unsupported provider 'openrouter-prod'"*; the real
+  command is the `openshell` one:
+  `openshell inference set -g nemoclaw --provider openrouter-prod --model @preset/trades-seats`.
+  **What actually saved it: `nemoclaw-inference-medic.timer` re-asserted the route within one
+  5-minute interval** (config version bumped 13219 → 13220), so the blast radius was ~6 minutes.
+  Check `openshell inference get -g nemoclaw` after ANY `recover`, and do not reach for `recover`
+  when `gateway restart` already reported health passed.
+
+- **TRAP — `nemoclaw <s> status` LIES about the gateway right after a restart.** s3 and s5 both
+  reported `OpenClaw: not running` / *"The sandbox is alive but the OpenClaw gateway process is not
+  running"* while the gateway was up, had registered its NemoClaw plugin, and was actively polling
+  `api.telegram.org/getUpdates` in `nemoclaw <s> logs`. s3 then answered a full agent turn
+  correctly. **The authoritative signals are the restart's own `✓ Gateway restarted; health passed`
+  and an actual `nemoclaw <s> agent --agent main -m "…"` turn** — never `status` alone. Believing
+  `status` is what triggered the needless `recover` above, and therefore the route regression.
+
+**THE WINDOW WAS EMPTY, and only by luck of ordering.** `Calls-worker` and `Calls-purge`
+auto-deploy, so the fork sync put them on 9c code at 20:11:59 — migration 1 landed at 20:11:58,
+one second earlier. Zero captures, visits or schedule events were written in the gap. **The
+durable rule: apply the additive migration BEFORE the fork sync, never after** — the sync is the
+deploy for the two auto-deploy services, and nobody controls when their build finishes.
+
+- **THE BOARD SENDS A CREW, NOT A PERSON — found by the final review, and it was a data-loss
+  bug** (2026-09-06). `web/board/board.js` was not in the 9c plan's file list and the diff never
+  touched `web/`, but every board write verb now means **REPLACE THE CREW**. The team view emits
+  ONE STOP PER PERSON, so a two-person trip draws two otherwise identical cards; dragging Ben's
+  card into Sam's lane sent `technicianRef: sam` and **deleted Joy from a trip she was still going
+  on** — silently, with no history table to recover from, and Joy got a "moved off your schedule"
+  push. Three more paths did the same: the detail sheet's Technician pencil (which printed
+  `technicianName`, the FIRST of the crew, so the sheet never admitted Joy was there), and the
+  tray's Assign on an **untimed crewed** visit — the tray deliberately holds those
+  (`listUnassignedVisitsWithRefs`' `|| starts_at === null` arm), so "unassigned tray" is not the
+  same set as "nobody on it". Fixed by expressing every gesture as crew ARITHMETIC against a new
+  `data-crew` attribute: a lane drop swaps only the dragged person, an Unassigned-lane drop takes
+  only that person off (parking the visit only when nobody is left), and both the sheet and the
+  tray now PRINT the whole crew and name who a replace removes. **The standing rule this leaves:
+  a schema change that alters what a write verb MEANS has to list `web/` in its file footprint,
+  even while the board is "just kept working" pending its rebuild** — `web/` has no test harness
+  at all, so nothing else will catch it.
+
+- **A visit carries a CREW, and a crew has no lead** — `visits.technician_id` is GONE. Who is on a trip lives in `visit_participants`
+(one row per person), and two technicians on one job at one time is ONE visit with two rows there
+— not two visits nothing joins. A crew has **no lead**: everybody on it is equal, a note from
+either of them closes the trip, and an unreported crew visit raises ONE gap.
+
+- **The double-booking guard MOVED with the person** — it needs one row that knows both who and
+  when, and an exclusion constraint cannot reach a second table. The guard is
+`EXCLUDE USING gist (technician_id WITH =, tstzrange(starts_at, ends_at) WITH &&)
+WHERE status='confirmed' AND starts_at IS NOT NULL`. It works ONLY because the person and the
+times sit on the SAME ROW, and a Postgres exclusion constraint cannot reach a second table. So
+moving the person off `visits` meant moving the guard with them: each participant row carries a
+DERIVED copy of the trip's `starts_at`/`ends_at`/`status`, filled by a `BEFORE INSERT OR UPDATE`
+trigger and kept in step by an `AFTER` trigger on `visits`. **Probed, not assumed** (local stack,
+2026-09-06): an exclusion raised from inside an AFTER trigger reaches PostgREST as
+`{"code":"23P01"}`, the parent UPDATE rolls back whole, and a non-overlapping move syncs every
+copy — so `isOverlapViolation` and rung 9b's "nothing changed" argument survive untouched.
+
+**Five traps this rung found, each measured:**
+
+- **A composite PK on a link table makes PostgREST synthesise a junction** — HTTP 300 PGRST201 on
+  every `technicians` embed. Use a surrogate key on any two-FK link table. With
+   `PRIMARY KEY (visit_id, technician_id)`, PostgREST reads `visit_participants` as a junction and
+   invents a many-to-many `visits ↔ technicians` that collides with `visits_technician_id_fkey` —
+   every select embedding `technicians` from `visits` answers **HTTP 300 `PGRST201`**. That would
+   have broken the still-running old code for the whole deploy window. A surrogate `id` with
+   `UNIQUE (visit_id, technician_id)` gives the same guarantee and no junction (probed: 200).
+   Pinned by a schema test. **Do not tidy it back into a composite key.**
+- **A bare `ON CONFLICT DO NOTHING` swallows an exclusion constraint** — always name the conflict
+  target. It arbitrates over EVERY
+   usable constraint, exclusion constraints included — so the relocated guard was silently OFF on
+   the trigger's own insert path. Always name the conflict target.
+- **Moving a filter from SQL into JS meets PostgREST's `max_rows`** — page the reader, or the
+  1000-row cap truncates before the filter runs. "Nobody is on it" is an
+   anti-join PostgREST cannot express, so four readers now fetch and filter in JS — and the
+   1000-row cap truncates BEFORE the filter runs, silently. All four are paged.
+- **A derived column needs its trigger on UPDATE too, and a `FOR SHARE` on the parent** — or the
+  copy drifts from its source and the guard checks a lie. Without
+   the first, a hand-written UPDATE desynchronises a participant from its trip; without the second,
+   a participant inserted concurrently with a move commits carrying the pre-move times. Either way
+   the guard ends up checking a time nobody is going.
+- **Order is load-bearing in two different places** — leavers off before the times move, and the
+  person reconciled before the times inside the trigger. App-side: `moveVisitRow` removes leavers
+   BEFORE the UPDATE, or "Joy is out, Ben covers it" is refused because Joy is busy at the target.
+   Trigger-side (while the bridge existed): reconcile the person BEFORE syncing the times, in ONE
+   function — two triggers fire alphabetically and the wrong order refuses the same move.
+
+- **Deploy shape: an additive migration BEFORE the code, the drop AFTER** (the 9b pair, reused),
+  and the second window is NOT free — see the plan. `20260907100000` is additive and goes BEFORE the code —
+the old column, its guard and its index all survive, and a bridge arm in the trigger materialises
+`technician_id` as participant #1 so the old code keeps working. `20260907100100` goes AFTER all
+five services are live: it rebuilds `v_schedule`/`v_cancelled_visits` with `technician_refs
+text[]` / `technician_names text[]` (**one row per TRIP** — one row per participant would make
+`count(*)` count people again), adds `v_visit_participants` for per-person questions, drops the
+bridge arm, the guard, the index and the column.
+
+---
+
+### ✅ BUILT **AND DEPLOYED** 2026-09-05/06 — rung 9b, "the visit is one object" (merged `c7d69f8`, PR #206)
+
+**Deploy 03:34–03:56Z. Evidence, not tool success lines.** Migration → all five Render services →
+seats → tick → compat-view drop. **Pilot schema md5 now EQUALS local:
+`8fe55faf8d9e040fe0e2836136a250d1`, 643 columns.**
+
+| check | evidence |
+|---|---|
+| migration | 467 schedule rows carried, 0 lost; all 62 `completed` rows stamped by the backfill, 0 unstamped; `raw_captures.visit_id` non-null on 0 rows so the FK re-point validated |
+| the bridge | `assignments` relkind `v`, 467 rows; **all three embed shapes 200** incl. the REVERSE `jobs?select=…,assignments(id,status)` |
+| five services | web · lifecycle-heart · Board_Worker · Calls-worker · Calls-purge all `live` on `c7d69f8` |
+| **one trip, one id** | booked untimed → moved → moved → cancelled = **4 `schedule_events` on ONE `assignment_id`**, `created_at` never changed, `updated_at` bumped each time |
+| the stages | `v_schedule.stage` read `committed`, then `placed`, then `reported` on the right rows |
+| a note attaches | technician note on a same-day booked visit → 1 `visit_notes` row, status `completed`, `completed_at` 20:48 FIRM-LOCAL, stage `reported`, **no second visit minted** |
+| confirmations | unschedule of a PLACED visit staged `pending_visit_cancel` carrying `visitId`; confirm resolved it, visit `cancelled`, job still `open`, 0 open tokens left |
+| **the backlog did NOT re-flag** | open `overdue_visit_gap` 100 → 98, **0 review_items created since deploy**; `lifecycle-heart` ran clean at 03:50Z |
+| exposure | `v_schedule`, `v_cancelled_visits`, `v_visit_notes`, `visit_notes` all anon=false, authenticated=false |
+
+**Three things the deploy taught that the plan did not know:**
+
+1. **A gateway restart is the whole seat "wire" when only tool SCHEMAS changed.** Seats run off the
+   gateway's cached `tools/list`, so `nemoclaw <s> gateway restart` is what makes `visitId` visible.
+   A full `wire` was NOT needed and would have been wrong: it pushes doctrine from whichever
+   `bootstrap-box.sh` copy is on the box, and **all six copies were stale against the repo**
+   (the drift trap, again — md5 every time). 9b changed no doctrine text, which is why this was safe.
+   s2's restart reported `health did not pass before timeout`; `doctor` said healthy and the seat
+   then booked and moved for real. **Treat that message as a slow start, not a failure** — verify
+   functionally before acting on it.
+2. **⚠ STALE CONFIRMED VISITS DEFEAT THE NOTE-ATTACH RULE'S STEP 2, on real data.** A note attaches
+   to "the job's ONE live visit" only when there is exactly one. The pilot's Marcus Ellery job
+   carried a `confirmed` visit from 2026-08-23 that nobody ever completed, so the job had TWO live
+   visits and a note filed against it fell through to step 3 and **minted a new `completed` visit**.
+   The code did exactly what it was specified to do; the specification assumed jobs do not
+   accumulate long-past `confirmed` rows, and they do. Consequence to carry into rung 9c/10: either
+   step 2 should ignore visits whose day is long past, or something must sweep stale `confirmed`
+   visits.
+   **⚠ Do NOT size this from the pilot** ([[never-size-from-the-pilot-box]], and I nearly did):
+   step 2 is defeated only when a job has MORE THAN ONE live visit, which is **3 of 300** open jobs
+   there — the one I hit was one of the three, which made it read as common. What the pilot shows is
+   the SHAPE, not the rate: 281 of those jobs carry a `confirmed` visit more than three days past
+   that nobody ever completed, and that is an artifact of seeded data nobody closes out, not a
+   forecast of a real firm. The mechanism is worth fixing; its frequency is unknown and this
+   environment cannot tell you.
+3. **`visits` inherited `assignments`' anon/authenticated SELECT on the pilot** — the rename carries
+   grants. This is the pre-existing recorded posture (`20260824120000` was never applied to the
+   pilot, so RLS is off on these tables) and NOT something this rung introduced, but it is a real
+   difference from local, where the same table is anon=false. The `v_*` views fail closed either
+   way. Flagged for an owner decision, not changed unilaterally.
+
+**Deploy-window note, for the record:** `Calls-worker` and `Calls-purge` auto-deploy, so the fork
+sync put them on new code ~1 minute BEFORE the migration landed. The pilot had taken 0 captures in
+3 days, so nothing hit it. On a busy pilot, apply the migration BEFORE syncing the fork.
+
+#### The build itself (`68bacf9`, `0dd4a0b`, `be54d85`, `a26e498`, `618d6ef`)
+
+**What was wrong.** TWO tables both meant "visit" and nothing joined them. `assignments` was the
+schedule — every `*_visit` tool wrote it, the board read it, the GiST exclusion guarded it.
+`visits` minted one row PER FIELD NOTE and nothing ever scheduled from it, so a technician filing
+twice about one trip produced two rows and a crew of two produced two more. Invisible, because
+nothing displayed that table. The moment `visits` BECAME the schedule, those rows would have shown
+on the board as work nobody did — which is why the note-attach rule (below) is part of this rung
+and not a later one.
+
+**The shape now.** ONE row per trip, keeping the name `visits`, with a lifecycle DERIVED from the
+row rather than stored in a ladder: `committed` (confirmed, untimed) → `placed` (confirmed, timed)
+→ `happened` (completed) → `reported` (a `visit_notes` row exists), plus `cancelled`. The
+`visit_status` enum is unchanged; `stage` is a `case` in `v_schedule` and `stageOf()` in
+`src/db/visits.ts`. **Status is tested FIRST** — a `visit_notes` row only splits a `completed`
+visit into `reported` vs `happened`; a note linked to a still-`confirmed` visit leaves it `placed`.
+So `where stage='reported'` is NOT "trips with a note on file". `proposed` is still written by
+nothing — a later cleanup.
+
+**Survivor = `assignments`, RENAMED.** Settled by probes on the local stack, not by preference:
+`raw_captures.visit_id → visits ON DELETE SET NULL` is implemented as an UPDATE and therefore
+TRIPS `raise_append_only`, so the 288 event-linked schedule rows could be neither deleted nor
+moved. `DROP TABLE … CASCADE` does not trip it; `RENAME` keeps the FK and fires nothing. So the
+schedule table was renamed and the 20 per-note rows were dropped with CASCADE (their notes stay in
+L1). **No trigger was disabled at any point.** The user had waived the pilot's data
+(2026-09-05: *"all of the data that exist in the pilot right now is test and seeded anyways"*).
+
+| Phase | What landed | Migration |
+|---|---|---|
+| 1 | `assignments`→`visits`, old `visits` dropped, `visit_notes`, merged columns, four views rebuilt | `20260906140000` |
+| 2 | a move is an UPDATE in place — the visit's id outlives every move/park/attach | none |
+| 3 | a note ATTACHES to the trip it reports (`resolveVisitForNote`) | none |
+| 4 | doctrine, docs, deploy | `20260906140100` drops the compat view |
+
+**Gates at the end of phase 3:** typecheck / lint / build clean, **2556 passed, 12 skipped** (up
+from 2544 by exactly the 12 tests added; none deleted — the rung-9a mass-edit lesson applied).
+
+**The note-attach rule, in order** (`src/writePath/attachNote.ts`): (1) the job's visit PLACED on
+the note's own firm-local day, held by this technician or by nobody, nearest start winning a tie;
+(2) else the job's ONE live visit, whatever day it sits on — the write-it-up-next-morning case;
+(3) else CREATE one, already happened. **ATTACH IS CHANNEL-BLIND; CREATE AND REPORT ARE NOT.** An
+inbound email answering a question about a booked visit is evidence about that trip and now links
+to it — before this it linked nothing and was invisible to the planner's evidence read and the
+watcher's activity probe. Only `technician_voice|technician_photo|technician_note` may mint a
+visit or flip one to `completed`. **This is a rule about the NOTE DOOR, not about people** —
+managers create visits all day through `book_visit` (admin-gated, untouched), and a manager filing
+a field note still creates one. It is also INTERIM: rung 10 is where inbound starts creating a
+COMMITTED visit.
+
+**Traps and findings worth carrying:**
+- **`ON DELETE SET NULL` is an UPDATE.** Against an append-only trigger it fails at DELETE time,
+  not at DDL time — so the constraint looks fine until the day something tries to delete.
+- **Naive-local vs real UTC, again.** Visit times are firm wall clock stamped as if UTC;
+  `raw_captures.captured_at` is a real instant. Comparing them raw makes an 08:00 note look later
+  than a 09:00 visit in `America/Los_Angeles`. Converted ONCE, in `noteLocalOf()`.
+  **And do not compare those strings with `<`** — `2026-09-08T09:00:00+00` vs
+  `…T09:00:00.000Z` is decided by `+` vs `.`, not by time. `Date.parse` both sides.
+- **A once-ever index plus stable ids = a detector that fires once, forever.**
+  `uq_observations_subject_ever` is unique per `(tenant, kind, subject_ref)` **and is PARTIAL —
+  `where author = 'detector'`** (`20260904110000_observations_author.sql`), so it constrains the
+  detectors and not the planner's own rows. Ids used to change
+  on every move, which accidentally re-armed the overdue detector. With ids surviving moves the
+  subject became `${visitId}@${starts_at}`, and the dedup probe asks BOTH spellings — without
+  that, the entire existing backlog would have been re-flagged on the first tick.
+- **A liveness filter can be bypassed by an id rename.** `boardNotify` resolved the notify target
+  from the visit row; once a move no longer created a successor row, the PREVIOUS holder had to be
+  looked up separately — and the first cut skipped the liveness check, which would have pushed
+  schedule details to an offboarded ex-employee's phone. An existing test caught it.
+- **A compat view bridges the deploy.** A plain `select … from visits` view named `assignments` is
+  auto-updatable, so the five Render services keep working between the migration and the deploy;
+  dropped by the second migration once all five are live. ⚠ **The load-bearing half — that
+  PostgREST resolves EMBEDS through the view** (the running code does
+  `from('assignments').select('*, jobs(…), technicians(…)')`) — cannot be covered by a test,
+  because `20260906140100` drops the view in the same `db reset`, so no test ever sees the bridge.
+  **PROVEN by hand instead (2026-09-05):** the view was created on a scratch stack and PostgREST
+  probed directly — the forward embed, the `!inner` variant, `schedule_events → assignments`, and
+  the REVERSE `jobs?select=…,assignments(id,status)` (`UNSCHEDULED_JOBS_SELECT`, hit on every board
+  load, and the direction most likely to fail) all return 200; `information_schema.views` reports
+  `is_insertable_into=YES, is_updatable=YES`; and the NEW code's shapes also return 200 with the
+  view present, so view-and-table coexistence raises no PGRST201 ambiguity. **The lesson is the
+  method, not the result:** a claim that no test can reach is not "probably fine", it is unverified
+  until someone builds the situation and looks.
+- **`schedule_events.assignment_id` KEEPS ITS NAME this rung.** That table is append-only and a
+  column has no bridge, so renaming it would 400 every schedule write in the deploy window. The TS
+  input is `visitId`, mapped onto the column. Code-first rename later.
+- **The completed-stamp CHECK was dropped.** `visits_completed_has_stamp` blocked the legal status
+  walk (the `cancel_job` cascade, the eval seeders); `completed_at` is optional detail, not an
+  invariant.
+
+**Deferred, deliberately:** **9c multi-technician** (a participant table; `technician_id` stays the
+single nullable lead) — this rung counts a crew of two as ONE visit but does not name the second
+person. **A capture on a job with NO live visit still links nothing** — a test documents it rather
+than leaving it implicit; rung 10 closes it by giving inbound its own committed visit.
+
+- **RECORDED, NOT FIXED — a crew edit is three HTTP round trips and is NOT atomic.**
+  `moveVisitRow`, `setVisitParticipants` and `attachVisitParticipants` all do DELETE leavers →
+  UPDATE `visits` → UPSERT joiners as separate PostgREST calls, because the DB cannot do it in one
+  (the "APP ORDER PIN" test proves leaver-first is required, or the exclusion refuses a legitimate
+  reassign-and-move). The leaver DELETE commits on its own; compensation is `restoreLeavers()`,
+  which is in-process and best-effort. A dyno recycle between calls leaves a real person off a trip
+  that did not move, with no event appended and nothing to reconcile it. This is a genuine
+  regression from 9b's single UPDATE. Fix shape when it matters: a `SECURITY DEFINER` RPC that does
+  the whole crew edit in one transaction.
+
+- **RECORDED, NOT FIXED — the tray became an unbounded full-table read.** The "nobody is on it"
+  test moved from SQL to JS (PostgREST has no anti-join), so `listUnassignedVisitsWithRefs`,
+  `listUnassignedVisits` and `listIdenticalUnassignedVisits` narrow only on time — and
+  `readLooseBucket` passes **the epoch**. Every board load now pages every confirmed visit the
+  tenant has ever had, with a 4-level embed, and discards nearly all of it. Invisible at the
+  pilot's 470 visits; it grows linearly forever on the hot path the board-latency doctrine exists
+  to protect.
+
+### ✅ BUILT **AND DEPLOYED** 2026-09-05 — rung 9a, "the rails come out" (merged as `e89cf74`, PR #204)
+
+**Deploy done 06:38–06:53Z, in the order below. Evidence, not tool success lines:** the CHECK drop
+first; then all FIVE Render services verified live on `e89cf74`; then the column drop; then the six
+seats. Post-migration `lifecycle-heart` tick returned `"watchers":{"mode":"live","tenants":1,
+"gapsFound":2,"tenantErrors":0}, "ok":true`. Pilot schema md5 now equals local:
+`c2986e774ef6a837330a35ef665858a8`, 646 columns. Both views read as `spine_reader` (164 / 94 rows)
+with `anon` and `authenticated` false — which also CLOSED a pre-existing exposure: on the pilot
+`v_cancelled_visits` had carried full Data-API grants to anon/authenticated, and the drop+recreate
++revoke removed them.
+
+**Two deploy-path facts the plan did not know, both worth carrying:**
+1. **Render deploys from a FORK.** `Yu-C1/TradesDatabase` is a fork of `hongyi42/TradesDatabase`,
+   and every service points at *its* main. Merging the PR does nothing until the fork is synced.
+2. **There are FIVE services, and three have `autoDeploy: no`** — `TradesDatabase` (web),
+   `lifecycle-heart` (cron), `Board_Worker` (worker). Only `Calls-worker` and `Calls-purge`
+   auto-deploy. At the moment of the sync, `lifecycle-heart` was 2 commits behind and
+   `Board_Worker` **nine days** behind; both had to be deployed by hand. All five reach
+   `db/assignments` (verified by walking the built import graph), so all five gate the column drop.
+   Their quiet drift is a standing hazard independent of this rung.
+
+**Box note:** `nemoclaw` is only on the LOGIN-shell PATH (`/home/ubuntu/.local/bin`), so a wire pass
+over non-interactive ssh must use `bash -lc` or it dies at `nemoclaw: command not found`. The fleet
+is now **s2, s3, s5, s6, s7, s8** — not the s1–s6 older notes record.
+
+**Manual checks run through the seats, 2026-09-05** (the plan's three Phase-3 manual items, agent-driven,
+maker ≠ checker, DB read-back via `supabase-test`): s2 (manager-sam, 17:36–17:45Z, from the fleet-to-OpenRouter
+session) and s8 (manager-joy, 19:40–19:43Z), both on the GATEWAY path (no `[agent/embedded]`), model
+`meta/muse-spark-1.3`. **Book with no time** → `book_visit {jobId}` in ONE step; row `confirmed / starts_at NULL /
+technician_id NULL` — exactly the tray reader's predicate. **Move** → `moved` in one step, untimed→Tue AND
+Tue→Wed, zero `review_items` minted, each move = cancel+insert with `created_at` carried. **Unschedule a PLACED
+visit** → `needs_confirmation` + an open `pending_visit_cancel` row; "Yes" → `unscheduled`, item `resolved`
+("unschedule confirmed by manager-joy"), row `cancelled`, job stays `open`, tray rows for the job 0. Verification
+job: customer Marcus Ellery / job `9b014ad9…` — reuse it. Recipe = `scripts/spine-eval/run-gateway.mjs`'s turn line
+(`nemoclaw <s> exec --no-tty -- bash -lc 'openclaw agent --agent main --session-id <fresh> -m …'`, no `--local`,
+no `--deliver`, fresh session id so the manager's Telegram context is untouched); 15–30 s per turn after the
+first. s2 was carrying a date-eval at the time, so s8 was used — any manager seat of the tenant works. A staged
+confirmation that is never answered stays `open` and VISIBLE in `list_review_items` (no sweeper); the clean way out is
+the app path — a late "yes" hits the 15-minute expiry, which dismisses it as `confirmation expired` (proven on s2, 19:46Z).
+
 
 Three phases, all landed and gated (typecheck / lint / 2545 tests / build, and `supabase db reset`
 proving both migrations apply from scratch). Plan:
@@ -4629,10 +5048,15 @@ booking against a server where `set_promise` no longer exists and book/move neve
   showed a visit had to be re-checked by hand: two holes were found this way (recall mode
   collected untimed rows and never returned them; windowed mode resolved their customer to null
   because their jobs were absent from the jobs fetch).
-- **`created_at` now means the VISIT's age, not the row's** — carried onto the successor of every
-  move/park/attach, because those are cancel-plus-insert and an oldest-first queue would otherwise
-  mean least-recently-touched. Consequence: both links of a chain share it, so
-  `listAssignmentsForJob` needs `updated_at` as its tiebreak.
+- ⚠ **RETIRED by rung 9b (2026-09-05): the `created_at` carry.** It read: *"`created_at` now means
+  the VISIT's age, not the row's — carried onto the successor of every move/park/attach, because
+  those are cancel-plus-insert and an oldest-first queue would otherwise mean
+  least-recently-touched."* The hack existed only because a move CANCELLED the row and inserted a
+  successor. Rung 9b makes a move an UPDATE in place, so there is no successor to carry anything
+  onto and `created_at` is the visit's age because it is the row's age. The `updated_at` tiebreak
+  it forced on `listAssignmentsForJob` went with it. **The lesson survives the mechanism:** when a
+  column's meaning has to be hand-propagated to keep a query honest, the shape underneath is
+  usually wrong — fix the shape, not the propagation.
 - `find_slots(earliestDate, latestDate)` SURVIVES — same words, different thing: a search range,
   never a commitment. Do not delete it while deleting the window.
 
@@ -4640,7 +5064,15 @@ booking against a server where `set_promise` no longer exists and book/move neve
 **The remodel (user's model, 2026-09-03):** a call → the extractor judges the job and, if the firm
 committed to a visit, creates it UNPLACED (the accepted carve-out: never on a day, never with a
 person; a wrong inference is an entry in the unscheduled list the manager can drop — create, don't
-stage). After that ONLY the manager touches the schedule, by hand or through their agent, which asks
+stage). **AMENDED 2026-09-05 (user): EMAIL inbound is in rung 10 too** — *"it's just an extra input
+path similar to phone calls anyways."* The rung is INBOUND-shaped, not phone-shaped: a call and an
+email are the same event (correspondence in which the firm may commit to coming out), they already
+share one write path (`recordFieldNote`, `src/inbound/webhook.ts` + `src/email/ingest.ts` both call
+it), and the carve-out's safety argument — a wrong inference is a droppable row in the unscheduled
+list, never a booking on someone's day — does not depend on which pipe carried the words. Web form is
+the same shape and should be settled with it. Rung 9b's technician-channel gate is the interim state,
+not a permanent rule: it stops inbound minting a COMPLETED visit (a customer's email is not a trip),
+and rung 10 is where inbound starts minting a COMMITTED one. After that ONLY the manager touches the schedule, by hand or through their agent, which asks
 (duration, time, who), has Google Maps tools, and uses its own judgment about the route optimizer.
 The planner reads the schedule + unplaced visits, RECOMMENDS, learns how this firm schedules, and
 passes that down to the seats. The promise ladder collapses into the visit's own window. The solver
@@ -4698,8 +5130,9 @@ path ALREADY do multi-person; only the reading, counting and asking layers assum
 - **Counting.** `get_team_schedule` returns the pilot specimen as `counts.total = 2`, two stops.
   "How many visits tomorrow?" answers two for one visit.
 - **Detection.** `listOverdueConfirmedAssignments` returns assignment ROWS with no tier filter and
-  no same-visit collapse, and `subject_ref` is the assignment id — so one two-person visit mints
-  TWO gaps addressed to two people. The group-send rail then correctly refuses to merge them (one
+  no same-visit collapse, and `subject_ref` is the assignment id *(⚠ since rung 9b it is
+  `${visitId}@${starts_at}` — `src/jobs/nudgeKinds.ts`; the id half is now stable across moves)* —
+  so one two-person visit mints TWO gaps addressed to two people. The group-send rail then correctly refuses to merge them (one
   message goes to one chat), so both get texted about the same visit.
 - **Booking.** No verb takes several people; the manager calls `book_visit` once per person and
   the confirmation says nothing about who else is already on that slot.
@@ -4720,11 +5153,15 @@ candidates recorded so the two builds can choose deliberately rather than by acc
   know, not both" is the multi-tech-safe shape, and it is a judgment, which is exactly what build
   6 hands to the planner.
 - **Build 7 (detectors report):** the load-bearing seam. Build 7 decides what a gap's SUBJECT is;
-  "one gap per assignment row" vs "one gap per visit" is that decision. There is no id today that
-  names a visit across its rows — the options are a `visit_group_id` column on `assignments` or a
-  derived key (`job_id` + window). Whichever is chosen, `uq_observations_subject_ever` dedupes on
-  `subject_ref`, so a visit-scoped subject makes the once-ever store collapse the duplicate for
-  free.
+  "one gap per assignment row" vs "one gap per visit" is that decision. ⚠ **Half of this is now
+  ANSWERED by rung 9b (2026-09-05) — do not re-derive it when planning 9c.** The old text read:
+  *"There is no id today that names a visit across its rows — the options are a `visit_group_id`
+  column on `assignments` or a derived key (`job_id` + window)."* **There is such an id now:** a
+  move is an UPDATE in place, so `visits.id` names the trip for its whole life. **Do not build
+  `visit_group_id`.** What 9b did NOT solve is the crew: `technician_id` is still a single nullable
+  column, so two people on one trip still means two rows with two ids, and 9c's participant table
+  is what collapses them. Note also that the once-ever dedupe now keys on `${visitId}@${starts_at}`,
+  not the bare id — a 9c subject must stay compatible with `visitSubjectCandidates()`.
 - **SETTLED 2026-09-01 (user): a crew has NO LEAD.** Everyone on a visit is equal — do not build a
   lead/helper distinction, a primary-technician column, or an "answered on behalf of" role. The
   consequence to hold: one person's note satisfies the visit for EVERYONE on it, which is already
@@ -4760,7 +5197,8 @@ the fail-safe would silently never fire — count only real verbs.
 `thoughts/shared/plans/2026-08-23-the-brain-can-look.md`):** `v_captures` (labeled retraction
 trail, sensitivity unfiltered per the same-day ruling), `v_visits` (the note→job bridge — a note's
 own `job_id` is NULL by design, the durable link is the visit), `v_nudges` and `v_review_items`
-joined the surface: twelve views. `nudge_decisions` stays deliberately view-less (the catalog is
+joined the surface: twelve views. *(⚠ rung 9b, 2026-09-05: `v_visits` is DROPPED and replaced by
+`v_visit_notes`, which walks the same bridge through the `visit_notes` link table. Still twelve.)* `nudge_decisions` stays deliberately view-less (the catalog is
 shared with the manager's `query_spine`). Historical statement of the gap, kept for the reasoning:
 `spine_read` exposed 8 views and **none covered `raw_captures`, `nudges` or `review_items`** — the
 planner could not read what anyone said. This is why the read surface moved IN FRONT of the memory
@@ -5418,7 +5856,8 @@ comparison across that date is measuring two different prompts.
 ### The OpenRouter switch — the spine only (2026-08-28)
 
 **The spine moved to OpenRouter on `z-ai/glm-5.3`; the FLEET did not.** Seat agents stay on
-Fireworks / `glm-5p2-fast` until the deferred seat plan lands. `docs/inference-recovery-runbook.md`
+Fireworks / `glm-5p2-fast` until the deferred seat plan lands *(it landed 2026-09-05 — see
+"The OpenRouter switch — the fleet" below; both halves now share one key)*. `docs/inference-recovery-runbook.md`
 now opens with that split — it covers the fleet only, and the first person to follow it during a
 spine outage would otherwise drive the wrong system.
 
@@ -5551,6 +5990,176 @@ unpaced pool loses ~95% of calls to the rate cap and prints `0.0%`; and `max_tok
 reasoning unset lets the thinking trace eat the answer — the same artifact that once produced a
 false "GLM weaker than Haiku" verdict here. An 11% score was reported off both before the user
 pushed back. **Read errors and truncation BEFORE reading a date-eval number.**
+
+### The OpenRouter switch — the fleet (2026-09-05)
+
+**Route:** `openrouter-prod / @preset/trades-seats` — an OpenRouter **preset** serving
+`meta/muse-spark-1.3` (standard tier; multimodal is the reason) and falling through, per request
+with no memory, to `~google/gemini-flash-latest`. Fireworks ran out of credits on 2026-09-04 and
+the fleet was inference-dead until this landed. Plan (with every measurement):
+`thoughts/shared/plans/2026-09-05-fleet-to-openrouter-muse-spark.md`; research:
+`thoughts/shared/research/2026-09-05-fleet-to-openrouter-gemini-3-8-flash.md`.
+
+**Why a preset.** The gateway rewrites every request's `model` to its one configured string and
+openclaw has no extra-body hook, so a `models[]` fallback chain cannot be sent by the seats
+(NVIDIA/OpenShell#2039). A preset is invoked *as a model id*, which the gateway can carry, and
+OpenRouter applies the chain server-side. **The medic therefore never reroutes** — the 08-12
+ruling's intent holds — and the second lane is verified daily by a direct probe. Verified live
+before the flip: the medic's exact payload with `models:[muse, ~gemini]` fell through to Gemini
+(the primary was 403-gated at the time) and passed the tool-call gate.
+
+**Measured, 2026-09-05 (unit costs and one-turn shapes — NOT volumes):** Muse: reasoning
+mandatory, medium 160–374 tokens, peaked 478/512 → `max_tokens` 1024 in the probe, 8192 on the
+seats; implicit caching engaged 1,137/1,264 on a repeat; probe ≈ $0.0014 cached / $0.0033 not.
+Gemini: 570 tokens for the same payload (tokenizer ≈ 2.2x more efficient than Muse's), reasoning
+mandatory and NOT controllable (`none` still burned 124), probe ≈ $0.0011. (The "never caches on
+this path" claim recorded here on 2026-09-05 morning was WRONG — measured that evening, Gemini
+caches implicitly through the gateway's plain requests, session-stickily; see the Gemini caching
+entry below.) Muse honours `reasoning_effort`
+(minimal 12–90). `~google/gemini-flash-latest` resolves to `google/gemini-3.8-flash` and
+retargets on release. Only Meta hosts Muse, only Google hosts Gemini.
+
+**Medic v6:** balance check every tick for FREE (`/api/v1/key` + `/api/v1/credits`, both 200 on
+this key though `/credits` is documented management-key-only; floor $2; sources named in the log
+so a half-missing watch is visible; NO BALANCE WATCH said loudly); route asserted with
+`--no-verify`; the v4 tool-call probe **hourly** (user: "stretch the medic to 60 minutes"),
+stamped only on a pass; `served=` logged; fallback probed daily; state in `StateDirectory=`
+(RuntimeDirectory is wiped when a oneshot stops); `EnvironmentFile=-`; `TimeoutStartSec=300`.
+≈ $2/month vs ≈ $28 had the 5-minute cadence stayed on Muse.
+
+**Seats:** honest model id, `input:["text","image"]`, `contextWindow` 262144 on manager seats
+(s2 s3 s6 s7 s8 — five of six) and 131072 on s5, `maxTokens` 8192,
+`compat.supportsReasoningEffort` so `thinkingDefault:"adaptive"` → medium and a per-message level
+reaches the wire (`/think <level>` on the chat path; `--thinking <level>` on the `nemoclaw … agent`
+CLI, which passes `/think` through as plain text). Written by `bootstrap-box.sh wire <s>` with
+`NEMOCLAW_CTX_WINDOW`. **Two traps found live (2026-09-05):** openclaw's config `compat` is a
+STRICT object — `supportsParallelToolCalls` is not a field, and the s2 canary crash-looped on
+`compat: Invalid input` until it was dropped; and the preset must NOT carry `reasoning.effort` —
+with the seats sending `reasoning_effort`, OpenRouter's shallow merge kept both keys and returned
+`400 … both provided with conflicting values` for every non-medium level (preset v2 removes it).
+
+**The coupling to know:** the fleet now shares the PLANNER's key (user ruling: test suite). A
+balance-out stops both in the same minute; the medic's first gate exists for that. Seat spend is
+account-level (never itemised in `cost_events`; the rollup nets the spine out of the invoice);
+seat requests arrive at OpenRouter untitled (the gateway strips headers) — "untitled = the
+fleet". `docs/inference-recovery-runbook.md` is rewritten for this shape.
+
+### Muse Spark latency, double texting, and the photo path (2026-09-05)
+
+**Where a seat turn's time goes (measured on s2, Telegram text turn):** Telegram→gateway 1–3s ·
+gateway prep→first model call 1.6s (s7 0.8s) · Muse TTFT ~3s · thinking ~4s (avg 407 reasoning
+tokens at ~100 tok/s) · answer ~1.5s · spine tool call via doorman→Render 0.3–0.7s ·
+**+3–5s for every additional model call** · reply delivery 2.1–2.7s (preview + edit). ≈13–15s for
+a one-tool turn, ≈8s with no tool; model-to-model mean 7.9s, p90 13s over 21 date-eval turns.
+The date-eval's 23s/question includes ~11–13s of `nemoclaw … agent` CLI boot (two plugin loads
+and a failed pairing handshake) that a Telegram user never pays. Ruled out with measurements:
+the egress proxy (0.48s to `api.telegram.org`), tool-schema count (40 schemas ≈ +0s — the old
+51s grammar penalty does not exist on this route), prompt size (33k tokens ≈ +1s TTFT), MCP
+handshakes (pooled per session, 10-minute idle TTL). Muse's reasoning is MANDATORY
+(`reasoning_effort:"none"` → 400): open-ended prose burns 3,465–4,519 reasoning tokens for a
+600-token answer and the effort knob barely moves it, while grounded seat turns think 83 (low)
+to 727 (high) tokens — effort works where the prompt is specific. Prompt caching: the FIRST call of a fresh session hits 99.4% of the 37.9k-token prefix, but over the whole 82-question run (252 generations, 3.07 calls/question, summed from OpenRouter's own generation records) only **67.7%** of prompt tokens were cached — later calls in a turn carry tool results the cache does not cover — and the run billed **$5.33**: median **$0.064 per question**, $0.021 per call, reasoning 73% of completion tokens. Cache reads ARE billed at the $0.15/M rate (verified: an identical second call's prompt cost fell $0.0345 → $0.0042). Unit costs only — never multiply by this suite's volume.
+
+**Double texting:** OpenClaw's inbound debouncer `messages.inbound.debounceMs` defaults to
+**0 = off**, and no seat ever carried a `messages` block. Set to **2000 ms** on all six seats
+(user, 2026-09-05 — raised to 5000 for one wire pass that evening, then returned to 2000; the
+reasoning is what matters).
+
+**The debounce window does NOT have to cover a person's typing pause, because `steer` does.**
+`messages.queue.mode` defaults to `steer` (500 ms, we set nothing): a message that arrives while a
+run is ACTIVE is injected into that run after the current tool calls and before the next model
+call — one turn, one reply (https://docs.openclaw.ai/concepts/queue). So the labour splits three
+ways: msg 2 before turn 1 starts → the debounce merges it; msg 2 during turn 1 → steer injects it;
+msg 2 after turn 1 ends → two replies, which is correct. Only the first sliver needs a window, so
+the window stays small. **The cost is per MESSAGE, not per pair** — `scheduleFlush`
+(`inbound-debounce.js:126`) resets the timer on every new item, so the window is added to every
+inbound text before its turn starts, on top of a turn already measured at ~8–15 s. Owner ruling:
+a 5 s wait before every reply is too high a price for a case steer already handles.
+
+**Why the first live test looked like a failure (and was not).** "Hi" then "What is joy's schedule
+again" arrived **11.1 s apart** (gateway log 03:27:45.820 → 03:27:56.963) and turn 1 had already
+**ENDED at 03:27:54.014** — 2.9 s before the second message landed. There was no overlap to steer
+into and no window short of ~12 s would have merged them. The cake pair was the same shape (turn 1
+ended 18:00:29.3, msg 2 read 18:00:32.3). Telegram stamps both messages of a pair to the same
+MINUTE, which is what made the screenshot look like a bug: **always read the gateway log's
+milliseconds, not the chat clock.** STILL UNPROVEN: steer has never been observed firing on this
+stack — both natural tests missed the window. The test is to ask a seat something slow (a
+multi-tool schedule question) and send a second message while it is still working. Its documented
+limit (https://docs.openclaw.ai/concepts/messages): text only — a photo flushes immediately. The queue's default
+`steer` mode could not merge the mango-cake pair either: the Telegram handler ran turn 1 inline,
+so the follow-up text was not even read until turn 1's reply had gone out (20s after it was sent).
+
+**Photo-then-question costs 44s:** the turn the photo arrives on sends it as native vision input
+(40k input tokens, 7.4s, correct). The NEXT turn sees it only as `MediaPath` metadata, so the
+agent ran three `exec` probes hunting for the file (~16s) and then a 20.8s `image` tool call — a
+second vision pass. Fix is a doctrine line ("a prior photo's `MediaPath` is already in the
+transcript — pass it straight to `image`") plus captioning the photo; no config fixes it. A photo
+turn also pays ~6s before the agent starts that a text turn does not (11.6s vs 1.6s pre-model),
+unexplained at `info` logging — a `logging.level: trace` turn on s2 is the next step.
+
+**s2 is uniquely heavy:** 2,453 sessions, a 14.7 MB `sessions.json`, 204 MB of transcripts (s7:
+35 sessions, 235 KB) — every eval question, verifier run and lever check leaves one behind, and
+s2's per-turn prep is 2.3–2.6s against s7's 0.8s. Prune `dateval-*`/`verify-*` sessions (never the
+live Telegram session) and make the eval harness clean up. Other levers, none applied: skip
+`resolve_date` on plain date questions if the eval shows Muse is right in-head (~4–5s), thinking
+`low` vs adaptive (~2.5–3s/call, against the medium-default doctrine — measure quality first),
+`channels.telegram.streaming: "off"` (~1s, no flicker). Harness defect, unfixed:
+`scripts/provider-trial/provider-bench.mjs` counts `delta.reasoning_content` but OpenRouter
+streams `delta.reasoning`, so it reports a reasoning model's whole thinking phase as TTFT and a
+fake tok/s ("33.7s / 4,498 tok/s" for Muse).
+
+**Gemini 3.8 Flash caching, measured 2026-09-05 (the research doc's "needs explicit breakpoints"
+line is superseded — see its amendment):** implicit caching WORKS through the seats' plain
+OpenAI-completions requests (fleet eval: call 2 of every session read 28,002/32,260 tokens; direct
+probe $0.0207 → $0.0041), but it is **session-sticky** — the first call of every fresh session
+missed, because `prompt_cache_key` (= session id) pins a Google replica; Muse's cache is
+prefix-global (99.4% on fresh sessions). Explicit `cache_control` beats it (99.98% cached, read
+$0.0021/33k, a fresh WRITE billed only $0.0041 — cache-read price + storage, not the docs formula)
+but is unreachable from openclaw 2026.6.34 by config: it emits breakpoints only for
+`openrouter` + `anthropic/*`, and `compat.cacheControlFormat` is rejected by the strict schema —
+a payload-patch plugin would be the route. Unit costs from the eval's first four questions:
+Gemini ≈ $0.031/question (call 1 uncached $0.025 + call 2 cached $0.005; reasoning ~300 tokens)
+vs Muse's measured $0.064 — cheaper despite the worse cache, on $0.75/M input and short thinking.
+
+### Gemini 3.8 Flash becomes the primary; Muse Spark 1.3 the fallback (2026-09-05, evening)
+
+**User decision, after both models ran the same 82-question date eval on the same Saturday:**
+preset `trades-seats` v3 = `["google/gemini-3.8-flash","meta/muse-spark-1.3"]` (both pinned — the
+eval gate, the medic's `served_of` and the response's `model` field all compare exact strings, so
+the floating `~google/gemini-flash-latest` alias is retired); medic v7 swaps `PRIMARY_MODEL` /
+`FALLBACK_MODEL` and nothing else; `bootstrap-box.sh wire` writes the honest id
+`google/gemini-3.8-flash` (all six reasoning-effort levels accepted by both lanes, probed);
+`scripts/date-eval/plan.mjs` defaults to it.
+
+**The evidence, side by side** (runs `date-eval-runs/2026-09-05-{muse,gemini}`, costs summed from
+OpenRouter's generation records, latency from its per-call `latency`/`generation_time`):
+
+| | Muse Spark 1.3 | Gemini 3.8 Flash |
+|---|---|---|
+| substantive score | 81/82 (D08: read "a week from tomorrow" as the week) | 80/82 (T04/T05: named both readings but leaned and did not ask) |
+| weekday↔date contradictions reaching text | 0 | 0 — the guard had nothing to catch on either |
+| `resolve_date` bypassed | 0/78 | 0/78 |
+| median agent turn (in-sandbox) | 14.1s | 10.2s |
+| per call: before first answer token / total | 2.62s / 3.7s | 1.65s / 2.0s |
+| reasoning tokens per call (median, p90) | 264, 604 — thinks every call | 0, 474 — thinks on ~⅓ of calls |
+| billed | $5.33 = $0.064/question, $0.021/call, 3.07 calls | $3.40 = $0.038/question, $0.012/call, 3.57 calls |
+| cache share (whole run) | 67.7% (prefix-global; fresh sessions hit 99.4%) | 61.4% (session-sticky; every fresh session's first call misses) |
+
+**What decided it:** the biggest latency factor is the fixed cost *per model call* before the first
+answer token (prefill + mandatory thinking) × ~3 calls a turn — Gemini's is ~1s shorter and it skips
+thinking on mechanical calls; that alone is the 11.7s vs 7.9s model-time gap. Accuracy was equal
+within noise. Accepted trade-off: Gemini leans on ambiguous dates (T04/T05) where doctrine says ask —
+watch it on Telegram. For reference, GLM 5.2 on Fireworks ran ~8s a turn (08-15, ×5), the NVIDIA
+94/94 baseline 14.1s; the CLI harness adds ~15s to every run and is not the variable.
+
+**Rollout (done 2026-09-05 20:27–20:45Z):** medic v7 installed (md5 = repo) → preset v3 published
+(`POST /api/v1/presets/trades-seats/chat/completions`; a new version is designated on POST) → probe
+forced (`rm` the two stamps in `/var/lib/nemoclaw-inference-medic/`): `served=google/gemini-3.8-flash`,
+no warning, `fallback lane verified — meta/muse-spark-1.3` → `wire s2` (model entry + the 2000 ms inbound
+debounce), canary turn's two generations both `google/gemini-3.8-flash-20260902`/Google → s3 s6 s7 s8
+(262144) and s5 (131072). Six-seat check: id, tier, `debounceMs 2000`, gateway listening/ready, Telegram
+polling, zero `invalid input`. The bootstrap copy that ran is `/home/ubuntu/Box_Setup_Stuff/bootstrap-box.sh`
+(synced from the repo first — md5 `2e80e4b4…`; the other five copies on the box are older vintages).
 
 ## 7. Where the deep detail lives
 

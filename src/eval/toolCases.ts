@@ -431,7 +431,7 @@ export function buildToolCases(): ToolCase[] {
       dbCheck(
         'the refused booking must not have written a row',
         (ctx) => ({
-          text: 'select count(*)::int n from assignments where job_id = $1',
+          text: 'select count(*)::int n from visits where job_id = $1',
           params: [jobId(ctx.tenant, 'job-t1-bk-08')],
         }),
         (rows) => count(rows) === 0,
@@ -665,7 +665,7 @@ export function buildToolCases(): ToolCase[] {
         check: dbCheck(
           'a confirmed assignment must exist at exactly 09:00 on the requested day',
           (ctx) => ({
-            text: `select count(*)::int n from assignments
+            text: `select count(*)::int n from visits
                     where job_id = $1 and status = 'confirmed' and starts_at = $2`,
             params: [jobId(ctx.tenant, 'job-t1-bk-01'), naiveLocal(bookingDay(ctx), '09:00')],
           }),
@@ -687,7 +687,7 @@ export function buildToolCases(): ToolCase[] {
         label: 'move a visit',
         // Doctrine: a move is one-shot — act, then say what you did.
         args: (ctx) => ({
-          assignmentId: visitId(ctx.tenant, 'visit-t1-rs-01'),
+          visitId: visitId(ctx.tenant, 'visit-t1-rs-01'),
           date: nextWorkday(addDays(ctx.anchor, 9)),
           // 16:15, not 15:15: the rs fixtures themselves sit at 15:15 across
           // seven consecutive working days, so a move INTO that window collides
@@ -706,7 +706,7 @@ export function buildToolCases(): ToolCase[] {
         check: dbCheck(
           'a confirmed row must now sit on the new day',
           (ctx) => ({
-            text: `select count(*)::int n from assignments
+            text: `select count(*)::int n from visits
                     where tenant_id = $1 and status = 'confirmed'
                       and starts_at = $2`,
             params: [ctx.tenant.id, naiveLocal(nextWorkday(addDays(ctx.anchor, 9)), '16:15')],
@@ -727,7 +727,7 @@ export function buildToolCases(): ToolCase[] {
     steps: [
       {
         label: 'unschedule',
-        args: (ctx) => ({ assignmentId: visitId(ctx.tenant, 'visit-t1-rs-03'), reason: 'eval: unschedule path' }),
+        args: (ctx) => ({ visitId: visitId(ctx.tenant, 'visit-t1-rs-03'), reason: 'eval: unschedule path' }),
         // The vocabulary matters: "cancel" a visit and "cancel" the job are
         // different acts, and the 2026-07-25 device pass found the agent
         // conflating them. The tool must disclose which one this is.
@@ -774,7 +774,7 @@ export function buildToolCases(): ToolCase[] {
             'the job must be terminal and its visits cancelled',
             (ctx) => ({
               text: `select j.status,
-                            (select count(*)::int from assignments a
+                            (select count(*)::int from visits a
                               where a.job_id = j.id and a.status <> 'cancelled') as live
                        from jobs j where j.id = $1`,
               params: [jobId(ctx.tenant, 'job-t1-rs-04')],

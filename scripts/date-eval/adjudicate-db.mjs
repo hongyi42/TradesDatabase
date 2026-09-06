@@ -17,7 +17,7 @@
 // mechanical. Anything else stays human.
 //
 // Same truth conventions as plan.mjs (they must never drift):
-//   - visits = assignments, status confirmed|completed, timed unless the
+//   - visits = the visits table, status confirmed|completed, timed unless the
 //     question is about windows
 //   - times/dates are NAIVE-LOCAL (render raw slices; the '+00' is a lie)
 //   - an UNTIMED visit has starts_at null and NO date of any kind (rung 9a
@@ -50,9 +50,14 @@ const [{ id: tenantId }] = await one('select id from tenants where name = $1', [
 const nextVisitFor = async (customerLike) => {
   const r = await one(
     `select c.name, (a.starts_at at time zone 'UTC')::date::text as date,
-            coalesce(t.ref,'unassigned') as tech
-     from assignments a join jobs j on j.id=a.job_id join customers c on c.id=j.customer_id
-     left join technicians t on t.id=a.technician_id
+            -- ONE ROW PER TRIP (rung 9c): a join would make the LIMIT 1 pick an
+            -- arbitrary crew member and could return the same visit twice.
+            coalesce(
+              (select min(t.ref) from visit_participants vp
+                 join technicians t on t.id = vp.technician_id
+                where vp.visit_id = a.id),
+              'unassigned') as tech
+     from visits a join jobs j on j.id=a.job_id join customers c on c.id=j.customer_id
      where a.tenant_id=$1 and c.name ilike $2 and a.status='confirmed'
        and a.starts_at >= ($3::date)::timestamp
      order by a.starts_at limit 1`,
@@ -63,7 +68,7 @@ const nextVisitFor = async (customerLike) => {
 const untimedFor = async (customerLike, titleLike) => {
   const r = await one(
     `select a.id::text as id
-     from assignments a join jobs j on j.id=a.job_id join customers c on c.id=j.customer_id
+     from visits a join jobs j on j.id=a.job_id join customers c on c.id=j.customer_id
      where a.tenant_id=$1 and c.name ilike $2 and j.title ilike $3
        and a.status='confirmed' and a.starts_at is null limit 1`,
     [tenantId, `%${customerLike}%`, `%${titleLike}%`],

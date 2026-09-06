@@ -43,10 +43,11 @@ export type ReviewKind =
   // Stage-0 watcher (plan 2026-08-15 feature A): a confirmed visit whose
   // scheduled end passed with no field report or status change. NON-token —
   // the manager resolves/dismisses freely via resolve_review; detail stays
-  // small, no summarizer needed. subject_ref = the assignment id.
+  // small, no summarizer needed. subject_ref = `<visit id>@<starts_at>`
+  // (rung 9b — parse it with visitIdOfSubject).
   | 'overdue_visit_gap'
   // Detector #2 (plan 2026-08-19): a job whose work is done but whose parts
-  // cost was never recorded. subject_ref is the JOB id, not an assignment —
+  // cost was never recorded. subject_ref is the JOB id, not a visit —
   // the only kind so far whose subject is not a visit.
   | 'job_cost_gap'
   // THE PLANNER'S OWN (build 7, plan 2026-09-02). The one kind no detector

@@ -74,7 +74,12 @@ import {
   formatDuration,
   isValidDuration,
   MAX_DURATION_MINUTES,
-  getAssignmentForTenant,
+  getVisitForTenant,
+  stageOf,
+  participantIdsOf,
+  listParticipants,
+  insertVisitNote,
+  listVisitNotesForCapture,
   getTechnicianById,
   unwrapAttributes,
   appendCostEvents,
@@ -172,8 +177,8 @@ import {
   servedDayPhrase, isRealDateISO, isWeekday, resolveDate } from '../schedule/dateResolve.js';
 import {
   latestScheduleVersion,
-  listAssignmentsForTenant,
-  listUnassignedAssignments,
+  listVisitsForTenant,
+  listUnassignedVisits,
   listUnplaced,
   listJobsWithCustomerByIds,
   listDecisionsForNudge,
@@ -554,12 +559,16 @@ const TOOLS = [
     description:
       'Retract a wrongly recorded capture — two-step. The record is append-only, so this never ' +
       'deletes: it permanently marks the capture as recorded-in-error (with your reason); the ' +
-      'note, its visit, AND any standing fact citing it as evidence all stop appearing in ' +
-      'briefings/context/lists automatically — retracting a fact\'s evidence capture IS how a ' +
-      'wrong standing fact is removed (no follow-up write needed). The staged preview\'s ' +
-      'willAlsoRemove lists exactly which standing facts and visits will disappear — show it ' +
-      'to the person as part of the confirmation. The confirm response echoes the final list ' +
-      'as alsoRemoved with a restoreHint when facts folded; if alsoRemoved is absent, the ' +
+      'note, any trip the note itself created, AND any standing fact citing it as evidence all ' +
+      'stop appearing in briefings/context/lists automatically — retracting a fact\'s evidence ' +
+      'capture IS how a wrong standing fact is removed (no follow-up write needed). The staged ' +
+      "preview's willAlsoRemove lists exactly which standing facts and visits will disappear — " +
+      'show it to the person as part of the confirmation. A trip that was BOOKED separately and ' +
+      'merely mentioned in this note does NOT disappear: it keeps its place on the schedule and ' +
+      'only loses this note as evidence, and it is listed under alsoLosesEvidence instead. Never ' +
+      'tell anyone a booked visit is going away because of a retraction. The confirm response ' +
+      'echoes the final list as alsoRemoved (plus alsoLostEvidence) with a restoreHint when ' +
+      'facts folded; if alsoRemoved is absent, the ' +
       'post-commit scan failed — fall back to the staged willAlsoRemove. Only other side ' +
       'effects the note caused — e.g. a job status change — are NOT auto-reverted. ' +
       'First call with captureId + reason: nothing happens yet; you get ' +
@@ -730,16 +739,36 @@ const TOOLS = [
 // fix to the direction-comes-from-kind warning, lands on one tool and not the
 // other.
 const SPINE_VIEW_CATALOG =
-  'It CANNOT write, and it can only read these fifteen views (nothing else exists to it): ' +
-  'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, ' +
-  'technician_ref, technician_name, job_id, ' +
+  'It CANNOT write, and it can only read these sixteen views (nothing else exists to it): ' +
+  'v_schedule(visit_id, local_day, local_weekday, starts_at, ends_at, completed_at, status, ' +
+  'stage, technician_refs, technician_names, job_id, ' +
   'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
   'schedule that STANDS: confirmed and completed visits only, so count(*) here is real ' +
   'bookings; cancelled visits are NOT in it — they live in ' +
-  'v_cancelled_visits(assignment_id, local_day, local_weekday, starts_at, ends_at, reason, ' +
-  'updated_at, technician_ref, ' +
-  'technician_name, job_id, job_title, job_type, customer_id, customer_name, city, ' +
+  "v_cancelled_visits. `stage` is the visit's life in one word: 'committed' (agreed, no time " +
+  "set yet), 'placed' (on the calendar), 'happened' (the trip is done), 'reported' (a field " +
+  "note has landed on it). Prefer it over reading status and starts_at yourself — " +
+  "\"which visits are committed but not placed\" is `where stage = 'committed'`. " +
+  'ONE ROW PER TRIP, and a trip can carry SEVERAL technicians: technician_refs and ' +
+  'technician_names are ARRAYS (text[]), so a two-person job is one row with two names — ' +
+  "count(*) counts TRIPS. Test membership with `where 'ben-shelton' = any(technician_refs)`, " +
+  'never `technician_ref = …` (there is no such column). A trip with NOBODY on it has ' +
+  'technician_refs NULL, not an empty array — ask `where technician_refs is null`; ' +
+  "`cardinality(technician_refs) = 0` and `technician_refs = '{}'` both match NOTHING and " +
+  'will silently report that no work is unassigned. When the question is about PEOPLE ' +
+  'rather than trips ("how many visits did Ben go on"), use v_visit_participants, which has ' +
+  'one row per person per trip. ' +
+  'v_cancelled_visits(visit_id, local_day, local_weekday, starts_at, ends_at, reason, ' +
+  'updated_at, technician_refs, ' +
+  'technician_names, job_id, job_title, job_type, customer_id, customer_name, city, ' +
   'postal_code), which also says why (reason) and when (updated_at); ' +
+  'v_visit_participants(visit_id, technician_ref, technician_name, created_at, job_id, ' +
+  'starts_at, status) — ONE ROW PER PERSON PER TRIP, for counting or grouping by person. ' +
+  'ALWAYS join it to v_schedule on visit_id: this view carries EVERY trip including CANCELLED ' +
+  'ones, and it has no local_day, so counting or date-filtering it on its own reports ' +
+  'called-off work as work done and buckets evening visits on the wrong day. The shape is ' +
+  "`from v_visit_participants p join v_schedule s on s.visit_id = p.visit_id where " +
+  "s.local_day >= '…'`; " +
   'v_team(ref, display_name, tier, state, seat_exempt, skills, service_cities, availability, ' +
   'created_at); ' +
   'v_jobs(id, title, job_type, status, priority, duration_minutes, price_cents, created_at, ' +
@@ -768,14 +797,14 @@ const SPINE_VIEW_CATALOG =
   "(3) sensitivity is NULL on most rows — never filter it with != (SQL != drops the NULLs and " +
   "silently hides the normal rows); use IS DISTINCT FROM, or no filter. (4) job_id here is only " +
   'the DIRECT stamp and is usually NULL by design — the durable link from a note to its job is ' +
-  'the visit: join v_visits on v_visits.source_capture_id = v_captures.id. Filtering v_captures ' +
+  'the visit: join v_visit_notes on v_visit_notes.capture_id = v_captures.id. Filtering v_captures ' +
   'by job_id alone reads as "nobody said anything" on exactly the jobs where somebody did. ' +
   '(5) These are the words people actually said, so they may be QUOTED — copied exactly as they ' +
   'came back, never tidied up. (For the assistant that closes gaps: a quote must be findable in ' +
   "either these results or the gap's own evidence lines, and a lookup you list AFTER your " +
   'decision has not run yet — read first.) ' +
-  'v_visits(id, job_id, source_capture_id, technician_name, labor_hours, created_at) — the ' +
-  'trips notes belong to; the note-to-job bridge; ' +
+  'v_visit_notes(visit_id, capture_id, job_id, created_at) — which field note reported which ' +
+  'trip; the note-to-job bridge (one trip can carry several notes); ' +
   'v_nudges(id, kind, status, subject_ref, technician_ref, technician_name, job_id, question, ' +
   'resolution, answered_by_capture_id, not_before, escalate_after, created_at, queued_at, ' +
   'asked_at, resolved_at, serve_count, attempts) — questions the assistant has asked and how ' +
@@ -1020,6 +1049,9 @@ const ADMIN_TOOLS = [
       'choice when a day or time was stated. Omit technicianRef to ' +
       'book WITHOUT a technician (put it on the calendar, assign later — attach someone with ' +
       'move_visit; find these via get_team_schedule unassignedOnly:true). ' +
+      'SEVERAL PEOPLE ON ONE TRIP: pass technicianRefs with every ref ("Ben and Joy on the ' +
+      'Henderson job") — that is ONE visit carrying a crew, not two bookings. Booking it ' +
+      'twice makes two separate trips, each chased and reported separately. ' +
       'When talking to customers, offer DAYS, not times. ' +
       'When the result carries dayPhrase, SAY IT VERBATIM whenever you name the day — never ' +
       'work out the weekday yourself; you are unreliable at calendar math. ' +
@@ -1030,7 +1062,8 @@ const ADMIN_TOOLS = [
       properties: {
         customerId: { type: 'string', description: 'Exactly one of customerId/jobId.' },
         jobId: { type: 'string', description: 'Exactly one of customerId/jobId.' },
-        technicianRef: { type: 'string', description: 'Roster ref of the technician. OPTIONAL — omit to book unassigned ("assign later").' },
+        technicianRef: { type: 'string', description: 'Roster ref of ONE technician — shorthand for a one-person crew. OPTIONAL — omit to book unassigned ("assign later").' },
+        technicianRefs: { type: 'array', items: { type: 'string' }, description: 'Roster refs of EVERY technician going on this trip. Two people on one job at one time is ONE visit with both refs here — never two book_visit calls.' },
         title: { type: 'string', description: 'Job title when booking by customerId (a new job is created).' },
         date: { type: 'string', description: 'YYYY-MM-DD, firm-local. Required WITH both times — or omit all three to book an untimed visit.' },
         startTime: { type: 'string', description: 'HH:MM 24h. Required with date and endTime — no default; ask the manager if unstated.' },
@@ -1046,13 +1079,15 @@ const ADMIN_TOOLS = [
     description:
       'Move a booked visit (manager only) — also how a technician gets ATTACHED to an ' +
       'unassigned visit (pass technicianRef with the same day/time), and how one gets TAKEN ' +
-      'OFF: unassign:true parks the visit — pulls the person off, keeps day/time; find it ' +
+      'OFF: unassign:true parks the visit — pulls everyone off, keeps day/time; find it ' +
       'under get_team_schedule unassignedOnly:true or the board\'s loose bucket. Reversible ' +
       'and internal → done in ONE call ({status:"moved"}) — ALWAYS tell the ' +
       'manager what moved; never act silently. Before moving a visit, READ the job\'s own ' +
       'record (get_job / list_recent_captures): if the firm told this customer a day or a ' +
-      'time, moving it is a promise someone must now un-tell them. Call with assignmentId + ' +
-      'date + startTime (+ optional endTime/technicianRef OR unassign) + reason. When the ' +
+      'time, moving it is a promise someone must now un-tell them. Call with visitId + ' +
+      'date + startTime (+ optional endTime/technicianRef/technicianRefs OR unassign) + reason. ' +
+      'technicianRefs REPLACES the crew: to ADD a second person to a visit, pass BOTH refs, ' +
+      'or the one already on it comes off. When the ' +
       'result carries ' +
       'boardNote, ALWAYS end your report with its exact [See it on the board](…) line — it ' +
       'renders as a tappable link. When the result carries dayPhrase, SAY IT VERBATIM whenever ' +
@@ -1060,12 +1095,13 @@ const ADMIN_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        assignmentId: { type: 'string', description: 'The visit to move (from get_team_schedule).' },
+        visitId: { type: 'string', description: 'The visit to move (from get_team_schedule).' },
         date: { type: 'string', description: 'New YYYY-MM-DD.' },
         startTime: { type: 'string', description: 'New HH:MM.' },
         endTime: { type: 'string', description: 'New HH:MM (default: keep the old duration).' },
-        technicianRef: { type: 'string', description: 'Reassign to this roster ref (default: same technician). Mutually exclusive with unassign.' },
-        unassign: { type: 'boolean', description: 'true = park the visit: pull the person off, keep day/time (the reverse of attaching). Mutually exclusive with technicianRef.' },
+        technicianRef: { type: 'string', description: 'Reassign to THIS ONE person — it REPLACES the crew, so anyone else on the visit comes off. To keep them, pass technicianRefs with every ref instead. Omit both to leave the crew unchanged. Mutually exclusive with unassign.' },
+        technicianRefs: { type: 'array', items: { type: 'string' }, description: 'The crew AFTER the move — it REPLACES whoever is on the visit, so list everyone still going, not just the person being added. Omit to keep the crew unchanged. Mutually exclusive with unassign.' },
+        unassign: { type: 'boolean', description: 'true = park the visit: pull EVERYONE off, keep day/time (the reverse of attaching). Mutually exclusive with technicianRef/technicianRefs.' },
         reason: { type: 'string', description: 'Why it is moving (kept on the record).' },
       },
       required: [],
@@ -1081,13 +1117,13 @@ const ADMIN_TOOLS = [
       'which they mean — never guess. Cancelling a visit that is ON THE CALENDAR is ' +
       'externally visible — a customer is expecting it — so that is TWO-STEP: you ' +
       'get {status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
-      'yes, call again with ONLY confirmId. Call with assignmentId + reason. When the result ' +
+      'yes, call again with ONLY confirmId. Call with visitId + reason. When the result ' +
       'carries boardNote, ALWAYS end your ' +
       'report with its exact [See it on the board](…) line — it renders as a tappable link.',
     inputSchema: {
       type: 'object',
       properties: {
-        assignmentId: { type: 'string', description: 'The visit to unschedule. First call only.' },
+        visitId: { type: 'string', description: 'The visit to unschedule. First call only.' },
         reason: { type: 'string', description: 'Why (kept on the record). First call only.' },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
@@ -1186,7 +1222,9 @@ const ADMIN_TOOLS = [
           type: 'string',
           description:
             'One SELECT over the views above. No semicolon, no writes. Example: ' +
-            "select technician_name, count(*) as visits from v_schedule where local_day >= '2026-08-01' group by 1 order by 2 desc",
+            'select p.technician_name, count(*) as visits from v_visit_participants p ' +
+            "join v_schedule s on s.visit_id = p.visit_id where s.local_day >= '2026-08-01' " +
+            'group by 1 order by 2 desc',
         },
         maxRows: {
           type: 'number',
@@ -1525,7 +1563,7 @@ const ADMIN_TOOLS = [
       '(genuinely NEW work only — GUARDED: refused with the open-jobs list when the customer ' +
       'already has open work on file; re-call with the matching jobId, or forceNewJob:true ' +
       'only for truly different new work), jobId (work on a recorded job — the usual case), ' +
-      'or assignmentId (re-placing or assigning an ' +
+      'or visitId (re-placing or assigning an ' +
       "existing visit — its booked length is used). Returns up to 5 ranked candidates, each " +
       'with technician, date, times, and a human-ready reasons line — RELAY those reasons, ' +
       'do not invent your own. Every date comes WITH its weekday (the weekday field, also in ' +
@@ -1545,12 +1583,12 @@ const ADMIN_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        customerId: { type: 'string', description: 'Exactly one of customerId/jobId/assignmentId.' },
-        jobId: { type: 'string', description: 'Exactly one of customerId/jobId/assignmentId.' },
-        assignmentId: {
+        customerId: { type: 'string', description: 'Exactly one of customerId/jobId/visitId.' },
+        jobId: { type: 'string', description: 'Exactly one of customerId/jobId/visitId.' },
+        visitId: {
           type: 'string',
           description:
-            'Exactly one of customerId/jobId/assignmentId — find who/when could take this ' +
+            'Exactly one of customerId/jobId/visitId — find who/when could take this ' +
             'existing visit (its own current slot is ignored while searching).',
         },
         durationMinutes: {
@@ -1903,7 +1941,7 @@ interface StagedNoteDetail {
   // The identity question, stored so the needs_identity response can echo the
   // ITEM's question — racing stages may return the other call's row, and the
   // question must describe the note that will actually commit (review finding).
-  suggestion?: { address: string; assignmentId: string };
+  suggestion?: { address: string; visitId: string };
   identityReason?: string;
 }
 
@@ -2202,6 +2240,9 @@ async function commitNote(input: {
     customerId: result.customerId,
     jobId: result.jobId,
     visitId: result.visitId,
+    // The trip's lifecycle in one word, so the seat can say "reported" rather
+    // than infer it from a status and a timestamp it was never given.
+    ...(result.stage ? { stage: result.stage } : {}),
     // No ids: no technician tool takes a gap id, and a ref in a person's face is
     // the machine artifact the (re: …) anchor exists to keep out of the chat.
     ...(openQuestions.length > 0 ? { openQuestions } : {}),
@@ -2279,7 +2320,14 @@ async function retractedResult(
     status: 'retracted',
     captureId,
     retractionId,
-    alsoRemoved: impact,
+    // `alsoRemoved` must name ONLY what actually went. Trips that merely lost
+    // this note as evidence ride alongside under their own key (rung 9b) —
+    // folding them into alsoRemoved would tell the manager a live appointment
+    // had disappeared.
+    alsoRemoved: impact && { facts: impact.facts, visits: impact.visits },
+    ...(impact && impact.visitsLosingEvidence.length > 0
+      ? { alsoLostEvidence: { visits: impact.visitsLosingEvidence } }
+      : {}),
     ...(impact === undefined
       ? {
           alsoRemovedNote:
@@ -2341,6 +2389,18 @@ async function dispatch(
   const { tenantId } = identity;
   const str = (k: string): string | undefined =>
     typeof args[k] === 'string' ? (args[k] as string) : undefined;
+  // A list of roster refs (rung 9c: a visit can carry a crew). Absent = the
+  // caller said nothing; present-but-malformed is an agent bug and is refused
+  // loudly rather than silently read as "nobody" — the same contract the
+  // present-but-empty technicianRef check has.
+  const strArray = (k: string): string[] | undefined => {
+    const v = args[k];
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v) || v.some((x) => typeof x !== 'string' || x.trim() === '')) {
+      throw new Error(`${k} must be an array of roster refs (non-empty strings)`);
+    }
+    return (v as string[]).map((x) => x.trim());
+  };
 
   // ONE roster read gates every call. Badge revocation propagates to hosts on
   // the ≤5-min pull, so a deactivated person's badge can briefly outlive their
@@ -3541,8 +3601,11 @@ async function dispatch(
           captureId: staged.captureId ?? target.id,
           reason: staged.reason ?? reason,
           targetPreview: staged.targetPreview,
-          willAlsoRemove: impact,
-          note: 'Nothing was retracted. Show the person the capture and this reason; on their explicit yes call again with ONLY confirmId. A retraction is permanent (the audit trail keeps both rows). If willAlsoRemove.facts or willAlsoRemove.visits has entries, the shown preview MUST include them.',
+          willAlsoRemove: { facts: impact.facts, visits: impact.visits },
+          ...(impact.visitsLosingEvidence.length > 0
+            ? { alsoLosesEvidence: { visits: impact.visitsLosingEvidence } }
+            : {}),
+          note: 'Nothing was retracted. Show the person the capture and this reason; on their explicit yes call again with ONLY confirmId. A retraction is permanent (the audit trail keeps both rows). If willAlsoRemove.facts or willAlsoRemove.visits has entries, the shown preview MUST include them. If alsoLosesEvidence.visits has entries, say those trips STAY on the schedule and only lose this note — never that they disappear.',
         };
       }
       // CONFIRM. Guarded token lookup, then commit-first (the unique index +
@@ -3601,6 +3664,28 @@ async function dispatch(
           metadata: { retractedBy: subjectRef },
         });
         retractionId = row.id;
+        // The retraction FOLLOWS its target onto the trip (rung 9b). The target
+        // note reached its visit through visit_notes, so the retraction has to
+        // travel the same road or it lands on the record with no connection to
+        // the thing it neutralizes — invisible to every reader that walks the
+        // link. Advisory: a retraction that is written but not linked is still
+        // a valid retraction, so this must never fail the confirm.
+        try {
+          for (const link of await listVisitNotesForCapture(target.id)) {
+            // capture_id is an id-only FK, so the link's own tenant is the only
+            // proof the trip is ours — check it before writing a row that would
+            // stamp this tenant onto another firm's visit. Not reachable today
+            // (a capture's links are written with the capture's tenant), which
+            // is exactly why it must be asserted rather than assumed.
+            if (link.tenant_id !== tenantId) continue;
+            await insertVisitNote({ tenantId, visitId: link.visit_id, captureId: row.id });
+          }
+        } catch (err) {
+          console.error(
+            `retract_capture: retraction ${row.id} not linked to its visit — ` +
+              `${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       } catch (err) {
         if (!isUniqueViolation(err)) throw err;
         // Two indexes can fire: our own externalId (this confirm's retry after
@@ -4089,10 +4174,10 @@ async function dispatch(
       // agent denied it existed — so it rides its own top-level list instead.
       let untimedRows: Awaited<ReturnType<typeof listUnplaced>> = [];
       const rows = unassignedOnly
-        ? await listUnassignedAssignments(tenantId, `${from}T00:00:00.000Z`)
+        ? await listUnassignedVisits(tenantId, `${from}T00:00:00.000Z`)
         : await (async () => {
             const [placed, untimed] = await Promise.all([
-              listAssignmentsForTenant(
+              listVisitsForTenant(
                 tenantId,
                 `${from}T00:00:00.000Z`,
                 new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
@@ -4106,7 +4191,7 @@ async function dispatch(
       const jobs = await listJobsWithCustomerByIds(tenantId, [
         // BOTH reads (review finding): in windowed mode the untimed rows come
         // from their own query, so their jobs are absent from `rows` and every
-        // untimed visit came back with customer: null — an assignmentId the
+        // untimed visit came back with customer: null — an visitId the
         // agent could not put a name to, which defeats the list's purpose.
         ...new Set([...rows, ...untimedRows].map((r) => r.job_id)),
       ]);
@@ -4132,15 +4217,27 @@ async function dispatch(
         const day = row.starts_at.slice(0, 10);
         if (day < from || (toDay !== null && day > toDay)) continue;
         const customer = jobById.get(row.job_id)?.customers ?? null;
-        // technician_id may be NULL (unassigned booking) — the ?? null echoes
-        // below render that as a person-less stop in both modes.
-        const technician = row.technician_id ? techById.get(row.technician_id) : undefined;
+        // A trip may have NOBODY on it (unassigned booking) or SEVERAL people
+        // (rung 9c). ONE row per trip either way — the counts below are counts
+        // of trips, and a crew drawn twice would say the day is twice as busy.
+        const crew = participantIdsOf(row, tenantId)
+          .map((id) => techById.get(id))
+          .filter((t): t is NonNullable<typeof t> => !!t);
+        const technician = crew[0];
         const bucket = byDay.get(day) ?? [];
         bucket.push({
-          assignmentId: row.id,
+          visitId: row.id,
+          // The lifecycle in one word, same vocabulary as v_schedule.stage.
+          // These rows are read 'confirmed' and timed, so they are 'placed' —
+          // stated rather than left for the model to infer from two fields.
+          stage: stageOf(row, false),
           technicianRef: technician?.ref ?? null,
           technicianName: technician?.display_name ?? null,
-          unassigned: row.technician_id === null,
+          technicianRefs: crew.map((t) => t.ref),
+          technicianNames: crew.map((t) => t.display_name),
+          // COUNTED, not named (see boardRead): a person the roster read could
+          // not resolve still occupies the trip.
+          unassigned: participantIdsOf(row, tenantId).length === 0,
           customer: customer?.name ?? null,
           address: customer
             ? formatAddress({
@@ -4174,11 +4271,18 @@ async function dispatch(
       // Recall mode needs it just as much — that view is where a person-less
       // untimed visit is reachable at all.
       const untimed = untimedRows.map((r) => ({
-        assignmentId: r.id,
+        visitId: r.id,
+        // 'committed': agreed to, no time set yet — the whole point of this view.
+        stage: stageOf(r, false),
         customer: jobById.get(r.job_id)?.customers?.name ?? null,
         jobId: r.job_id,
-        technicianRef: r.technician_id ? (techById.get(r.technician_id)?.ref ?? null) : null,
-        unassigned: r.technician_id === null,
+        technicianRef: participantIdsOf(r, tenantId)
+          .map((id) => techById.get(id)?.ref ?? null)
+          .filter((ref): ref is string => !!ref)[0] ?? null,
+        technicianRefs: participantIdsOf(r, tenantId)
+          .map((id) => techById.get(id)?.ref ?? null)
+          .filter((ref): ref is string => !!ref),
+        unassigned: participantIdsOf(r, tenantId).length === 0,
       }));
       if (unassignedOnly) {
         // Agent parity with the board's loose-bucket tray (Plan 4a): the
@@ -4276,6 +4380,15 @@ async function dispatch(
             'technicianRef was empty — pass the roster ref, or omit the field entirely to book unassigned',
           );
         }
+        // The CREW (rung 9c). A present-but-EMPTY array is the same accident as
+        // an empty ref: the agent meant to name people and the value dropped.
+        const technicianRefs = strArray('technicianRefs');
+        if (technicianRefs !== undefined && technicianRefs.length === 0) {
+          throw new Error(
+            'technicianRefs was empty — list every technician going, or omit the field entirely ' +
+              'to book unassigned',
+          );
+        }
 
         const date = str('date');
 
@@ -4322,6 +4435,7 @@ async function dispatch(
         const bookInput = {
           tenantId,
           ...(technicianRef ? { technicianRef } : {}),
+          ...(technicianRefs ? { technicianRefs } : {}),
           ...(customerId ? { customerId } : {}),
           ...(jobId ? { jobId } : {}),
           title: str('title') ?? null,
@@ -4339,7 +4453,7 @@ async function dispatch(
           const booked = await bookVisit(bookInput);
           return {
             status: 'booked',
-            assignmentId: booked.assignment.id,
+            visitId: booked.assignment.id,
             jobId: booked.job.id,
             // The job's identity rides EVERY booked result: the title is
             // agent-supplied free text on the customerId path, and without
@@ -4354,8 +4468,18 @@ async function dispatch(
             ...(booked.assignment.starts_at
               ? { dayPhrase: servedDayPhrase(booked.assignment.starts_at.slice(0, 10)) }
               : {}),
-            technicianRef: technicianRef ?? null,
-            unassigned: booked.assignment.technician_id === null,
+            technicianRef: booked.technicianRefs[0] ?? null,
+            // EVERYBODY who is going. A one-person booking still carries the
+            // list, so a surface never has to guess which field to read.
+            technicianRefs: booked.technicianRefs,
+            ...(booked.technicianRefs.length > 1
+              ? {
+                  crewNote:
+                    `${booked.technicianRefs.length} people are on this visit — it is ONE trip, ` +
+                    'not one each. Name all of them when you report it.',
+                }
+              : {}),
+            unassigned: booked.technicianRefs.length === 0,
             // ROW-derived, never the input, so the echo can never name a day
             // the row does not hold (final-review finding). Null on an untimed
             // booking — there is no day, and inventing one is the whole class
@@ -4387,25 +4511,39 @@ async function dispatch(
       const subjectRef = identity.technicianRef;
         // previewMoveVisit throws on impossible moves before anything is
         // written; since rung 9a the move then commits in the same call.
-        const assignmentId = str('assignmentId');
+        const visitId = str('visitId');
         const date = str('date');
         const startTime = str('startTime');
         const reason = str('reason')?.trim();
-        if (!assignmentId) throw new Error('assignmentId is required');
+        if (!visitId) throw new Error('visitId is required');
         if (!date || !startTime) throw new Error('date and startTime are required');
         if (!reason) throw new Error('reason is required — say why the visit is moving');
         const technicianRefArg = str('technicianRef');
+        const technicianRefsArg = strArray('technicianRefs');
+        if (technicianRefsArg !== undefined && technicianRefsArg.length === 0) {
+          throw new Error(
+            'technicianRefs was empty — list the crew AFTER the move, or pass unassign:true to ' +
+              'take everyone off',
+          );
+        }
         if (args.unassign !== undefined && typeof args.unassign !== 'boolean') {
           throw new Error('unassign must be a boolean');
         }
         const unassignArg = args.unassign === true;
+        if (unassignArg && (technicianRefArg || technicianRefsArg)) {
+          throw new Error(
+            'pass technicianRef/technicianRefs to attach or reassign, OR unassign:true to park ' +
+              'the visit — not both',
+          );
+        }
         const preview = await previewMoveVisit({
           tenantId,
-          assignmentId,
+          visitId,
           date,
           startTime,
           ...(str('endTime') ? { endTime: str('endTime') } : {}),
           ...(technicianRefArg ? { technicianRef: technicianRefArg } : {}),
+          ...(technicianRefsArg ? { technicianRefs: technicianRefsArg } : {}),
           unassign: unassignArg,
           reason,
           actorRef: subjectRef,
@@ -4417,24 +4555,52 @@ async function dispatch(
         // and this tool cannot and must not claim none existed.
           const moved = await moveVisit({
             tenantId,
-            assignmentId,
+            visitId,
             date,
             startTime,
             endTime: preview.endTime, // resolved — preview == commit
             ...(technicianRefArg ? { technicianRef: technicianRefArg } : {}),
+            ...(technicianRefsArg ? { technicianRefs: technicianRefsArg } : {}),
             unassign: unassignArg,
             reason,
             actorRef: subjectRef,
           });
           return {
             status: 'moved',
-            assignmentId: moved.created.id,
-            previousAssignmentId: moved.cancelled.id,
+            // The SAME id it had before the move (rung 9b): a visit is one
+            // object for its whole life, so a link or a gap that named it
+            // still names it.
+            visitId: moved.visit.id,
+            stage: stageOf(moved.visit, false),
             date,
             ...(date ? { dayPhrase: servedDayPhrase(date) } : {}),
             startTime,
             endTime: preview.endTime,
-            ...(unassignArg ? { unassigned: true } : {}),
+            // Who is on it AFTER the move, read back from the row itself.
+            technicianRefs: moved.technicianRefs,
+            ...(moved.technicianRefs.length > 1
+              ? {
+                  crewNote:
+                    `${moved.technicianRefs.length} people are on this visit — it is ONE trip, ` +
+                    'not one each. Name all of them when you report it.',
+                }
+              : {}),
+            ...(moved.crewNotAdded.length > 0
+              ? {
+                  crewNotAdded: moved.crewNotAdded,
+                  crewNotAddedNote:
+                    'The visit DID move, but these people are booked elsewhere at the new time ' +
+                    'and are NOT on it. Say both halves to the manager.' +
+                    (moved.technicianRefs.length === 0
+                      ? ' NOBODY is on this visit now — it moved and it is unassigned. Say that ' +
+                        'plainly and ask the manager who should go.'
+                      : ''),
+                }
+              : {}),
+            // CREW-DERIVED, not "did the caller say unassign" (rung 9c): a move
+            // whose joiner was lost to a race can land a trip with nobody on it,
+            // and the agent has to be able to see that.
+            ...(moved.technicianRefs.length === 0 ? { unassigned: true } : {}),
             ...(moved.warning ? { warning: moved.warning } : {}),
             note: unassignArg
               ? 'Parked in one step — the person was taken off; the visit keeps its slot and ' +
@@ -4450,11 +4616,11 @@ async function dispatch(
       const confirmId = str('confirmId');
       if (!confirmId) {
         // STAGE.
-        const assignmentId = str('assignmentId');
+        const visitId = str('visitId');
         const reason = str('reason')?.trim();
-        if (!assignmentId) throw new Error('assignmentId is required');
+        if (!visitId) throw new Error('visitId is required');
         if (!reason) throw new Error('reason is required — say why the visit is being unscheduled');
-        const preview = await previewUnscheduleVisit(tenantId, assignmentId);
+        const preview = await previewUnscheduleVisit(tenantId, visitId);
         // Doctrine (2026-07-17, verdict computed in booking.ts): cancelling an
         // UNPROMISED visit is internal + reversible (the job stays open;
         // rebook any time) → one step. Cancelling a promised visit stages —
@@ -4462,13 +4628,13 @@ async function dispatch(
         if (!preview.requiresConfirmation) {
           const cancelledRow = await unscheduleVisit({
             tenantId,
-            assignmentId,
+            visitId,
             reason,
             actorRef: subjectRef,
           });
           return {
             status: 'unscheduled',
-            assignmentId: cancelledRow.id,
+            visitId: cancelledRow.id,
             // Placed day, else the unplaced range's day (plan 4b-2).
             day: cancelledRow.starts_at?.slice(0, 10) ?? null,
             note:
@@ -4491,7 +4657,7 @@ async function dispatch(
           kind: 'pending_visit_cancel',
           subjectRef,
           detail: {
-            assignmentId,
+            visitId,
             reason,
             preview: preview as unknown as Json,
             stagedAt: new Date().toISOString(),
@@ -4511,15 +4677,15 @@ async function dispatch(
         subjectRef,
       });
       if (!item) {
-        throw new Error('confirmation not found — call unschedule_visit again with assignmentId + reason to restage');
+        throw new Error('confirmation not found — call unschedule_visit again with visitId + reason to restage');
       }
-      const d = (item.detail ?? {}) as { assignmentId?: string; reason?: string; stagedAt?: string };
+      const d = (item.detail ?? {}) as { visitId?: string; reason?: string; stagedAt?: string };
       if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
         throw new Error('confirmation expired — restage the unschedule and confirm again');
       }
-      if (!d.assignmentId || !d.reason) {
-        throw new Error('staged unschedule is malformed — restage with assignmentId + reason');
+      if (!d.visitId || !d.reason) {
+        throw new Error('staged unschedule is malformed — restage with visitId + reason');
       }
       const consumed = await resolveReviewItem(
         item.id,
@@ -4534,7 +4700,7 @@ async function dispatch(
       try {
         cancelledRow = await unscheduleVisit({
           tenantId,
-          assignmentId: d.assignmentId,
+          visitId: d.visitId,
           reason: d.reason,
           actorRef: subjectRef,
         });
@@ -4553,7 +4719,7 @@ async function dispatch(
       }
       return {
         status: 'unscheduled',
-        assignmentId: cancelledRow.id,
+        visitId: cancelledRow.id,
         // Placed day, else the unplaced range's day (plan 4b-2).
         day: cancelledRow.starts_at?.slice(0, 10) ?? null,
         note: 'the work is not cancelled — the job is back in the loose bucket for rebooking',
@@ -4655,7 +4821,7 @@ async function dispatch(
         jobId: result.job.id,
         jobTitle: result.job.title,
         visitsCancelled: result.cancelledVisits.map((v) => ({
-          assignmentId: v.id,
+          visitId: v.id,
           // Placed day, else the unplaced range's day (plan 4b-2).
           day: v.starts_at?.slice(0, 10) ?? null,
         })),
@@ -5165,7 +5331,7 @@ async function dispatch(
       let sandboxRef = target.sandbox_ref;
       // The bot handle is the only way the person can OPEN the chat (bots can't
       // message first) — resolve it from the pool row on both paths. Legacy
-      // assignments (no pool row) and pre-handle registrations yield null, which
+      // host assignments (no pool row) and pre-handle registrations yield null, which
       // the tool description turns into "ask your operator", never a guess.
       let botUsername: string | null = null;
       if (!sandboxRef) {
@@ -5927,17 +6093,17 @@ async function dispatch(
       // Non-string args are REJECTED, never coerced-to-absent: str() maps
       // {technicianRef: 123} to undefined, which would silently UN-PIN the
       // search (the get_schedule precedent — the SDK doesn't validate args).
-      for (const k of ['customerId', 'jobId', 'assignmentId', 'technicianRef', 'assumedType']) {
+      for (const k of ['customerId', 'jobId', 'visitId', 'technicianRef', 'assumedType']) {
         if (args[k] !== undefined && typeof args[k] !== 'string') {
           throw new Error(`${k} must be a string`);
         }
       }
-      // ------- subject: exactly one of customerId | jobId | assignmentId
+      // ------- subject: exactly one of customerId | jobId | visitId
       const customerIdArg = str('customerId');
       const jobIdArg = str('jobId');
-      const assignmentIdArg = str('assignmentId');
-      if ([customerIdArg, jobIdArg, assignmentIdArg].filter(Boolean).length !== 1) {
-        throw new Error('pass exactly one of customerId, jobId, or assignmentId');
+      const visitIdArg = str('visitId');
+      if ([customerIdArg, jobIdArg, visitIdArg].filter(Boolean).length !== 1) {
+        throw new Error('pass exactly one of customerId, jobId, or visitId');
       }
       const pinnedRef = str('technicianRef');
       const assumedType = str('assumedType')?.trim().toLowerCase();
@@ -5965,12 +6131,13 @@ async function dispatch(
         id: string;
         starts_at: string | null; // null = UNTIMED (plan 4b-2, rung 9a)
         ends_at: string | null;
-        technician_id: string | null;
         status: string;
       } | null = null;
+      // Who is on the subject trip, if it has anybody (rung 9c).
+      let subjectCrewIds: string[] = [];
       let customerIdResolved: string;
-      if (assignmentIdArg) {
-        const row = await getAssignmentForTenant(assignmentIdArg, tenantId);
+      if (visitIdArg) {
+        const row = await getVisitForTenant(visitIdArg, tenantId);
         if (!row) throw new Error('visit not found');
         // Mirror move/cancel's subject rule: terminal rows are history, not
         // schedulable subjects.
@@ -5978,6 +6145,9 @@ async function dispatch(
           throw new Error(`this visit is ${row.status} — only confirmed or proposed visits can be re-placed`);
         }
         subjectRow = row;
+        // The crew comes off the participant table, not the row: `visits` no
+        // longer knows who is on a trip (rung 9c).
+        subjectCrewIds = (await listParticipants(row.id)).map((p) => p.technician_id);
         const j = await getJob(row.job_id);
         if (!j || j.tenant_id !== tenantId) throw new Error('visit job not found');
         job = j;
@@ -5998,7 +6168,7 @@ async function dispatch(
       // — the recurring live failure is searching (then booking) by customerId
       // for work already on file, which is also where every baffling "no
       // recorded type" error came from. Steer to the real jobId instead.
-      if (!jobIdArg && !assignmentIdArg && args.forceNewJob !== true) {
+      if (!jobIdArg && !visitIdArg && args.forceNewJob !== true) {
         const openWork = await listOpenJobsForCustomer(customer.id);
         if (openWork.length > 0) throw new Error(openWorkSteer('searched', openWork));
       }
@@ -6210,7 +6380,7 @@ async function dispatch(
         latest,
         ...(pinnedRef ? { technicianRef: pinnedRef } : {}),
         ...(requiredSkills ? { requiredSkills } : {}),
-        ...(subjectRow ? { excludeAssignmentId: subjectRow.id } : {}),
+        ...(subjectRow ? { excludeVisitId: subjectRow.id } : {}),
       });
       const customerCity = customer.city?.trim().toLowerCase() || null;
       const generated = generateCandidates({
@@ -6248,10 +6418,17 @@ async function dispatch(
         // day may contain the subject's own stop — filtering other techs' days
         // by timestamp would silently drop a different person's same-instant
         // visit (review finding #1).
-        const subjectTechRef =
-          subjectRow?.technician_id != null
-            ? ((await getTechnicianById(subjectRow.technician_id, tenantId))?.ref ?? null)
-            : null;
+        // EVERY person on the subject trip. Their days all contain it (the
+        // per-technician read is participant-rooted since rung 9c), so filtering
+        // only the first one's day would score a crew-mate's candidates against
+        // a route that still includes the stop being moved away. The original
+        // safety argument — never drop a DIFFERENT person's same-instant visit
+        // (review finding #1) — holds for a set exactly as it did for one ref.
+        const subjectTechRefs = new Set<string>();
+        for (const id of subjectCrewIds) {
+          const ref = (await getTechnicianById(id, tenantId))?.ref;
+          if (ref) subjectTechRefs.add(ref);
+        }
         const pairs = [
           ...new Map(
             generated
@@ -6265,13 +6442,15 @@ async function dispatch(
             const days = await listDayStops(tenantId, c.technicianRef, c.date, c.date);
             let stops = days[0]?.stops ?? [];
             // The assignment subject's own row must not count in its day's
-            // route — it is exactly the stop being re-placed. Same tech +
-            // identical start identifies it ONLY for a confirmed subject
+            // route — it is exactly the stop being re-placed. A CREW trip sits
+            // on every member's day (rung 9c), so the test is membership of the
+            // subject's crew. Same person + identical start identifies it ONLY
+            // for a confirmed subject
             // (confirmed rows cannot overlap); a PROPOSED subject is not in
             // listDayStops at all, and the DB legally allows a different
             // confirmed visit at the same instant — filtering would silently
             // drop that real stop (review round-2 residual).
-            if (subjectRow?.status === 'confirmed' && c.technicianRef === subjectTechRef) {
+            if (subjectRow?.status === 'confirmed' && subjectTechRefs.has(c.technicianRef)) {
               stops = stops.filter((s) => s.scheduledStart !== subjectRow.starts_at);
             }
             stopsByTechDate.set(techDateKey(c.technicianRef, c.date), stops);
@@ -6345,7 +6524,7 @@ async function dispatch(
             latest: addDaysISO(latest, 14),
             ...(pinnedRef ? { technicianRef: pinnedRef } : {}),
             ...(requiredSkills ? { requiredSkills } : {}),
-            ...(subjectRow ? { excludeAssignmentId: subjectRow.id } : {}),
+            ...(subjectRow ? { excludeVisitId: subjectRow.id } : {}),
           });
           const beyond = generateCandidates({
             todayISO,

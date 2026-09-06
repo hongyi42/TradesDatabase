@@ -47,7 +47,7 @@ try {
   for (const t of w.tenants) {
     const [{ n: customers }] = await q('select count(*)::int n from customers where tenant_id=$1', [t.id]);
     const [{ n: jobs }] = await q('select count(*)::int n from jobs where tenant_id=$1', [t.id]);
-    const [{ n: visits }] = await q('select count(*)::int n from assignments where tenant_id=$1', [t.id]);
+    const [{ n: visits }] = await q('select count(*)::int n from visits where tenant_id=$1', [t.id]);
     check(
       `${t.name.padEnd(16)} counts match the manifest`,
       customers === t.counts.customers && jobs === t.counts.jobs && visits === t.counts.visits,
@@ -60,7 +60,8 @@ try {
   const placed = await q(
     `select t.ref, (a.starts_at)::date::text d, to_char(a.starts_at,'HH24:MI') st,
             to_char(a.ends_at,'HH24:MI') et, t.availability
-       from assignments a join technicians t on t.id = a.technician_id
+       from visits a join visit_participants vp on vp.visit_id = a.id
+                 join technicians t on t.id = vp.technician_id
       where a.tenant_id = $1 and a.starts_at is not null`,
     [main.id],
   );
@@ -71,7 +72,7 @@ try {
   check('every placed visit sits inside its technician pattern', outside.length === 0, `${outside.length} outside`);
 
   const [{ n: weekend }] = await q(
-    `select count(*)::int n from assignments a join technicians t on t.id=a.technician_id
+    `select count(*)::int n from visits a join visit_participants vp on vp.visit_id = a.id join technicians t on t.id=vp.technician_id
       where a.tenant_id=$1 and a.starts_at is not null and t.ref in ('tech-jane','tech-marco')
         and extract(dow from a.starts_at) in (0,6)`,
     [main.id],
@@ -79,8 +80,9 @@ try {
   check('no weekend work for the Mon–Fri technicians', weekend === 0, `${weekend} found`);
 
   const [{ n: onLeave }] = await q(
-    `select count(*)::int n from assignments a
-       join technician_time_off o on o.technician_id = a.technician_id
+    `select count(*)::int n from visits a
+       join visit_participants vp on vp.visit_id = a.id
+       join technician_time_off o on o.technician_id = vp.technician_id
       where a.tenant_id=$1 and a.starts_at is not null
         and (a.starts_at)::date between o.starts_on and o.ends_on`,
     [main.id],
@@ -90,7 +92,7 @@ try {
   // Naive-local storage: the stored HH:MM must BE a slot wall-clock. A UTC-shifted
   // write would render as the wrong time in every schedule answer.
   const [{ st: firstStart }] = await q(
-    `select to_char(starts_at,'HH24:MI') st from assignments
+    `select to_char(starts_at,'HH24:MI') st from visits
       where tenant_id=$1 and starts_at is not null order by starts_at limit 1`,
     [main.id],
   );
@@ -138,7 +140,7 @@ try {
     // ILIKE, not LIKE: 'Horizon-edge tune-up' is capitalised and a case-sensitive
     // match silently found only one of the two rows — a check that under-reports
     // is worse than no check.
-    `select (a.starts_at)::date::text d from assignments a join jobs j on j.id=a.job_id
+    `select (a.starts_at)::date::text d from visits a join jobs j on j.id=a.job_id
       where a.tenant_id=$1 and j.title ilike '%horizon%' order by 1`,
     [main.id],
   );
@@ -164,7 +166,7 @@ try {
 
   // ── the world has something to answer questions about ──
   const density = await q(
-    `select (starts_at)::date::text d, count(*)::int n from assignments
+    `select (starts_at)::date::text d, count(*)::int n from visits
       where tenant_id=$1 and status='confirmed' and starts_at is not null
         and (starts_at)::date between $2::date and $3::date
       group by 1 order by 1`,
@@ -175,15 +177,15 @@ try {
 
   const [{ n: queue }] = await q(
     `select count(*)::int n from jobs j where j.tenant_id=$1 and j.status='open'
-       and not exists (select 1 from assignments a where a.job_id = j.id)`,
+       and not exists (select 1 from visits a where a.job_id = j.id)`,
     [main.id],
   );
   const [{ n: tbd }] = await q(
-    `select count(*)::int n from assignments where tenant_id=$1 and starts_at is null`,
+    `select count(*)::int n from visits where tenant_id=$1 and starts_at is null`,
     [main.id],
   );
   const [{ n: personless }] = await q(
-    `select count(*)::int n from assignments where tenant_id=$1 and technician_id is null`,
+    `select count(*)::int n from visits where tenant_id=$1 and not exists (select 1 from visit_participants p where p.visit_id = visits.id)`,
     [main.id],
   );
   check(

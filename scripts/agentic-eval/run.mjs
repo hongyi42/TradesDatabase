@@ -159,8 +159,8 @@ const RESET_TABLES = [
   'technician_time_off',
   'job_type_durations',
   'raw_captures',
+  'visit_notes',
   'visits',
-  'assignments',
   'jobs',
   'customers',
   'technicians',
@@ -265,12 +265,12 @@ for (const s of scenarios) {
   await sql.query(`delete from job_notes where tenant_id = $1`, [tenant.id]);
   await sql.query(`delete from job_note_versions where tenant_id = $1`, [tenant.id]);
   // Neutralize the PRIOR scenario's world for the live detectors: candidates
-  // are CONFIRMED assignments in the 72h window, and every scenario shares one
+  // are CONFIRMED visits in the 72h window, and every scenario shares one
   // t0 — without this, scenario N's visit re-flags as a fresh gap in every
   // later scenario's tick, opening phantom manager items (review finding; the
   // once-ever stores can't help, the nudges delete just emptied them).
   await sql.query(
-    `update assignments set status = 'cancelled' where tenant_id = $1 and status = 'confirmed'`,
+    `update visits set status = 'cancelled' where tenant_id = $1 and status = 'confirmed'`,
     [tenant.id],
   );
 

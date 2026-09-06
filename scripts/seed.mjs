@@ -50,7 +50,7 @@ import {
   setTechnicianServiceCities,
   addTimeOff,
   upsertJobTypeDuration,
-  createAssignment,
+  insertVisitNote,
 } from '../dist/db/index.js';
 import { formatEmailRawText } from '../dist/email/format.js';
 
@@ -102,7 +102,7 @@ const WITH_ROSTER = TARGET === 'local' || WITH_ROSTER_FLAG;
 
 // FIRM-local "today" (seed tenant timezone = the migration default,
 // America/Los_Angeles): matchIdentity consults the capture's firm-local day
-// against naive-local assignments, so the demo booking must land on the day
+// against naive-local visit rows, so the demo booking must land on the day
 // the matcher will actually look at — the UTC date is already tomorrow every
 // evening in LA.
 const TODAY = new Intl.DateTimeFormat('en-CA', {
@@ -112,7 +112,7 @@ const TODAY = new Intl.DateTimeFormat('en-CA', {
   day: '2-digit',
 }).format(new Date()); // YYYY-MM-DD
 
-// The scheduling-foundation migration (assignments/time-off/durations) is applied
+// The scheduling-foundation migration (visits/time-off/durations) is applied
 // to the LOCAL stack but not yet deployed hosted — probe instead of assuming, so
 // the same seed works on both targets until the hosted apply happens.
 async function schedulingSchemaPresent() {
@@ -120,7 +120,7 @@ async function schedulingSchemaPresent() {
   await client.connect();
   try {
     // Probe the NEWEST scheduling table (schedule_events, promise-ladder
-    // migration 20260714120000) — probing `assignments` alone would pass on a
+    // migration 20260714120000) — probing `visits` alone would pass on a
     // target that has the 07-04 foundation but not the ladder, and the seed's
     // schedule_events truncate + promise-field writes would then crash mid-run.
     const { rows } = await client.query(
@@ -137,8 +137,9 @@ async function truncateSpine(hasScheduling) {
   // tenants is intentionally left intact (keeps Default Tenant). dropped_audit is
   // standalone (no spine FK) but cleared too, so privacy receipts reset as well.
   // technicians/review_items only go when the roster reseed was explicitly asked for.
-  let tables = 'customers, jobs, visits, raw_captures, schedule_entries, dropped_audit';
-  if (hasScheduling) tables += ', assignments, technician_time_off, job_type_durations, schedule_events';
+  let tables =
+    'customers, jobs, visits, visit_participants, visit_notes, raw_captures, schedule_entries, dropped_audit';
+  if (hasScheduling) tables += ', technician_time_off, job_type_durations, schedule_events';
   if (WITH_ROSTER) tables += ', technicians, review_items';
   const client = new pg.Client({ connectionString: dbUrl });
   await client.connect();
@@ -366,10 +367,15 @@ async function seed(tenantId, janeId) {
     customerId: maria.id,
     jobId: acJob.id,
   });
+  // A trip that HAPPENED and was reported: one visit row plus the note link
+  // (rung 9b — the note no longer owns a row of its own).
   const aVisit = await createVisit({
     tenantId,
     jobId: acJob.id,
-    technicianName: 'tech-jane',
+    technicianId: janeId ?? null,
+    startsAt: null,
+    endsAt: null,
+    status: 'completed',
     laborHours: 2,
     completedAt: `${TODAY}T19:00:00.000Z`,
     attributes: {
@@ -378,6 +384,7 @@ async function seed(tenantId, janeId) {
     }, // L3
     sourceCaptureId: aTechNote.id,
   });
+  await insertVisitNote({ tenantId, visitId: aVisit.id, captureId: aTechNote.id });
 
   // ── Customer B — Tom Becker: open job scheduled today ─────────────────────────
   const bWeb = await appendRawCapture({
@@ -421,7 +428,7 @@ async function seed(tenantId, janeId) {
       tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
     } while (tomorrow.getUTCDay() === 0 || tomorrow.getUTCDay() === 6);
     const tomorrowDate = tomorrow.toISOString().slice(0, 10);
-    tomAssignment = await createAssignment({
+    tomAssignment = await createVisit({
       tenantId,
       jobId: furnaceJob.id,
       technicianId: janeId,
@@ -433,7 +440,7 @@ async function seed(tenantId, janeId) {
     // A TODAY-dated confirmed visit on the same job: the schedule-confirm demo
     // ("is this the address: 99 Ranch Rd?") consults the capture day's
     // ASSIGNMENTS since the mirror retired — matchIdentity keys on "today".
-    await createAssignment({
+    await createVisit({
       tenantId,
       jobId: furnaceJob.id,
       technicianId: janeId,

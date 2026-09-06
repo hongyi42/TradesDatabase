@@ -173,17 +173,24 @@ async function main() {
     if (captureId) {
       // RUNG 9b: a note no longer OWNS a visit row keyed by source_capture_id
       // and there is no technician_name column — `visits` is the schedule, the
-      // note LINKS its trip through visit_notes, and the person is a real FK.
+      // note LINKS its trip through visit_notes, and the people on the trip are
+      // real foreign keys in `visit_participants` (rung 9c).
       // The identity assertion is the point of this check and it survives: the
       // technician is the one the SIGNED HEADER named, never a tool argument.
       const { data: links } = await db
         .from('visit_notes')
-        .select('visit_id, visits!inner(id,tenant_id,technician_id,technicians(ref))')
+        .select(
+          'visit_id, visits!inner(id,tenant_id,visit_participants(technician_id,technicians(ref)))',
+        )
         .eq('tenant_id', tenantId)
         .eq('capture_id', captureId);
       const v = links?.[0]?.visits;
-      v && v.technicians?.ref === TECH
-        ? ok(`L2 visit links to L1 through visit_notes; technician ref='${v.technicians.ref}' (from signed header, not args)`)
+      // Rung 9c: WHO went is the crew list, so the ref comes off a participant.
+      const refs = (v?.visit_participants ?? [])
+        .map((p) => p.technicians?.ref)
+        .filter(Boolean);
+      refs.includes(TECH)
+        ? ok(`L2 visit links to L1 through visit_notes; technician ref='${TECH}' is on the trip (from signed header, not args)`)
         : bad('no L2 visit linked to the capture, or technician mismatch');
     }
   } finally {

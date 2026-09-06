@@ -436,11 +436,12 @@ describe('MCP server', () => {
     expect(cust.rows[0].name).toBe('MCP Cust'); // preview == commit
 
     const vis = await pg.query<{ technician_id: string | null }>(
-      'select technician_id from visits where id = $1',
+      'select technician_id from visit_participants where visit_id = $1',
       [done.data.visitId],
     );
-    // Rung 9b: the person is a real foreign key now, resolved from the badge's
-    // roster ref — not the free TEXT name the per-note table carried.
+    // Rung 9b made the person a real foreign key, resolved from the badge's
+    // roster ref — not the free TEXT name the per-note table carried. Rung 9c
+    // moved it onto the crew list, because a trip can carry more than one.
     expect(vis.rows[0].technician_id).toBe(techMcpId);
 
     // The token is consumed: a repeat confirm reports the note that already
@@ -1564,7 +1565,7 @@ describe('retract_capture + retraction folding', () => {
         visitId: visit.id,
         jobId: job.id,
         scheduledAt: null,
-        technicianId: techMcpId,
+        technicianIds: [techMcpId],
       },
     ]);
     expect(staged.data.note).toContain('willAlsoRemove');
@@ -1634,7 +1635,7 @@ describe('retract_capture + retraction folding', () => {
     expect(staged.isError).toBe(false);
     expect(staged.data.willAlsoRemove.visits).toEqual([]);
     expect(staged.data.alsoLosesEvidence.visits).toEqual([
-      { visitId: booked.id, jobId: job.id, scheduledAt: null, technicianId: techMcpId },
+      { visitId: booked.id, jobId: job.id, scheduledAt: null, technicianIds: [techMcpId] },
     ]);
 
     const done = await call('retract_capture', { confirmId: staged.data.confirmId });
@@ -4483,6 +4484,107 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       await mgrClient.close();
     }
   });
+
+  test('a crew books and moves as ONE visit (rung 9c)', { timeout: 30_000 }, async () => {
+    const customer = await createCustomer({ tenantId, name: 'Crew Carla' });
+    const second = await insertTechnician({
+      tenantId,
+      ref: 'crew-two',
+      displayName: 'Crew Two',
+    });
+    await setTechnicianState(second.id, 'active');
+    const { client: mgrClient, callWith } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const booked = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'two-person lift',
+        technicianRefs: ['tech-mcp', 'crew-two'],
+        date: '2026-12-18',
+        startTime: '09:00',
+        endTime: '11:00',
+      });
+      expect(booked.data.status).toBe('booked');
+      expect(booked.data.technicianRefs).toEqual(['tech-mcp', 'crew-two']);
+      // The steer that stops the agent reporting it as two jobs.
+      expect(booked.data.crewNote).toContain('2 people are on this visit');
+      expect(booked.data.unassigned).toBe(false);
+      // ONE visit row, two participants.
+      const { rows } = await pg.query(
+        'select count(*)::int as n from visit_participants where visit_id = $1',
+        [booked.data.visitId],
+      );
+      expect(rows[0].n).toBe(2);
+
+      // A move REPLACES the crew.
+      const moved = await callWith('move_visit', {
+        visitId: booked.data.visitId,
+        date: '2026-12-18',
+        startTime: '14:00',
+        technicianRefs: ['crew-two'],
+        reason: 'tech-mcp is needed elsewhere',
+      });
+      expect(moved.data.status).toBe('moved');
+      expect(moved.data.technicianRefs).toEqual(['crew-two']);
+      expect(moved.data.crewNote).toBeUndefined(); // one person again
+
+      // The shorthand still works alone, and says nothing about a crew.
+      const solo = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'one-person call',
+        forceNewJob: true,
+        technicianRef: 'tech-mcp',
+        date: '2026-12-19',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      expect(solo.data.technicianRefs).toEqual(['tech-mcp']);
+      expect(solo.data.crewNote).toBeUndefined();
+
+      // A present-but-empty list is an agent bug, not "book unassigned".
+      const empty = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'empty crew',
+        forceNewJob: true,
+        technicianRefs: [],
+        date: '2026-12-20',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      expect(empty.isError).toBe(true);
+      expect(empty.text).toContain('technicianRefs was empty');
+
+      // And so is a list with a non-string in it.
+      const junk = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'junk crew',
+        forceNewJob: true,
+        technicianRefs: ['tech-mcp', 7],
+        date: '2026-12-20',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      expect(junk.isError).toBe(true);
+      expect(junk.text).toContain('array of roster refs');
+
+      // unassign and a crew together is a contradiction.
+      const both = await callWith('move_visit', {
+        visitId: booked.data.visitId,
+        date: '2026-12-18',
+        startTime: '14:00',
+        technicianRefs: ['crew-two'],
+        unassign: true,
+        reason: 'contradiction',
+      });
+      expect(both.isError).toBe(true);
+      expect(both.text).toContain('not both');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
 });
 
 describe('schedule-input verbs (Plan 3a)', () => {
@@ -6148,10 +6250,11 @@ describe('move_visit unassign (plan 4a.5)', () => {
       expect(parked.data.unassigned).toBe(true);
       expect(parked.data.note).toContain('Parked in one step');
       const parkedRow = await pg.query(
-        'select technician_id from visits where id = $1',
+        `select (select count(*)::int from visit_participants p where p.visit_id = v.id) as crew
+           from visits v where v.id = $1`,
         [parked.data.visitId],
       );
-      expect(parkedRow.rows[0].technician_id).toBeNull();
+      expect(parkedRow.rows[0].crew).toBe(0);
 
       // Both steering args at once → the shared verb refuses.
       const both = await callWith('move_visit', {
@@ -6189,10 +6292,12 @@ describe('move_visit unassign (plan 4a.5)', () => {
       expect(crossDay.data.status).toBe('moved');
       expect(crossDay.data.unassigned).toBe(true);
       const confirmedRow = await pg.query(
-        'select technician_id, starts_at from visits where id = $1',
+        `select v.starts_at,
+                (select count(*)::int from visit_participants p where p.visit_id = v.id) as crew
+           from visits v where v.id = $1`,
         [crossDay.data.visitId],
       );
-      expect(confirmedRow.rows[0].technician_id).toBeNull(); // detached…
+      expect(confirmedRow.rows[0].crew).toBe(0); // detached…
       // …and the day change landed too: a park keeps its time, it only drops
       // the person.
       expect(confirmedRow.rows[0].starts_at.toISOString()).toContain('2027-07-07');
@@ -7020,7 +7125,15 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
     // the catalog — fourteen since v_roster_events (build 6.5 Phase 1); the
     // count and the list must move together or the description lies to the model
-    expect(desc).toContain('fifteen views'); // +v_office_messages, build 7
+    expect(desc).toContain('sixteen views'); // +v_visit_participants, rung 9c
+    // v_schedule's crew columns are ARRAYS now, and its singular one is gone —
+    // an agent told `technician_ref` there would write SQL against a column
+    // that does not exist and get a 42703 instead of an answer. (The singular
+    // name survives on v_visit_participants, which really does have one row per
+    // person, so the negative is pinned on v_schedule's own column list.)
+    expect(desc).toContain('stage, technician_refs, technician_names,');
+    expect(desc).not.toContain('stage, technician_ref,');
+    expect(desc).toContain('v_visit_participants(visit_id, technician_ref,');
     // Rung 8: `locked` left v_schedule with pinning. The catalog is the column
     // list the model is SHOWN, so a stale name here would have it write SQL
     // against a column that no longer exists.

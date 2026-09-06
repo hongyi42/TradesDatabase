@@ -89,13 +89,26 @@ try {
   // agent (and board) that correctly show 08:30 — the truth was the wrong side.
   const rows = await one(
     `select (a.starts_at at time zone 'UTC')::date::text as day,
-            coalesce(t.ref, 'UNASSIGNED') as tech,
+            -- ONE ROW PER TRIP (rung 9c): a crew is a LIST on the row, never
+            -- extra rows. Joining participants out would make dayCounts count
+            -- PEOPLE while the agent answers from v_schedule, which counts
+            -- trips — every count question on a crew day would grade false.
+            coalesce(
+              (select min(t.ref) from visit_participants vp
+                 join technicians t on t.id = vp.technician_id
+                where vp.visit_id = a.id),
+              'UNASSIGNED') as tech,
+            coalesce(
+              (select array_agg(t.ref order by vp.created_at, vp.technician_id)
+                 from visit_participants vp
+                 join technicians t on t.id = vp.technician_id
+                where vp.visit_id = a.id),
+              '{}') as crew,
             c.name as customer, j.title as title,
             to_char(a.starts_at at time zone 'UTC', 'HH24:MI') as start_local
      from visits a
      join jobs j on j.id = a.job_id
      join customers c on c.id = j.customer_id
-     left join technicians t on t.id = a.technician_id
      where a.tenant_id = $1 and a.status in ('confirmed', 'completed') and a.starts_at is not null
      order by a.starts_at`,
     [tenantId],
@@ -121,11 +134,13 @@ try {
   );
 
   const untimedJobs = await one(
-    `select c.name as customer, j.title as title, coalesce(t.ref, null) as tech
+    `select c.name as customer, j.title as title,
+            (select min(t.ref) from visit_participants vp
+               join technicians t on t.id = vp.technician_id
+              where vp.visit_id = a.id) as tech
      from visits a
      join jobs j on j.id = a.job_id
      join customers c on c.id = j.customer_id
-     left join technicians t on t.id = a.technician_id
      where a.tenant_id = $1 and a.starts_at is null and a.status = 'confirmed'
      order by a.created_at`,
     [tenantId],
@@ -136,11 +151,14 @@ try {
   // and an ambiguous question grades badly for reasons that are not the model's.
   const nextRows = await one(
     `select distinct on (c.id) c.name as customer, (a.starts_at at time zone 'UTC')::date::text as date,
-            coalesce(t.ref, 'unassigned') as tech, j.title as title
+            coalesce(
+              (select min(t.ref) from visit_participants vp
+                 join technicians t on t.id = vp.technician_id
+                where vp.visit_id = a.id),
+              'unassigned') as tech, j.title as title
      from visits a
      join jobs j on j.id = a.job_id
      join customers c on c.id = j.customer_id
-     left join technicians t on t.id = a.technician_id
      where a.tenant_id = $1 and a.status = 'confirmed'
        and a.starts_at >= ($2::date)::timestamp
      order by c.id, a.starts_at`,

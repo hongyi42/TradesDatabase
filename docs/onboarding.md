@@ -236,6 +236,14 @@ a second `visits` table that minted a fresh row per field note and nothing ever 
 are now one object called `visits`, and every id survives a move, because a move EDITS the row
 instead of cancelling it and inserting a successor.
 
+**A trip carries a crew** (rung 9c, 2026-09-06). Who is going is not a column on the visit — it is
+`visit_participants`, one row per person. Two technicians on one job at one time is ONE visit with
+two participants, not two visits, and there is **no lead**: everybody on it is equal, either of
+them reporting it closes it for both, and it raises ONE gap when nobody does. Where a surface has
+to name exactly one of them (a gap has to be addressed to somebody) it takes a stable tiebreak,
+never a rank. The "nobody is booked twice" exclusion constraint moved onto that table with them,
+because the guard needs a row that knows both *who* and *when*.
+
 **A visit has a time or it does not** — that is still the whole state model on the schedule side.
 The full lifecycle is *derived* from the row, never stored:
 
@@ -253,7 +261,7 @@ links, then flips the status. A note filed *before* the start, or one arriving f
 only links.)
 
 A field note ATTACHES to the trip it reports rather than minting its own row: the job's visit on
-the note's own firm-local day (that technician's, or nobody's; nearest start breaks a tie), else
+the note's own firm-local day (one the filer is ON, or nobody's; nearest start breaks a tie), else
 the job's single live visit, else — for a technician channel only — a new one, already happened.
 Attaching is channel-blind so a customer's own email is evidence about the trip it answers;
 creating and reporting are not.

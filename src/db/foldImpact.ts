@@ -1,4 +1,5 @@
 import { getClient } from './client.js';
+import { participantIdsOf } from './visits.js';
 import { factEntriesCiting } from './standingFacts.js';
 
 // What disappears from default views if a given capture is retracted: standing
@@ -29,7 +30,9 @@ export interface FoldedVisit {
   visitId: string;
   jobId: string;
   scheduledAt: string | null;
-  technicianId: string | null;
+  // EVERY person on the trip (rung 9c). A crew loses its evidence together, so
+  // the singular field would have named one of two.
+  technicianIds: string[];
 }
 
 export interface FoldImpact {
@@ -89,7 +92,9 @@ export async function findFoldImpact(tenantId: string, captureId: string): Promi
     fetchAll('visit_notes', (from, to) =>
       client
         .from('visit_notes')
-        .select('visit_id, visits!inner(id,tenant_id,job_id,starts_at,technician_id,source_capture_id)')
+        .select(
+          'visit_id, visits!inner(id,tenant_id,job_id,starts_at,source_capture_id,visit_participants(technician_id,created_at,tenant_id))',
+        )
         .eq('tenant_id', tenantId)
         .eq('capture_id', captureId)
         .range(from, to),
@@ -129,7 +134,9 @@ export async function findFoldImpact(tenantId: string, captureId: string): Promi
         // The trip's own time, which is what "scheduled" meant all along — the
         // old column of that name was never written by anything.
         scheduledAt: n.visits.starts_at,
-        technicianId: n.visits.technician_id,
+        // EVERY person on the trip (rung 9c) — the preview names who loses
+        // evidence, and a crew loses it together.
+        technicianIds: participantIdsOf(n.visits, tenantId),
       },
       // Mirrors src/db/context.ts's fold predicate exactly. Only attachNote's
       // step 3 sets this (book_visit never does), and every visit it creates is

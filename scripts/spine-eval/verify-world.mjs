@@ -60,7 +60,8 @@ try {
   const placed = await q(
     `select t.ref, (a.starts_at)::date::text d, to_char(a.starts_at,'HH24:MI') st,
             to_char(a.ends_at,'HH24:MI') et, t.availability
-       from visits a join technicians t on t.id = a.technician_id
+       from visits a join visit_participants vp on vp.visit_id = a.id
+                 join technicians t on t.id = vp.technician_id
       where a.tenant_id = $1 and a.starts_at is not null`,
     [main.id],
   );
@@ -71,7 +72,7 @@ try {
   check('every placed visit sits inside its technician pattern', outside.length === 0, `${outside.length} outside`);
 
   const [{ n: weekend }] = await q(
-    `select count(*)::int n from visits a join technicians t on t.id=a.technician_id
+    `select count(*)::int n from visits a join visit_participants vp on vp.visit_id = a.id join technicians t on t.id=vp.technician_id
       where a.tenant_id=$1 and a.starts_at is not null and t.ref in ('tech-jane','tech-marco')
         and extract(dow from a.starts_at) in (0,6)`,
     [main.id],
@@ -80,7 +81,8 @@ try {
 
   const [{ n: onLeave }] = await q(
     `select count(*)::int n from visits a
-       join technician_time_off o on o.technician_id = a.technician_id
+       join visit_participants vp on vp.visit_id = a.id
+       join technician_time_off o on o.technician_id = vp.technician_id
       where a.tenant_id=$1 and a.starts_at is not null
         and (a.starts_at)::date between o.starts_on and o.ends_on`,
     [main.id],
@@ -183,7 +185,7 @@ try {
     [main.id],
   );
   const [{ n: personless }] = await q(
-    `select count(*)::int n from visits where tenant_id=$1 and technician_id is null`,
+    `select count(*)::int n from visits where tenant_id=$1 and not exists (select 1 from visit_participants p where p.visit_id = visits.id)`,
     [main.id],
   );
   check(

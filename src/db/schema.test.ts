@@ -121,9 +121,14 @@ describe('context spine schema', () => {
   test('visits absorbed the happened-stage columns the per-note table carried', async () => {
     const cols = await columns('visits');
     // From the SCHEDULE half…
-    for (const scheduled of ['starts_at', 'ends_at', 'technician_id', 'status', 'reason']) {
+    for (const scheduled of ['starts_at', 'ends_at', 'status', 'reason']) {
       expect(cols.get(scheduled), `visits.${scheduled}`).toBeDefined();
     }
+    // INVERTED by rung 9c: WHO goes is not a column on the trip. A crew has no
+    // lead, and one nullable FK could only ever hold one of them, so the person
+    // lives in `visit_participants` — where the double-booking guard can see
+    // both the person and the times on one row.
+    expect(cols.get('technician_id'), 'the person moved to visit_participants').toBeUndefined();
     // …and from the REPORT half, which used to live in a second table.
     expect(cols.get('started_at')?.data_type).toBe('timestamp with time zone');
     expect(cols.get('completed_at')?.data_type).toBe('timestamp with time zone');
@@ -204,26 +209,113 @@ describe('context spine schema', () => {
     }
   });
 
-  test('the narrowed overlap guard carries the starts_at predicate (Plan 4b-2)', async () => {
-    const { rows } = await client.query<{ def: string }>(
-      `select pg_get_constraintdef(oid) as def from pg_constraint
-        where conname = 'no_confirmed_overlap'
-          and conrelid = 'public.visits'::regclass`,
+  test('the overlap guard MOVED, and no copy was left behind on visits (rung 9c)', async () => {
+    // The guard needs a row that knows both WHO and WHEN, and a Postgres
+    // exclusion constraint cannot reach a second table — so when the person
+    // moved to visit_participants, the constraint went with them. A surviving
+    // copy on `visits` would be a guard over a column that no longer exists.
+    const { rows: onVisits } = await client.query(
+      `select 1 from pg_constraint
+        where conname = 'no_confirmed_overlap' and conrelid = 'public.visits'::regclass`,
+    );
+    expect(onVisits).toEqual([]);
+    const { rows } = await client.query<{ def: string; contype: string }>(
+      `select contype, pg_get_constraintdef(oid) as def from pg_constraint
+        where conname = 'no_confirmed_overlap_participant'
+          and conrelid = 'public.visit_participants'::regclass`,
     );
     expect(rows).toHaveLength(1);
+    expect(rows[0].contype, 'x = exclusion constraint').toBe('x');
     // Unplaced rows are demand, not schedule — they must sit OUTSIDE the guard
     // or tstzrange(null,null) blocks the technician's entire calendar.
     expect(rows[0].def).toContain('starts_at IS NOT NULL');
   });
 
-  test('visits carries the no_confirmed_overlap exclusion constraint', async () => {
-    const { rows } = await client.query<{ conname: string; contype: string }>(
-      `select conname, contype from pg_constraint
-        where conname = 'no_confirmed_overlap'
-          and conrelid = 'public.visits'::regclass`,
+  // ── Rung 9c: the crew, and where the double-booking guard now lives ────────
+
+  test('visit_participants carries the relocated overlap guard', async () => {
+    const cols = await columns('visit_participants');
+    for (const c of ['id', 'tenant_id', 'visit_id', 'technician_id', 'starts_at', 'ends_at', 'status', 'created_at']) {
+      expect(cols.get(c), `visit_participants.${c}`).toBeDefined();
+    }
+    const { rows } = await client.query<{ contype: string; def: string }>(
+      `select contype, pg_get_constraintdef(oid) as def from pg_constraint
+        where conrelid = 'public.visit_participants'::regclass
+          and conname = 'no_confirmed_overlap_participant'`,
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].contype, 'x = exclusion constraint').toBe('x');
+    // Same predicate as the visits-level guard it replaces: an untimed row is
+    // demand, not schedule, and tstzrange(null,null) would block a whole
+    // calendar.
+    expect(rows[0].def).toContain('starts_at IS NOT NULL');
+    // And nothing of it was left on `visits`: the bridge column is dropped by
+    // 20260907100100 (asserted above, where it used to be required).
+    const { rows: fk } = await client.query<{ def: string }>(
+      `select pg_get_constraintdef(oid) as def from pg_constraint
+        where conrelid = 'public.visit_participants'::regclass
+          and conname = 'visit_participants_visit_id_fkey'`,
+    );
+    // A crew list must die with its trip, or a visit becomes undeletable.
+    expect(fk[0].def).toContain('ON DELETE CASCADE');
+  });
+
+  test('the crew table must NOT look like a PostgREST junction', async () => {
+    // MEASURED (local stack, 2026-09-06): with a (visit_id, technician_id)
+    // PRIMARY KEY, PostgREST synthesises a many-to-many `visits ↔ technicians`
+    // that collides with visits_technician_id_fkey, and EVERY select embedding
+    // `technicians` from `visits` answers HTTP 300 PGRST201 — the board, the
+    // customer brief, the unplaced strip. A surrogate key gives the same
+    // guarantee and keeps the relationship unambiguous. Do not "tidy" this back
+    // into a composite primary key.
+    const { rows } = await client.query<{ def: string }>(
+      `select pg_get_constraintdef(oid) as def from pg_constraint
+        where conrelid = 'public.visit_participants'::regclass and contype in ('p','u')`,
+    );
+    expect(rows.some((r) => r.def === 'PRIMARY KEY (id)')).toBe(true);
+    expect(rows.some((r) => r.def === 'UNIQUE (visit_id, technician_id)')).toBe(true);
+  });
+
+  test('ONE after-trigger reconciles participants — the order is inside it, not between triggers', async () => {
+    const { rows } = await client.query<{ tgname: string; def: string }>(
+      `select tgname, pg_get_triggerdef(oid) as def from pg_trigger
+        where tgrelid = 'public.visits'::regclass and not tgisinternal
+        order by tgname`,
+    );
+    // AFTER triggers fire ALPHABETICALLY. Split across two — a `_sync` and a
+    // `_mirror` — the name decides which runs first, and "sync the times"
+    // before "reconcile the person" refuses a legitimate reassign-and-move.
+    expect(rows.filter((r) => /AFTER/.test(r.def)).map((r) => r.tgname)).toEqual([
+      'visits_participants_after',
+    ]);
+    // Its bridge arm went with the column: it fires on the TIMES and the
+    // status now, and there is no person on `visits` to reconcile.
+    const after = rows.find((r) => r.tgname === 'visits_participants_after');
+    expect(after?.def).not.toContain('technician_id');
+    expect(rows.some((r) => /sync|mirror/i.test(r.tgname))).toBe(false);
+    const fill = await client.query<{ def: string }>(
+      `select pg_get_triggerdef(oid) as def from pg_trigger
+        where tgrelid = 'public.visit_participants'::regclass and not tgisinternal`,
+    );
+    // INSERT **AND UPDATE**: the times on a participant are copies, and the
+    // guarantee is only structural if a hand-written UPDATE cannot set them
+    // either — otherwise the exclusion constraint ends up checking a time
+    // nobody is going (Phase 1 review).
+    expect(fill.rows).toHaveLength(1);
+    expect(fill.rows[0].def).toContain('BEFORE INSERT OR UPDATE');
+  });
+
+  test('visit_participants is closed to the Data API', async () => {
+    const { rows } = await client.query<{ relrowsecurity: boolean }>(
+      `select relrowsecurity from pg_class where oid = 'public.visit_participants'::regclass`,
+    );
+    expect(rows[0].relrowsecurity, 'RLS on, no policy → anon/authenticated get zero rows').toBe(true);
+    const { rows: grants } = await client.query<{ grantee: string }>(
+      `select distinct grantee from information_schema.role_table_grants
+        where table_schema = 'public' and table_name = 'visit_participants'
+          and grantee in ('anon','authenticated')`,
+    );
+    expect(grants).toEqual([]);
   });
 
   // The L1 invariant: raw_captures is append-only. The whole probe runs inside a

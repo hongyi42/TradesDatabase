@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import type { PlacedVisit } from '../db/visits.js';
+import type { PlacedVisitWithParticipants } from '../db/visits.js';
 import type { JobWithCustomer } from '../db/jobs.js';
 import type { Observation } from '../db/observations.js';
 import type { ReviewItem } from '../db/reviewItems.js';
@@ -40,7 +40,22 @@ const NOW = '2026-08-16T12:00:00.000Z';
 
 const tenant = (timezone: string): Tenant => ({ id: 't1', timezone }) as unknown as Tenant;
 
-function visit(over: Partial<PlacedVisit>): PlacedVisit {
+// One participant embed, shaped exactly as the readers return it.
+function crewOf(technicianId: string, createdAt = '2026-08-01T00:00:00.000Z') {
+  return {
+    technician_id: technicianId,
+    created_at: createdAt,
+    tenant_id: 't1',
+    technicians: {
+      id: technicianId,
+      ref: technicianId,
+      display_name: technicianId,
+      tenant_id: 't1',
+    },
+  };
+}
+
+function visit(over: Partial<PlacedVisitWithParticipants>): PlacedVisitWithParticipants {
   return {
     id: 'a1',
     tenant_id: 't1',
@@ -53,8 +68,11 @@ function visit(over: Partial<PlacedVisit>): PlacedVisit {
     reason: null,
     created_at: '2026-08-01T00:00:00.000Z',
     updated_at: '2026-08-01T00:00:00.000Z',
+    // Rung 9c: a visit carries its crew. Empty = nobody on it; the crew cases
+    // pass their own participants.
+    visit_participants: [],
     ...over,
-  } as unknown as PlacedVisit;
+  } as unknown as PlacedVisitWithParticipants;
 }
 
 function openItem(over: Partial<ReviewItem>): ReviewItem {
@@ -436,7 +454,9 @@ describe('runWatchers', () => {
       visit({
         id: `a${i}`,
         job_id: `j${i}`,
-        technician_id: i === 0 ? 'tech-1' : null,
+        // WHO is on the trip lives in the crew list now (rung 9c) — the
+        // detector reads participants, not a column.
+        visit_participants: i === 0 ? [crewOf('tech-1')] : [],
         starts_at: `2026-08-15T0${i}:00:00.000Z`,
         ends_at: `2026-08-15T0${i + 1}:00:00.000Z`,
       }),
@@ -481,6 +501,94 @@ describe('runWatchers', () => {
     });
     expect(observed[1].technicianId).toBeNull();
     expect(observed[1].context).not.toHaveProperty('technicianRef'); // absent, not null
+  });
+
+  test('live: an unreported CREW visit raises ONE gap, addressed to one of them, listing both', async () => {
+    const observed: Array<{ technicianId: string | null; context: Record<string, unknown> }> = [];
+    const crewVisit = visit({
+      id: 'crew-1',
+      job_id: 'jc',
+      // benFirst was added first, so he is the addressee — a tiebreak, not a
+      // rank. Joy's created_at is later.
+      visit_participants: [
+        crewOf('tech-ben', '2026-08-01T00:00:00.000Z'),
+        crewOf('tech-joy', '2026-08-01T00:00:01.000Z'),
+      ],
+    });
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listOverdue: async () => [crewVisit],
+      listTeam: async () =>
+        [
+          { id: 'tech-ben', ref: 'ben-shelton', display_name: 'Ben Shelton' },
+          { id: 'tech-joy', ref: 'manager-joy', display_name: 'Joy Manager' },
+        ] as unknown as Technician[],
+      listJobs: async (_t, ids) =>
+        ids.map((id) => ({
+          id,
+          tenant_id: 't1',
+          title: 'Two-person lift',
+          customers: { name: 'Henderson' },
+        }) as unknown as JobWithCustomer),
+      createObservation: async (input) => {
+        observed.push({
+          technicianId: input.technicianId,
+          context: input.context as Record<string, unknown>,
+        });
+        return obsRow({ subject_ref: input.subjectRef });
+      },
+    }));
+    // ONE gap for ONE trip — not one per person.
+    expect(summary.observationsCreated).toBe(1);
+    expect(observed).toHaveLength(1);
+    expect(observed[0].technicianId).toBe('tech-ben');
+    expect(observed[0].context).toMatchObject({
+      technicianRef: 'ben-shelton',
+      technicianName: 'Ben Shelton',
+      participants: [
+        { ref: 'ben-shelton', name: 'Ben Shelton' },
+        { ref: 'manager-joy', name: 'Joy Manager' },
+      ],
+    });
+  });
+
+  test('live: a note by the OTHER crew member still suppresses the gap', async () => {
+    // The freshness test is JOB-scoped and has no technician dimension at all,
+    // so either person's note counts as activity on the trip. That is a
+    // property worth pinning, not an accident: the whole point of one visit
+    // carrying a crew is that ONE report closes it for everybody.
+    const crewVisit = visit({
+      id: 'crew-2',
+      job_id: 'jc2',
+      visit_participants: [
+        crewOf('tech-ben', '2026-08-01T00:00:00.000Z'),
+        crewOf('tech-joy', '2026-08-01T00:00:01.000Z'),
+      ],
+    });
+    // CONTROL: the same crew trip with NO note raises one gap.
+    const control = await runWatchers(NOW, 'live', baseDeps({
+      listOverdue: async () => [crewVisit],
+      listNoteTimes: async () => [],
+      createObservation: async (input) => obsRow({ subject_ref: input.subjectRef }),
+    }));
+    expect(control.observationsCreated).toBe(1);
+
+    // Joy — the participant who is NOT the gap's addressee — filed a note after
+    // the visit ended. A DIFFERENT trip, because the once-ever index would
+    // silence a re-run of the one above for its own reason.
+    const reported = visit({
+      id: 'crew-3',
+      job_id: 'jc3',
+      visit_participants: [
+        crewOf('tech-ben', '2026-08-01T00:00:00.000Z'),
+        crewOf('tech-joy', '2026-08-01T00:00:01.000Z'),
+      ],
+    });
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listOverdue: async () => [reported],
+      listNoteTimes: async () => [{ job_id: 'jc3', created_at: '2026-08-16T09:00:00.000Z' }],
+      createObservation: async (input) => obsRow({ subject_ref: input.subjectRef }),
+    }));
+    expect(summary.observationsCreated).toBe(0);
   });
 
   test('live: a null create (concurrent notice) is uncounted; ever-flagged is never re-noticed', async () => {
@@ -528,7 +636,7 @@ describe('runWatchers', () => {
       ],
       listCaptureTimes: async () => [{ job_id: 'j9', captured_at: '2026-08-15T11:00:00.000Z' }],
       listAssignments: async () => [
-        visit({ id: 'a-cancelled', status: 'cancelled' } as Partial<PlacedVisit>),
+        visit({ id: 'a-cancelled', status: 'cancelled' } as Partial<PlacedVisitWithParticipants>),
         visit({ id: 'a-still-open', job_id: 'j8' }),
       ],
       resolveGap: async (_t, _kind, subjectRef, _status, resolution) => {
@@ -561,7 +669,7 @@ describe('runWatchers', () => {
       // Activity BEFORE the flag (09:00 < 10:00) — what the planner escalated despite.
       listCaptureTimes: async () => [{ job_id: 'j-esc', captured_at: '2026-08-16T09:00:00.000Z' }],
       listAssignments: async () => [
-        visit({ id: 'a-esc', status: 'completed' } as Partial<PlacedVisit>),
+        visit({ id: 'a-esc', status: 'completed' } as Partial<PlacedVisitWithParticipants>),
       ],
       resolveGap: async (_t, _k, subjectRef) => {
         resolved.push(subjectRef);
@@ -778,9 +886,9 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
     const summary = await runWatchers(NOW, 'live', baseDeps({
       specs: [OVERDUE_VISIT_GAP_SPEC, secondSpec()],
       listOverdue: async () => [
-        visit({ id: 'a1', job_id: 'j1', technician_id: 'tech-1', ends_at: '2026-08-15T01:00:00.000Z' }),
-        visit({ id: 'a2', job_id: 'j2', technician_id: 'tech-1', ends_at: '2026-08-15T02:00:00.000Z' }),
-        visit({ id: 'a3', job_id: 'j3', technician_id: 'tech-1', ends_at: '2026-08-15T03:00:00.000Z' }),
+        visit({ id: 'a1', job_id: 'j1', visit_participants: [crewOf('tech-1')], ends_at: '2026-08-15T01:00:00.000Z' }),
+        visit({ id: 'a2', job_id: 'j2', visit_participants: [crewOf('tech-1')], ends_at: '2026-08-15T02:00:00.000Z' }),
+        visit({ id: 'a3', job_id: 'j3', visit_participants: [crewOf('tech-1')], ends_at: '2026-08-15T03:00:00.000Z' }),
       ],
       listTeam: async () => [boundTech()],
       createObservation: async (input) => {
@@ -801,7 +909,7 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
     // that has no spec.
     const summary = await runWatchers(NOW, 'live', baseDeps({
       specs: [], // no spec for overdue_visit_gap
-      listOverdue: async () => [visit({ id: 'a1', technician_id: 'tech-1' })],
+      listOverdue: async () => [visit({ id: 'a1', visit_participants: [crewOf('tech-1')] })],
       listTeam: async () => [boundTech()],
       createObservation: async () => {
         throw new Error('must not record an observation for an unregistered kind');
@@ -964,7 +1072,7 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
     const created: string[] = [];
     await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => Array.from({ length: 5 }, (_, i) =>
-        visit({ id: `a${i}`, job_id: `j${i}`, technician_id: 'tech-1', ends_at: `2026-08-15T0${i}:00:00.000Z` })),
+        visit({ id: `a${i}`, job_id: `j${i}`, visit_participants: [crewOf('tech-1')], ends_at: `2026-08-15T0${i}:00:00.000Z` })),
       listCostCandidates: async () => [candidate(), candidate({ jobId: 'j-cost-2' })],
       listTeam: async () => [boundTech()],
       createObservation: async (input) => {

@@ -345,7 +345,8 @@ export function buildCorpus(): Scenario[] {
       describe: 'the visit sits at 09:30 on the named day with the named technician',
       query: (ctx) => ({
         text: `select count(*)::int n from visits a
-                 join technicians t on t.id = a.technician_id
+                 join visit_participants vp on vp.visit_id = a.id
+                 join technicians t on t.id = vp.technician_id
                 where a.job_id = $1 and a.status = 'confirmed'
                   and (a.starts_at)::date = $2::date
                   and (a.starts_at)::time = time '09:30'
@@ -1013,7 +1014,8 @@ export function buildCorpus(): Scenario[] {
       describe: "a confirmed visit exists on Theo Marsh's book for this job",
       query: (ctx) => ({
         text: `select count(*)::int n from visits a
-                 join technicians t on t.id = a.technician_id
+                 join visit_participants vp on vp.visit_id = a.id
+                 join technicians t on t.id = vp.technician_id
                 where a.job_id = $1 and a.status = 'confirmed' and t.ref = 'wf-tech-t2'`,
         params: [jobId(ctx.tenant, 'job-t2-wf-01')],
       }),

@@ -6,6 +6,207 @@ import type { Technician } from './technicians.js';
 
 export type Visit = Database['public']['Tables']['visits']['Row'];
 export type VisitStatus = Database['public']['Enums']['visit_status'];
+export type VisitParticipant = Database['public']['Tables']['visit_participants']['Row'];
+
+// ---- The crew (rung 9c) ----------------------------------------------------
+//
+// A visit is ONE TRIP and a trip can carry several people, so who is on it
+// lives in `visit_participants`, one row per person. There is NO LEAD (user,
+// 2026-09-01): the rows are unordered by rank, and where a surface has to name
+// exactly one of them — a gap has to be addressed to somebody — it takes the
+// participant added FIRST, by (created_at, technician_id). That is a tiebreak,
+// not a hierarchy: it is stable, it is not stored anywhere as "primary", and
+// nothing reads it as authority.
+//
+// `visits.technician_id` is GONE (20260907100100). The visit row no longer
+// knows who is on it, and the double-booking guard lives on the participant,
+// where the row knows both WHO and WHEN.
+
+export interface ParticipantRef {
+  technicianId: string;
+  ref: string;
+  displayName: string;
+}
+
+// The shape the embed selects below return for each participant. tenant_id
+// rides on BOTH levels for the same reason every other nested projection in
+// this file carries it: the foreign keys are ID-ONLY (see the SECURITY note
+// above the board reads), so the caller re-checks before printing a name.
+export interface ParticipantIdEmbed {
+  technician_id: string;
+  created_at: string;
+  tenant_id: string;
+}
+export interface ParticipantEmbed extends ParticipantIdEmbed {
+  technicians: Pick<Technician, 'id' | 'ref' | 'display_name' | 'tenant_id'> | null;
+}
+
+export type WithParticipants = { tenant_id: string; visit_participants?: ParticipantEmbed[] | null };
+export type WithParticipantIds = {
+  tenant_id: string;
+  visit_participants?: ParticipantIdEmbed[] | null;
+};
+
+// A visit that carries its crew. The three readers that feed occupancy, the
+// team schedule and slot-finding return this — they had no participants source
+// otherwise, and inferring the crew from `technician_id` is exactly what this
+// rung deletes.
+export type VisitWithParticipants = Visit & { visit_participants: ParticipantEmbed[] };
+export type PlacedVisitWithParticipants = VisitWithParticipants & {
+  starts_at: string;
+  ends_at: string;
+};
+
+// THE tiebreak, in one place: added first, then by id. All the rows written by
+// one upsert statement share a created_at (it is `now()`, the transaction's
+// clock), so a crew booked in one go falls through to the id — deterministic
+// and rank-free, which is exactly what the no-lead ruling asks for.
+export function orderParticipants<T extends { created_at: string; technician_id: string }>(
+  rows: T[],
+): T[] {
+  return [...rows].sort((a, b) =>
+    a.created_at === b.created_at
+      ? a.technician_id.localeCompare(b.technician_id)
+      : a.created_at < b.created_at
+        ? -1
+        : 1,
+  );
+}
+
+// Who is on this visit, in tiebreak order, tenant-checked at the participant
+// level. Use this for "is anybody on it" — it counts people we cannot NAME
+// (a technician row from another tenant) as people, which is the safe answer:
+// treating an occupied visit as unassigned would offer it to the tray.
+export function participantIdsOf(
+  row: WithParticipantIds,
+  tenantId: string = row.tenant_id,
+): string[] {
+  return orderParticipants(
+    (row.visit_participants ?? []).filter((p) => p.tenant_id === tenantId),
+  ).map((p) => p.technician_id);
+}
+
+// The nameable crew, in tiebreak order — the tenant re-check applied on BOTH
+// levels. A participant whose technician belongs to another tenant is dropped
+// here rather than printed; participantIdsOf still counts them.
+export function participantsOf(
+  row: WithParticipants,
+  tenantId: string = row.tenant_id,
+): ParticipantRef[] {
+  return orderParticipants((row.visit_participants ?? []).filter((p) => p.tenant_id === tenantId))
+    .filter((p) => p.technicians !== null && p.technicians.tenant_id === tenantId)
+    .map((p) => ({
+      technicianId: p.technician_id,
+      ref: p.technicians!.ref,
+      displayName: p.technicians!.display_name,
+    }));
+}
+
+// `technicianId` (one person) and `technicianIds` (the crew) both name people;
+// the union, deduped, IS the crew. The single-person field is kept because 119
+// test fixtures and four seed scripts pass it, and because "send Ben" is still
+// the common case — it is sugar for a one-element list, never a rank.
+function crewOf(input: { technicianId?: string | null; technicianIds?: string[] }): string[] {
+  return [
+    ...new Set([
+      ...(input.technicianId ? [input.technicianId] : []),
+      ...(input.technicianIds ?? []).filter((id) => !!id),
+    ]),
+  ];
+}
+
+// ---- Participant writes ----------------------------------------------------
+//
+// Callers pass (tenant, visit, people) and NOTHING ELSE: the times and the
+// status on a participant row are copies the DB fills and maintains
+// (visit_participants_fill / visits_reconcile_participants). There is no code
+// path that can write a participant whose times disagree with its visit, which
+// is what makes the relocated overlap guard trustworthy.
+
+// THE ONLY THING that puts a person on a visit. UPSERT with ignoreDuplicates,
+// never a plain insert (the insertVisitNote idiom): re-adding somebody already
+// on the crew is a no-op, not an error — a redelivered request, or a move that
+// re-states a crew member who was staying. It must never become ON CONFLICT DO
+// UPDATE, which would let a caller overwrite the derived times, and the
+// conflict target must always be NAMED: a bare DO NOTHING arbitrates over the
+// exclusion constraint too and would swallow the double-booking guard.
+export async function upsertParticipants(
+  tenantId: string,
+  visitId: string,
+  technicianIds: string[],
+): Promise<void> {
+  const ids = [...new Set(technicianIds.filter((id) => !!id))];
+  if (ids.length === 0) return;
+  const { error } = await getClient()
+    .from('visit_participants')
+    .upsert(
+      ids.map((technician_id) => ({ tenant_id: tenantId, visit_id: visitId, technician_id })),
+      { onConflict: 'visit_id,technician_id', ignoreDuplicates: true },
+    );
+  if (error) {
+    throw Object.assign(new Error(`upsertParticipants failed: ${error.message}`), {
+      code: error.code,
+    });
+  }
+}
+
+// Take people OFF a visit. Deleting a participant is legal and leaves no
+// residue: the row is a link, and the trip's evidence (its notes, its events)
+// hangs off the VISIT, not off who was on it.
+export async function removeParticipants(
+  visitId: string,
+  technicianIds: string[],
+): Promise<void> {
+  const ids = [...new Set(technicianIds.filter((id) => !!id))];
+  if (ids.length === 0) return;
+  const { error } = await getClient()
+    .from('visit_participants')
+    .delete()
+    .eq('visit_id', visitId)
+    .in('technician_id', ids);
+  if (error) {
+    throw Object.assign(new Error(`removeParticipants failed: ${error.message}`), {
+      code: error.code,
+    });
+  }
+}
+
+export async function listParticipants(visitId: string): Promise<VisitParticipant[]> {
+  const { data, error } = await getClient()
+    .from('visit_participants')
+    .select()
+    .eq('visit_id', visitId);
+  if (error) throw new Error(`listParticipants failed: ${error.message}`);
+  return orderParticipants(data ?? []);
+}
+
+// REPLACE the crew: whoever is not in the set leaves, whoever is not on it
+// joins. Leavers go FIRST and that order is load-bearing wherever times are
+// changing too — see moveVisitRow's note. The leavers are computed in JS from
+// a read rather than expressed as a `not.in` filter, so no id is ever
+// interpolated into a PostgREST filter string.
+export async function setVisitParticipants(
+  tenantId: string,
+  visitId: string,
+  technicianIds: string[],
+): Promise<void> {
+  const wanted = [...new Set(technicianIds.filter((id) => !!id))];
+  const current = await listParticipants(visitId);
+  const leavers = current.filter((p) => !wanted.includes(p.technician_id));
+  const leaverIds = leavers.map((p) => p.technician_id);
+  await removeParticipants(visitId, leaverIds);
+  try {
+    await upsertParticipants(tenantId, visitId, wanted);
+  } catch (err) {
+    // The upsert is one statement and rolls back whole, but the DELETE above
+    // already committed — without this, a refused re-crew would report "that
+    // slot is taken" while having silently taken the leavers off the trip.
+    if (leaverIds.length > 0) {
+      await upsertParticipants(tenantId, visitId, leaverIds).catch(() => undefined);
+    }
+    throw err;
+  }
+}
 
 // Rows that HAVE times (plan 4b-2). Every reader whose query filters on
 // starts_at/ends_at returns these by construction: a SQL comparison against
@@ -28,7 +229,11 @@ export const VISIT_TRANSITIONS: Record<VisitStatus, VisitStatus[]> = {
 export interface CreateVisitInput {
   tenantId: string;
   jobId: string;
-  technicianId: string | null; // null = unassigned ("book now, assign later")
+  // WHO GOES. `technicianIds` is the crew; `technicianId` is shorthand for one
+  // person (null/omitted = unassigned — "book now, assign later"). Passing both
+  // is legal and means the union. Neither is a rank: see the crew note above.
+  technicianId?: string | null;
+  technicianIds?: string[];
   // A visit HAS A TIME OR IT DOES NOT (rung 9a). Both timestamps together, or
   // both null for an untimed visit — the stored date range is gone, so there is
   // no third shape to police.
@@ -59,12 +264,12 @@ export async function createVisit(input: CreateVisitInput): Promise<Visit> {
       'createVisit: provide BOTH times, or neither (an untimed visit) — never one',
     );
   }
+  const crew = crewOf(input);
   const { data, error } = await getClient()
     .from('visits')
     .insert({
       tenant_id: input.tenantId,
       job_id: input.jobId,
-      technician_id: input.technicianId,
       starts_at: input.startsAt,
       ends_at: input.endsAt,
       status: input.status ?? 'proposed',
@@ -81,6 +286,26 @@ export async function createVisit(input: CreateVisitInput): Promise<Visit> {
     });
   }
   if (!data) throw new Error('createVisit failed: no row returned');
+  // THE CREW. Every one of them, including the first: with the bridge column
+  // gone there is no trigger arm putting anybody on the trip, so this call is
+  // the only thing that does. If one of them is already booked elsewhere the
+  // exclusion constraint fires here, AFTER the visit row exists — so delete it
+  // and rethrow, or a refused booking would leave a phantom trip nobody asked
+  // for. SAFE ONLY HERE: this row is seconds old and nothing points at it yet.
+  // Once a schedule_event does, `ON DELETE SET NULL` trips raise_append_only
+  // and the delete raises instead (the rung 9b probe).
+  if (crew.length > 0) {
+    try {
+      await upsertParticipants(input.tenantId, data.id, crew);
+    } catch (err) {
+      await getClient()
+        .from('visits')
+        .delete()
+        .eq('id', data.id)
+        .then(undefined, () => undefined); // advisory: the rethrow below is the truth
+      throw err;
+    }
+  }
   return data;
 }
 
@@ -141,19 +366,43 @@ export async function updateVisitStatus(
   return data;
 }
 
-// SQLSTATE 23P01 = exclusion_violation — the no_confirmed_overlap guard fired.
+// SQLSTATE 23P01 = exclusion_violation — the no_confirmed_overlap guard fired,
+// and NOTHING was written. Callers say "that slot is taken" on the strength of
+// that second half, so a joiner failure is deliberately excluded: there the
+// visit HAS moved and only the person could not be added. Report that with
+// isJoinerFailure, or the manager is told the opposite of what happened.
 export function isOverlapViolation(err: unknown): boolean {
   return (
-    typeof err === 'object' && err !== null && (err as { code?: string }).code === '23P01'
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { code?: string }).code === '23P01' &&
+    (err as { stage?: string }).stage !== 'joiner'
   );
 }
 
 export interface MoveVisitRowInput {
   startsAt: string;
   endsAt: string;
-  technicianId?: string | null; // omit = same technician; null = DETACH (park unassigned)
+  // WHO GOES, after the move. Omit BOTH = keep the crew exactly as it is.
+  // `technicianIds: []` or `technicianId: null` = DETACH everybody (park it).
+  // A list REPLACES the crew — it is not additive (user, 2026-09-06).
+  technicianId?: string | null;
+  technicianIds?: string[];
   reason: string; // why the visit moved (kept on the row)
   status?: VisitStatus; // omit = leave it where it is
+}
+
+// The move landed, but somebody could not be ADDED to it — they are booked
+// elsewhere at the new time. Distinct from a plain 23P01, which means nothing
+// moved at all: here the caller must tell the manager both halves.
+export function isJoinerFailure(
+  err: unknown,
+): err is Error & { code?: string; visit: Visit; technicianIds: string[] } {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { stage?: string }).stage === 'joiner'
+  );
 }
 
 // THE MOVE PRIMITIVE — ONE UPDATE, and the visit keeps its id (rung 9b).
@@ -200,14 +449,36 @@ export async function moveVisitRow(id: string, input: MoveVisitRowInput): Promis
   if (old.status === 'cancelled' || old.status === 'completed') {
     throw new Error(`cannot move a ${old.status} visit`);
   }
+  // LEAVERS FIRST, THEN THE MOVE, THEN THE JOINERS (rung 9c, probed).
+  //
+  // The sync trigger drags EVERY participant's copy of the times onto the new
+  // slot, and the exclusion guard then checks each of them. So if a leaver is
+  // still on the visit when the UPDATE runs, the most ordinary reassign there
+  // is — "Ben cannot make Tuesday, send Joy" — is refused, because Ben is busy
+  // on Tuesday. Taking him off first means the guard checks only the people who
+  // are actually going. The joiners are added last, at the new time, for the
+  // same reason in reverse.
+  const wanted = crewChangeOf(input);
+  let leavers: string[] = [];
+  if (wanted !== undefined) {
+    leavers = (await listParticipants(id))
+      .map((p) => p.technician_id)
+      .filter((tid) => !wanted.includes(tid));
+    await removeParticipants(id, leavers);
+  }
+  // Put the leavers back if the move itself fails. Advisory: the visit did not
+  // move, so their old copy is still the right one, but a failure here must
+  // never mask the failure that mattered.
+  const restoreLeavers = async () => {
+    if (leavers.length > 0) {
+      await upsertParticipants(old.tenant_id, id, leavers).catch(() => undefined);
+    }
+  };
   const { data, error } = await getClient()
     .from('visits')
     .update({
       starts_at: input.startsAt,
       ends_at: input.endsAt,
-      // `!== undefined`, not `??`: an explicit null means DETACH, and `??`
-      // would silently resurrect the old technician (plan 4a.5).
-      ...(input.technicianId !== undefined ? { technician_id: input.technicianId } : {}),
       reason: input.reason,
       ...(input.status ? { status: input.status } : {}),
     }) // updated_at is stamped by the DB trigger
@@ -216,14 +487,39 @@ export async function moveVisitRow(id: string, input: MoveVisitRowInput): Promis
     .select()
     .maybeSingle();
   if (error) {
+    await restoreLeavers();
     throw Object.assign(new Error(`moveVisitRow failed: ${error.message}`), { code: error.code });
   }
   if (!data) {
+    await restoreLeavers();
     throw new Error(
       `moveVisitRow: visit ${id} changed concurrently (was '${old.status}'); move not applied`,
     );
   }
+  if (wanted !== undefined && wanted.length > 0) {
+    try {
+      await upsertParticipants(old.tenant_id, id, wanted);
+    } catch (err) {
+      // The visit HAS moved. Say so — the caller reports both halves rather
+      // than pretending nothing happened.
+      throw Object.assign(err as Error, { stage: 'joiner', visit: data, technicianIds: wanted });
+    }
+  }
   return data;
+}
+
+// undefined = "leave the crew alone"; an array = REPLACE it with exactly these
+// people. `technicianId: null` is the old spelling of "detach everybody" and
+// still means that.
+function crewChangeOf(input: {
+  technicianId?: string | null;
+  technicianIds?: string[];
+}): string[] | undefined {
+  if (input.technicianIds !== undefined) {
+    return [...new Set([...(input.technicianId ? [input.technicianId] : []), ...input.technicianIds])];
+  }
+  if (input.technicianId !== undefined) return input.technicianId === null ? [] : [input.technicianId];
+  return undefined;
 }
 
 // Attach or detach the PERSON on a visit, leaving its times alone — the tray's
@@ -235,19 +531,32 @@ export async function moveVisitRow(id: string, input: MoveVisitRowInput): Promis
 // had to: the successor it created was always 'confirmed', and an attach that
 // silently left a row 'proposed' would vanish from every ['confirmed']-filtered
 // reader — on the board, in the tray, and in the overlap guard (review finding).
-export async function attachVisitTechnician(
+// The crew REPLACES whoever was on it, same as a move (rung 9c): an empty list
+// detaches everybody. Leavers first, then the UPDATE, then the joiners — the
+// order matters here too, because attaching can flip a 'proposed' row to
+// 'confirmed', which is exactly when the overlap guard starts applying.
+export async function attachVisitParticipants(
   id: string,
-  input: { technicianId: string | null; reason: string; status?: VisitStatus },
+  input: { technicianIds: string[]; reason: string; status?: VisitStatus },
 ): Promise<Visit> {
   const old = await getVisit(id);
-  if (!old) throw new Error(`attachVisitTechnician: visit ${id} not found`);
+  if (!old) throw new Error(`attachVisitParticipants: visit ${id} not found`);
   if (old.status === 'cancelled' || old.status === 'completed') {
     throw new Error(`cannot attach a person to a ${old.status} visit`);
   }
+  const wanted = [...new Set(input.technicianIds.filter((tid) => !!tid))];
+  const leavers = (await listParticipants(id))
+    .map((p) => p.technician_id)
+    .filter((tid) => !wanted.includes(tid));
+  await removeParticipants(id, leavers);
+  const restoreLeavers = async () => {
+    if (leavers.length > 0) {
+      await upsertParticipants(old.tenant_id, id, leavers).catch(() => undefined);
+    }
+  };
   const { data, error } = await getClient()
     .from('visits')
     .update({
-      technician_id: input.technicianId,
       reason: input.reason,
       ...(input.status ? { status: input.status } : {}),
     })
@@ -256,14 +565,23 @@ export async function attachVisitTechnician(
     .select()
     .maybeSingle();
   if (error) {
-    throw Object.assign(new Error(`attachVisitTechnician failed: ${error.message}`), {
+    await restoreLeavers();
+    throw Object.assign(new Error(`attachVisitParticipants failed: ${error.message}`), {
       code: error.code,
     });
   }
   if (!data) {
+    await restoreLeavers();
     throw new Error(
-      `attachVisitTechnician: visit ${id} changed concurrently (was '${old.status}'); not applied`,
+      `attachVisitParticipants: visit ${id} changed concurrently (was '${old.status}'); not applied`,
     );
+  }
+  if (wanted.length > 0) {
+    try {
+      await upsertParticipants(old.tenant_id, id, wanted);
+    } catch (err) {
+      throw Object.assign(err as Error, { stage: 'joiner', visit: data, technicianIds: wanted });
+    }
   }
   return data;
 }
@@ -374,15 +692,19 @@ export async function listVisitsByIds(
 // Rows overlapping the [fromISO, toISO) window for the WHOLE tenant — the
 // team-schedule / dispatch-board read. Confirmed only by default: the board
 // shows the real schedule, not alternative proposals.
+// Single string literal — see the DETAIL_SELECT note below.
+const CREW_SELECT =
+  '*, visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
+
 export async function listVisitsForTenant(
   tenantId: string,
   fromISO: string,
   toISO: string,
   statuses: VisitStatus[] = ['confirmed'],
-): Promise<PlacedVisit[]> {
+): Promise<PlacedVisitWithParticipants[]> {
   const { data, error } = await getClient()
     .from('visits')
-    .select()
+    .select(CREW_SELECT)
     .eq('tenant_id', tenantId)
     .lt('starts_at', toISO)
     .gt('ends_at', fromISO)
@@ -390,7 +712,7 @@ export async function listVisitsForTenant(
     .order('starts_at', { ascending: true });
   if (error) throw new Error(`listVisitsForTenant failed: ${error.message}`);
   // Placed by construction: the lt/gt time filters never match NULL.
-  return (data ?? []) as PlacedVisit[];
+  return (data ?? []) as unknown as PlacedVisitWithParticipants[];
 }
 
 // ---- Dispatch-board reads: the whole visit graph in ONE round-trip ----
@@ -432,7 +754,7 @@ export type VisitDetailRow = Visit & {
         > | null;
       })
     | null;
-  technicians: Pick<Technician, 'id' | 'ref' | 'display_name' | 'tenant_id'> | null;
+  visit_participants: ParticipantEmbed[];
 };
 
 // NOTE: these select strings must stay SINGLE STRING LITERALS — supabase-js
@@ -440,7 +762,7 @@ export type VisitDetailRow = Visit & {
 // ('a' + 'b') string widens to `string`, which makes the inference collapse to
 // GenericStringError and breaks the build.
 const DETAIL_SELECT =
-  '*, jobs(id,tenant_id,title,priority,duration_minutes,customer_id,customers(name,phone,email,address_line1,address_line2,city,state,postal_code,attributes,tenant_id)), technicians(id,ref,display_name,tenant_id)';
+  '*, jobs(id,tenant_id,title,priority,duration_minutes,customer_id,customers(name,phone,email,address_line1,address_line2,city,state,postal_code,attributes,tenant_id)), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
 
 // One visit + its job/customer/technician, tenant-scoped at the ROOT only.
 // A cross-tenant or unknown id reads as null (same contract as
@@ -474,12 +796,12 @@ export type VisitDayRow = Visit & {
         customers: (JobCustomerAddress & { tenant_id: string }) | null;
       })
     | null;
-  technicians: Pick<Technician, 'id' | 'ref' | 'display_name' | 'tenant_id'> | null;
+  visit_participants: ParticipantEmbed[];
 };
 
 // Single string literal — see the DETAIL_SELECT note above.
 const DAY_SELECT =
-  '*, jobs(id,tenant_id,customer_id,customers(name,address_line1,address_line2,city,state,postal_code,tenant_id)), technicians(id,ref,display_name,tenant_id)';
+  '*, jobs(id,tenant_id,customer_id,customers(name,address_line1,address_line2,city,state,postal_code,tenant_id)), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
 
 // Same filters as listVisitsForTenant, plus the embedded graph.
 export type PlacedVisitDayRow = VisitDayRow & { starts_at: string; ends_at: string };
@@ -505,6 +827,14 @@ export async function listVisitsWithRefsForTenant(
 
 // Rows overlapping the [fromISO, toISO) window for one technician, live
 // statuses by default (proposed + confirmed — what claims or may claim time).
+//
+// ROOTED AT THE PARTICIPANT (rung 9c): "this person's calendar" is a question
+// about the crew list, not about a column on the trip, and a crew-mate's visit
+// has to appear on BOTH their days. Every filter here reads the participant's
+// OWN synced copy of the times and the status — the same columns the overlap
+// guard reads — so this lister and the guard can never disagree about what
+// occupies a person's day. `visits!inner` then carries the trip itself (the
+// listNoteTimesForJobs embed precedent).
 export async function listVisitsForTechnician(
   technicianId: string,
   fromISO: string,
@@ -512,8 +842,8 @@ export async function listVisitsForTechnician(
   statuses: VisitStatus[] = ['proposed', 'confirmed'],
 ): Promise<PlacedVisit[]> {
   const { data, error } = await getClient()
-    .from('visits')
-    .select()
+    .from('visit_participants')
+    .select('visits!inner(*)')
     .eq('technician_id', technicianId)
     .lt('starts_at', toISO)
     .gt('ends_at', fromISO)
@@ -521,15 +851,19 @@ export async function listVisitsForTechnician(
     .order('starts_at', { ascending: true });
   if (error) throw new Error(`listVisitsForTechnician failed: ${error.message}`);
   // Placed by construction: the lt/gt time filters never match NULL.
-  return (data ?? []) as PlacedVisit[];
+  return ((data ?? []) as unknown as { visits: Visit }[])
+    .map((row) => row.visits)
+    .filter((v): v is PlacedVisit => v !== null) as PlacedVisit[];
 }
 
 // The booking's full history — every row ever written for the job, newest
 // first (reschedules/cancellations included; history = the rows themselves).
-export async function listVisitsForJob(jobId: string): Promise<Visit[]> {
+export async function listVisitsForJob(jobId: string): Promise<VisitWithParticipants[]> {
   const { data, error } = await getClient()
     .from('visits')
-    .select()
+    // The crew rides along: the attach rule asks "is this technician ON this
+    // trip", which is a question about the participant list (rung 9c).
+    .select(CREW_SELECT)
     .eq('job_id', jobId)
     // Newest first. `updated_at` is the tiebreak because rung 9a made
     // `created_at` the VISIT's age rather than the ROW's: a move/park/attach is
@@ -539,7 +873,7 @@ export async function listVisitsForJob(jobId: string): Promise<Visit[]> {
     .order('created_at', { ascending: false })
     .order('updated_at', { ascending: false });
   if (error) throw new Error(`listVisitsForJob failed: ${error.message}`);
-  return data ?? [];
+  return (data ?? []) as unknown as VisitWithParticipants[];
 }
 
 // The "assign later" recall surface (and Plan 3's future work queue): every
@@ -550,25 +884,45 @@ export async function listVisitsForJob(jobId: string): Promise<Visit[]> {
 export async function listUnassignedVisits(
   tenantId: string,
   fromISO: string,
-): Promise<Visit[]> {
+): Promise<VisitWithParticipants[]> {
   // DELIBERATELY WIDE (plan 4b-2): unplaced rows (null starts_at) are part of
   // the recall surface — a parked time-TBD visit must be visible SOMEWHERE the
   // moment it exists. NULLs order last. (PostgREST .or() syntax verified
   // against the local stack during plan review.)
-  const { data, error } = await getClient()
-    .from('visits')
-    .select()
-    .eq('tenant_id', tenantId)
-    .is('technician_id', null)
-    .eq('status', 'confirmed')
-    .or(`starts_at.gte.${fromISO},starts_at.is.null`)
-    // Timed rows in time order, then untimed OLDEST FIRST (rung 9a) — with no
-    // stored range there is no date to sort them by, and age is what stops a
-    // hard-to-place visit sinking to the bottom forever.
-    .order('starts_at', { ascending: true, nullsFirst: false })
-    .order('created_at', { ascending: true });
-  if (error) throw new Error(`listUnassignedVisits failed: ${error.message}`);
-  return data ?? [];
+  //
+  // "NOBODY IS ON IT" is now the ABSENCE OF PARTICIPANT ROWS, and PostgREST
+  // cannot express an anti-join — so the crew is embedded and the emptiness
+  // filtered in JS (the listUnscheduledOpenJobsWithCustomer precedent below).
+  // Tenant job counts are small; this is one round trip either way.
+  //
+  // PAGED, and that is not optional here. The emptiness test moved from SQL to
+  // JS, so SQL now returns every confirmed row in the window and PostgREST's
+  // silent 1000-row cap (`max_rows`, supabase/config.toml) would truncate it —
+  // dropping rows the JS filter never gets to see, with no error. The old
+  // query could not hit the cap because SQL had already narrowed to the small
+  // person-less slice. Same reasoning as listNoteTimesForJobs.
+  const PAGE = 1000;
+  const rows: VisitWithParticipants[] = [];
+  for (let fromRow = 0; ; fromRow += PAGE) {
+    const { data, error } = await getClient()
+      .from('visits')
+      .select(CREW_SELECT)
+      .eq('tenant_id', tenantId)
+      .eq('status', 'confirmed')
+      .or(`starts_at.gte.${fromISO},starts_at.is.null`)
+      // Timed rows in time order, then untimed OLDEST FIRST (rung 9a) — with no
+      // stored range there is no date to sort them by, and age is what stops a
+      // hard-to-place visit sinking to the bottom forever. `id` is the paging
+      // tiebreak: without a total order, two pages can repeat or skip a row.
+      .order('starts_at', { ascending: true, nullsFirst: false })
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(fromRow, fromRow + PAGE - 1);
+    if (error) throw new Error(`listUnassignedVisits failed: ${error.message}`);
+    rows.push(...((data ?? []) as unknown as VisitWithParticipants[]));
+    if (!data || data.length < PAGE) break;
+  }
+  return rows.filter((v) => participantIdsOf(v, tenantId).length === 0);
 }
 
 // The Stage-0 watcher's candidate read (plan 2026-08-15 feature A): confirmed
@@ -581,18 +935,19 @@ export async function listOverdueConfirmedVisits(
   tenantId: string,
   endedFromNaive: string, // ISO, firm wall-clock as if UTC — inclusive
   endedToNaive: string, // ISO, firm wall-clock as if UTC — exclusive
-): Promise<PlacedVisit[]> {
+): Promise<PlacedVisitWithParticipants[]> {
   const { data, error } = await getClient()
     .from('visits')
-    .select()
+    .select(CREW_SELECT)
     .eq('tenant_id', tenantId)
     .eq('status', 'confirmed')
     .gte('ends_at', endedFromNaive)
     .lt('ends_at', endedToNaive)
     .order('ends_at', { ascending: true });
   if (error) throw new Error(`listOverdueConfirmedVisits failed: ${error.message}`);
-  // Placed by construction: the gte/lt time filters never match NULL.
-  return (data ?? []) as PlacedVisit[];
+  // Placed by construction: the gte/lt time filters never match NULL. ONE row
+  // per trip, crew or not — the gap mint counts trips, never people.
+  return (data ?? []) as unknown as PlacedVisitWithParticipants[];
 }
 
 // The customer brief's schedule half (date-eval finding, 2026-08-13): the
@@ -611,12 +966,12 @@ export async function listOverdueConfirmedVisits(
 // tenant-scoped directly — the embed never widens the read.
 export type CustomerUpcomingRow = Visit & {
   jobs: Pick<Job, 'id' | 'tenant_id' | 'customer_id' | 'title'> | null;
-  technicians: Pick<Technician, 'id' | 'ref' | 'display_name' | 'tenant_id'> | null;
+  visit_participants: ParticipantEmbed[];
 };
 
 // Single string literal — see the DETAIL_SELECT note above.
 const CUSTOMER_UPCOMING_SELECT =
-  '*, jobs!inner(id,tenant_id,customer_id,title), technicians(id,ref,display_name,tenant_id)';
+  '*, jobs!inner(id,tenant_id,customer_id,title), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
 
 export async function listUpcomingVisitsForCustomer(
   tenantId: string,
@@ -652,33 +1007,53 @@ export async function listUpcomingVisitsForCustomer(
 // resolveMove. jobs is an ID-ONLY foreign key — customer_id is surfaced only
 // when the job's tenant re-checks (the boardRead pattern).
 // Single string literal — see the DETAIL_SELECT note above.
-const IDENTICAL_UNASSIGNED_SELECT = 'id, jobs(customer_id, tenant_id)';
+// The crew rides along so "nobody is on it" can be answered without a second
+// query — PostgREST has no anti-join (see listUnassignedVisits).
+const IDENTICAL_UNASSIGNED_SELECT =
+  'id, tenant_id, jobs(customer_id, tenant_id), visit_participants(technician_id,created_at,tenant_id)';
 
 export interface IdenticalUnassignedRow {
   id: string;
   customerId: string | null;
 }
 
+type IdenticalUnassignedQueryRow = {
+  id: string;
+  tenant_id: string;
+  jobs: { customer_id: string; tenant_id: string } | null;
+  visit_participants: ParticipantIdEmbed[];
+};
+
 export async function listIdenticalUnassignedVisits(
   tenantId: string,
   startISO: string,
   endISO: string,
 ): Promise<IdenticalUnassignedRow[]> {
-  const { data, error } = await getClient()
-    .from('visits')
-    .select(IDENTICAL_UNASSIGNED_SELECT)
-    .eq('tenant_id', tenantId)
-    .is('technician_id', null)
-    .eq('status', 'confirmed')
-    .eq('starts_at', startISO)
-    .eq('ends_at', endISO);
-  if (error) throw new Error(`listIdenticalUnassignedVisits failed: ${error.message}`);
-  return (
-    (data ?? []) as Array<{ id: string; jobs: { customer_id: string; tenant_id: string } | null }>
-  ).map((row) => ({
-    id: row.id,
-    customerId: row.jobs && row.jobs.tenant_id === tenantId ? row.jobs.customer_id : null,
-  }));
+  // Paged like its siblings: the emptiness test lives in JS now, so the 1000-row
+  // cap would truncate before the filter runs. An exact-window match is small in
+  // practice — this is consistency, not a live worry.
+  const PAGE = 1000;
+  const rows: IdenticalUnassignedQueryRow[] = [];
+  for (let fromRow = 0; ; fromRow += PAGE) {
+    const { data, error } = await getClient()
+      .from('visits')
+      .select(IDENTICAL_UNASSIGNED_SELECT)
+      .eq('tenant_id', tenantId)
+      .eq('status', 'confirmed')
+      .eq('starts_at', startISO)
+      .eq('ends_at', endISO)
+      .order('id', { ascending: true })
+      .range(fromRow, fromRow + PAGE - 1);
+    if (error) throw new Error(`listIdenticalUnassignedVisits failed: ${error.message}`);
+    rows.push(...((data ?? []) as unknown as IdenticalUnassignedQueryRow[]));
+    if (!data || data.length < PAGE) break;
+  }
+  return rows
+    .filter((row) => participantIdsOf(row, tenantId).length === 0)
+    .map((row) => ({
+      id: row.id,
+      customerId: row.jobs && row.jobs.tenant_id === tenantId ? row.jobs.customer_id : null,
+    }));
 }
 
 // ASSIGNED-and-unplaced rows intersecting a day window (plan 4b-2 Phase 3):
@@ -690,7 +1065,7 @@ export async function listIdenticalUnassignedVisits(
 // what the work IS (title) and how long it takes (4b-1 duration), unlike the
 // time-grid day view where the sheet fetches those on tap.
 const UNPLACED_STRIP_SELECT =
-  '*, jobs(id,tenant_id,title,duration_minutes,customer_id,customers(name,tenant_id)), technicians(id,ref,display_name,tenant_id)';
+  '*, jobs(id,tenant_id,title,duration_minutes,customer_id,customers(name,tenant_id)), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
 
 export type UnplacedStripRow = Visit & {
   jobs:
@@ -698,7 +1073,7 @@ export type UnplacedStripRow = Visit & {
         customers: Pick<Customer, 'name' | 'tenant_id'> | null;
       })
     | null;
-  technicians: Pick<Technician, 'id' | 'ref' | 'display_name' | 'tenant_id'> | null;
+  visit_participants: ParticipantEmbed[];
 };
 
 // EVERY untimed row — assigned or not. The reader above deliberately shows only
@@ -729,23 +1104,28 @@ export async function listUntimedVisitsForJob(
   jobId: string,
   technicianId: string | null,
 ): Promise<IdenticalUnassignedRow[]> {
-  let query = getClient()
+  const { data, error } = await getClient()
     .from('visits')
     .select(IDENTICAL_UNASSIGNED_SELECT)
     .eq('tenant_id', tenantId)
     .eq('status', 'confirmed')
     .is('starts_at', null)
     .eq('job_id', jobId);
-  query =
-    technicianId === null ? query.is('technician_id', null) : query.eq('technician_id', technicianId);
-  const { data, error } = await query;
+  // NOT paged, unlike the readers above: this one is scoped to a single job AND
+  // to untimed rows, so reaching 1000 would mean a thousand untimed visits on
+  // one job. The others are tenant-wide.
   if (error) throw new Error(`listUntimedVisitsForJob failed: ${error.message}`);
-  return (
-    (data ?? []) as Array<{ id: string; jobs: { customer_id: string; tenant_id: string } | null }>
-  ).map((row) => ({
-    id: row.id,
-    customerId: row.jobs && row.jobs.tenant_id === tenantId ? row.jobs.customer_id : null,
-  }));
+  return ((data ?? []) as unknown as IdenticalUnassignedQueryRow[])
+    .filter((row) => {
+      const crew = participantIdsOf(row, tenantId);
+      // Same key as before, read off the crew list: nobody-on-it matches
+      // nobody-on-it, and a named person matches any trip they are on.
+      return technicianId === null ? crew.length === 0 : crew.includes(technicianId);
+    })
+    .map((row) => ({
+      id: row.id,
+      customerId: row.jobs && row.jobs.tenant_id === tenantId ? row.jobs.customer_id : null,
+    }));
 }
 
 // ---- Loose-bucket reads (Plan 4a): the tray + agent-parity surfaces ----
@@ -757,7 +1137,7 @@ export async function listUntimedVisitsForJob(
 // rides along (4b-3): the freeze's queue-2 ladder needs the job length, and
 // fetching it per row was an N+1 the strip's sibling select never had.
 const BUCKET_SELECT =
-  '*, jobs(id,tenant_id,title,duration_minutes,customer_id,customers(name,tenant_id))';
+  '*, jobs(id,tenant_id,title,duration_minutes,customer_id,customers(name,tenant_id)), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
 
 export type VisitBucketRow = Visit & {
   jobs:
@@ -765,6 +1145,7 @@ export type VisitBucketRow = Visit & {
         customers: Pick<Customer, 'name' | 'tenant_id'> | null;
       })
     | null;
+  visit_participants: ParticipantEmbed[];
 };
 
 // listUnassignedVisits with the customer/job names embedded — the tray's
@@ -781,17 +1162,37 @@ export async function listUnassignedVisitsWithRefs(
   // and the tray is the only place it can appear. Keyed on technician alone,
   // tapping Assign on a tray row made the visit vanish from the whole board
   // with no way back except chat (review finding, rung 9a phase 2).
-  const { data, error } = await getClient()
-    .from('visits')
-    .select(BUCKET_SELECT)
-    .eq('tenant_id', tenantId)
-    .eq('status', 'confirmed')
-    .or(
-      `and(technician_id.is.null,or(starts_at.gte.${fromISO},starts_at.is.null)),starts_at.is.null`,
-    )
-    .order('starts_at', { ascending: true, nullsFirst: false });
-  if (error) throw new Error(`listUnassignedVisitsWithRefs failed: ${error.message}`);
-  return (data ?? []) as VisitBucketRow[];
+  //
+  // The person half of that OR is now an anti-join on visit_participants, which
+  // PostgREST cannot express — so SQL narrows to the time half (a superset of
+  // what qualifies: every row the old .or() matched satisfies "starts_at >=
+  // from OR starts_at is null") and the crew decides the rest in JS.
+  //
+  // PAGED for the reason listUnassignedVisits is, and MORE sharply: the board's
+  // loose bucket calls this with fromISO = the epoch (boardRead.readLooseBucket),
+  // so the SQL half now matches every confirmed visit the tenant has ever had.
+  // Under the 1000-row cap the rows dropped first would be the untimed ones —
+  // they sort last — which are exactly what the tray exists to show.
+  const PAGE = 1000;
+  const rows: VisitBucketRow[] = [];
+  for (let fromRow = 0; ; fromRow += PAGE) {
+    const { data, error } = await getClient()
+      .from('visits')
+      .select(BUCKET_SELECT)
+      .eq('tenant_id', tenantId)
+      .eq('status', 'confirmed')
+      .or(`starts_at.gte.${fromISO},starts_at.is.null`)
+      .order('starts_at', { ascending: true, nullsFirst: false })
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(fromRow, fromRow + PAGE - 1);
+    if (error) throw new Error(`listUnassignedVisitsWithRefs failed: ${error.message}`);
+    rows.push(...((data ?? []) as unknown as VisitBucketRow[]));
+    if (!data || data.length < PAGE) break;
+  }
+  return rows.filter(
+    (v) => participantIdsOf(v, tenantId).length === 0 || v.starts_at === null,
+  );
 }
 
 // Named columns, no '*': jobs carry the elastic L3 `attributes` JSONB, which
@@ -950,11 +1351,11 @@ export async function listNoteTimesForJobs(
 // ---- The customer brief's PAST-work half ----------------------------------
 
 export type VisitWithTechnician = Visit & {
-  technicians: Pick<Technician, 'ref' | 'display_name' | 'tenant_id'> | null;
+  visit_participants: ParticipantEmbed[];
 };
 
 // Single string literal — see the DETAIL_SELECT note above.
-const CUSTOMER_VISITS_SELECT = 'visits(*, technicians(ref,display_name,tenant_id))';
+const CUSTOMER_VISITS_SELECT = 'visits(*, visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id)))';
 
 // Every trip that HAS HAPPENED across a customer's jobs, newest first. Visits
 // carry no customer_id, so we reach them through the jobs relation and flatten.
@@ -972,10 +1373,25 @@ export async function listVisitsForCustomer(customerId: string): Promise<VisitWi
     .eq('customer_id', customerId)
     .eq('visits.status', 'completed');
   if (error) throw new Error(`listVisitsForCustomer failed: ${error.message}`);
-  const visits = (data ?? []).flatMap((job) => job.visits as VisitWithTechnician[]);
-  return visits
-    // technicians is an ID-ONLY foreign key: re-check the tenant before any
-    // caller prints the name (the DETAIL_SELECT doctrine above).
-    .map((v) => (v.technicians && v.technicians.tenant_id !== v.tenant_id ? { ...v, technicians: null } : v))
-    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+  const visits = (data ?? []).flatMap((job) => job.visits as unknown as VisitWithTechnician[]);
+  return (
+    visits
+      // The embed's foreign keys are ID-ONLY, and THESE ROWS ARE RETURNED RAW
+      // to get_customer_context, which spreads them into the agent's tool
+      // result. participantsOf's re-check protects the readers that call it;
+      // this payload has no such reader, so the sanitising happens here — a
+      // participant from another tenant is dropped, and a technician row from
+      // another tenant is nulled rather than having its name serialised.
+      .map((v) => ({
+        ...v,
+        visit_participants: (v.visit_participants ?? [])
+          .filter((p) => p.tenant_id === v.tenant_id)
+          .map((p) =>
+            p.technicians && p.technicians.tenant_id !== v.tenant_id
+              ? { ...p, technicians: null }
+              : p,
+          ),
+      }))
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+  );
 }

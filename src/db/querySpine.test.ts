@@ -314,7 +314,7 @@ describe('query_spine — bounds', () => {
 });
 
 describe('query_spine — the view surface is closed', () => {
-  test('spine_reader holds SELECT on exactly the fifteen views and nothing else', async () => {
+  test('spine_reader holds SELECT on exactly the sixteen views and nothing else', async () => {
     // A new table must not become readable by default. This is the test that
     // fails when someone adds a grant without thinking.
     // v_money_events added 2026-08-15 (money-ledger plan, manager-only money
@@ -336,6 +336,10 @@ describe('query_spine — the view surface is closed', () => {
     // close a gap, superseding the 5.5 rule that office answers never fill the
     // record. Manager visibility through the shared catalog is the same
     // recorded acceptance as v_observations and v_roster_events.
+    // v_visit_participants added 2026-09-06 (rung 9c): v_schedule stays ONE ROW
+    // PER TRIP with the crew as arrays, so `count(*)` keeps counting trips —
+    // this view is where a question about PEOPLE ("how many visits did Ben go
+    // on") gets one row per person to count instead.
     const { rows } = await pg.query(
       `select table_name from information_schema.table_privileges
         where grantee = 'spine_reader' order by table_name`,
@@ -356,6 +360,7 @@ describe('query_spine — the view surface is closed', () => {
       'v_team',
       'v_time_off',
       'v_visit_notes',
+      'v_visit_participants',
     ]);
   });
 

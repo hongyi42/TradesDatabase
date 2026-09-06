@@ -4,6 +4,7 @@ import { getClient } from './client.js';
 import { createCustomer } from './customers.js';
 import { createJob, listCostGapCandidates, updateJobStatus, type JobStatus } from './jobs.js';
 import { createTenant } from './tenants.js';
+import { upsertParticipants } from './visits.js';
 
 // Integration test against the LOCAL stack (testEnvGuard enforces local-only).
 // This covers the riskiest new SQL in the cost detector: a PostgREST embed with
@@ -58,15 +59,21 @@ async function mkAssignment(
   tenant = tenantId,
 ): Promise<void> {
   const startsAt = new Date(Date.parse(endsAt) - 3_600_000).toISOString();
-  const { error } = await getClient().from('visits').insert({
-    tenant_id: tenant,
-    job_id: jobId,
-    technician_id: technicianId,
-    status,
-    starts_at: startsAt,
-    ends_at: endsAt,
-  });
+  // The trip first, then WHO went: `visits` has no technician column since rung
+  // 9c, so a fixture puts somebody on a visit the same way the app does.
+  const { data, error } = await getClient()
+    .from('visits')
+    .insert({
+      tenant_id: tenant,
+      job_id: jobId,
+      status,
+      starts_at: startsAt,
+      ends_at: endsAt,
+    })
+    .select('id')
+    .single();
   if (error) throw new Error(`assignment insert failed: ${error.message}`);
+  if (technicianId) await upsertParticipants(tenant, data.id as string, [technicianId]);
 }
 
 beforeAll(async () => {
@@ -156,6 +163,30 @@ describe('listCostGapCandidates — detector #2 candidates', () => {
     expect(mine.map((r) => r.jobId)).not.toContain(otherJob);
     const theirs = await listCostGapCandidates(otherTenantId, FROM, TO);
     expect(theirs.map((r) => r.jobId)).toEqual([otherJob]);
+  });
+
+  test('a CREW names the same person on every run (rung 9c)', async () => {
+    // Two people went; the cost question is asked of ONE of them. Which one
+    // must not wobble between runs, or the same job re-asks a different
+    // technician every tick. The tiebreak is "added first", and it is stable.
+    const crewJob = await mkJob('completed');
+    const endsAt = nextSlot();
+    const startsAt = new Date(Date.parse(endsAt) - 3_600_000).toISOString();
+    const { data, error } = await getClient()
+      .from('visits')
+      .insert({ tenant_id: tenantId, job_id: crewJob, status: 'confirmed', starts_at: startsAt, ends_at: endsAt })
+      .select('id')
+      .single();
+    if (error) throw new Error(`crew visit insert failed: ${error.message}`);
+    // techB first, then techA — so "added first" is techB, NOT roster or uuid order.
+    await upsertParticipants(tenantId, data.id as string, [techB]);
+    await upsertParticipants(tenantId, data.id as string, [techA]);
+
+    const first = (await listCostGapCandidates(tenantId, FROM, TO)).find((r) => r.jobId === crewJob);
+    const second = (await listCostGapCandidates(tenantId, FROM, TO)).find((r) => r.jobId === crewJob);
+    expect(first).toBeDefined();
+    expect(first?.technicianId).toBe(techB);
+    expect(second?.technicianId).toBe(techB); // same answer, every run
   });
 
   test('carries the job title and customer name the question needs', async () => {

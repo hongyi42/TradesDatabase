@@ -73,6 +73,7 @@ beforeEach(async () => {
 
 const book = (args: {
   technicianRef?: string;
+  technicianRefs?: string[];
   date: string;
   startTime: string;
   endTime: string;
@@ -356,4 +357,176 @@ describe('pollOnce', () => {
     expect(texts).not.toContain('New visit on your schedule: 2026-11-09, 08:00–09:00.');
   });
 
+});
+
+// ── Rung 9c: a crew visit tells everyone on it ──────────────────────────────
+describe('pollOnce with a crew', () => {
+  test('a booked crew gets ONE push each — the same trip, told to both', async () => {
+    await book({
+      technicianRefs: ['notify-n1', 'notify-n2'],
+      date: '2026-12-10',
+      startTime: '09:00',
+      endTime: '10:00',
+    });
+    expect(await pollOnce(lastSeen)).toBe(2);
+    expect(sentTo().sort((a, b) => a.userId.localeCompare(b.userId))).toEqual([
+      { userId: '910000001', text: 'New visit on your schedule: 2026-12-10, 09:00–10:00.' },
+      { userId: '910000002', text: 'New visit on your schedule: 2026-12-10, 09:00–10:00.' },
+    ]);
+  });
+
+  test('a reassignment tells the leaver and the joiner, and the stayer hears it ONCE', async () => {
+    const booked = await book({
+      technicianRefs: ['notify-n1', 'notify-n2'],
+      date: '2026-12-11',
+      startTime: '09:00',
+      endTime: '10:00',
+    });
+    await pollOnce(lastSeen); // drain the booking pushes
+    sends.mockClear();
+    // Nina stays and the trip moves; Noah comes off.
+    await moveVisit({
+      tenantId,
+      visitId: booked.assignment.id,
+      date: '2026-12-11',
+      startTime: '14:00',
+      technicianRefs: ['notify-n1'],
+      reason: 'noah is out',
+      actorRef: 'notify-mgr',
+    });
+    expect(await pollOnce(lastSeen)).toBe(2);
+    const sent = sentTo().sort((a, b) => a.userId.localeCompare(b.userId));
+    // The stayer gets ONE "moved", not an add plus a remove.
+    expect(sent).toEqual([
+      { userId: '910000001', text: 'Your visit moved: 2026-12-11 → 2026-12-11, now 14:00–15:00.' },
+      { userId: '910000002', text: 'Your 2026-12-11 visit was moved off your schedule.' },
+    ]);
+  });
+
+  test('a joiner is told the visit landed on their schedule', async () => {
+    const booked = await book({
+      technicianRef: 'notify-n1',
+      date: '2026-12-12',
+      startTime: '09:00',
+      endTime: '10:00',
+    });
+    await pollOnce(lastSeen);
+    sends.mockClear();
+    await moveVisit({
+      tenantId,
+      visitId: booked.assignment.id,
+      date: '2026-12-12',
+      startTime: '09:00',
+      technicianRefs: ['notify-n1', 'notify-n2'],
+      reason: 'send noah too',
+      actorRef: 'notify-mgr',
+    });
+    expect(await pollOnce(lastSeen)).toBe(2);
+    const sent = sentTo().sort((a, b) => a.userId.localeCompare(b.userId));
+    expect(sent[0].text).toBe('Your visit moved: 2026-12-12 → 2026-12-12, now 09:00–10:00.');
+    expect(sent[1]).toEqual({
+      userId: '910000002',
+      text: 'A visit landed on your schedule: 2026-12-12, 09:00–10:00.',
+    });
+  });
+
+  test('a cancelled crew visit is told to everyone on it', async () => {
+    const booked = await book({
+      technicianRefs: ['notify-n1', 'notify-n2'],
+      date: '2026-12-13',
+      startTime: '09:00',
+      endTime: '10:00',
+    });
+    await pollOnce(lastSeen);
+    sends.mockClear();
+    await unscheduleVisit({
+      tenantId,
+      visitId: booked.assignment.id,
+      reason: 'customer called it off',
+      actorRef: 'notify-mgr',
+    });
+    expect(await pollOnce(lastSeen)).toBe(2);
+    expect(sentTo().map((s) => s.userId).sort()).toEqual(['910000001', '910000002']);
+    expect(sentTo()[0].text).toBe('Your 2026-12-13 visit was cancelled.');
+  });
+
+  test('HISTORICAL events still resolve: the rung-9b singular previousTechnicianId', async () => {
+    // schedule_events is append-only, so every `moved` event written before
+    // rung 9c is permanent and names its predecessor the OLD way. Losing either
+    // fallback means the person who lost a visit silently stops being told.
+    const booked = await book({
+      technicianRef: 'notify-n1',
+      date: '2026-12-14',
+      startTime: '09:00',
+      endTime: '10:00',
+    });
+    await pollOnce(lastSeen);
+    sends.mockClear();
+    // A hand-written event in the rung-9b shape: singular previousTechnicianId.
+    const n1 = await pg.query<{ id: string }>(
+      `select id from technicians where tenant_id = $1 and ref = 'notify-n1'`,
+      [tenantId],
+    );
+    await pg.query(
+      `insert into schedule_events (tenant_id, assignment_id, kind, actor_ref, detail)
+       values ($1, $2, 'moved', 'notify-mgr', $3::jsonb)`,
+      [
+        tenantId,
+        booked.assignment.id,
+        JSON.stringify({
+          fromDay: '2026-12-14',
+          toDay: '2026-12-14',
+          previousTechnicianId: n1.rows[0].id,
+        }),
+      ],
+    );
+    expect(await pollOnce(lastSeen)).toBe(1);
+    // Nina is on it before AND after → one "moved", from the SINGULAR key.
+    expect(sentTo()).toEqual([
+      { userId: '910000001', text: 'Your visit moved: 2026-12-14 → 2026-12-14, now 09:00–10:00.' },
+    ]);
+  });
+
+  test('HISTORICAL events still resolve: the PRE-9b predecessor row id', async () => {
+    // The oldest vintage: before rung 9b a move cancelled one row and minted
+    // another, so the event named the PREDECESSOR ROW and the person had to be
+    // read off it. Those rows are permanent (schedule_events is append-only),
+    // and this is the one fallback nothing else exercises — without it the
+    // person who lost such a visit silently stops being told.
+    const moved = await book({
+      technicianRef: 'notify-n1',
+      date: '2026-12-15',
+      startTime: '09:00',
+      endTime: '10:00',
+    });
+    const predecessor = await book({
+      technicianRef: 'notify-n2',
+      date: '2026-12-15',
+      startTime: '11:00',
+      endTime: '12:00',
+    });
+    await pollOnce(lastSeen);
+    sends.mockClear();
+    await pg.query(
+      `insert into schedule_events (tenant_id, assignment_id, kind, actor_ref, detail)
+       values ($1, $2, 'moved', 'notify-mgr', $3::jsonb)`,
+      [
+        tenantId,
+        moved.assignment.id,
+        JSON.stringify({
+          fromDay: '2026-12-15',
+          toDay: '2026-12-15',
+          previousAssignmentId: predecessor.assignment.id,
+        }),
+      ],
+    );
+    expect(await pollOnce(lastSeen)).toBe(2);
+    const sent = sentTo().sort((a, b) => a.userId.localeCompare(b.userId));
+    // Nina holds the moved visit; Noah is read off the PREDECESSOR row and told
+    // it left his schedule.
+    expect(sent).toEqual([
+      { userId: '910000001', text: 'A visit landed on your schedule: 2026-12-15, 09:00–10:00.' },
+      { userId: '910000002', text: 'Your 2026-12-15 visit was moved off your schedule.' },
+    ]);
+  });
 });

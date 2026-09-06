@@ -2,7 +2,7 @@
 date: 2026-09-06
 task: Rung 9c — a visit carries a crew: move the person off the visit row into visit_participants, relocate the double-booking guard with it, and teach every verb and reader that a trip can have several people
 research: thoughts/shared/research/2026-09-06-a-visit-carries-a-crew.md
-status: draft
+status: complete
 supersedes: nothing (thoughts/shared/plans/2026-09-03-a-visit-is-not-a-person.md is already marked superseded; this is the rung that replaces its approach)
 ---
 
@@ -66,6 +66,90 @@ visits finding from the 9b deploy is deliberately NOT here.
   `listUnscheduledOpenJobsWithCustomer` precedent (`visits.ts:826-841`).
 - **Out of scope** — stale-confirmed visits defeating attach step 2; any-participant ask-of-record; the
   board rebuild; rungs 10–12.
+
+### Amended during Phase 4
+- **The deploy's second window is NOT free, and the plan said it was.** Removing the bridge writes in
+  the same commit the services ship means that between "five services live" and migration 2 the
+  catalog names views that do not exist, new bookings leave the old `v_schedule`'s `technician_ref`
+  empty, and the still-live `no_confirmed_overlap` reads a stale column (a possible FALSE "has NOT
+  moved"). Migration 2 moved to immediately after `live`, before the seat restarts and before any
+  tick. Nothing is papered over; the window is made short and its cost is written down.
+- **The date-eval ground truth counts TRIPS, not people.** The join rewrite turned one crew visit
+  into N rows, so `dayCounts` would have graded the agent's (correct) "1 visit" against a manifest
+  saying 2 — a false failure on every count question covering a crew day. The crew is a subquery now,
+  never a join, in all three eval scripts.
+- **The catalog's worked example must join `v_schedule`.** `v_visit_participants` carries every trip
+  including CANCELLED ones and has no `local_day`, so an example that counted it directly would have
+  taught the agent to report called-off work as work done — a recorded live incident
+  (engineering-memory L1308) — and to bucket evening visits on the wrong UTC day.
+- **A move that loses its only joiner to a race lands a trip with NOBODY on it** (the Phase 2
+  carry-forward). With the bridge gone, `upsertParticipants` is the only thing that puts a person on
+  a visit. The warning and the MCP result now say so outright.
+- **The §9c record's own entries have to be `- **Title**` bullets** or `decisions:index` cannot lift
+  them into the map every session is told to grep.
+
+### Amended during Phase 3
+- **`unassigned` COUNTS people, it does not name them.** A visit held by a technician whose roster
+  row belongs to another tenant is a trip we cannot put a NAME on, not an empty one. Deriving
+  `unassigned` from the nameable crew would have offered an occupied visit to the tray; it now reads
+  `participantIdsOf(...).length === 0` in boardRead, context and the MCP schedule reads.
+- **`find_slots` excludes the subject's stop from EVERY crew member's day**, not the first one's. A
+  crew trip sits on both their days, so scoring the other member's candidates against a route that
+  still contains the stop being moved understates the drive.
+- **`listCostGapCandidates` is paged** for the same reason the Phase 1 readers are: its "somebody is
+  on it" filter moved from SQL to JS.
+- **`listVisitsForCustomer` re-sanitises its own rows.** It is returned RAW to `get_customer_context`
+  and spread into the agent's result, so it cannot rely on `participantsOf`'s tenant re-check the way
+  every other reader does.
+- **The watcher names the crew from the ROSTER read**, the same source as the addressee — two name
+  sources for one crew is how a gap ends up addressed to "Ben Shelton" while listing "ben-shelton".
+- **Two tests were vacuous until fixed**: the crew attach test passed under a single-column rule
+  because step 2 rescued it (the job needs a second live visit for step 1 to be the deciding rule),
+  and the board crew test asserted as the bridge-column holder, which a pre-9c reader also finds.
+
+### Amended during Phase 2
+- **A present-but-empty `technicianRef`/`technicianRefs` is REFUSED by the verb**, not read. `''`
+  used to mean "keep the crew" and `[]` means "park it" — two readings of the same accident, and the
+  two surfaces already refuse both at their own edge. The shared verb is now the floor under them.
+- **A race names only the joiner who is actually busy.** One collision rolls the whole upsert back,
+  so every joiner is missing — calling them all busy tells the manager something false about the
+  innocent one. The warning re-checks each at the new slot.
+- **`move_visit`'s singular `technicianRef` says it REPLACES the crew**, like its plural sibling. An
+  agent told "send Joy too" that reached for the singular field would silently drop Ben.
+- **Carried into Phase 4:** once the bridge column goes, `upsertParticipants` becomes responsible for
+  participant #1, and a joiner failure after the leavers were removed can leave a trip with NOBODY on
+  it. Neither `moveVisit`'s warning nor the MCP result would say so today. Phase 4 must cover it.
+
+### Amended during Phase 1 (probed on the local stack, 2026-09-06)
+- **SURROGATE PRIMARY KEY on `visit_participants`, not (visit_id, technician_id)** — PostgREST reads a
+  two-FK table whose PK is exactly those FKs as a JUNCTION and synthesises a many-to-many
+  `visits ↔ technicians` that collides with `visits_technician_id_fkey`. Every select embedding
+  `technicians` from `visits` then answers HTTP 300 `PGRST201` — which would have broken the
+  still-running old code for the entire deploy window, the one thing the migration order exists to
+  prevent. `id uuid primary key` + `unique (visit_id, technician_id)` gives the same guarantee and
+  keeps the relationship unambiguous (probed: 200 on all four embed shapes). Pinned by a schema test.
+- **The five embed selects KEEP `technicians(...)` and ADD the participants embed** rather than
+  replacing it (the plan said replace). The plan also said the `technicians` member stays on the row
+  types until Phase 3 — replacing the select would have left it typed but always undefined, i.e. no
+  technician names on the board for two phases. Both resolve now; Phase 3 removes the old one.
+- **The bridge column keeps whoever already holds it** if they are still on the crew (`bridgeFor`),
+  instead of always taking the first of the list. The trigger's bridge arm deletes the OLD
+  column-holder's participant row, so re-stating the same crew in a different order silently dropped
+  a STAYING member and skipped their overlap check — the move then landed on top of their own
+  booking (review round 1, probed).
+- **`on conflict (visit_id, technician_id) do nothing`, never a bare `on conflict`** — an untargeted
+  DO NOTHING arbitrates over every constraint, the exclusion included, so the relocated guard was
+  unenforced on the trigger's own insert path (review round 2, probed).
+- **The fill trigger fires on INSERT *or UPDATE* and takes `for share` on the visit** — without
+  either, a participant's derived times can drift from its trip (a direct UPDATE, or an insert racing
+  a move), and the guard is then checking a time nobody is going.
+- **The three tenant-wide readers are PAGED** — the "nobody is on it" test moved from SQL to JS, so
+  SQL now returns every confirmed row in the window and PostgREST's 1000-row cap would truncate
+  before the filter ran. The tray reads from the epoch, and untimed rows sort last, so they are
+  exactly what would have been dropped.
+- **`isOverlapViolation` excludes a joiner failure** — both carry 23P01, but one means "nothing
+  moved" and the other means "it moved and one person is missing". Reporting the first for the second
+  tells the manager the opposite of what happened.
 
 ## Plain-language walkthrough
 ```
@@ -177,11 +261,11 @@ revoke all on visit_participants from anon, authenticated;
 - `npm run gen:types:local` (never `gen:types` — it targets the pilot).
 
 ### Automated verification
-- [ ] `npx supabase db reset` applies the migration; `npm run typecheck` · `lint` · `test` · `build`
-- [ ] `src/db/schema.test.ts`: `visit_participants` exists with `no_confirmed_overlap_participant`;
+- [x] `npx supabase db reset` applies the migration; `npm run typecheck` · `lint` · `test` · `build`
+- [x] `src/db/schema.test.ts`: `visit_participants` exists with `no_confirmed_overlap_participant`;
       `visits.technician_id` still present (inverted in Phase 4); ONE trigger on `visits` named
       `visits_participants_after` and none named `*sync*`/`*mirror*` (the order pin, review F3)
-- [ ] `src/db/scheduling.test.ts` — re-point :292 (overlap raised on the PARTICIPANT insert), :414 (move
+- [x] `src/db/scheduling.test.ts` — re-point :292 (overlap raised on the PARTICIPANT insert), :414 (move
       onto a taken slot: `23P01` from the sync trigger, visit EXACTLY where it was), :706 (untimed twins
       insert). New: two ids → two participants; a `23P01` on the second person leaves NO visit row behind;
       set-participants with a colliding add leaves the crew intact; sync trigger moves every participant's
@@ -191,11 +275,11 @@ revoke all on visit_participants from anon, authenticated;
       OLD person A holds elsewhere SUCCEEDS** (the F3 order pin — fails under the wrong trigger order);
       `listOverdueConfirmedVisits` returns a two-participant visit ONCE (db test — `watchers.test.ts`
       mocks this reader, so only a db test can see a fan-out).
-- [ ] Test-count audit: added ≥ 11, deleted 0 (the rung-9a mass-edit rule).
+- [x] Test-count audit: added ≥ 11, deleted 0 (the rung-9a mass-edit rule).
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack only.
-- [ ] `docker exec … psql`: after `db reset` + `npm run seed:local`, `select count(*) from
+- [x] `docker exec … psql`: after `db reset` + `npm run seed:local`, `select count(*) from
       visit_participants` equals `select count(*) from visits where technician_id is not null`.
 
 ### Manual verification
@@ -247,21 +331,21 @@ joined and who left, and the Telegram pushes reach all of them.
 unchanged (it sends the shorthand).
 
 ### Automated verification
-- [ ] `typecheck` · `lint` · `test` · `build`
-- [ ] `booking.test.ts`: book two refs → two participants + one `booked` event carrying both; an unknown
+- [x] `typecheck` · `lint` · `test` · `build`
+- [x] `booking.test.ts`: book two refs → two participants + one `booked` event carrying both; an unknown
       second ref is refused by name and NO visit is left behind; move with `technicianRefs` replaces the
       crew and the event carries `previousTechnicianIds`; move onto a slot one crew member holds elsewhere
       is refused per person BEFORE the write; **reassign-and-move where the LEAVER is busy at the target
       succeeds** (review F2); the joiner-failure message; `unassign:true` empties it.
-- [ ] `boardNotify.test.ts`: a booked crew → one push each; a reassignment → the leaver told, the joiner
+- [x] `boardNotify.test.ts`: a booked crew → one push each; a reassignment → the leaver told, the joiner
       told; a historical `previousTechnicianId` still resolves.
-- [ ] `server.test.ts`: `technicianRefs` on book and move, `crewNote` present for N > 1; the catalog
+- [x] `server.test.ts`: `technicianRefs` on book and move, `crewNote` present for N > 1; the catalog
       regression pin that `technicianRef` still works alone.
-- [ ] `boardApi.test.ts`: `technicianRefs` accepted on all three routes.
+- [x] `boardApi.test.ts`: `technicianRefs` accepted on all three routes.
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack.
-- [ ] none beyond the suite (all codifiable).
+- [x] none beyond the suite (all codifiable).
 
 ### Manual verification
 - [ ] none
@@ -311,23 +395,23 @@ participants' refs. `SPINE_VIEW_CATALOG` untouched until Phase 4.
 re-sourced in Phase 1). **`src/eval/plannerSim.ts`** — no change (visit seeding uses the sugar).
 
 ### Automated verification
-- [ ] `typecheck` · `lint` · `test` · `build`
-- [ ] `recordFieldNote.test.ts`: a crew of two, either person's note attaches to THE visit and marks it
+- [x] `typecheck` · `lint` · `test` · `build`
+- [x] `recordFieldNote.test.ts`: a crew of two, either person's note attaches to THE visit and marks it
       `completed` — **the closing case files as the SECOND-added participant**, or the partner-row bug can
       regress unseen; a non-participant technician's same-day note falls to step 3 and creates one.
-- [ ] `watchers.test.ts`: an unreported crew visit → ONE observation, `technician_id` = the first-added
+- [x] `watchers.test.ts`: an unreported crew visit → ONE observation, `technician_id` = the first-added
       participant, `context.participants` both; a note by the OTHER participant still suppresses it
       (job-scoped freshness).
-- [ ] `jobs` cost-gap test: a crew names the same person on every run.
-- [ ] `fit` test: a crew visit occupies BOTH people's days. `boardRead`/`boardApi` tests: team view shows
+- [x] `jobs` cost-gap test: a crew names the same person on every run.
+- [x] `fit` test: a crew visit occupies BOTH people's days. `boardRead`/`boardApi` tests: team view shows
       a crew stop in both lanes with one `visitId`; the second person's self-view contains it EXACTLY
       ONCE (length assertion — `boardApi.test.ts:293`'s count passes today only because its fixture has
       no crew); the detail 404s for a non-participant.
-- [ ] Test-count audit as in Phase 1.
+- [x] Test-count audit as in Phase 1.
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack.
-- [ ] none beyond the suite.
+- [x] none beyond the suite.
 
 ### Manual verification
 - [ ] none
@@ -379,25 +463,46 @@ SQL/selects on `a.technician_id` → participants; `node --check` each `.mjs`.
 box.sh` rule 5 (+1 sentence: "to send two people, pass technicianRefs"), 2026-09-02 research gets a
 superseded pointer to this plan. `npm run decisions:index`.
 
-**Deploy order** — 0. re-check pilot captures (3-day count) and open cancel tokens; 1. `apply_migration`
-`20260907100000`; read back `count(visit_participants) == count(visits where technician_id not null)`,
-the constraint on `pg_constraint`, all three triggers; probe `visits?select=*,visit_participants(technician_id,technicians(ref))&limit=1`
-→ 200; 2. sync the fork; 3. deploy `TradesDatabase`, `lifecycle-heart`, `Board_Worker` (autoDeploy
-off) and verify all five `live`; 4. `nemoclaw <s> gateway restart` on s2, then s3 s5 s6 s7 s8 (arg
-schemas changed); 5. one clean `lifecycle-heart` tick; 6. `apply_migration` `20260907100100`; read back
-`information_schema.columns` has no `visits.technician_id`, schema md5 pilot == local.
+**Deploy order** — 0. re-check pilot captures (3-day count), open cancel tokens, and
+`select to_regclass('public.assignments')` is null (a surviving 9b compat view would make the column
+drop fail); 1. `apply_migration` `20260907100000`; read back
+`count(visit_participants) == count(visits where technician_id not null)`, the constraint on
+`pg_constraint`, both triggers; probe
+`visits?select=*,visit_participants(technician_id,technicians(ref))&limit=1` → 200 AND
+`visits?select=id,technicians(ref)&limit=1` → 200 (the junction check: a 300 here means the surrogate
+key was lost); 2. sync the fork; 3. deploy `TradesDatabase`, `lifecycle-heart`, `Board_Worker`
+(autoDeploy off) and verify all five `live`; **4. `apply_migration` `20260907100100` IMMEDIATELY** —
+read back `information_schema.columns` has no `visits.technician_id`, schema md5 pilot == local;
+5. `nemoclaw <s> gateway restart` on s2, then s3 s5 s6 s7 s8 (arg schemas changed); 6. one clean
+`lifecycle-heart` tick.
+
+**WHY MIGRATION 2 MOVED UP, and what the remaining window costs** (Phase 4 review). The first
+window — migration 1 applied, services still on the old commit — degrades NOTHING: the column, its
+guard and its index all survive, and the trigger's bridge arm keeps participants true while the old
+code writes the column. The SECOND window, between the services going live and migration 2, is not
+free, because this rung's commit stops writing the bridge column:
+  * the new `SPINE_VIEW_CATALOG` names `technician_refs` and `v_visit_participants`, which do not
+    exist until migration 2 — a planner tick in that window gets 42703/42P01 on a `spine_read`;
+  * visits booked in the window leave `technician_id` NULL, so the still-live OLD `v_schedule`
+    shows `technician_ref` empty for them;
+  * the still-live `no_confirmed_overlap` on `visits` reads a now-stale `technician_id`, so moving
+    a pre-9c visit whose original holder is leaving the crew can be refused with a false
+    "already has a confirmed visit … the visit has NOT moved".
+None of it corrupts data, and all three end the moment migration 2 lands — so the window is made as
+SHORT as possible (migration 2 immediately after `live`, before the seat restarts and before any
+deliberate tick) rather than papered over. Do not run a `lifecycle-heart` tick inside it.
 
 ### Automated verification
-- [ ] `db reset` applies both; `typecheck` · `lint` · `test` · `build`; `node --check` on 5 `.mjs`
-- [ ] db test: `v_schedule` returns ONE row for a two-person visit with both refs in order;
+- [x] `db reset` applies both; `typecheck` · `lint` · `test` · `build`; `node --check` on 5 `.mjs`
+- [x] db test: `v_schedule` returns ONE row for a two-person visit with both refs in order;
       `v_visit_participants` walls the tenant; the catalog pin names the new columns and not `technician_ref`.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP, `RENDER_API_KEY`, `ssh tradesbox`, fork push rights.
-- [ ] The window, stated: between migration 1 and the deploy, old code writes the column and the
-      trigger keeps participants true; between the deploy and migration 2, new code writes the bridge
-      column too, so `v_schedule` and the old guard stay coherent — NOTHING degrades in either window
-      (this is what the bridge buys; review §5).
+- [ ] The window, stated HONESTLY (corrected in Phase 4 review — the original claim that nothing
+      degrades in either window was wrong once the bridge writes were removed in this same commit):
+      window 1 is clean; window 2 costs a broken catalog, empty `technician_ref` on the old view, and
+      a possible false overlap refusal — see **WHY MIGRATION 2 MOVED UP** above. Keep it short.
 - [ ] Steps 1–6 with read-backs. Then on s2 (fresh session ids, the 9b recipe): book "Ben and Joy" on a
       Default-Tenant job → `visit_participants` has 2 rows for ONE visit, one `booked` event with both
       refs; move it → both participant copies moved, `previousTechnicianIds` on the event; s5 (ben) files a

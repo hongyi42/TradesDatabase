@@ -2,7 +2,11 @@ import { getCustomer, type Customer } from './customers.js';
 import { getTenant } from './tenants.js';
 import { listJobsForCustomer, type Job } from './jobs.js';
 import { listVisitsForCustomer, type VisitWithTechnician } from './visits.js';
-import { listUpcomingVisitsForCustomer } from './visits.js';
+import {
+  listUpcomingVisitsForCustomer,
+  participantIdsOf,
+  participantsOf,
+} from './visits.js';
 import { localDateISO } from '../schedule/availability.js';
 import { spineNowIso } from '../evalClock.js';
 // Full weekday name, matching resolve_date's phrase convention ("Monday
@@ -104,13 +108,18 @@ export async function getCustomerContext(
       .map((r) => {
         const date = r.starts_at?.slice(0, 10) ?? null;
         const phrase = date ? `${weekdayFull(date)} ${date}` : 'no time set yet';
+        const crew = participantsOf(r, customer.tenant_id);
         return {
           visitId: r.id,
           jobId: r.job_id,
           jobTitle: r.jobs?.title ?? null,
-          technicianRef: r.technicians?.ref ?? null,
-          technicianName: r.technicians?.display_name ?? null,
-          unassigned: r.technician_id === null,
+          technicianRef: crew[0]?.ref ?? null,
+          technicianName: crew[0]?.displayName ?? null,
+          // EVERY name on the trip: the brief tells a customer who is coming,
+          // and "Ben" for a two-person job is a wrong answer, not a short one.
+          technicianRefs: crew.map((p) => p.ref),
+          technicianNames: crew.map((p) => p.displayName),
+          unassigned: participantIdsOf(r, customer.tenant_id).length === 0, // counted, not named
           date,
           startTime: r.starts_at?.slice(11, 16) ?? null,
           endTime: r.ends_at?.slice(11, 16) ?? null,

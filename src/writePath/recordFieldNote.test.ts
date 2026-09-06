@@ -173,6 +173,97 @@ describe('a field note attaches to its trip (rung 9b)', () => {
     expect(Number((await visitRow(visit.id)).labor_hours)).toBe(3.5);
   });
 
+  test('a CREW visit: EITHER person closes it, and the partner row never existed to strand', async () => {
+    // The bug this rung removes: two people on one trip used to be two visits,
+    // so the one who filed closed HERS and his sat 'confirmed' forever — chased
+    // by the watcher for a report that had already been written.
+    //
+    // The closer is the SECOND-added participant on purpose. Filing as the
+    // first one would pass even if the rule still matched a single column.
+    const { job, phone } = await jobFor('Duo Dana');
+    const first = await freshTech();
+    const firstRef = `attach-tech-${techSeq - 1}`;
+    const second = await freshTech();
+    const secondRef = `attach-tech-${techSeq - 1}`;
+    const visit = await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianIds: [first, second],
+      startsAt: naive('00:00'),
+      endsAt: naive('23:59'),
+      status: 'confirmed',
+    });
+    // A SECOND live visit on the job, so step 2 ("the job's one live visit")
+    // cannot rescue a step-1 miss. Without it this test passes even when the
+    // rule is still a single-column match — which is the regression it exists
+    // to catch.
+    await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianIds: [first],
+      startsAt: naive('09:00', TOMORROW),
+      endsAt: naive('10:00', TOMORROW),
+      status: 'confirmed',
+    });
+    expect(firstRef).not.toBe(secondRef);
+    const before = await visitCount();
+    const r = await recordFieldNote(
+      noteBy(secondRef, 'technician_note', 'we finished it'),
+      stub({ phone, customerName: 'Duo Dana', jobTitle: 'Duo Dana work', laborHours: 3 }),
+    );
+    expect(r.visitId).toBe(visit.id); // THE trip, not a second one
+    expect(await visitCount()).toBe(before);
+    const row = await visitRow(visit.id);
+    expect(row.status).toBe('completed'); // done for BOTH of them
+    // And the crew is intact — closing it did not take anybody off.
+    const { rows: crew } = await pg.query<{ n: string }>(
+      'select count(*)::int as n from visit_participants where visit_id = $1',
+      [visit.id],
+    );
+    expect(Number(crew[0].n)).toBe(2);
+  });
+
+  test('a technician who is NOT on the trip falls through to step 3 and gets their own', async () => {
+    const { job, phone } = await jobFor('Outside Otto');
+    const onIt = await freshTech();
+    await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianIds: [onIt],
+      startsAt: naive('00:00'),
+      endsAt: naive('23:59'),
+      status: 'confirmed',
+    });
+    // A SECOND live visit on the job, so step 2 ("the job's one live visit")
+    // cannot resolve it either — otherwise every note lands on the only trip
+    // regardless of who is on it, and step 1 is never the deciding rule.
+    await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianIds: [onIt],
+      startsAt: naive('09:00', TOMORROW),
+      endsAt: naive('10:00', TOMORROW),
+      status: 'confirmed',
+    });
+    const stranger = await freshTech();
+    const strangerRef = `attach-tech-${techSeq - 1}`;
+    expect(stranger).not.toBe(onIt);
+    const before = await visitCount();
+    const r = await recordFieldNote(
+      noteBy(strangerRef, 'technician_note', 'I went too, separately'),
+      stub({ phone, customerName: 'Outside Otto', jobTitle: 'Outside Otto work' }),
+    );
+    // Step 1 does not match — the filer is not on today's trip, so it is NOT
+    // closed on their say-so — and step 2 cannot pick between two live visits,
+    // so a trip with no booking behind it is created, as it always was.
+    expect(await visitCount()).toBe(before + 1);
+    const { rows } = await pg.query<{ n: string }>(
+      'select count(*)::int as n from visit_participants where visit_id = $1',
+      [r.visitId],
+    );
+    expect(Number(rows[0].n)).toBe(1);
+  });
+
   test('a note filed BEFORE the visit starts attaches as evidence, and leaves it PLACED', async () => {
     const { job, phone } = await jobFor('Early Ed');
     const tech = await freshTech();

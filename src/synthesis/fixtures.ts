@@ -46,7 +46,6 @@ export const visit = (over: Partial<VisitWithTechnician> = {}): VisitWithTechnic
   id: 'visit-1',
   tenant_id: 'tenant-1',
   job_id: 'job-1',
-  technician_id: null,
   starts_at: null,
   ends_at: null,
   status: 'completed',
@@ -58,7 +57,20 @@ export const visit = (over: Partial<VisitWithTechnician> = {}): VisitWithTechnic
   source_capture_id: 'cap-a',
   created_at: '2026-06-03T00:00:00.000Z',
   updated_at: '2026-06-03T00:00:00.000Z',
-  technicians: { ref: 'jane', display_name: 'Jane', tenant_id: 'tenant-1' },
+  // The crew, the way every reader sees it since rung 9c.
+  visit_participants: [
+    {
+      technician_id: 'tech-jane',
+      created_at: '2026-06-03T00:00:00.000Z',
+      tenant_id: 'tenant-1',
+      technicians: {
+        id: 'tech-jane',
+        ref: 'jane',
+        display_name: 'Jane',
+        tenant_id: 'tenant-1',
+      },
+    },
+  ],
   ...over,
 });
 

@@ -13,6 +13,9 @@ import {
   unwrapAttributes,
   type Visit,
   type Json,
+  participantIdsOf,
+  participantsOf,
+  type ParticipantRef,
 } from '../db/index.js';
 import { formatAddress } from '../routes/deepLink.js';
 import { localDateISO } from './availability.js';
@@ -33,16 +36,22 @@ import { clampToTechnicianHorizon, horizonDaysFor } from './policy.js';
 // get_team_schedule keeps its own version stamp (it calls latestScheduleVersion
 // directly, not through here), as does boardNotify.
 //
-// Feature A semantics carried over: technician_id is nullable — person-less
-// rows render technicianRef/technicianName null and unassigned:true, and a
-// technician self-view can never contain them (null never equals a viewer id).
+// Feature A semantics carried over: a visit can have NOBODY on it — such rows
+// render technicianRef/technicianName null and unassigned:true, and a
+// technician self-view can never contain them (an empty crew has no member to
+// match the viewer).
 
 export class InvalidRangeError extends Error {}
 
 export interface BoardStop {
   visitId: string;
+  // THE LANE this stop is drawn in. A crew visit emits one stop per person in
+  // the team view — all sharing `visitId` — so the grid's lanes need no client
+  // change; `technicianRefs` says who else is on the same trip.
   technicianRef: string | null;
   technicianName: string | null;
+  technicianRefs: string[];
+  technicianNames: string[];
   unassigned: boolean;
   customer: string | null;
   address: string | null;
@@ -135,9 +144,13 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
     new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
     ['confirmed'],
   );
+  // MEMBERSHIP, not a column match (rung 9c): a technician's own board must
+  // show a trip they are on even when somebody else was named first.
   const visible =
     input.viewerTechnicianId != null
-      ? rows.filter((r) => r.technician_id === input.viewerTechnicianId)
+      ? rows.filter((r) =>
+          participantIdsOf(r, tenantId).includes(input.viewerTechnicianId as string),
+        )
       : rows;
   const byDay = new Map<string, BoardStop[]>();
   for (const row of visible) {
@@ -158,14 +171,31 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
     // behavior — security review 2026-07-22.)
     const customer =
       job && job.customers && job.customers.tenant_id === tenantId ? job.customers : null;
-    const technician =
-      row.technicians && row.technicians.tenant_id === tenantId ? row.technicians : null;
+    const crew = participantsOf(row, tenantId);
+    // ONE STOP PER PERSON in the TEAM view, all sharing a visitId: the grid
+    // draws lanes by technician, so a two-person trip has to appear in both
+    // lanes or one of them looks free. In the SELF view the layout is flat
+    // (web/board/board.js) — one stop, or the viewer's own crew visit would be
+    // drawn twice on their own day.
+    const lanes: (ParticipantRef | null)[] =
+      crew.length === 0
+        ? [null]
+        : input.viewerTechnicianId != null
+          ? [crew.find((p) => p.technicianId === input.viewerTechnicianId) ?? crew[0]]
+          : crew;
     const bucket = byDay.get(day) ?? [];
+    for (const technician of lanes) {
     bucket.push({
       visitId: row.id,
       technicianRef: technician?.ref ?? null,
-      technicianName: technician?.display_name ?? null,
-      unassigned: row.technician_id === null,
+      technicianName: technician?.displayName ?? null,
+      // EVERY name on the trip, so a lane row can say who else is on it.
+      technicianRefs: crew.map((p) => p.ref),
+      technicianNames: crew.map((p) => p.displayName),
+      // COUNTED, not named: somebody whose roster row belongs to another tenant
+      // is a person we cannot NAME, not an empty visit. Saying "unassigned"
+      // there would offer an occupied trip to the tray.
+      unassigned: participantIdsOf(row, tenantId).length === 0,
       customer: customer?.name ?? null,
       address: customer
         ? formatAddress({
@@ -185,6 +215,7 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
       // (Pre-existing leak, closed here — security review 2026-07-22.)
       jobId: job ? row.job_id : null,
     });
+    }
     byDay.set(day, bucket);
   }
   // The per-day strip is GONE (rung 9a). An unplaced row used to be smeared
@@ -242,6 +273,14 @@ export interface LooseBucket {
     // live-assignment anti-join — invisible on every surface at once).
     // Always false for an untimed visit: with no date, nothing can be late.
     overdue: boolean;
+    // WHO IS ALREADY ON IT (rung 9c). The tray holds two different rows: a
+    // visit with NOBODY on it, and an UNTIMED visit that has a full crew. They
+    // look identical without this, and the tray's Assign button REPLACES the
+    // crew — so a manager tapping Assign on the second kind silently takes a
+    // real crew off a real trip. The board renders these and names what the
+    // tap will remove.
+    technicianRefs: string[];
+    technicianNames: string[];
   }[];
   unscheduledJobs: UnscheduledJob[];
 }
@@ -293,6 +332,10 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
       // every date field reads null, and nothing untimed can be overdue.
       const placedRow = isPlaced(row);
       const date = placedRow ? row.starts_at.slice(0, 10) : null;
+      // Nameable crew only, tenant-checked at both levels (participantsOf) —
+      // the same withhold-the-field-keep-the-row rule the rest of this reader
+      // applies to job and customer names.
+      const crew = participantsOf(row, tenantId);
       return {
         visitId: row.id,
         date,
@@ -302,6 +345,8 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
         customer: customer?.name ?? null,
         jobTitle: job ? job.title : null,
         overdue: placedRow ? (date as string) < today : false,
+        technicianRefs: crew.map((p) => p.ref),
+        technicianNames: crew.map((p) => p.displayName),
         // Sort key only — stripped below so the endpoint serves exactly the
         // declared LooseBucket shape.
         _createdAt: row.created_at,
@@ -355,8 +400,10 @@ export interface VisitDetail {
   start: string | null;
   end: string | null;
   unassigned: boolean;
-  technicianRef: string | null;
+  technicianRef: string | null; // first-or-null; the crew is technicianRefs
   technicianName: string | null;
+  technicianRefs: string[];
+  technicianNames: string[];
   // Null when the assignment references another tenant's job — withheld like
   // every other nested field (the day-view jobId precedent). The sheet's
   // Purpose editor posts against this id (plan 4a.5).
@@ -419,7 +466,11 @@ export async function readVisitDetail(
   // serial round-trips, each waiting on the id from the one before).
   const row = await getVisitWithRefsForTenant(visitId, tenantId);
   if (!row) return null;
-  if (viewerTechnicianId != null && row.technician_id !== viewerTechnicianId) return null;
+  // MEMBERSHIP (rung 9c): a crew-mate who was not named first still owns this
+  // trip and must be able to open it.
+  if (viewerTechnicianId != null && !participantIdsOf(row, tenantId).includes(viewerTechnicianId)) {
+    return null;
+  }
   // SECURITY: the embed's foreign keys are ID-ONLY, so every nested row is
   // re-checked against the tenant before use — the same guards the id-only
   // getJob/getCustomer reads required, plus the tenant scoping that
@@ -427,16 +478,17 @@ export async function readVisitDetail(
   const job = row.jobs && row.jobs.tenant_id === tenantId ? row.jobs : null;
   const customer =
     job && job.customers && job.customers.tenant_id === tenantId ? job.customers : null;
-  const technician =
-    row.technicians && row.technicians.tenant_id === tenantId ? row.technicians : null;
+  const crew = participantsOf(row, tenantId);
   return {
     visitId: row.id,
     status: row.status,
     start: row.starts_at,
     end: row.ends_at,
-    unassigned: row.technician_id === null,
-    technicianRef: technician?.ref ?? null,
-    technicianName: technician?.display_name ?? null,
+    unassigned: participantIdsOf(row, tenantId).length === 0, // counted, not named
+    technicianRef: crew[0]?.ref ?? null,
+    technicianName: crew[0]?.displayName ?? null,
+    technicianRefs: crew.map((p) => p.ref),
+    technicianNames: crew.map((p) => p.displayName),
     // job/customer/technician are already tenant-gated above — no re-test here.
     // jobId gated on the tenant-checked job, NOT raw row.job_id (the day-view
     // precedent: never disclose another firm's job UUID).

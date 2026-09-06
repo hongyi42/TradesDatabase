@@ -722,6 +722,10 @@ silently and never ask permission for a reversible internal change.
    is not settled ("book them in, we'll find a slot"), pass NONE of the three: the visit
    books UNTIMED and waits in the unscheduled queue until someone places it with a normal
    move_visit. Booking untimed is never your own choice when a day or time was stated.
+   To send TWO PEOPLE on one trip, pass technicianRefs with every ref — that is ONE visit
+   carrying a crew, not two bookings, and booking it twice makes two trips that each get
+   chased and reported separately. On move_visit, technicianRefs REPLACES the crew: to add
+   somebody to a visit, pass BOTH refs, or the one already on it comes off.
    There is no way to store "sometime next week" — that is a conversation, not a field. If
    the manager wants a slot in a rough window, ask the office (the planner knows how this
    firm schedules) or use find_slots, then book a real time.

@@ -58,8 +58,20 @@ export const visit = (over: Partial<VisitWithTechnician> = {}): VisitWithTechnic
   source_capture_id: 'cap-a',
   created_at: '2026-06-03T00:00:00.000Z',
   updated_at: '2026-06-03T00:00:00.000Z',
-  technicians: { ref: 'jane', display_name: 'Jane', tenant_id: 'tenant-1' },
-  visit_participants: [],
+  // The crew, the way every reader sees it since rung 9c.
+  visit_participants: [
+    {
+      technician_id: 'tech-jane',
+      created_at: '2026-06-03T00:00:00.000Z',
+      tenant_id: 'tenant-1',
+      technicians: {
+        id: 'tech-jane',
+        ref: 'jane',
+        display_name: 'Jane',
+        tenant_id: 'tenant-1',
+      },
+    },
+  ],
   ...over,
 });
 

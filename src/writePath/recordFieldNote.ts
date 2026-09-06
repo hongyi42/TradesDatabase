@@ -22,6 +22,7 @@ import {
   type Job,
   type JobStatus,
   type Json,
+  type Visit,
 } from '../db/index.js';
 import { defaultExtractor, type Extractor, type ExtractedFields } from './extract.js';
 import { matchIdentity, type MatchResult, type ScheduledCustomerDraft } from './identityMatch.js';
@@ -312,7 +313,10 @@ export async function recordFieldNote(
     laborHours: extracted.laborHours ?? null,
     attributes: noteAttributes,
   });
-  let visit = resolved.visit;
+  // Widened to the bare row on purpose: resolveVisitForNote hands back a visit
+  // WITH its crew (the attach rule needs it), but from here on the writes below
+  // return plain rows and nothing in this function asks who was on the trip.
+  let visit: Visit | null = resolved.visit;
   if (visit) {
     // The LINK is what every channel gets: it is the evidence citation, and the
     // whole reason attach is channel-blind.

@@ -1,5 +1,6 @@
 import type { Database, Json } from './database.types.js';
 import { getClient } from './client.js';
+import { participantIdsOf, type ParticipantIdEmbed } from './visits.js';
 
 export type Job = Database['public']['Tables']['jobs']['Row'];
 export type JobStatus = Database['public']['Enums']['job_status'];
@@ -225,9 +226,26 @@ export async function listCostGapCandidates(
   endedFromNaive: string, // ISO, firm wall-clock as if UTC — inclusive
   endedToNaive: string, // ISO, firm wall-clock as if UTC — exclusive
 ): Promise<CostGapCandidate[]> {
+  // PAGED: the "somebody is on it" test moved from SQL (.not technician_id is
+  // null) into JS with the crew, so this query now returns person-less rows too
+  // and PostgREST's 1000-row cap would truncate before the filter ran. The order
+  // is ends_at DESC and the dedup keeps the first row per job, so a truncation
+  // would silently drop the jobs whose only in-window visit ended earliest.
+  const PAGE = 1000;
+  const rows: Array<{
+    id: string;
+    tenant_id: string;
+    ends_at: string | null;
+    job_id: string;
+    jobs: { id: string; title: string | null; tenant_id: string; customers: { name: string } | null } | null;
+    visit_participants: ParticipantIdEmbed[];
+  }> = [];
+  for (let fromRow = 0; ; fromRow += PAGE) {
   const { data, error } = await getClient()
     .from('visits')
-    .select('technician_id, ends_at, job_id, jobs!inner(id, title, status, tenant_id, customers(name))')
+    .select(
+      'id, tenant_id, ends_at, job_id, jobs!inner(id, title, status, tenant_id, customers(name)), visit_participants(technician_id,created_at,tenant_id)',
+    )
     .eq('tenant_id', tenantId)
     // 'completed' BELONGS here since rung 9b: a field note now marks the visit
     // it reports as completed, so filtering to 'confirmed' alone would go blind
@@ -245,26 +263,30 @@ export async function listCostGapCandidates(
     // is the only thing between the firm and knowing what the job made.
     // 'cancelled'/'declined' stay out — no work happened, so nothing was spent.
     .in('jobs.status', ['completed', 'invoiced', 'paid'])
-    .not('technician_id', 'is', null)
     // DESCENDING, deliberately: the dedup below keeps the FIRST row per job, so
     // this makes that the job's MOST RECENT in-window visit. Ascending asked
     // whoever happened to go first on a multi-visit job — the wrong person to
     // ask what it ended up costing.
-    .order('ends_at', { ascending: false });
+    .order('ends_at', { ascending: false })
+    .order('id', { ascending: true }) // total order, or a page can repeat a row
+    .range(fromRow, fromRow + PAGE - 1);
   if (error) throw new Error(`listCostGapCandidates failed: ${error.message}`);
-  const rows = (data ?? []) as unknown as Array<{
-    technician_id: string | null;
-    ends_at: string | null;
-    job_id: string;
-    jobs: { id: string; title: string | null; tenant_id: string; customers: { name: string } | null } | null;
-  }>;
+    rows.push(...((data ?? []) as unknown as typeof rows));
+    if (!data || data.length < PAGE) break;
+  }
   const seen = new Set<string>();
   const out: CostGapCandidate[] = [];
   for (const r of rows) {
     // id-only-FK belt-and-suspenders (the boardRead pattern): the embed is
     // filtered in the query, re-checked here.
     if (!r.jobs || r.jobs.tenant_id !== tenantId) continue;
-    if (!r.technician_id || !r.ends_at) continue;
+    if (!r.ends_at) continue;
+    // WHO to ask, off the crew (rung 9c). A trip with nobody on it has nobody
+    // to ask, so it is skipped exactly as a null technician_id used to be. On a
+    // crew the tiebreak-first participant is asked — deterministic, so the same
+    // job names the same person on every run rather than flipping between them.
+    const crew = participantIdsOf(r, tenantId);
+    if (crew.length === 0) continue;
     // ONE candidate per job — a job with three visits is still one cost
     // question (subject_ref is the job). MOST RECENT visit wins (see the
     // descending order above): the technician who was there last is the one who
@@ -275,7 +297,7 @@ export async function listCostGapCandidates(
       jobId: r.job_id,
       jobTitle: r.jobs.title,
       customerName: r.jobs.customers?.name ?? null,
-      technicianId: r.technician_id,
+      technicianId: crew[0],
       endsAtLocal: r.ends_at,
     });
   }

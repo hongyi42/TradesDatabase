@@ -17,6 +17,7 @@
 import {
   getTechnicianById,
   listVisitsForTenant,
+  participantIdsOf,
   listJobsWithCustomerByIds,
   listTeam,
   listTimeOffForTechnician,
@@ -385,8 +386,10 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
     addDaysISO(input.latest, 1) + 'T00:00:00.000Z',
     ['confirmed'],
   );
+  // Rows with SOMEBODY on them — a trip nobody is going on occupies nobody's
+  // day (rung 9c: that is the crew list, not a column).
   const rows = placedRows.filter(
-    (r) => r.technician_id !== null && r.id !== input.excludeVisitId,
+    (r) => participantIdsOf(r, input.tenantId).length > 0 && r.id !== input.excludeVisitId,
   );
   const jobs = await listJobsWithCustomerByIds(input.tenantId, [
     ...new Set(rows.map((r) => r.job_id)),
@@ -403,7 +406,11 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
     const citiesByDate = new Map<string, Set<string>>();
     const stopsByDate = new Map<string, number>();
     const commitmentsByDate = new Map<string, number>();
-    const mine = rows.filter((r) => r.technician_id === t.id);
+    // A CREW visit occupies BOTH people's days — it is one trip and each of
+    // them is out on it, so it is `mine` for every participant.
+    const mine = rows.filter((r) =>
+      participantIdsOf(r, input.tenantId).includes(t.id),
+    );
     const span = daysBetween(input.earliest, input.latest);
     for (let i = 0; i <= span; i++) {
       const date = addDaysISO(input.earliest, i);
@@ -438,7 +445,8 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
 export interface DisplacementCandidate {
   visitId: string;
   customer: string | null;
-  technicianRef: string | null;
+  technicianRef: string | null; // first-or-null; the crew is technicianRefs
+  technicianRefs: string[];
   day: string;
   weekday: string; // server-computed — same no-agent-calendar-math rule
   span: string;
@@ -470,18 +478,23 @@ export async function findDisplacementCandidates(
   // is the only ordering the row itself can justify.
   const ordered = [...rows].sort((a, b) => (a.starts_at < b.starts_at ? -1 : 1));
   for (const row of ordered.slice(0, limit)) {
-    let ref: string | null = null;
-    if (row.technician_id) {
-      if (!refCache.has(row.technician_id)) {
-        const t = await getTechnicianById(row.technician_id, tenantId);
-        refCache.set(row.technician_id, t?.ref ?? null);
+    // EVERY person who would be displaced — moving a crew visit moves both of
+    // them, so naming one would understate what the manager is being asked to
+    // disturb.
+    const refs: string[] = [];
+    for (const technicianId of participantIdsOf(row, tenantId)) {
+      if (!refCache.has(technicianId)) {
+        const t = await getTechnicianById(technicianId, tenantId);
+        refCache.set(technicianId, t?.ref ?? null);
       }
-      ref = refCache.get(row.technician_id) ?? null;
+      const ref = refCache.get(technicianId) ?? null;
+      if (ref) refs.push(ref);
     }
     out.push({
       visitId: row.id,
       customer: nameByJob.get(row.job_id) ?? null,
-      technicianRef: ref,
+      technicianRef: refs[0] ?? null,
+      technicianRefs: refs,
       day: row.starts_at.slice(0, 10),
       weekday: weekdayLabel(row.starts_at.slice(0, 10)),
       span: `${row.starts_at.slice(11, 16)}–${row.ends_at.slice(11, 16)}`,

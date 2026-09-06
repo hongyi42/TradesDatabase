@@ -76,6 +76,8 @@ import {
   MAX_DURATION_MINUTES,
   getVisitForTenant,
   stageOf,
+  participantIdsOf,
+  listParticipants,
   insertVisitNote,
   listVisitNotesForCapture,
   getTechnicianById,
@@ -4197,9 +4199,13 @@ async function dispatch(
         const day = row.starts_at.slice(0, 10);
         if (day < from || (toDay !== null && day > toDay)) continue;
         const customer = jobById.get(row.job_id)?.customers ?? null;
-        // technician_id may be NULL (unassigned booking) — the ?? null echoes
-        // below render that as a person-less stop in both modes.
-        const technician = row.technician_id ? techById.get(row.technician_id) : undefined;
+        // A trip may have NOBODY on it (unassigned booking) or SEVERAL people
+        // (rung 9c). ONE row per trip either way — the counts below are counts
+        // of trips, and a crew drawn twice would say the day is twice as busy.
+        const crew = participantIdsOf(row, tenantId)
+          .map((id) => techById.get(id))
+          .filter((t): t is NonNullable<typeof t> => !!t);
+        const technician = crew[0];
         const bucket = byDay.get(day) ?? [];
         bucket.push({
           visitId: row.id,
@@ -4209,7 +4215,11 @@ async function dispatch(
           stage: stageOf(row, false),
           technicianRef: technician?.ref ?? null,
           technicianName: technician?.display_name ?? null,
-          unassigned: row.technician_id === null,
+          technicianRefs: crew.map((t) => t.ref),
+          technicianNames: crew.map((t) => t.display_name),
+          // COUNTED, not named (see boardRead): a person the roster read could
+          // not resolve still occupies the trip.
+          unassigned: participantIdsOf(row, tenantId).length === 0,
           customer: customer?.name ?? null,
           address: customer
             ? formatAddress({
@@ -4248,8 +4258,13 @@ async function dispatch(
         stage: stageOf(r, false),
         customer: jobById.get(r.job_id)?.customers?.name ?? null,
         jobId: r.job_id,
-        technicianRef: r.technician_id ? (techById.get(r.technician_id)?.ref ?? null) : null,
-        unassigned: r.technician_id === null,
+        technicianRef: participantIdsOf(r, tenantId)
+          .map((id) => techById.get(id)?.ref ?? null)
+          .filter((ref): ref is string => !!ref)[0] ?? null,
+        technicianRefs: participantIdsOf(r, tenantId)
+          .map((id) => techById.get(id)?.ref ?? null)
+          .filter((ref): ref is string => !!ref),
+        unassigned: participantIdsOf(r, tenantId).length === 0,
       }));
       if (unassignedOnly) {
         // Agent parity with the board's loose-bucket tray (Plan 4a): the
@@ -6091,9 +6106,10 @@ async function dispatch(
         id: string;
         starts_at: string | null; // null = UNTIMED (plan 4b-2, rung 9a)
         ends_at: string | null;
-        technician_id: string | null;
         status: string;
       } | null = null;
+      // Who is on the subject trip, if it has anybody (rung 9c).
+      let subjectCrewIds: string[] = [];
       let customerIdResolved: string;
       if (visitIdArg) {
         const row = await getVisitForTenant(visitIdArg, tenantId);
@@ -6104,6 +6120,9 @@ async function dispatch(
           throw new Error(`this visit is ${row.status} — only confirmed or proposed visits can be re-placed`);
         }
         subjectRow = row;
+        // The crew comes off the participant table, not the row: `visits` no
+        // longer knows who is on a trip (rung 9c).
+        subjectCrewIds = (await listParticipants(row.id)).map((p) => p.technician_id);
         const j = await getJob(row.job_id);
         if (!j || j.tenant_id !== tenantId) throw new Error('visit job not found');
         job = j;
@@ -6374,10 +6393,17 @@ async function dispatch(
         // day may contain the subject's own stop — filtering other techs' days
         // by timestamp would silently drop a different person's same-instant
         // visit (review finding #1).
-        const subjectTechRef =
-          subjectRow?.technician_id != null
-            ? ((await getTechnicianById(subjectRow.technician_id, tenantId))?.ref ?? null)
-            : null;
+        // EVERY person on the subject trip. Their days all contain it (the
+        // per-technician read is participant-rooted since rung 9c), so filtering
+        // only the first one's day would score a crew-mate's candidates against
+        // a route that still includes the stop being moved away. The original
+        // safety argument — never drop a DIFFERENT person's same-instant visit
+        // (review finding #1) — holds for a set exactly as it did for one ref.
+        const subjectTechRefs = new Set<string>();
+        for (const id of subjectCrewIds) {
+          const ref = (await getTechnicianById(id, tenantId))?.ref;
+          if (ref) subjectTechRefs.add(ref);
+        }
         const pairs = [
           ...new Map(
             generated
@@ -6391,13 +6417,15 @@ async function dispatch(
             const days = await listDayStops(tenantId, c.technicianRef, c.date, c.date);
             let stops = days[0]?.stops ?? [];
             // The assignment subject's own row must not count in its day's
-            // route — it is exactly the stop being re-placed. Same tech +
-            // identical start identifies it ONLY for a confirmed subject
+            // route — it is exactly the stop being re-placed. A CREW trip sits
+            // on every member's day (rung 9c), so the test is membership of the
+            // subject's crew. Same person + identical start identifies it ONLY
+            // for a confirmed subject
             // (confirmed rows cannot overlap); a PROPOSED subject is not in
             // listDayStops at all, and the DB legally allows a different
             // confirmed visit at the same instant — filtering would silently
             // drop that real stop (review round-2 residual).
-            if (subjectRow?.status === 'confirmed' && c.technicianRef === subjectTechRef) {
+            if (subjectRow?.status === 'confirmed' && subjectTechRefs.has(c.technicianRef)) {
               stops = stops.filter((s) => s.scheduledStart !== subjectRow.starts_at);
             }
             stopsByTechDate.set(techDateKey(c.technicianRef, c.date), stops);

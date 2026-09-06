@@ -7,9 +7,14 @@
 // trip it is reporting — or the board grows visits nobody made.
 //
 // The rule, in order:
-//   1. A visit PLACED on the note's own firm-local day, held by this technician
-//      or by nobody. Nearest start wins a tie, because a technician who files at
-//      11:40 after a 9–11 and a 13–14 is talking about the morning one.
+//   1. A visit PLACED on the note's own firm-local day, with this technician ON
+//      IT or with nobody on it. Nearest start wins a tie, because a technician
+//      who files at 11:40 after a 9–11 and a 13–14 is talking about the morning
+//      one. "ON IT" is membership of the crew (rung 9c), not a column match:
+//      when two people go on one trip, EITHER of them reports it and the trip
+//      is done. Before that, the crew was two separate visits and the partner's
+//      row never closed — it sat 'confirmed' forever, chased by the watcher for
+//      a report that had already been filed.
 //   2. Otherwise the job's ONE live visit, if it has exactly one. A note filed
 //      the next morning about yesterday's trip is the common case, and a job
 //      with a single visit has no ambiguity to resolve.
@@ -24,7 +29,13 @@
 // customer's own answer could leave a gap looking unanswered. Step 3 is the
 // only technician-gated part, and rung 10 is where inbound (call AND email)
 // gets its own creation path: a COMMITTED visit, never a completed one.
-import { createVisit, listVisitsForJob, type Visit } from '../db/visits.js';
+import {
+  createVisit,
+  listParticipants,
+  listVisitsForJob,
+  participantIdsOf,
+  type VisitWithParticipants,
+} from '../db/visits.js';
 import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
 import { naiveLocalISO } from '../schedule/booking.js';
 import type { Json } from '../db/database.types.js';
@@ -45,7 +56,7 @@ export interface ResolveVisitForNoteInput {
 
 export interface ResolvedVisitForNote {
   /** null = nothing to attach to, and this channel may not create one. */
-  visit: Visit | null;
+  visit: VisitWithParticipants | null;
   created: boolean;
   /** The note's time in the SAME convention the visit's times use. */
   noteLocal: string;
@@ -75,12 +86,14 @@ export async function resolveVisitForNote(
   );
 
   // (1) Placed on the note's own day, held by this technician or by nobody.
-  const sameDay = live.filter(
-    (v) =>
-      v.starts_at !== null &&
-      v.starts_at.slice(0, 10) === noteDay &&
-      (v.technician_id === null || v.technician_id === input.technicianId),
-  );
+  const sameDay = live.filter((v) => {
+    if (v.starts_at === null || v.starts_at.slice(0, 10) !== noteDay) return false;
+    const crew = participantIdsOf(v, input.tenantId);
+    return (
+      crew.length === 0 ||
+      (input.technicianId !== null && crew.includes(input.technicianId))
+    );
+  });
   if (sameDay.length > 0) {
     const noteMs = Date.parse(noteLocal);
     const nearest = sameDay.reduce((best, v) =>
@@ -97,7 +110,7 @@ export async function resolveVisitForNote(
 
   // (3) A trip with no booking behind it — technician channels only.
   if (!input.mayCreate) return { visit: null, created: false, noteLocal };
-  const visit = await createVisit({
+  const created = await createVisit({
     tenantId: input.tenantId,
     jobId: input.jobId,
     technicianId: input.technicianId,
@@ -112,5 +125,18 @@ export async function resolveVisitForNote(
     attributes: input.attributes ?? {},
     sourceCaptureId: input.captureId,
   });
+  // createVisit returns the BARE row, and the caller's contract is a row that
+  // carries its crew. Reading it back rather than assuming: an empty list here
+  // would be a typed lie — the trip has the filer on it — and any later
+  // participantsOf() on this value would report nobody.
+  const visit: VisitWithParticipants = {
+    ...created,
+    visit_participants: (await listParticipants(created.id)).map((p) => ({
+      technician_id: p.technician_id,
+      created_at: p.created_at,
+      tenant_id: p.tenant_id,
+      technicians: null, // names are not this path's business; ids are
+    })),
+  };
   return { visit, created: true, noteLocal };
 }

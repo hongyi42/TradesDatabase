@@ -793,7 +793,6 @@ export type VisitDetailRow = Visit & {
         > | null;
       })
     | null;
-  technicians: Pick<Technician, 'id' | 'ref' | 'display_name' | 'tenant_id'> | null;
   visit_participants: ParticipantEmbed[];
 };
 
@@ -802,7 +801,7 @@ export type VisitDetailRow = Visit & {
 // ('a' + 'b') string widens to `string`, which makes the inference collapse to
 // GenericStringError and breaks the build.
 const DETAIL_SELECT =
-  '*, jobs(id,tenant_id,title,priority,duration_minutes,customer_id,customers(name,phone,email,address_line1,address_line2,city,state,postal_code,attributes,tenant_id)), technicians(id,ref,display_name,tenant_id), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
+  '*, jobs(id,tenant_id,title,priority,duration_minutes,customer_id,customers(name,phone,email,address_line1,address_line2,city,state,postal_code,attributes,tenant_id)), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
 
 // One visit + its job/customer/technician, tenant-scoped at the ROOT only.
 // A cross-tenant or unknown id reads as null (same contract as
@@ -836,13 +835,12 @@ export type VisitDayRow = Visit & {
         customers: (JobCustomerAddress & { tenant_id: string }) | null;
       })
     | null;
-  technicians: Pick<Technician, 'id' | 'ref' | 'display_name' | 'tenant_id'> | null;
   visit_participants: ParticipantEmbed[];
 };
 
 // Single string literal — see the DETAIL_SELECT note above.
 const DAY_SELECT =
-  '*, jobs(id,tenant_id,customer_id,customers(name,address_line1,address_line2,city,state,postal_code,tenant_id)), technicians(id,ref,display_name,tenant_id), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
+  '*, jobs(id,tenant_id,customer_id,customers(name,address_line1,address_line2,city,state,postal_code,tenant_id)), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
 
 // Same filters as listVisitsForTenant, plus the embedded graph.
 export type PlacedVisitDayRow = VisitDayRow & { starts_at: string; ends_at: string };
@@ -899,10 +897,12 @@ export async function listVisitsForTechnician(
 
 // The booking's full history — every row ever written for the job, newest
 // first (reschedules/cancellations included; history = the rows themselves).
-export async function listVisitsForJob(jobId: string): Promise<Visit[]> {
+export async function listVisitsForJob(jobId: string): Promise<VisitWithParticipants[]> {
   const { data, error } = await getClient()
     .from('visits')
-    .select()
+    // The crew rides along: the attach rule asks "is this technician ON this
+    // trip", which is a question about the participant list (rung 9c).
+    .select(CREW_SELECT)
     .eq('job_id', jobId)
     // Newest first. `updated_at` is the tiebreak because rung 9a made
     // `created_at` the VISIT's age rather than the ROW's: a move/park/attach is
@@ -912,7 +912,7 @@ export async function listVisitsForJob(jobId: string): Promise<Visit[]> {
     .order('created_at', { ascending: false })
     .order('updated_at', { ascending: false });
   if (error) throw new Error(`listVisitsForJob failed: ${error.message}`);
-  return data ?? [];
+  return (data ?? []) as unknown as VisitWithParticipants[];
 }
 
 // The "assign later" recall surface (and Plan 3's future work queue): every
@@ -1005,13 +1005,12 @@ export async function listOverdueConfirmedVisits(
 // tenant-scoped directly — the embed never widens the read.
 export type CustomerUpcomingRow = Visit & {
   jobs: Pick<Job, 'id' | 'tenant_id' | 'customer_id' | 'title'> | null;
-  technicians: Pick<Technician, 'id' | 'ref' | 'display_name' | 'tenant_id'> | null;
   visit_participants: ParticipantEmbed[];
 };
 
 // Single string literal — see the DETAIL_SELECT note above.
 const CUSTOMER_UPCOMING_SELECT =
-  '*, jobs!inner(id,tenant_id,customer_id,title), technicians(id,ref,display_name,tenant_id), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
+  '*, jobs!inner(id,tenant_id,customer_id,title), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
 
 export async function listUpcomingVisitsForCustomer(
   tenantId: string,
@@ -1105,7 +1104,7 @@ export async function listIdenticalUnassignedVisits(
 // what the work IS (title) and how long it takes (4b-1 duration), unlike the
 // time-grid day view where the sheet fetches those on tap.
 const UNPLACED_STRIP_SELECT =
-  '*, jobs(id,tenant_id,title,duration_minutes,customer_id,customers(name,tenant_id)), technicians(id,ref,display_name,tenant_id), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
+  '*, jobs(id,tenant_id,title,duration_minutes,customer_id,customers(name,tenant_id)), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
 
 export type UnplacedStripRow = Visit & {
   jobs:
@@ -1113,7 +1112,6 @@ export type UnplacedStripRow = Visit & {
         customers: Pick<Customer, 'name' | 'tenant_id'> | null;
       })
     | null;
-  technicians: Pick<Technician, 'id' | 'ref' | 'display_name' | 'tenant_id'> | null;
   visit_participants: ParticipantEmbed[];
 };
 
@@ -1392,12 +1390,11 @@ export async function listNoteTimesForJobs(
 // ---- The customer brief's PAST-work half ----------------------------------
 
 export type VisitWithTechnician = Visit & {
-  technicians: Pick<Technician, 'ref' | 'display_name' | 'tenant_id'> | null;
   visit_participants: ParticipantEmbed[];
 };
 
 // Single string literal — see the DETAIL_SELECT note above.
-const CUSTOMER_VISITS_SELECT = 'visits(*, technicians(ref,display_name,tenant_id), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id)))';
+const CUSTOMER_VISITS_SELECT = 'visits(*, visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id)))';
 
 // Every trip that HAS HAPPENED across a customer's jobs, newest first. Visits
 // carry no customer_id, so we reach them through the jobs relation and flatten.
@@ -1415,10 +1412,25 @@ export async function listVisitsForCustomer(customerId: string): Promise<VisitWi
     .eq('customer_id', customerId)
     .eq('visits.status', 'completed');
   if (error) throw new Error(`listVisitsForCustomer failed: ${error.message}`);
-  const visits = (data ?? []).flatMap((job) => job.visits as VisitWithTechnician[]);
-  return visits
-    // technicians is an ID-ONLY foreign key: re-check the tenant before any
-    // caller prints the name (the DETAIL_SELECT doctrine above).
-    .map((v) => (v.technicians && v.technicians.tenant_id !== v.tenant_id ? { ...v, technicians: null } : v))
-    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+  const visits = (data ?? []).flatMap((job) => job.visits as unknown as VisitWithTechnician[]);
+  return (
+    visits
+      // The embed's foreign keys are ID-ONLY, and THESE ROWS ARE RETURNED RAW
+      // to get_customer_context, which spreads them into the agent's tool
+      // result. participantsOf's re-check protects the readers that call it;
+      // this payload has no such reader, so the sanitising happens here — a
+      // participant from another tenant is dropped, and a technician row from
+      // another tenant is nulled rather than having its name serialised.
+      .map((v) => ({
+        ...v,
+        visit_participants: (v.visit_participants ?? [])
+          .filter((p) => p.tenant_id === v.tenant_id)
+          .map((p) =>
+            p.technicians && p.technicians.tenant_id !== v.tenant_id
+              ? { ...p, technicians: null }
+              : p,
+          ),
+      }))
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+  );
 }

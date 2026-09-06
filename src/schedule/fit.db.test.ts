@@ -85,7 +85,8 @@ const ctx = (over: Partial<Parameters<typeof assembleFitContext>[0]> = {}) =>
   assembleFitContext({ tenantId, earliest: WEEK_START, latest: WEEK_END, ...over });
 
 async function makeVisit(opts: {
-  technicianId: string | null;
+  technicianId?: string | null;
+  technicianIds?: string[];
   startsAt: string;
   endsAt: string;
   city?: string;
@@ -100,7 +101,8 @@ async function makeVisit(opts: {
   return createVisit({
     tenantId,
     jobId: job.id,
-    technicianId: opts.technicianId,
+    technicianId: opts.technicianId ?? null,
+    ...(opts.technicianIds ? { technicianIds: opts.technicianIds } : {}),
     startsAt: opts.startsAt,
     endsAt: opts.endsAt,
     status: opts.status ?? 'confirmed',
@@ -290,5 +292,34 @@ describe('findDisplacementCandidates', () => {
       span: '08:00–10:00',
     });
     expect(p?.customer).toContain('Fit cust');
+  });
+});
+
+// ── Rung 9c: a crew visit occupies EVERY person on it ───────────────────────
+describe('a crew visit occupies both days (rung 9c)', () => {
+  test('one trip, two people: it lands on BOTH their Thursdays, and displacement names both', async () => {
+    // Before the rung this was two visits, so occupancy was already "right" by
+    // accident. With one trip carrying two people, a reader keyed on a column
+    // would show the second person's Thursday as free.
+    const crewVisit = await makeVisit({
+      technicianIds: [plumber.id, sparky.id],
+      // FRIDAY, untouched by every other fixture in this file: the two of them
+      // must be free, or the exclusion constraint refuses the crew booking and
+      // the test fails for a fixture reason rather than a real one.
+      startsAt: '2026-08-07T09:00:00.000Z',
+      endsAt: '2026-08-07T11:00:00.000Z',
+      city: 'Clovis',
+    });
+    const out = await ctx({ earliest: '2026-08-07', latest: '2026-08-07' });
+    for (const t of [plumber, sparky]) {
+      const who = out.technicians.find((x) => x.ref === t.ref);
+      expect(who, `${t.ref} must be in the fit context`).toBeDefined();
+      expect(who?.stopsByDate.get('2026-08-07') ?? 0, `${t.ref} is out on the crew trip`).toBe(1);
+      expect(who?.visitsByDate.get('2026-08-07') ?? []).toHaveLength(1);
+    }
+    // And moving it would disturb both of them.
+    const cands = await findDisplacementCandidates(tenantId, '2026-08-07', '2026-08-07');
+    const mine = cands.find((c) => c.visitId === crewVisit.id);
+    expect(mine?.technicianRefs?.slice().sort()).toEqual([plumber.ref, sparky.ref].sort());
   });
 });

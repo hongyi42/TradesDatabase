@@ -67,6 +67,25 @@ visits finding from the 9b deploy is deliberately NOT here.
 - **Out of scope** — stale-confirmed visits defeating attach step 2; any-participant ask-of-record; the
   board rebuild; rungs 10–12.
 
+### Amended during Phase 3
+- **`unassigned` COUNTS people, it does not name them.** A visit held by a technician whose roster
+  row belongs to another tenant is a trip we cannot put a NAME on, not an empty one. Deriving
+  `unassigned` from the nameable crew would have offered an occupied visit to the tray; it now reads
+  `participantIdsOf(...).length === 0` in boardRead, context and the MCP schedule reads.
+- **`find_slots` excludes the subject's stop from EVERY crew member's day**, not the first one's. A
+  crew trip sits on both their days, so scoring the other member's candidates against a route that
+  still contains the stop being moved understates the drive.
+- **`listCostGapCandidates` is paged** for the same reason the Phase 1 readers are: its "somebody is
+  on it" filter moved from SQL to JS.
+- **`listVisitsForCustomer` re-sanitises its own rows.** It is returned RAW to `get_customer_context`
+  and spread into the agent's result, so it cannot rely on `participantsOf`'s tenant re-check the way
+  every other reader does.
+- **The watcher names the crew from the ROSTER read**, the same source as the addressee — two name
+  sources for one crew is how a gap ends up addressed to "Ben Shelton" while listing "ben-shelton".
+- **Two tests were vacuous until fixed**: the crew attach test passed under a single-column rule
+  because step 2 rescued it (the job needs a second live visit for step 1 to be the deciding rule),
+  and the board crew test asserted as the bridge-column holder, which a pre-9c reader also finds.
+
 ### Amended during Phase 2
 - **A present-but-empty `technicianRef`/`technicianRefs` is REFUSED by the verb**, not read. `''`
   used to mean "keep the crew" and `[]` means "park it" — two readings of the same accident, and the
@@ -355,23 +374,23 @@ participants' refs. `SPINE_VIEW_CATALOG` untouched until Phase 4.
 re-sourced in Phase 1). **`src/eval/plannerSim.ts`** — no change (visit seeding uses the sugar).
 
 ### Automated verification
-- [ ] `typecheck` · `lint` · `test` · `build`
-- [ ] `recordFieldNote.test.ts`: a crew of two, either person's note attaches to THE visit and marks it
+- [x] `typecheck` · `lint` · `test` · `build`
+- [x] `recordFieldNote.test.ts`: a crew of two, either person's note attaches to THE visit and marks it
       `completed` — **the closing case files as the SECOND-added participant**, or the partner-row bug can
       regress unseen; a non-participant technician's same-day note falls to step 3 and creates one.
-- [ ] `watchers.test.ts`: an unreported crew visit → ONE observation, `technician_id` = the first-added
+- [x] `watchers.test.ts`: an unreported crew visit → ONE observation, `technician_id` = the first-added
       participant, `context.participants` both; a note by the OTHER participant still suppresses it
       (job-scoped freshness).
-- [ ] `jobs` cost-gap test: a crew names the same person on every run.
-- [ ] `fit` test: a crew visit occupies BOTH people's days. `boardRead`/`boardApi` tests: team view shows
+- [x] `jobs` cost-gap test: a crew names the same person on every run.
+- [x] `fit` test: a crew visit occupies BOTH people's days. `boardRead`/`boardApi` tests: team view shows
       a crew stop in both lanes with one `visitId`; the second person's self-view contains it EXACTLY
       ONCE (length assertion — `boardApi.test.ts:293`'s count passes today only because its fixture has
       no crew); the detail 404s for a non-participant.
-- [ ] Test-count audit as in Phase 1.
+- [x] Test-count audit as in Phase 1.
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack.
-- [ ] none beyond the suite.
+- [x] none beyond the suite.
 
 ### Manual verification
 - [ ] none

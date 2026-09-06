@@ -1564,7 +1564,7 @@ describe('retract_capture + retraction folding', () => {
         visitId: visit.id,
         jobId: job.id,
         scheduledAt: null,
-        technicianId: techMcpId,
+        technicianIds: [techMcpId],
       },
     ]);
     expect(staged.data.note).toContain('willAlsoRemove');
@@ -1634,7 +1634,7 @@ describe('retract_capture + retraction folding', () => {
     expect(staged.isError).toBe(false);
     expect(staged.data.willAlsoRemove.visits).toEqual([]);
     expect(staged.data.alsoLosesEvidence.visits).toEqual([
-      { visitId: booked.id, jobId: job.id, scheduledAt: null, technicianId: techMcpId },
+      { visitId: booked.id, jobId: job.id, scheduledAt: null, technicianIds: [techMcpId] },
     ]);
 
     const done = await call('retract_capture', { confirmId: staged.data.confirmId });

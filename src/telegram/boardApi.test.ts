@@ -94,6 +94,16 @@ beforeAll(async () => {
   await updateTechnician(t1.id, { telegram_user_id: '900000002', state: 'active' });
   const t2 = await insertTechnician({ tenantId, ref: 'board-t2', displayName: 'Theo Two' });
   await updateTechnician(t2.id, { state: 'active' });
+  // A THIRD bookable person with their own slip, used only by the crew tests:
+  // the crew assertions have to be made as the person who is NOT the bridge
+  // column's holder, or they pass under the pre-9c single-column logic.
+  const t3 = await insertTechnician({
+    tenantId,
+    ref: 'board-t3',
+    displayName: 'Tara Three',
+    seatExempt: true,
+  });
+  await updateTechnician(t3.id, { telegram_user_id: '900000003', state: 'active' });
 
   // Three confirmed stops on one day via the REAL booking verb: t1, t2, and an
   // unassigned visit (no technicianRef — Feature A's null technician_id).
@@ -273,6 +283,8 @@ describe('GET /board/api/day', () => {
         'jobId',
         'start',
         'status',
+        'technicianRefs',
+        'technicianNames',
         'technicianName',
         'technicianRef',
         'unassigned',
@@ -288,6 +300,63 @@ describe('GET /board/api/day', () => {
     });
     expect(typeof stop.jobId).toBe('string');
     expect(stop.end.slice(0, 16)).toBe(`${DAY_A}T11:00`);
+  });
+
+  test('a CREW visit draws in BOTH lanes on the team view, ONCE on a self view (rung 9c)', async () => {
+    // The team grid draws lanes by technician, so a two-person trip has to
+    // appear in both or one lane looks free — same visitId in each. A self view
+    // is a FLAT list (web/board/board.js), so the same trip there is one row:
+    // drawing it per participant would show the viewer their own visit twice.
+    const CREW_DAY = relDate(24);
+    const crewCustomer = await createCustomer({ tenantId, name: 'Lane Casa' });
+    const booked = await bookVisit({
+      tenantId,
+      customerId: crewCustomer.id,
+      actorRef: 'board-mgr',
+      title: 'Two-lane lift',
+      date: CREW_DAY,
+      startTime: '09:00',
+      endTime: '11:00',
+      // board-t1 is named FIRST, so the bridge column holds t1 and the crew
+      // tiebreak names t1. Every assertion below is then made as board-t3 —
+      // the person a column-based reader would NOT find.
+      technicianRefs: ['board-t1', 'board-t3'],
+    });
+    try {
+      // TEAM view (manager): one stop per person, one visitId.
+      const team = (await (await day(`?from=${CREW_DAY}`, tma(900000001))).json()) as DayResponse;
+      const teamStops = team.days[0].stops.filter((st) => st.visitId === booked.assignment.id);
+      expect(teamStops).toHaveLength(2);
+      expect(teamStops.map((st) => st.technicianRef).sort()).toEqual(['board-t1', 'board-t3']);
+      // Each lane row still names the whole crew.
+      for (const st of teamStops) {
+        expect((st as unknown as { technicianRefs: string[] }).technicianRefs.slice().sort()).toEqual([
+          'board-t1',
+          'board-t3',
+        ]);
+        expect(st.unassigned).toBe(false);
+      }
+
+      // SELF view as the SECOND-added crew member: the trip is on their day at
+      // all (a column reader would show it as t1's alone), and EXACTLY ONCE —
+      // the self layout is flat, so one stop per participant would draw the
+      // viewer's own visit twice.
+      const self = (await (await day(`?from=${CREW_DAY}`, tma(900000003))).json()) as DayResponse;
+      const selfStops = self.days[0].stops.filter((st) => st.visitId === booked.assignment.id);
+      expect(selfStops).toHaveLength(1);
+      expect(selfStops[0].technicianRef).toBe('board-t3'); // their OWN lane, not t1's
+
+      // And they can open the detail sheet — membership, not "named first".
+      const detail = await fetch(`${base}/board/api/visit?visitId=${booked.assignment.id}`, {
+        headers: tma(900000003),
+      });
+      expect(detail.status).toBe(200);
+      const d = (await detail.json()) as { technicianRefs: string[]; unassigned: boolean };
+      expect(d.technicianRefs.slice().sort()).toEqual(['board-t1', 'board-t3']);
+      expect(d.unassigned).toBe(false);
+    } finally {
+      await pg.query("update visits set status = 'cancelled' where id = $1", [booked.assignment.id]);
+    }
   });
 
   test('technician slip → own stops only; the unassigned stop is absent by construction', async () => {

@@ -14,6 +14,7 @@ import {
   listObservationsByStatus,
   listObservedSubjectRefs,
   listOverdueConfirmedVisits,
+  participantsOf,
   listTeam,
   listTenantIdsWithTelegramBindings,
   listNoteTimesForJobs,
@@ -609,7 +610,13 @@ export async function runWatchers(
           const job = jobById.get(g.job_id);
           const title = job?.title ?? 'a job';
           const customer = job?.customers?.name ?? 'unknown customer';
-          const tech = g.technician_id ? techById.get(g.technician_id) : undefined;
+          // ONE gap for the TRIP, addressed to ONE of its people (rung 9c). A
+          // crew has no lead, so the addressee is the participant added first —
+          // a stable tiebreak, not a hierarchy. The whole crew rides in the
+          // context so the planner can see who else was there and message any
+          // of them; only the named one is the ask of record.
+          const crew = participantsOf(g, tenantId);
+          const tech = crew[0] ? techById.get(crew[0].technicianId) : undefined;
           const obs = await createObs({
             tenantId,
             // From the SPEC, never a literal — the forget-spot the registry
@@ -627,6 +634,18 @@ export async function runWatchers(
               customerName: customer,
               jobTitle: title,
               ...(tech ? { technicianRef: tech.ref, technicianName: tech.display_name } : {}),
+              // Names come from the ROSTER read, the same source the addressee
+              // above uses — two name sources for one crew is how a gap ends up
+              // addressed to "Ben Shelton" while listing "ben-shelton". The
+              // embed's own copy is the fallback, so nobody drops off the list.
+              ...(crew.length > 0
+                ? {
+                    participants: crew.map((p) => {
+                      const t = techById.get(p.technicianId);
+                      return { ref: t?.ref ?? p.ref, name: t?.display_name ?? p.displayName };
+                    }),
+                  }
+                : {}),
               visitId: g.id,
               jobId: g.job_id,
               startsAtLocal: g.starts_at,

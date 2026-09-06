@@ -83,7 +83,7 @@ MEM_AVAIL_MIN_MB="${MEM_AVAIL_MIN_MB:-400}"
 # Unlike openshell-gateway (which has no unit at all and would therefore be
 # skipped here without a word), this one is `loaded` wherever it is installed,
 # so the line does what it looks like it does.
-BOX_UNITS="${BOX_UNITS:-doorman.service badge-pull.timer badge-pull.service nudge-runner.timer nudge-runner.service sandbox-token-medic.service sandbox-recycler.service nemoclaw-inference-medic.timer sysstat-collect.timer}"
+BOX_UNITS="${BOX_UNITS:-doorman.service badge-pull.timer badge-pull.service nudge-runner.timer nudge-runner.service sandbox-token-medic.service sandbox-token-medic.timer sandbox-recycler.service nemoclaw-inference-medic.timer sysstat-collect.timer openshell-gateway.service openshell-gateway-heal.service sandbox-orphan-reaper.timer}"
 
 FAILED=0   # count of checks reporting down, for the closing log line only
 
@@ -203,7 +203,27 @@ unit_status() {
   active="$(timeout 5 systemctl show "$u" -p ActiveState --value 2>/dev/null || echo unknown)"
   case "$u" in
     *.timer)
-      [ "$active" = active ] && echo "ok $active" || echo "down $active"
+      if [ "$active" != active ]; then echo "down $active"; return 0; fi
+      # A timer can be `active` and still never fire again, so ActiveState
+      # alone is not enough. sandbox-token-medic.timer fired once (2026-09-06
+      # 03:24:56 UTC) and stopped: its service is Type=oneshot with
+      # RemainAfterExit=yes, so the SERVICE stayed `active`, and systemd will
+      # not re-trigger an already-active unit. Both units read `active` for
+      # the entire time the daily token renewal was dead — which is exactly
+      # how it went unnoticed.
+      #
+      # The tell is the SCHEDULE, not the state. Measured on trades-box-1:
+      #   healthy calendar timer  -> NextElapseUSecRealtime is a date
+      #   healthy monotonic timer -> NextElapseUSecMonotonic is a duration
+      #   dead                    -> realtime empty AND monotonic `infinity`
+      local next_rt next_mono
+      next_rt="$(timeout 5 systemctl show "$u" -p NextElapseUSecRealtime --value 2>/dev/null || echo '')"
+      next_mono="$(timeout 5 systemctl show "$u" -p NextElapseUSecMonotonic --value 2>/dev/null || echo '')"
+      if [ -z "$next_rt" ] && { [ "$next_mono" = infinity ] || [ -z "$next_mono" ]; }; then
+        echo "down active/unscheduled"
+      else
+        echo "ok $active"
+      fi
       return 0 ;;
   esac
   type="$(timeout 5 systemctl show "$u" -p Type --value 2>/dev/null || echo '')"

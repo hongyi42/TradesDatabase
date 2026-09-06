@@ -2,7 +2,7 @@
 date: 2026-09-05
 task: Rung 9b — the visit is one object: rename assignments→visits, drop the per-note visits table, moves in place, notes attach through visit_notes, four derived stages
 research: thoughts/shared/research/2026-09-05-the-visit-is-one-object.md
-status: draft
+status: complete
 supersedes: thoughts/shared/plans/2026-07-03-scheduling-foundation.md
 ---
 
@@ -483,13 +483,19 @@ order that keeps five services alive, re-wires the fleet, and proves the object 
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP, Render MCP, `ssh tradesbox` (all connected today); fork access (above)
-- [ ] Steps 2–5 above with their read-backs; schema md5 over `information_schema.columns` local == pilot
-- [ ] Seat loop on s8 (rung 9a's recipe: `nemoclaw s8 exec … openclaw agent --session-id <fresh>`, no
-      `--local`/`--deliver`), Marcus Ellery / job `9b014ad9…`: book untimed → `visitId`, row `confirmed, starts_at
-      NULL`; move → **same `visitId`**, one row updated, `schedule_events` `moved` with `previousTechnicianId:
-      null`; move again → same id; `record_field_note` from s5 dated the visit day → `visit_notes` row,
-      `completed`, `v_schedule.stage='reported'`; unschedule placed → `needs_confirmation`. Read back every turn.
-- [ ] Both `anon`/`authenticated` false on `v_schedule`, `v_cancelled_visits`, `v_visit_notes`, `visit_notes`
+- [x] Steps 2–5 above with their read-backs; schema md5 over `information_schema.columns` local == pilot
+      — **2026-09-06: `8fe55faf8d9e040fe0e2836136a250d1`, 643 columns, pilot == local.** 467 rows carried, 62/62 completed stamped, `assignments` gone, all five services live on `c7d69f8`, `lifecycle-heart` clean 03:50Z.
+- [x] Seat loop — **run on s2 (manager) + s5 (technician), 2026-09-06 03:42–03:56Z.** Booked untimed
+      (`b14da024…`, `confirmed / starts_at NULL`) → moved to Sep 8 → moved to Sep 9 → unschedule staged
+      `pending_visit_cancel` carrying **`visitId`** → confirmed. **`schedule_events` = `booked → moved →
+      moved → cancelled`, four rows on ONE `assignment_id`**, `created_at` never changed. `v_schedule.stage`
+      read `committed`, then `placed`. Separately, a technician note on a same-day booked visit ATTACHED:
+      1 `visit_notes` row, `completed`, `completed_at` 20:48 firm-local, **stage `reported`, no second visit
+      minted**. Seats needed only `nemoclaw <s> gateway restart` (cached tools/list), not a full `wire`.
+- [x] Both `anon`/`authenticated` false on `v_schedule`, `v_cancelled_visits`, `v_visit_notes`, `visit_notes`
+      — confirmed. ⚠ **But `visits` itself is anon/authenticated readable on the pilot**, inherited from
+      `assignments` by the rename. Pre-existing posture (`20260824120000` was never applied there), NOT
+      introduced by this rung, and local differs. Left for an owner decision rather than changed here.
 
 ### Manual verification
 - [ ] Telegram board: a moved visit's detail link still opens (`visitId`), the tray shows committed visits, a
@@ -519,6 +525,14 @@ order that keeps five services alive, re-wires the fleet, and proves the object 
 - **The PostgREST-embed-through-the-view claim was uncited** and cannot be tested (the compat view
   is dropped in the same `db reset`). Downgraded to unverified in the record, with a pilot probe
   added to the deploy order as step 2b.
+
+**FOUND ON THE PILOT, not in any test — carry into 9c/10:** ⚠ **stale `confirmed` visits defeat the
+attach rule's step 2.** Step 2 fires only when the job has exactly ONE live visit. The Marcus Ellery job
+carried a `confirmed` visit from 2026-08-23 that nobody ever completed, so a note filed against that job
+fell through to step 3 and **minted a new completed visit**. The code did exactly what it was specified to
+do; the spec assumed jobs do not accumulate long-past `confirmed` rows, and real data does. Fix is either
+to have step 2 ignore visits whose day is long past, or to sweep stale `confirmed` visits. Until then a
+job with old bookings quietly grows one trip per note.
 
 **Recorded, not built:** rung 9c multi-technician (participant table; `technician_id` stays the lead); **rung 10
 — INBOUND commits a visit: CALL AND EMAIL** (user, 2026-09-05), extractor creates it untimed via `createVisit`,

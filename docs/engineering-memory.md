@@ -198,50 +198,50 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L4502 · The quiet-firm skip
 - L4505 · No v_office_messages
 - L4507 · B65-REACH-A-MANAGER
-- L4706 · ON DELETE SET NULL is an UPDATE.
-- L4708 · Naive-local vs real UTC, again. _(2026-09-08)_
-- L4713 · A once-ever index plus stable ids = a detector that fires once, forever.
-- L4720 · A liveness filter can be bypassed by an id rename.
-- L4724 · A compat view bridges the deploy. _(2026-09-05)_
-- L4738 · schedule_events.assignment_id KEEPS ITS NAME this rung.
-- L4741 · The completed-stamp CHECK was dropped.
-- L4828 · A green suite proves nothing when you mass-edit tests.
-- L4833 · A test can pin the bug.
-- L4836 · Reachability is not a compile error.
-- L4906 · A technician's seat agent has NO scheduling verb at any tier.
-- L4909 · Live specimen in the pilot _(2026-09-01)_
-- L4919 · Counting.
-- L4921 · Detection.
-- L4926 · Booking.
-- L4939 · Build 6 (vocabulary): _(2026-09-01)_
-- L4944 · Build 7 (detectors report): _(2026-09-05)_
-- L4954 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L4752 · ON DELETE SET NULL is an UPDATE.
+- L4754 · Naive-local vs real UTC, again. _(2026-09-08)_
+- L4759 · A once-ever index plus stable ids = a detector that fires once, forever.
+- L4766 · A liveness filter can be bypassed by an id rename.
+- L4770 · A compat view bridges the deploy. _(2026-09-05)_
+- L4784 · schedule_events.assignment_id KEEPS ITS NAME this rung.
+- L4787 · The completed-stamp CHECK was dropped.
+- L4874 · A green suite proves nothing when you mass-edit tests.
+- L4879 · A test can pin the bug.
+- L4882 · Reachability is not a compile error.
+- L4952 · A technician's seat agent has NO scheduling verb at any tier.
+- L4955 · Live specimen in the pilot _(2026-09-01)_
+- L4965 · Counting.
+- L4967 · Detection.
+- L4972 · Booking.
+- L4985 · Build 6 (vocabulary): _(2026-09-01)_
+- L4990 · Build 7 (detectors report): _(2026-09-05)_
+- L5000 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L5350 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L5373 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L5420 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L5457 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L5489 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L5494 · Every member row stores the FULL grouped message in question.
-- L5498 · The attribution stamp is an audit link, not a gate.
-- L5502 · The derived stamp requires a capture a badge-holder SPOKE
-- L5506 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L5512 · The follow-up loop has two halves and both had to be written down.
-- L5518 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L5592 · Batching works.
-- L5594 · The follow-up leg works, including the half that fails silently.
-- L5598 · Both attribution paths fired, each in its designed case.
-- L5602 · Escalation fired correctly
-- L5603 · The planner's group-aware pacing is the result worth keeping.
+- L5396 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L5419 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L5466 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L5503 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L5535 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L5540 · Every member row stores the FULL grouped message in question.
+- L5544 · The attribution stamp is an audit link, not a gate.
+- L5548 · The derived stamp requires a capture a badge-holder SPOKE
+- L5552 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L5558 · The follow-up loop has two halves and both had to be written down.
+- L5564 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L5638 · Batching works.
+- L5640 · The follow-up leg works, including the half that fails silently.
+- L5644 · Both attribution paths fired, each in its designed case.
+- L5648 · Escalation fired correctly
+- L5649 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L5933 · Evals:
-- L5940 · Runbooks:
-- L5945 · Decision history with citations:
-- L5949 · This file
+- L5979 · Evals:
+- L5986 · Runbooks:
+- L5991 · Decision history with citations:
+- L5995 · This file
 
 <!-- INDEX:END -->
 
@@ -4653,7 +4653,53 @@ ladder was a workaround for that CHECK. Removing the CHECK removes the reason th
 because we are operating in a test suite and nothing is in production right now."* Destructive is
 permitted, consistent with the L1 waiver recorded above.
 
-### ✅ BUILT 2026-09-05 — rung 9b, "the visit is one object" (`68bacf9`, `0dd4a0b`, `be54d85`)
+### ✅ BUILT **AND DEPLOYED** 2026-09-05/06 — rung 9b, "the visit is one object" (merged `c7d69f8`, PR #206)
+
+**Deploy 03:34–03:56Z. Evidence, not tool success lines.** Migration → all five Render services →
+seats → tick → compat-view drop. **Pilot schema md5 now EQUALS local:
+`8fe55faf8d9e040fe0e2836136a250d1`, 643 columns.**
+
+| check | evidence |
+|---|---|
+| migration | 467 schedule rows carried, 0 lost; all 62 `completed` rows stamped by the backfill, 0 unstamped; `raw_captures.visit_id` non-null on 0 rows so the FK re-point validated |
+| the bridge | `assignments` relkind `v`, 467 rows; **all three embed shapes 200** incl. the REVERSE `jobs?select=…,assignments(id,status)` |
+| five services | web · lifecycle-heart · Board_Worker · Calls-worker · Calls-purge all `live` on `c7d69f8` |
+| **one trip, one id** | booked untimed → moved → moved → cancelled = **4 `schedule_events` on ONE `assignment_id`**, `created_at` never changed, `updated_at` bumped each time |
+| the stages | `v_schedule.stage` read `committed`, then `placed`, then `reported` on the right rows |
+| a note attaches | technician note on a same-day booked visit → 1 `visit_notes` row, status `completed`, `completed_at` 20:48 FIRM-LOCAL, stage `reported`, **no second visit minted** |
+| confirmations | unschedule of a PLACED visit staged `pending_visit_cancel` carrying `visitId`; confirm resolved it, visit `cancelled`, job still `open`, 0 open tokens left |
+| **the backlog did NOT re-flag** | open `overdue_visit_gap` 100 → 98, **0 review_items created since deploy**; `lifecycle-heart` ran clean at 03:50Z |
+| exposure | `v_schedule`, `v_cancelled_visits`, `v_visit_notes`, `visit_notes` all anon=false, authenticated=false |
+
+**Three things the deploy taught that the plan did not know:**
+
+1. **A gateway restart is the whole seat "wire" when only tool SCHEMAS changed.** Seats run off the
+   gateway's cached `tools/list`, so `nemoclaw <s> gateway restart` is what makes `visitId` visible.
+   A full `wire` was NOT needed and would have been wrong: it pushes doctrine from whichever
+   `bootstrap-box.sh` copy is on the box, and **all six copies were stale against the repo**
+   (the drift trap, again — md5 every time). 9b changed no doctrine text, which is why this was safe.
+   s2's restart reported `health did not pass before timeout`; `doctor` said healthy and the seat
+   then booked and moved for real. **Treat that message as a slow start, not a failure** — verify
+   functionally before acting on it.
+2. **⚠ STALE CONFIRMED VISITS DEFEAT THE NOTE-ATTACH RULE'S STEP 2, on real data.** A note attaches
+   to "the job's ONE live visit" only when there is exactly one. The pilot's Marcus Ellery job
+   carried a `confirmed` visit from 2026-08-23 that nobody ever completed, so the job had TWO live
+   visits and a note filed against it fell through to step 3 and **minted a new `completed` visit**.
+   The code did exactly what it was specified to do; the specification assumed jobs do not
+   accumulate long-past `confirmed` rows, and they do. Consequence to carry into rung 9c/10: either
+   step 2 should ignore visits whose day is long past, or something must sweep stale `confirmed`
+   visits. Until then, a job with old bookings quietly grows a trip per note.
+3. **`visits` inherited `assignments`' anon/authenticated SELECT on the pilot** — the rename carries
+   grants. This is the pre-existing recorded posture (`20260824120000` was never applied to the
+   pilot, so RLS is off on these tables) and NOT something this rung introduced, but it is a real
+   difference from local, where the same table is anon=false. The `v_*` views fail closed either
+   way. Flagged for an owner decision, not changed unilaterally.
+
+**Deploy-window note, for the record:** `Calls-worker` and `Calls-purge` auto-deploy, so the fork
+sync put them on new code ~1 minute BEFORE the migration landed. The pilot had taken 0 captures in
+3 days, so nothing hit it. On a busy pilot, apply the migration BEFORE syncing the fork.
+
+#### The build itself (`68bacf9`, `0dd4a0b`, `be54d85`, `a26e498`, `618d6ef`)
 
 **What was wrong.** TWO tables both meant "visit" and nothing joined them. `assignments` was the
 schedule — every `*_visit` tool wrote it, the board read it, the GiST exclusion guarded it.

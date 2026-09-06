@@ -2,7 +2,7 @@
 date: 2026-09-06
 task: Rung 9c — a visit carries a crew: move the person off the visit row into visit_participants, relocate the double-booking guard with it, and teach every verb and reader that a trip can have several people
 research: thoughts/shared/research/2026-09-06-a-visit-carries-a-crew.md
-status: draft
+status: complete
 supersedes: nothing (thoughts/shared/plans/2026-09-03-a-visit-is-not-a-person.md is already marked superseded; this is the rung that replaces its approach)
 ---
 

@@ -232,10 +232,10 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 **7. Where the deep detail lives**
 
-- L5804 · Evals:
-- L5811 · Runbooks:
-- L5816 · Decision history with citations:
-- L5820 · This file
+- L5826 · Evals:
+- L5833 · Runbooks:
+- L5838 · Decision history with citations:
+- L5842 · This file
 
 <!-- INDEX:END -->
 
@@ -5721,8 +5721,30 @@ handshakes (pooled per session, 10-minute idle TTL). Muse's reasoning is MANDATO
 to 727 (high) tokens — effort works where the prompt is specific. Prompt caching: the FIRST call of a fresh session hits 99.4% of the 37.9k-token prefix, but over the whole 82-question run (252 generations, 3.07 calls/question, summed from OpenRouter's own generation records) only **67.7%** of prompt tokens were cached — later calls in a turn carry tool results the cache does not cover — and the run billed **$5.33**: median **$0.064 per question**, $0.021 per call, reasoning 73% of completion tokens. Cache reads ARE billed at the $0.15/M rate (verified: an identical second call's prompt cost fell $0.0345 → $0.0042). Unit costs only — never multiply by this suite's volume.
 
 **Double texting:** OpenClaw's inbound debouncer `messages.inbound.debounceMs` defaults to
-**0 = off**, and no seat ever carried a `messages` block. User approved **2000 ms** (the vendor's
-example); `bootstrap-box.sh wire` now writes it — apply s2 first, then the fleet. Its documented
+**0 = off**, and no seat ever carried a `messages` block. Set to **2000 ms** on all six seats
+(user, 2026-09-05 — raised to 5000 for one wire pass that evening, then returned to 2000; the
+reasoning is what matters).
+
+**The debounce window does NOT have to cover a person's typing pause, because `steer` does.**
+`messages.queue.mode` defaults to `steer` (500 ms, we set nothing): a message that arrives while a
+run is ACTIVE is injected into that run after the current tool calls and before the next model
+call — one turn, one reply (https://docs.openclaw.ai/concepts/queue). So the labour splits three
+ways: msg 2 before turn 1 starts → the debounce merges it; msg 2 during turn 1 → steer injects it;
+msg 2 after turn 1 ends → two replies, which is correct. Only the first sliver needs a window, so
+the window stays small. **The cost is per MESSAGE, not per pair** — `scheduleFlush`
+(`inbound-debounce.js:126`) resets the timer on every new item, so the window is added to every
+inbound text before its turn starts, on top of a turn already measured at ~8–15 s. Owner ruling:
+a 5 s wait before every reply is too high a price for a case steer already handles.
+
+**Why the first live test looked like a failure (and was not).** "Hi" then "What is joy's schedule
+again" arrived **11.1 s apart** (gateway log 03:27:45.820 → 03:27:56.963) and turn 1 had already
+**ENDED at 03:27:54.014** — 2.9 s before the second message landed. There was no overlap to steer
+into and no window short of ~12 s would have merged them. The cake pair was the same shape (turn 1
+ended 18:00:29.3, msg 2 read 18:00:32.3). Telegram stamps both messages of a pair to the same
+MINUTE, which is what made the screenshot look like a bug: **always read the gateway log's
+milliseconds, not the chat clock.** STILL UNPROVEN: steer has never been observed firing on this
+stack — both natural tests missed the window. The test is to ask a seat something slow (a
+multi-tool schedule question) and send a second message while it is still working. Its documented
 limit (https://docs.openclaw.ai/concepts/messages): text only — a photo flushes immediately. The queue's default
 `steer` mode could not merge the mango-cake pair either: the Telegram handler ran turn 1 inline,
 so the follow-up text was not even read until turn 1's reply had gone out (20s after it was sent).

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import type { PlacedVisit } from '../db/visits.js';
+import type { PlacedVisitWithParticipants } from '../db/visits.js';
 import type { JobWithCustomer } from '../db/jobs.js';
 import type { Observation } from '../db/observations.js';
 import type { ReviewItem } from '../db/reviewItems.js';
@@ -40,7 +40,7 @@ const NOW = '2026-08-16T12:00:00.000Z';
 
 const tenant = (timezone: string): Tenant => ({ id: 't1', timezone }) as unknown as Tenant;
 
-function visit(over: Partial<PlacedVisit>): PlacedVisit {
+function visit(over: Partial<PlacedVisitWithParticipants>): PlacedVisitWithParticipants {
   return {
     id: 'a1',
     tenant_id: 't1',
@@ -53,8 +53,11 @@ function visit(over: Partial<PlacedVisit>): PlacedVisit {
     reason: null,
     created_at: '2026-08-01T00:00:00.000Z',
     updated_at: '2026-08-01T00:00:00.000Z',
+    // Rung 9c: a visit carries its crew. Empty = nobody on it; the crew cases
+    // pass their own participants.
+    visit_participants: [],
     ...over,
-  } as unknown as PlacedVisit;
+  } as unknown as PlacedVisitWithParticipants;
 }
 
 function openItem(over: Partial<ReviewItem>): ReviewItem {
@@ -528,7 +531,7 @@ describe('runWatchers', () => {
       ],
       listCaptureTimes: async () => [{ job_id: 'j9', captured_at: '2026-08-15T11:00:00.000Z' }],
       listAssignments: async () => [
-        visit({ id: 'a-cancelled', status: 'cancelled' } as Partial<PlacedVisit>),
+        visit({ id: 'a-cancelled', status: 'cancelled' } as Partial<PlacedVisitWithParticipants>),
         visit({ id: 'a-still-open', job_id: 'j8' }),
       ],
       resolveGap: async (_t, _kind, subjectRef, _status, resolution) => {
@@ -561,7 +564,7 @@ describe('runWatchers', () => {
       // Activity BEFORE the flag (09:00 < 10:00) — what the planner escalated despite.
       listCaptureTimes: async () => [{ job_id: 'j-esc', captured_at: '2026-08-16T09:00:00.000Z' }],
       listAssignments: async () => [
-        visit({ id: 'a-esc', status: 'completed' } as Partial<PlacedVisit>),
+        visit({ id: 'a-esc', status: 'completed' } as Partial<PlacedVisitWithParticipants>),
       ],
       resolveGap: async (_t, _k, subjectRef) => {
         resolved.push(subjectRef);

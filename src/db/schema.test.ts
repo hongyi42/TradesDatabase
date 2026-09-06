@@ -226,6 +226,90 @@ describe('context spine schema', () => {
     expect(rows[0].contype, 'x = exclusion constraint').toBe('x');
   });
 
+  // ── Rung 9c: the crew, and where the double-booking guard now lives ────────
+
+  test('visit_participants carries the relocated overlap guard', async () => {
+    const cols = await columns('visit_participants');
+    for (const c of ['id', 'tenant_id', 'visit_id', 'technician_id', 'starts_at', 'ends_at', 'status', 'created_at']) {
+      expect(cols.get(c), `visit_participants.${c}`).toBeDefined();
+    }
+    const { rows } = await client.query<{ contype: string; def: string }>(
+      `select contype, pg_get_constraintdef(oid) as def from pg_constraint
+        where conrelid = 'public.visit_participants'::regclass
+          and conname = 'no_confirmed_overlap_participant'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].contype, 'x = exclusion constraint').toBe('x');
+    // Same predicate as the visits-level guard it replaces: an untimed row is
+    // demand, not schedule, and tstzrange(null,null) would block a whole
+    // calendar.
+    expect(rows[0].def).toContain('starts_at IS NOT NULL');
+    // THE BRIDGE IS STILL HERE. 20260907100100 drops it AFTER every service is
+    // live, and this assertion inverts then.
+    expect((await columns('visits')).get('technician_id'), 'the deploy bridge').toBeDefined();
+    const { rows: fk } = await client.query<{ def: string }>(
+      `select pg_get_constraintdef(oid) as def from pg_constraint
+        where conrelid = 'public.visit_participants'::regclass
+          and conname = 'visit_participants_visit_id_fkey'`,
+    );
+    // A crew list must die with its trip, or a visit becomes undeletable.
+    expect(fk[0].def).toContain('ON DELETE CASCADE');
+  });
+
+  test('the crew table must NOT look like a PostgREST junction', async () => {
+    // MEASURED (local stack, 2026-09-06): with a (visit_id, technician_id)
+    // PRIMARY KEY, PostgREST synthesises a many-to-many `visits ↔ technicians`
+    // that collides with visits_technician_id_fkey, and EVERY select embedding
+    // `technicians` from `visits` answers HTTP 300 PGRST201 — the board, the
+    // customer brief, the unplaced strip. A surrogate key gives the same
+    // guarantee and keeps the relationship unambiguous. Do not "tidy" this back
+    // into a composite primary key.
+    const { rows } = await client.query<{ def: string }>(
+      `select pg_get_constraintdef(oid) as def from pg_constraint
+        where conrelid = 'public.visit_participants'::regclass and contype in ('p','u')`,
+    );
+    expect(rows.some((r) => r.def === 'PRIMARY KEY (id)')).toBe(true);
+    expect(rows.some((r) => r.def === 'UNIQUE (visit_id, technician_id)')).toBe(true);
+  });
+
+  test('ONE after-trigger reconciles participants — the order is inside it, not between triggers', async () => {
+    const { rows } = await client.query<{ tgname: string; def: string }>(
+      `select tgname, pg_get_triggerdef(oid) as def from pg_trigger
+        where tgrelid = 'public.visits'::regclass and not tgisinternal
+        order by tgname`,
+    );
+    // AFTER triggers fire ALPHABETICALLY. Split across two — a `_sync` and a
+    // `_mirror` — the name decides which runs first, and "sync the times"
+    // before "reconcile the person" refuses a legitimate reassign-and-move.
+    expect(rows.filter((r) => /AFTER/.test(r.def)).map((r) => r.tgname)).toEqual([
+      'visits_participants_after',
+    ]);
+    expect(rows.some((r) => /sync|mirror/i.test(r.tgname))).toBe(false);
+    const fill = await client.query<{ def: string }>(
+      `select pg_get_triggerdef(oid) as def from pg_trigger
+        where tgrelid = 'public.visit_participants'::regclass and not tgisinternal`,
+    );
+    // INSERT **AND UPDATE**: the times on a participant are copies, and the
+    // guarantee is only structural if a hand-written UPDATE cannot set them
+    // either — otherwise the exclusion constraint ends up checking a time
+    // nobody is going (Phase 1 review).
+    expect(fill.rows).toHaveLength(1);
+    expect(fill.rows[0].def).toContain('BEFORE INSERT OR UPDATE');
+  });
+
+  test('visit_participants is closed to the Data API', async () => {
+    const { rows } = await client.query<{ relrowsecurity: boolean }>(
+      `select relrowsecurity from pg_class where oid = 'public.visit_participants'::regclass`,
+    );
+    expect(rows[0].relrowsecurity, 'RLS on, no policy → anon/authenticated get zero rows').toBe(true);
+    const { rows: grants } = await client.query<{ grantee: string }>(
+      `select distinct grantee from information_schema.role_table_grants
+        where table_schema = 'public' and table_name = 'visit_participants'
+          and grantee in ('anon','authenticated')`,
+    );
+    expect(grants).toEqual([]);
+  });
+
   // The L1 invariant: raw_captures is append-only. The whole probe runs inside a
   // transaction that is rolled back, so nothing persists (and DELETE is blocked
   // by the same trigger, so a committed probe row could not be cleaned up).

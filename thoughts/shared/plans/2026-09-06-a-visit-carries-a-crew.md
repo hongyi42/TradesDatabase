@@ -67,6 +67,37 @@ visits finding from the 9b deploy is deliberately NOT here.
 - **Out of scope** — stale-confirmed visits defeating attach step 2; any-participant ask-of-record; the
   board rebuild; rungs 10–12.
 
+### Amended during Phase 1 (probed on the local stack, 2026-09-06)
+- **SURROGATE PRIMARY KEY on `visit_participants`, not (visit_id, technician_id)** — PostgREST reads a
+  two-FK table whose PK is exactly those FKs as a JUNCTION and synthesises a many-to-many
+  `visits ↔ technicians` that collides with `visits_technician_id_fkey`. Every select embedding
+  `technicians` from `visits` then answers HTTP 300 `PGRST201` — which would have broken the
+  still-running old code for the entire deploy window, the one thing the migration order exists to
+  prevent. `id uuid primary key` + `unique (visit_id, technician_id)` gives the same guarantee and
+  keeps the relationship unambiguous (probed: 200 on all four embed shapes). Pinned by a schema test.
+- **The five embed selects KEEP `technicians(...)` and ADD the participants embed** rather than
+  replacing it (the plan said replace). The plan also said the `technicians` member stays on the row
+  types until Phase 3 — replacing the select would have left it typed but always undefined, i.e. no
+  technician names on the board for two phases. Both resolve now; Phase 3 removes the old one.
+- **The bridge column keeps whoever already holds it** if they are still on the crew (`bridgeFor`),
+  instead of always taking the first of the list. The trigger's bridge arm deletes the OLD
+  column-holder's participant row, so re-stating the same crew in a different order silently dropped
+  a STAYING member and skipped their overlap check — the move then landed on top of their own
+  booking (review round 1, probed).
+- **`on conflict (visit_id, technician_id) do nothing`, never a bare `on conflict`** — an untargeted
+  DO NOTHING arbitrates over every constraint, the exclusion included, so the relocated guard was
+  unenforced on the trigger's own insert path (review round 2, probed).
+- **The fill trigger fires on INSERT *or UPDATE* and takes `for share` on the visit** — without
+  either, a participant's derived times can drift from its trip (a direct UPDATE, or an insert racing
+  a move), and the guard is then checking a time nobody is going.
+- **The three tenant-wide readers are PAGED** — the "nobody is on it" test moved from SQL to JS, so
+  SQL now returns every confirmed row in the window and PostgREST's 1000-row cap would truncate
+  before the filter ran. The tray reads from the epoch, and untimed rows sort last, so they are
+  exactly what would have been dropped.
+- **`isOverlapViolation` excludes a joiner failure** — both carry 23P01, but one means "nothing
+  moved" and the other means "it moved and one person is missing". Reporting the first for the second
+  tells the manager the opposite of what happened.
+
 ## Plain-language walkthrough
 ```
       visits ──< visit_participants >── technicians
@@ -177,11 +208,11 @@ revoke all on visit_participants from anon, authenticated;
 - `npm run gen:types:local` (never `gen:types` — it targets the pilot).
 
 ### Automated verification
-- [ ] `npx supabase db reset` applies the migration; `npm run typecheck` · `lint` · `test` · `build`
-- [ ] `src/db/schema.test.ts`: `visit_participants` exists with `no_confirmed_overlap_participant`;
+- [x] `npx supabase db reset` applies the migration; `npm run typecheck` · `lint` · `test` · `build`
+- [x] `src/db/schema.test.ts`: `visit_participants` exists with `no_confirmed_overlap_participant`;
       `visits.technician_id` still present (inverted in Phase 4); ONE trigger on `visits` named
       `visits_participants_after` and none named `*sync*`/`*mirror*` (the order pin, review F3)
-- [ ] `src/db/scheduling.test.ts` — re-point :292 (overlap raised on the PARTICIPANT insert), :414 (move
+- [x] `src/db/scheduling.test.ts` — re-point :292 (overlap raised on the PARTICIPANT insert), :414 (move
       onto a taken slot: `23P01` from the sync trigger, visit EXACTLY where it was), :706 (untimed twins
       insert). New: two ids → two participants; a `23P01` on the second person leaves NO visit row behind;
       set-participants with a colliding add leaves the crew intact; sync trigger moves every participant's
@@ -191,11 +222,11 @@ revoke all on visit_participants from anon, authenticated;
       OLD person A holds elsewhere SUCCEEDS** (the F3 order pin — fails under the wrong trigger order);
       `listOverdueConfirmedVisits` returns a two-participant visit ONCE (db test — `watchers.test.ts`
       mocks this reader, so only a db test can see a fan-out).
-- [ ] Test-count audit: added ≥ 11, deleted 0 (the rung-9a mass-edit rule).
+- [x] Test-count audit: added ≥ 11, deleted 0 (the rung-9a mass-edit rule).
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack only.
-- [ ] `docker exec … psql`: after `db reset` + `npm run seed:local`, `select count(*) from
+- [x] `docker exec … psql`: after `db reset` + `npm run seed:local`, `select count(*) from
       visit_participants` equals `select count(*) from visits where technician_id is not null`.
 
 ### Manual verification

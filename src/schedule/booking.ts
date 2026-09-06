@@ -30,7 +30,7 @@ import {
   listUntimedVisitsForJob,
   listOpenJobsForCustomer,
   moveVisitRow,
-  attachVisitTechnician,
+  attachVisitParticipants,
   updateVisitStatus,
   updateJobDetails,
   updateJobStatus,
@@ -900,8 +900,8 @@ export async function attachUnplacedVisit(
   // An attach only changes WHO — the visit stays untimed. One guarded UPDATE,
   // so the row the manager tapped in the tray cannot vanish underneath them
   // (which is exactly what the old cancel-then-insert could do on a failure).
-  const visit = await attachVisitTechnician(old.id, {
-    technicianId: technician?.id ?? null,
+  const visit = await attachVisitParticipants(old.id, {
+    technicianIds: technician ? [technician.id] : [],
     reason: input.reason,
     status: 'confirmed', // never leave it 'proposed' — see the note on the core
   });

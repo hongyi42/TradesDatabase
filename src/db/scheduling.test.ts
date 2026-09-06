@@ -23,10 +23,18 @@ import {
 } from './jobs.js';
 import {
   createVisit,
+  listIdenticalUnassignedVisits,
+  listParticipants,
+  listUnassignedVisits,
+  listUntimedVisitsForJob,
+  participantsOf,
+  setVisitParticipants,
+  upsertParticipants,
   stageOf,
   insertVisitNote,
   getVisitForTenant,
   isOverlapViolation,
+  isJoinerFailure,
   listVisitsForJob,
   listVisitsForTechnician,
   listVisitsForTenant,
@@ -1127,5 +1135,398 @@ describe('listOverdueConfirmedVisits', () => {
     expect(rowsA.some((r) => r.id === bRow.id)).toBe(false);
     const rowsB = await listOverdueConfirmedVisits(tenantB, FROM, TO);
     expect(rowsB.map((r) => r.id)).toEqual([bRow.id]);
+  });
+});
+
+// ── Rung 9c: a visit carries a crew ─────────────────────────────────────────
+//
+// DEDICATED TENANT and DECEMBER dates: this block books the same two people
+// against each other on purpose, and the shared seed tenant's fixtures sit in
+// August–October. A stray overlap between the two would read as a bug in the
+// guard rather than a fixture collision (the listOverdueConfirmedVisits note).
+describe('a visit carries a crew (rung 9c)', () => {
+  const D = (day: number, hour: number) =>
+    `2026-12-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:00:00.000Z`;
+  let crewTenant: string;
+  let jobId: string;
+  let ben: Technician;
+  let joy: Technician;
+
+  const mk = async (over: Partial<Parameters<typeof createVisit>[0]> = {}) =>
+    createVisit({
+      tenantId: crewTenant,
+      jobId,
+      startsAt: null,
+      endsAt: null,
+      status: 'confirmed',
+      ...over,
+    });
+
+  beforeAll(async () => {
+    crewTenant = (await createTenant(`crew-tenant-${Date.now()}`)).id;
+    await setTenantSeats(crewTenant, { managerSeats: 2, technicianSeats: 5 });
+    const customer = await createCustomer({ tenantId: crewTenant, name: 'Crew Casa' });
+    jobId = (await createJob({ tenantId: crewTenant, customerId: customer.id, title: 'Crew work' })).id;
+    ben = await insertTechnician({ tenantId: crewTenant, ref: 'ben-crew', displayName: 'Ben Crew' });
+    joy = await insertTechnician({ tenantId: crewTenant, ref: 'joy-crew', displayName: 'Joy Crew' });
+  });
+
+  afterAll(async () => {
+    // Runs BEFORE the file-level TRUNCATE, and tenants is NO ACTION — delete the
+    // children first (the listOverdueConfirmedVisits pattern). visit_participants
+    // goes with its visit: the FK is ON DELETE CASCADE.
+    await pg.query('delete from visits where tenant_id = $1', [crewTenant]);
+    await pg.query('delete from jobs where tenant_id = $1', [crewTenant]);
+    await pg.query('delete from customers where tenant_id = $1', [crewTenant]);
+    await pg.query('delete from technicians where tenant_id = $1', [crewTenant]);
+    await pg.query('delete from tenants where id = $1', [crewTenant]);
+  });
+
+  test('two people, ONE trip: both participants carry the visit\'s times and status', async () => {
+    const v = await mk({ technicianIds: [ben.id, joy.id], startsAt: D(1, 9), endsAt: D(1, 11) });
+    const parts = await listParticipants(v.id);
+    expect(parts).toHaveLength(2);
+    expect(parts.map((p) => p.technician_id).sort()).toEqual([ben.id, joy.id].sort());
+    // The derived copies — what makes the relocated guard trustworthy. No
+    // caller wrote these; the fill trigger did.
+    expect(parts.every((p) => new Date(p.starts_at as string).toISOString() === D(1, 9))).toBe(true);
+    expect(parts.every((p) => new Date(p.ends_at as string).toISOString() === D(1, 11))).toBe(true);
+    expect(parts.every((p) => p.status === 'confirmed')).toBe(true);
+    // ONE row on the job — the whole point of the rung.
+    expect((await listVisitsForJob(jobId)).filter((r) => r.id === v.id)).toHaveLength(1);
+  });
+
+  test('a crew-mate already booked elsewhere refuses the booking and leaves NO visit behind', async () => {
+    await mk({ technicianId: joy.id, startsAt: D(2, 9), endsAt: D(2, 11) });
+    const before = (await listVisitsForJob(jobId)).length;
+    let raised: unknown;
+    try {
+      await mk({ technicianIds: [ben.id, joy.id], startsAt: D(2, 10), endsAt: D(2, 12) });
+    } catch (err) {
+      raised = err;
+    }
+    // Raised by the PARTICIPANT constraint: ben (the bridge column) is free, so
+    // the visits-level guard passes and joy's participant row is what collides.
+    expect(isOverlapViolation(raised)).toBe(true);
+    // No phantom trip: a refused booking leaves nothing for a manager to find.
+    expect((await listVisitsForJob(jobId)).length).toBe(before);
+  });
+
+  test('a move drags EVERY participant\'s copy onto the new slot', async () => {
+    const v = await mk({ technicianIds: [ben.id, joy.id], startsAt: D(3, 9), endsAt: D(3, 11) });
+    await moveVisitRow(v.id, { startsAt: D(3, 14), endsAt: D(3, 16), reason: 'customer asked' });
+    const parts = await listParticipants(v.id);
+    expect(parts).toHaveLength(2);
+    expect(parts.every((p) => new Date(p.starts_at as string).toISOString() === D(3, 14))).toBe(true);
+  });
+
+  test('APP ORDER PIN: a crew-mate can LEAVE onto a slot they are busy in', async () => {
+    // Joy is on this trip AND booked elsewhere at 14:00. The manager moves the
+    // trip to 14:00 and takes Joy off it: "Ben can cover it alone."
+    //
+    // The trigger cannot save this one. Its person-arm only reacts to
+    // technician_id, and technician_id is BEN both before and after — so as far
+    // as the DB is concerned Joy is simply still on a visit that just moved onto
+    // her other booking, and the sync raises 23P01. The only fix is the typed
+    // layer taking leavers off BEFORE the UPDATE, which is what moveVisitRow
+    // does. (Break that order and this test fails with an exclusion violation.)
+    const joysOther = await mk({ technicianId: joy.id, startsAt: D(4, 14), endsAt: D(4, 16) });
+    const v = await mk({ technicianIds: [ben.id, joy.id], startsAt: D(4, 9), endsAt: D(4, 11) });
+    const moved = await moveVisitRow(v.id, {
+      startsAt: D(4, 14),
+      endsAt: D(4, 16),
+      technicianIds: [ben.id],
+      reason: 'joy is out, ben covers it',
+    });
+    expect(moved.id).toBe(v.id);
+    expect((await listParticipants(v.id)).map((p) => p.technician_id)).toEqual([ben.id]);
+    // Joy's own booking is untouched — nothing was stolen to make room.
+    const other = await getVisitForTenant(joysOther.id, crewTenant);
+    expect(other?.status).toBe('confirmed');
+    expect(new Date(other?.starts_at as string).toISOString()).toBe(D(4, 14));
+  });
+
+  test('TRIGGER ORDER PIN: the OLD code\'s one-statement reassign-and-move still succeeds', async () => {
+    // This is the deploy window, exactly: code that has never heard of
+    // participants moves a visit and changes its person in ONE UPDATE. The app
+    // cannot take the leaver off first — it does not know there is a crew — so
+    // the ONLY thing standing between the manager and a refused reassign is the
+    // order INSIDE the trigger. Reconcile the person, THEN sync the times.
+    //
+    // Two triggers would fire alphabetically and this is the case that breaks:
+    // sync-then-reconcile drags Ben's copy onto 14:00, where Ben already is.
+    const bensOther = await mk({ technicianId: ben.id, startsAt: D(14, 14), endsAt: D(14, 16) });
+    const v = await mk({ technicianId: ben.id, startsAt: D(14, 9), endsAt: D(14, 11) });
+    await pg.query(
+      `update visits set technician_id = $1, starts_at = $2, ends_at = $3 where id = $4`,
+      [joy.id, D(14, 14), D(14, 16), v.id],
+    );
+    expect((await listParticipants(v.id)).map((p) => p.technician_id)).toEqual([joy.id]);
+    // Joy's copy followed the trip; Ben's booking elsewhere is untouched.
+    const [joysCopy] = await listParticipants(v.id);
+    expect(new Date(joysCopy.starts_at as string).toISOString()).toBe(D(14, 14));
+    expect((await getVisitForTenant(bensOther.id, crewTenant))?.status).toBe('confirmed');
+  });
+
+  test('a list REPLACES the crew; the leaver\'s row goes with them', async () => {
+    const v = await mk({ technicianIds: [ben.id, joy.id], startsAt: D(5, 9), endsAt: D(5, 11) });
+    await moveVisitRow(v.id, {
+      startsAt: D(5, 13),
+      endsAt: D(5, 15),
+      technicianIds: [joy.id],
+      reason: 'ben off the job',
+    });
+    expect((await listParticipants(v.id)).map((p) => p.technician_id)).toEqual([joy.id]);
+  });
+
+  test('the deploy bridge: an old-style technician_id UPDATE moves ONE person and never drops the crew', async () => {
+    // This is the still-running old code, byte for byte: it knows one column and
+    // nothing about participants. Between the two migrations it must keep
+    // working, and it must not be able to silently delete a crew-mate it cannot
+    // see — so the trigger removes the OLD person only, never everybody.
+    const v = await mk({ technicianIds: [ben.id, joy.id], startsAt: D(6, 9), endsAt: D(6, 11) });
+    expect((await listParticipants(v.id)).map((p) => p.technician_id)).toEqual([ben.id, joy.id]);
+    await pg.query('update visits set technician_id = null where id = $1', [v.id]);
+    // Ben (the bridge person) left; Joy, invisible to that UPDATE, stayed.
+    expect((await listParticipants(v.id)).map((p) => p.technician_id)).toEqual([joy.id]);
+    // And an old-style attach materialises a participant with no typed layer.
+    await pg.query('update visits set technician_id = $1 where id = $2', [ben.id, v.id]);
+    expect((await listParticipants(v.id)).map((p) => p.technician_id).sort()).toEqual(
+      [ben.id, joy.id].sort(),
+    );
+  });
+
+  test('the tiebreak is ADDED FIRST — not the roster order, not the uuid order', async () => {
+    // A crew has no lead (user, 2026-09-01), but a gap has to be addressed to
+    // somebody. The rule is "whoever was added first", and it is stable: the
+    // same booking always names the same person, and naming Joy first makes it
+    // Joy — nothing about Ben's row makes him senior.
+    const benFirst = await mk({ technicianIds: [ben.id, joy.id], startsAt: D(7, 9), endsAt: D(7, 11) });
+    const joyFirst = await mk({ technicianIds: [joy.id, ben.id], startsAt: D(7, 14), endsAt: D(7, 16) });
+    expect((await listParticipants(benFirst.id)).map((p) => p.technician_id)).toEqual([ben.id, joy.id]);
+    expect((await listParticipants(joyFirst.id)).map((p) => p.technician_id)).toEqual([joy.id, ben.id]);
+  });
+
+  test('listVisitsForTechnician reaches a crew visit through EITHER person', async () => {
+    const v = await mk({ technicianIds: [ben.id, joy.id], startsAt: D(8, 9), endsAt: D(8, 11) });
+    const bens = await listVisitsForTechnician(ben.id, D(8, 0), D(8, 23));
+    const joys = await listVisitsForTechnician(joy.id, D(8, 0), D(8, 23));
+    expect(bens.map((r) => r.id)).toContain(v.id);
+    // The crew-mate who is NOT the bridge column's person — invisible to this
+    // reader before the rung.
+    expect(joys.map((r) => r.id)).toContain(v.id);
+  });
+
+  test('"nobody is on it" means NO PARTICIPANT ROWS, across all four recall readers', async () => {
+    const heldUntimed = await mk({ technicianIds: [ben.id] });
+    const freeUntimed = await mk({});
+    const unassigned = (await listUnassignedVisits(crewTenant, D(1, 0))).map((r) => r.id);
+    expect(unassigned).toContain(freeUntimed.id);
+    expect(unassigned).not.toContain(heldUntimed.id);
+
+    const forBen = (await listUntimedVisitsForJob(crewTenant, jobId, ben.id)).map((r) => r.id);
+    expect(forBen).toContain(heldUntimed.id);
+    const forNobody = (await listUntimedVisitsForJob(crewTenant, jobId, null)).map((r) => r.id);
+    expect(forNobody).toContain(freeUntimed.id);
+    expect(forNobody).not.toContain(heldUntimed.id);
+
+    const parkedFree = await mk({ startsAt: D(9, 9), endsAt: D(9, 11) });
+    const parkedHeld = await mk({ technicianIds: [joy.id], startsAt: D(9, 9), endsAt: D(9, 11) });
+    const twins = (await listIdenticalUnassignedVisits(crewTenant, D(9, 9), D(9, 11))).map((r) => r.id);
+    expect(twins).toEqual([parkedFree.id]);
+
+    const tray = (await listUnassignedVisitsWithRefs(crewTenant, D(1, 0))).map((r) => r.id);
+    expect(tray).toContain(parkedFree.id);
+    // Timed AND crewed is nobody's recall surface. (An UNTIMED row with a crew
+    // still belongs in the tray — rung 9a — so heldUntimed is not asserted out.)
+    expect(tray).not.toContain(parkedHeld.id);
+  });
+
+  test('the watcher sees a crew trip ONCE, with both names on it', async () => {
+    const v = await mk({ technicianIds: [ben.id, joy.id], startsAt: D(10, 9), endsAt: D(10, 11) });
+    const rows = await listOverdueConfirmedVisits(crewTenant, D(10, 10), D(10, 12));
+    // One TRIP, not one per person — the gap mint counts trips.
+    expect(rows.filter((r) => r.id === v.id)).toHaveLength(1);
+    const crew = participantsOf(rows.find((r) => r.id === v.id)!, crewTenant);
+    expect(crew.map((p) => p.ref)).toEqual(['ben-crew', 'joy-crew']);
+  });
+
+  test('a colliding ADD leaves the crew exactly as it was', async () => {
+    await mk({ technicianId: joy.id, startsAt: D(11, 9), endsAt: D(11, 11) });
+    const v = await mk({ technicianId: ben.id, startsAt: D(11, 10), endsAt: D(11, 12) });
+    let raised: unknown;
+    try {
+      await setVisitParticipants(crewTenant, v.id, [ben.id, joy.id]);
+    } catch (err) {
+      raised = err;
+    }
+    expect(isOverlapViolation(raised)).toBe(true);
+    // The upsert is ONE statement, so it rolls back whole: Ben is still on it.
+    expect((await listParticipants(v.id)).map((p) => p.technician_id)).toEqual([ben.id]);
+  });
+
+  test('a participant can never carry times its visit does not have', async () => {
+    const v = await mk({ startsAt: D(12, 9), endsAt: D(12, 11) });
+    // Try to lie on the way in — the fill trigger overwrites regardless.
+    await pg.query(
+      `insert into visit_participants (tenant_id, visit_id, technician_id, starts_at, ends_at, status)
+       values ($1, $2, $3, '2020-01-01T00:00:00Z', '2020-01-01T01:00:00Z', 'proposed')`,
+      [crewTenant, v.id, ben.id],
+    );
+    const [p] = await listParticipants(v.id);
+    expect(new Date(p.starts_at as string).toISOString()).toBe(D(12, 9));
+    expect(p.status).toBe('confirmed');
+    // And a row whose tenant disagrees with the trip's is refused outright.
+    await expect(
+      pg.query(
+        `insert into visit_participants (tenant_id, visit_id, technician_id)
+         values ($1, $2, $3)`,
+        [tenantId, v.id, joy.id],
+      ),
+    ).rejects.toThrow(/tenant mismatch/);
+  });
+
+  test('a crew member who is STAYING is never displaced by the bridge column', async () => {
+    // The bridge column names one of the crew, and the trigger's bridge arm
+    // removes whoever it USED to name. So if a move re-stated the same crew in
+    // a different order, naming a different member, the trigger would delete a
+    // person who is staying — their overlap never checked — and the trip would
+    // land on top of their own booking. (Found in Phase 1 review, probed: the
+    // move SUCCEEDED and Ben vanished off the crew.) The column now stays with
+    // whoever holds it as long as they are still going.
+    const bensOther = await mk({ technicianId: ben.id, startsAt: D(15, 14), endsAt: D(15, 16) });
+    const v = await mk({ technicianIds: [ben.id, joy.id], startsAt: D(15, 9), endsAt: D(15, 11) });
+    expect(v.technician_id).toBe(ben.id);
+    let raised: unknown;
+    try {
+      await moveVisitRow(v.id, {
+        startsAt: D(15, 14),
+        endsAt: D(15, 16),
+        technicianIds: [joy.id, ben.id], // SAME crew, listed the other way round
+        reason: 'both still going',
+      });
+    } catch (err) {
+      raised = err;
+    }
+    expect(isOverlapViolation(raised)).toBe(true);
+    // Nothing moved, and nobody was dropped.
+    const after = await getVisitForTenant(v.id, crewTenant);
+    expect(new Date(after?.starts_at as string).toISOString()).toBe(D(15, 9));
+    expect((await listParticipants(v.id)).map((p) => p.technician_id).sort()).toEqual(
+      [ben.id, joy.id].sort(),
+    );
+    expect((await getVisitForTenant(bensOther.id, crewTenant))?.status).toBe('confirmed');
+  });
+
+  test('setVisitParticipants carries the bridge column with the crew', async () => {
+    // Between the two migrations the column is what the old code, v_schedule
+    // and the old guard read. Leaving it naming somebody who has left would
+    // make all three report a person who is not on the trip.
+    const v = await mk({ technicianIds: [ben.id], startsAt: D(16, 9), endsAt: D(16, 11) });
+    expect(v.technician_id).toBe(ben.id);
+    await setVisitParticipants(crewTenant, v.id, [joy.id]);
+    expect((await listParticipants(v.id)).map((p) => p.technician_id)).toEqual([joy.id]);
+    expect((await getVisitForTenant(v.id, crewTenant))?.technician_id).toBe(joy.id);
+    // Adding somebody does NOT move the column off whoever already holds it.
+    await setVisitParticipants(crewTenant, v.id, [ben.id, joy.id]);
+    expect((await getVisitForTenant(v.id, crewTenant))?.technician_id).toBe(joy.id);
+    expect((await listParticipants(v.id)).map((p) => p.technician_id).sort()).toEqual(
+      [ben.id, joy.id].sort(),
+    );
+  });
+
+  test('a direct UPDATE cannot desynchronise a participant from its trip', async () => {
+    // The derived columns are re-derived on UPDATE too, so the guard can never
+    // end up checking a time nobody is going.
+    const v = await mk({ technicianIds: [ben.id], startsAt: D(17, 9), endsAt: D(17, 11) });
+    await pg.query(
+      `update visit_participants
+          set starts_at = '2020-01-01T00:00:00Z', ends_at = '2020-01-01T01:00:00Z',
+              status = 'proposed'
+        where visit_id = $1`,
+      [v.id],
+    );
+    const [p] = await listParticipants(v.id);
+    expect(new Date(p.starts_at as string).toISOString()).toBe(D(17, 9));
+    expect(new Date(p.ends_at as string).toISOString()).toBe(D(17, 11));
+    expect(p.status).toBe('confirmed');
+  });
+
+  test('the trigger\'s own insert is GUARDED — a bare ON CONFLICT would swallow the exclusion', async () => {
+    // The bridge arm inserts a participant. `on conflict do nothing` without a
+    // target arbitrates over EVERY constraint, the exclusion included, so the
+    // relocated guard would be silently off on exactly the path the deploy
+    // window runs: old code changing the person and the times in one UPDATE.
+    // (Phase 1 review, probed: the visit moved onto the taken slot and ended up
+    // with NO participants at all.)
+    //
+    // Joy is on the 14:00 trip as a CREW MEMBER, not as its bridge column — so
+    // the old visits-level guard is blind to her and the participant guard is
+    // the only thing that can refuse this.
+    await mk({ technicianIds: [ben.id, joy.id], startsAt: D(18, 14), endsAt: D(18, 16) });
+    const v = await mk({ startsAt: D(18, 9), endsAt: D(18, 11) });
+    await expect(
+      pg.query(`update visits set technician_id = $1, starts_at = $2, ends_at = $3 where id = $4`, [
+        joy.id,
+        D(18, 14),
+        D(18, 16),
+        v.id,
+      ]),
+    ).rejects.toThrow(/no_confirmed_overlap_participant/);
+    // Nothing moved, and nobody was quietly attached.
+    const after = await getVisitForTenant(v.id, crewTenant);
+    expect(new Date(after?.starts_at as string).toISOString()).toBe(D(18, 9));
+    expect(after?.technician_id).toBeNull();
+    expect(await listParticipants(v.id)).toHaveLength(0);
+  });
+
+  test('a refused re-crew puts the leavers back — it never quietly empties the trip', async () => {
+    // setVisitParticipants deletes the leavers before it adds the joiners, and
+    // the add is one statement that rolls back whole. Without a restore the
+    // caller would be told "that slot is taken" while the person who was ALREADY
+    // on the trip had been removed (Phase 1 review).
+    await mk({ technicianId: joy.id, startsAt: D(19, 14), endsAt: D(19, 16) });
+    const v = await mk({ technicianIds: [ben.id], startsAt: D(19, 14), endsAt: D(19, 16) });
+    let raised: unknown;
+    try {
+      await setVisitParticipants(crewTenant, v.id, [joy.id]);
+    } catch (err) {
+      raised = err;
+    }
+    expect(isOverlapViolation(raised)).toBe(true);
+    expect((await listParticipants(v.id)).map((p) => p.technician_id)).toEqual([ben.id]);
+  });
+
+  test('"moved, but could not add them" is NOT reported as "nothing moved"', async () => {
+    // A joiner failure carries 23P01 too, and the two mean opposite things: one
+    // says the visit is exactly where it was, the other says it moved and one
+    // person is missing from it. isOverlapViolation answers the first question
+    // only, so a caller cannot tell a manager the visit did not move when it did.
+    const v = await mk({ technicianIds: [ben.id], startsAt: D(20, 9), endsAt: D(20, 11) });
+    await mk({ technicianId: joy.id, startsAt: D(20, 14), endsAt: D(20, 16) });
+    let raised: unknown;
+    try {
+      await moveVisitRow(v.id, {
+        startsAt: D(20, 14),
+        endsAt: D(20, 16),
+        technicianIds: [ben.id, joy.id], // ben moves fine; joy is busy there
+        reason: 'add joy on the way',
+      });
+    } catch (err) {
+      raised = err;
+    }
+    expect(isJoinerFailure(raised)).toBe(true);
+    expect(isOverlapViolation(raised)).toBe(false);
+    // The visit really did move, and Ben went with it.
+    const after = await getVisitForTenant(v.id, crewTenant);
+    expect(new Date(after?.starts_at as string).toISOString()).toBe(D(20, 14));
+    expect((await listParticipants(v.id)).map((p) => p.technician_id)).toEqual([ben.id]);
+  });
+
+  test('upsertParticipants is idempotent — a redelivered add is a no-op, not an error', async () => {
+    const v = await mk({ technicianIds: [ben.id], startsAt: D(13, 9), endsAt: D(13, 11) });
+    await upsertParticipants(crewTenant, v.id, [ben.id, joy.id]);
+    await upsertParticipants(crewTenant, v.id, [ben.id, joy.id]);
+    expect(await listParticipants(v.id)).toHaveLength(2);
   });
 });

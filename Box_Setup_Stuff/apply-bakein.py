@@ -15,7 +15,7 @@ heredoc; the Brev-era guide describes the OLD layout):
   NEW: scripts/generate-openclaw-config.mts + replacement_patterns heredoc
 
 The edits (see the guide for full rationale):
-  (1)  toolSearch:false manifests (nemotron + z-ai/glm-5.2)
+  (1)  toolSearch:false manifests (nemotron + z-ai/glm-5.2 + both OpenRouter lanes)
   (2)  config generator — bake the trades-spine MCP block
   (3)  nemoclaw-start.sh — runtime badge fallback (harmless no-op normally)
   (3b) nemoclaw-start.sh — placeholder self-heal (the versioning-trap fix:
@@ -96,6 +96,42 @@ def edit1_manifests():
                 "verified working for GLM-5.2, this manifest can be deleted."
             ),
             "match": {"modelIds": ["z-ai/glm-5.2"]},
+            "effects": {"openclawTools": {"toolSearch": False}},
+        },
+        # Both lanes of the OpenRouter preset get a manifest, because `match` is on
+        # the model id openclaw is CONFIGURED with and the lane order has already
+        # flipped once (Muse-first, then Gemini-first, both on 2026-09-05). A
+        # manifest that names only one lane silently stops covering the rebuild
+        # window the moment the order changes — which is exactly what happened to
+        # the Muse-only entry this pair replaces.
+        "gemini-3-8-flash-toolsearch-off.json": {
+            "$schema": "../schema.json",
+            "id": "gemini-3-8-flash-toolsearch-off",
+            "agent": "openclaw",
+            "description": (
+                "google/gemini-3.8-flash — the fleet's primary since the evening of 2026-09-05 "
+                "(OpenRouter preset @preset/trades-seats), and the id `bootstrap-box.sh wire` "
+                "writes into openclaw. Direct function calls are the verified-working path; tool "
+                "search was measured slower AND costlier on this stack (2026-08-04). The wire "
+                "phase pins toolSearch:false anyway; this manifest keeps a rebuild honest before "
+                "wire runs."
+            ),
+            # `@preset/trades-seats` is here because a REBUILD writes the ROUTE
+            # string as the seat's model id, and the rebuild-to-wire window is the
+            # whole point of this manifest.
+            "match": {"modelIds": ["google/gemini-3.8-flash", "@preset/trades-seats"]},
+            "effects": {"openclawTools": {"toolSearch": False}},
+        },
+        "muse-spark-1-3-toolsearch-off.json": {
+            "$schema": "../schema.json",
+            "id": "muse-spark-1-3-toolsearch-off",
+            "agent": "openclaw",
+            "description": (
+                "meta/muse-spark-1.3 — the preset's FALLBACK lane (and the fleet's primary for "
+                "part of 2026-09-05, before the date-eval flip). Kept so a seat left declaring "
+                "this id is still covered. Same reasoning as the Gemini manifest above."
+            ),
+            "match": {"modelIds": ["meta/muse-spark-1.3"]},
             "effects": {"openclawTools": {"toolSearch": False}},
         },
     }

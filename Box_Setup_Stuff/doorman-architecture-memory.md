@@ -123,9 +123,47 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
 - Note: OpenClaw's streamable-http MCP loader does NOT itself resolve placeholders (its `resolveEnvPlaceholder`
   with format `Bearer ${VAR}` only covers the codex/gemini path). The egress proxy is what resolves it.
 
-## The agent model: GLM-5.2 — production route is Fireworks Fast (`fireworks-prod / accounts/fireworks/routers/glm-5p2-fast`)
-**Current production route (since 2026-08-15): `fireworks-prod /
-accounts/fireworks/routers/glm-5p2-fast`** — Fireworks' fast router serves the same GLM-5.2
+## The agent model: Gemini 3.8 Flash → Muse Spark 1.3, via an OpenRouter preset (`openrouter-prod / @preset/trades-seats`)
+**Current production route (since 2026-09-05): `openrouter-prod / @preset/trades-seats`.**
+**Since the evening of 2026-09-05 the primary is `google/gemini-3.8-flash` and Muse Spark 1.3 is
+the fallback (preset v3; medic v7)** — user decision after both ran the same 82-question date
+eval: Gemini 80/82, Muse 81/82, 0 weekday↔date contradictions on either; Gemini 10.2s vs 14.1s
+per turn, $0.038 vs $0.064 per question (the extra is ~1s more before the first answer token on
+every call, and Muse thinks on every call where Gemini thinks on a third). Both lanes are pinned
+ids. The paragraph below records the morning's Muse-first reasoning; it still explains the shape.
+Fireworks ran out of credits on 2026-09-04; the user chose OpenRouter for ease of model switching
+and `meta/muse-spark-1.3` (multimodal — photos from technicians are where the product is going;
+standard tier, NOT `-contributor`, whose prompts "may be used to improve Meta's products") with
+`~google/gemini-flash-latest` as the second lane. Plan and measurements:
+`thoughts/shared/plans/2026-09-05-fleet-to-openrouter-muse-spark.md`. Four facts that shape it:
+- **The gateway carries exactly ONE model string and rewrites every request's `model` to it**
+  (NVIDIA/OpenShell#2039); openclaw has no extra-body hook. So the seats cannot send a `models[]`
+  chain — the **preset** is how a second lane reaches them: OpenRouter resolves `@preset/…` to
+  its config (v3: models `[gemini-3.8-flash, muse]`; v2 was `[muse, ~gemini]`, `max_tokens 8192`, `allow_fallbacks`,
+  `data_collection deny`; **no `reasoning`** — the seats send `reasoning_effort` themselves and a
+  preset-side `reasoning.effort` collided with every non-medium level, 400) and chains **per
+  request, with no memory** — if the primary
+  errors, that request goes to the second lane; the next request tries the primary again. The response's `model`
+  names what served. Created via `POST /api/v1/presets/trades-seats/chat/completions` with the
+  planner's key. (An earlier note here said "the docs say management-key-only"; that was the
+  /credits endpoint's restriction, not the presets endpoint's — the presets page states only a
+  bearer token. Do not go hunting for a management key during an incident.) Read it back with `GET
+  /api/v1/presets/trades-seats`.
+- **One key pays for the fleet AND the spine's planner** (user ruling 2026-09-05: "this is
+  testing suite"). A balance-out kills both in the same minute, which is why the medic's first
+  gate is the balance, free, every tick.
+- **Only Google hosts Gemini and only Meta hosts Muse**, so this is vendor-level redundancy
+  between two single-host models, not OpenRouter's multi-host routing. A *stalled* (not erroring)
+  Meta delays every turn until OpenRouter gives up on it — undocumented — inside the gateway's
+  60 s `--timeout`; the medic would see that as a probe timeout.
+- **Caching:** Muse caches implicitly (measured 1,137/1,264 tokens on a repeat); Gemini caches
+  implicitly too but session-stickily — a fresh session's first call misses, later calls read
+  ~87% (measured 2026-09-05; the earlier "needs `cache_control`" note was wrong — see the
+  research doc's amendment). Reasoning is MANDATORY on both; Muse honours `reasoning_effort`
+  (minimal 12–90 tokens, medium 160–374), Gemini accepts all six levels (probed 2026-09-05; reasoning is mandatory on both).
+
+**HISTORY (superseded 2026-09-05): GLM-5.2 on Fireworks Fast (`fireworks-prod / accounts/fireworks/routers/glm-5p2-fast`).**
+Production route 2026-08-15 → 2026-09-05 — Fireworks' fast router serves the same GLM-5.2
 weights ~2.4x faster wall-clock (provider trial:
 `thoughts/shared/research/2026-08-14-glm-5.2-inference-provider-options.md`). Created as
 `--type openai` + `OPENAI_BASE_URL=https://api.fireworks.ai/inference/v1` (cluster inference
@@ -140,8 +178,15 @@ re-asserts the Fireworks route on boot + every 5 min (units in this repo). Check
 body params — no `prompt_cache_key` fleet-side, so Fireworks billed-cache hits are replica-luck
 there (the spine on Render sends its own key via `INFERENCE_CACHE_KEY`).
 
-**THERE IS NO FALLBACK, BY DESIGN (v5, 2026-08-12, user decision).** The medic asserts the
+**THE MEDIC NEVER REROUTES (v5, 2026-08-12, user decision — kept in v6).** It asserts the
 production route and reports honestly whether it is serving. It does **not** reroute traffic.
+Since v6 (2026-09-05) the second lane lives in the OpenRouter preset — per request, vendor-side,
+served model reported back — and the medic (a) checks the key's balance every tick for free,
+(b) probes a real tool call HOURLY (stamped only on a pass, so a "skipped" tick can never close
+an open incident), (c) logs `served=<model>` and warns loudly when the fallback (Muse, since v7) is carrying the fleet,
+(d) probes the fallback lane directly once a day so the fallback stays *verified* — the 08-12
+lesson below, applied rather than forgotten. `--no-verify` on the route assertion: a preset slug
+is not a listed model. Pinned by `src/control/inferenceMedicScript.test.ts` (20 cases).
 How the trap got built, because it was never a decision: nvidia-prod was the ORIGINAL provider
 (2026-07-02); the 07-06 DeepInfra swap kept it as a **manual rollback**; medic v2 (07-11) wired
 that manual rollback up as an **automatic failover target**, and nobody verified it still served
@@ -180,8 +225,10 @@ reconstructable afterwards, not noticed as it happens. The notifier is deliberat
 a bot is paired (user decision 2026-08-12); the transition logic above is what will make it safe to
 switch on without creating a channel people mute.
 
-The standing model decision is the GLM line — Nemotron-3 Super 120B proved too weak; do NOT
-"restore" it when debugging model errors. GLM-5.1 was the first pick but NVIDIA retired it. (Note
+(HISTORY — since 2026-09-05 the standing model decision is Gemini 3.8 Flash (primary) + Muse Spark 1.3 (fallback) via the
+OpenRouter preset, see the top of this section; the GLM notes below are kept for the NVIDIA onboard path,
+which still needs a listed id.) The standing model decision was the GLM line — Nemotron-3 Super
+120B proved too weak; do NOT "restore" it when debugging model errors. GLM-5.1 was the first pick but NVIDIA retired it. (Note
 the id SPELLING differs by provider: DeepInfra `zai-org/GLM-5.2`, NVIDIA `z-ai/glm-5.2`.)
 - **Verify model ids against the LIVE catalog, from the HOST:**
   `curl -s https://integrate.api.nvidia.com/v1/models` — it is **public, no key needed**. As of
@@ -189,9 +236,18 @@ the id SPELLING differs by provider: DeepInfra `zai-org/GLM-5.2`, NVIDIA `z-ai/g
   (retired); `z-ai/glm5.1` → 404 model_not_found. Never trust page URLs or guesses.
 - **nemoclaw's own `--verify` CANNOT reach NVIDIA** — it runs inside the egress-restricted
   gateway container and fails on connection (not auth). Run catalog checks from the host shell.
-- **Change models the supported way:** `nemoclaw inference set --provider nvidia-prod
-  --model <id> --sandbox <AGENT>` — updates the gateway route AND all three openclaw.json refs
-  (agents.defaults.model.primary + registry id/name). No hand-edit of the writable layer.
+- **Change models the supported way — ONBOARD ONLY (scoped 2026-09-05):** `nemoclaw inference set
+  --provider nvidia-prod --model <id> --sandbox <AGENT>` updates the gateway route AND all three
+  openclaw.json refs (agents.defaults.model.primary + registry id/name). That is the right tool
+  while a seat is still on the NVIDIA onboard path.
+  **Do NOT run it against a wired seat.** Since the OpenRouter switch the seat's model entry is
+  written by `bootstrap-box.sh wire <AGENT>`, deliberately by hand (jq), because it carries four
+  fields the vendor command cannot express: `contextWindow` (per-tier), `maxTokens 8192`,
+  `input:["text","image"]` and `compat.supportsReasoningEffort`. The vendor command would
+  overwrite id/name with the ROUTED string — `@preset/trades-seats`, which is not a model — and
+  drop all four, leaving the seat with no image input and no reasoning lever until someone
+  notices. `wire`'s `cmp -s` guard only catches it on the next wire run. If it is ever run by
+  mistake: re-run `NEMOCLAW_CTX_WINDOW=<tier> ./bootstrap-box.sh wire <AGENT>`.
 - Error decoding: 410 = retired model route; 404 = id never existed; 401/403 = key problem;
   5xx/timeout = provider blip.
 

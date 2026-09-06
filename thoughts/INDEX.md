@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 211 documents · 203 live · 8 superseded.
+Regenerate with `npm run decisions:index`. 213 documents · 204 live · 9 superseded.
 
 ## Superseded — do not build on these
 
@@ -44,11 +44,14 @@ Regenerate with `npm run decisions:index`. 211 documents · 203 live · 8 supers
 - `2026-07-04` ~~[2026-07-04-feature-B-outbound-composio-actions](shared/plans/2026-07-04-feature-B-outbound-composio-actions.md)~~ → **[2026-07-04-feature-B-outbound-composio-sessions](shared/plans/2026-07-04-feature-B-outbound-composio-sessions.md)**
 - `2026-07-03` ~~[2026-07-03-scheduling-foundation](shared/plans/2026-07-03-scheduling-foundation.md)~~ → **[2026-09-05-the-visit-is-one-object](shared/plans/2026-09-05-the-visit-is-one-object.md)**
 - `2026-06-30` ~~[2026-06-30-phone-call-input-short-two-tier](shared/plans/2026-06-30-phone-call-input-short-two-tier.md)~~ → **[2026-08-04-phone-call-signalwire](shared/plans/2026-08-04-phone-call-signalwire.md)**
+- `????-??-??` ~~[2026-08-15-fireworks-switch](shared/plans/2026-08-15-fireworks-switch.md)~~ → **[2026-09-05-fleet-to-openrouter-muse-spark](shared/plans/2026-09-05-fleet-to-openrouter-muse-spark.md)**
 
 ## Live
 
+- `2026-09-05` `plan` [2026-09-05-fleet-to-openrouter-muse-spark](shared/plans/2026-09-05-fleet-to-openrouter-muse-spark.md) · _draft_ — Move the six-seat fleet from Fireworks/GLM-5.2 to OpenRouter — Muse Spark 1.3 primary, Gemini Flash (floating…
 - `2026-09-05` `plan` [2026-09-05-the-rails-come-out](shared/plans/2026-09-05-the-rails-come-out.md) `describes 1 deleted file` — "Rung 9, part A — delete the promise ladder and the stored window; no schema rail restricts the agent"
 - `2026-09-05` `plan` [2026-09-05-the-visit-is-one-object](shared/plans/2026-09-05-the-visit-is-one-object.md) `describes 1 deleted file` · _draft_ — Rung 9b — the visit is one object: rename assignments→visits, drop the per-note visits table, moves in place,…
+- `2026-09-05` `research` [2026-09-05-fleet-to-openrouter-gemini-3-8-flash](shared/research/2026-09-05-fleet-to-openrouter-gemini-3-8-flash.md) `not landed` — Switching the six-seat fleet from Fireworks/GLM-5.2 to OpenRouter/google/gemini-3.8-flash — the full footprint
 - `2026-09-05` `research` [2026-09-05-the-visit-is-one-object](shared/research/2026-09-05-the-visit-is-one-object.md) `landed` `describes 1 deleted file` — "Rung 9 — the visit is one object: the full footprint of retiring `assignments` into `visits`, collapsing the…
 - `2026-09-03` `plan` [2026-09-03-the-schedule-is-the-managers](shared/plans/2026-09-03-the-schedule-is-the-managers.md) `describes 1 deleted file` `drift 28` — "Rung 8 — the schedule is the manager's: delete the autonomous solver and pinning"
 - `2026-09-03` `research` [2026-09-03-the-schedule-is-the-managers](shared/research/2026-09-03-the-schedule-is-the-managers.md) `not landed` `describes 8 deleted files` — "Rung 8 — the schedule is the manager's: the demolition footprint of the autonomous solver"
@@ -235,7 +238,6 @@ Regenerate with `npm run decisions:index`. 211 documents · 203 live · 8 supers
 - `????-??-??` `plan` [2026-07-30-remaining-vendor-cost-coverage](shared/plans/2026-07-30-remaining-vendor-cost-coverage.md)
 - `????-??-??` `plan` [2026-08-06-weekday-guard-plugin](shared/plans/2026-08-06-weekday-guard-plugin.md)
 - `????-??-??` `plan` [2026-08-14-agent-turn-hardening](shared/plans/2026-08-14-agent-turn-hardening.md)
-- `????-??-??` `plan` [2026-08-15-fireworks-switch](shared/plans/2026-08-15-fireworks-switch.md)
 - `????-??-??` `plan` [2026-08-17-prod-devops-plan](shared/plans/2026-08-17-prod-devops-plan.md)
 - `????-??-??` `research` [2026-07-04-third-party-automated-scheduling-software](shared/research/2026-07-04-third-party-automated-scheduling-software.md)
 - `????-??-??` `research` [2026-07-08-long-running-agent-tasks](shared/research/2026-07-08-long-running-agent-tasks.md)

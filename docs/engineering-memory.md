@@ -18,228 +18,230 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 ## What is in here
 
-197 entries — the map this file never had. Jump by line number, or grep the title.
+199 entries — the map this file never had. Jump by line number, or grep the title.
 
 **1. How we work (process rules)**
 
-- L248 · Every code change goes through a PR before main _(2026-07-12)_
-- L253 · RPI workflow
-- L256 · Box_Setup_Stuff/ is not documentation — it's the only context a host-side Claude gets
-- L260 · Decision briefs follow ONE layout _(2026-08-26)_
-- L270 · Verify vendor claims against live docs, cite URLs
-- L272 · Never paste badge plaintext anywhere _(2026-07-03)_
-- L274 · Concurrent sessions share a checkout at their peril _(2026-08-15)_
-- L280 · A new table that references ONLY tenants escapes every cleanup cascade _(2026-08-15)_
+- L250 · Every code change goes through a PR before main _(2026-07-12)_
+- L255 · RPI workflow
+- L258 · Box_Setup_Stuff/ is not documentation — it's the only context a host-side Claude gets
+- L262 · Decision briefs follow ONE layout _(2026-08-26)_
+- L272 · Verify vendor claims against live docs, cite URLs
+- L274 · Never paste badge plaintext anywhere _(2026-07-03)_
+- L276 · Concurrent sessions share a checkout at their peril _(2026-08-15)_
+- L282 · Two operators on trades-box-1 at once is an outage waiting to happen _(2026-09-05)_
+- L291 · Never size anything from the pilot's accumulated state — including inference cost _(2026-08-26)_
+- L299 · A new table that references ONLY tenants escapes every cleanup cascade _(2026-08-15)_
 
 **2. Product principles (user decisions — don't re-litigate, do cite when relevant)**
 
-- L292 · Agent-first framing + the intelligent-spine direction _(2026-08-15)_
-- L320 · Nudge frequency is paced by URGENCY, never capped _(2026-08-18)_
-- L375 · The spine is not the books _(2026-08-15)_
-- L388 · The money layer is workflow-agnostic — never pilot-fitted _(2026-08-15)_
-- L398 · Telegram is the entire UI _(2026-07-03)_
-- L408 · A schedule READ renders the booked order; it never re-derives one _(2026-07-31)_
-- L428 · Vocabulary must track what actually gates _(2026-07-23)_
-- L436 · Two access tiers, manager and technician _(2026-07-02)_
-- L443 · Seat-based licensing _(2026-07-02)_
-- L447 · EXPLORATORY direction — software-for-physical-data exchange _(2026-07-26)_
-- L464 · Spine scope boundary _(2026-07-06)_
-- L469 · Confirmation doctrine _(2026-07-17)_
-- L483 · REJECTED direction — do not propose again: _(2026-07-15)_
-- L487 · Agent model: _(2026-08-15)_
-- L556 · Candidate seat model, MEASURED but NOT adopted (2026-08-24) — Gemini 3.7 Flash. _(2026-08-24)_
-- L697 · Homogeneous memory collapses retrieval
-- L700 · Context collapse / brevity bias
-- L704 · Hint leakage
-- L735 · Push the keys, pull the content.
-- L741 · Only accumulate what something can later falsify.
-- L745 · Traces are not memory.
-- L748 · Append-only, never model-rewritten.
-- L750 · Keep it out of the record.
-- L758 · Field notes record one-shot; standing facts still confirm _(2026-08-21)_
-- L793 · A mixed batch confirms as a whole _(2026-08-21)_
-- L893 · Independent rollback of the technician-facing voice.
-- L895 · Per-gap failure isolation.
-- L931 · ONE ask.
-- L933 · The queue is the resting place, not a staging area.
-- L935 · escalated presumes a second party.
-- L938 · Detection is one query:
+- L311 · Agent-first framing + the intelligent-spine direction _(2026-08-15)_
+- L339 · Nudge frequency is paced by URGENCY, never capped _(2026-08-18)_
+- L394 · The spine is not the books _(2026-08-15)_
+- L407 · The money layer is workflow-agnostic — never pilot-fitted _(2026-08-15)_
+- L417 · Telegram is the entire UI _(2026-07-03)_
+- L427 · A schedule READ renders the booked order; it never re-derives one _(2026-07-31)_
+- L447 · Vocabulary must track what actually gates _(2026-07-23)_
+- L455 · Two access tiers, manager and technician _(2026-07-02)_
+- L462 · Seat-based licensing _(2026-07-02)_
+- L466 · EXPLORATORY direction — software-for-physical-data exchange _(2026-07-26)_
+- L483 · Spine scope boundary _(2026-07-06)_
+- L488 · Confirmation doctrine _(2026-07-17)_
+- L502 · REJECTED direction — do not propose again: _(2026-07-15)_
+- L506 · Agent model: _(2026-08-15)_
+- L579 · Candidate seat model, MEASURED but NOT adopted (2026-08-24) — Gemini 3.7 Flash. _(2026-08-24)_
+- L720 · Homogeneous memory collapses retrieval
+- L723 · Context collapse / brevity bias
+- L727 · Hint leakage
+- L758 · Push the keys, pull the content.
+- L764 · Only accumulate what something can later falsify.
+- L768 · Traces are not memory.
+- L771 · Append-only, never model-rewritten.
+- L773 · Keep it out of the record.
+- L781 · Field notes record one-shot; standing facts still confirm _(2026-08-21)_
+- L816 · A mixed batch confirms as a whole _(2026-08-21)_
+- L916 · Independent rollback of the technician-facing voice.
+- L918 · Per-gap failure isolation.
+- L954 · ONE ask.
+- L956 · The queue is the resting place, not a staging area.
+- L958 · escalated presumes a second party.
+- L961 · Detection is one query:
 
 **3. Environments & infrastructure**
 
-- L1016 · A CRON service cannot be deployed by commit id at all. _(2026-08-20)_
-- L1024 · Nothing auto-applies DB migrations to the pilot.
-- L1028 · Deploy-before-migration _(2026-07-19)_
-- L1031 · A new tool surface silently bypasses whatever doctrine rule did not name it — twice now. _(2026-08-06)_
-- L1061 · local_weekday did not close it — resolve_date week ranges were the real hole (2026-08-06). _(2026-08-06)_
-- L1079 · A HOOK plugin is not installed until the GATEWAY's startup line says so (2026-08-06). _(2026-08-06)_
-- L1090 · openclaw plugins install — the VENDOR's own CLI — trips the config-hash trap (2026-08-06). _(2026-08-06)_
-- L1098 · gateway restart does NOT re-render config from sandboxes.json _(2026-08-19)_
-- L1105 · DOCTRINE — the manager is NEVER a verification layer for dates (owner decision, 2026-08-11). _(2026-08-11)_
-- L1133 · WHY the guard was deaf, and proof the version upgrade fixes it (2026-08-12). _(2026-08-12)_
-- L1194 · Guard v0.3.0 fixes both eval-found detector defects (2026-08-12, PR #124). _(2026-08-12)_
-- L1361 · Eval truth-set conventions (2026-08-13 adjudication, five grader bugs): _(2026-08-13)_
-- L1429 · medic v4+v5 are DEPLOYED as of 2026-08-13 19:54:23Z — the NVIDIA failover can no longer fire. _(2026-08-13)_
-- L1508 · Ops alerting: the verdict now leaves the box (2026-08-12). _(2026-08-12)_
-- L1578 · The ladder cannot see the MONEY LEDGER — and a money-only answer leaves the nudge open _(2026-08-19)_
-- L1650 · Stage-1 shadow CONFIRMED on the pilot (2026-08-18T00:05Z). _(2026-08-18)_
-- L1682 · USER DECISION 2026-08-18 — DeepInfra is being RETIRED; Fireworks replaces its inference key. _(2026-08-18)_
-- L1709 · Stage 1 is PROVEN END TO END IN PRODUCTION (2026-08-18 23:10-23:17Z, first clean run). _(2026-08-18)_
-- L1837 · nemoclaw list shows the ONBOARDING RECORD, not the live inference route (2026-08-06). _(2026-08-06)_
-- L1869 · revoke ... from public does NOT revoke anon/authenticated on a new function. _(2026-08-06)_
+- L1039 · A CRON service cannot be deployed by commit id at all. _(2026-08-20)_
+- L1047 · Nothing auto-applies DB migrations to the pilot.
+- L1051 · Deploy-before-migration _(2026-07-19)_
+- L1054 · A new tool surface silently bypasses whatever doctrine rule did not name it — twice now. _(2026-08-06)_
+- L1084 · local_weekday did not close it — resolve_date week ranges were the real hole (2026-08-06). _(2026-08-06)_
+- L1102 · A HOOK plugin is not installed until the GATEWAY's startup line says so (2026-08-06). _(2026-08-06)_
+- L1113 · openclaw plugins install — the VENDOR's own CLI — trips the config-hash trap (2026-08-06). _(2026-08-06)_
+- L1121 · gateway restart does NOT re-render config from sandboxes.json _(2026-08-19)_
+- L1128 · DOCTRINE — the manager is NEVER a verification layer for dates (owner decision, 2026-08-11). _(2026-08-11)_
+- L1156 · WHY the guard was deaf, and proof the version upgrade fixes it (2026-08-12). _(2026-08-12)_
+- L1217 · Guard v0.3.0 fixes both eval-found detector defects (2026-08-12, PR #124). _(2026-08-12)_
+- L1384 · Eval truth-set conventions (2026-08-13 adjudication, five grader bugs): _(2026-08-13)_
+- L1452 · medic v4+v5 are DEPLOYED as of 2026-08-13 19:54:23Z — the NVIDIA failover can no longer fire. _(2026-08-13)_
+- L1531 · Ops alerting: the verdict now leaves the box (2026-08-12). _(2026-08-12)_
+- L1601 · The ladder cannot see the MONEY LEDGER — and a money-only answer leaves the nudge open _(2026-08-19)_
+- L1673 · Stage-1 shadow CONFIRMED on the pilot (2026-08-18T00:05Z). _(2026-08-18)_
+- L1705 · USER DECISION 2026-08-18 — DeepInfra is being RETIRED; Fireworks replaces its inference key. _(2026-08-18)_
+- L1732 · Stage 1 is PROVEN END TO END IN PRODUCTION (2026-08-18 23:10-23:17Z, first clean run). _(2026-08-18)_
+- L1860 · nemoclaw list shows the ONBOARDING RECORD, not the live inference route (2026-08-06). _(2026-08-06)_
+- L1892 · revoke ... from public does NOT revoke anon/authenticated on a new function. _(2026-08-06)_
 
 **4. Live-state snapshot (as of 2026-08-24 — verify before relying)**
 
-- L1918 · The ladder is complete through ⑤ — all five stages merged AND deployed (2026-08-24). _(2026-08-24)_
-- L1927 · Model routing differs BY RENDER SERVICE (verified 2026-08-24). _(2026-08-24)_
-- L1952 · The Render estate — six services, two of them behind main (API-read 2026-08-24). _(2026-08-24)_
-- L1990 · What the brain has produced on the pilot: proven machinery, empty corpus (2026-08-24). _(2026-08-24)_
-- L2001 · In flight, NOT on main: the one-call collapse _(2026-08-24)_
-- L2006 · Tenants on the pilot DB — FOUR, not two (2026-08-24). _(2026-08-24)_
-- L2018 · The demo schedule has run out — re-shift before the next demo (2026-08-24). _(2026-08-24)_
-- L2024 · Roster: 31 technician rows, and the flag is a STATE, not a boolean (2026-08-24). _(2026-08-24)_
-- L2031 · Sandbox map on trades-box-1 (2026-08-24) _(2026-08-24)_
-- L2044 · sandbox_pool is a partial ledger, not the pool — never answer "which seats exist" from it.
-- L2049 · Board:
-- L2062 · Live: _(2026-07-20)_
-- L2410 · Deferred / backlog (each has an owner-stated reason — check before resurrecting): _(2026-07-25)_
-- L2652 · FIXED 2026-07-30 — agent turns took 60–80s; cause was ONE tool's schema. _(2026-07-30)_
-- L2724 · Dated debts (reviewed 2026-08-24): _(2026-08-24)_
-- L2747 · Pending human tests:
-- L2804 · Money's structure in the spine is load-bearing for FUTURE BUSINESS ANALYTICS _(2026-08-19)_
+- L1941 · The ladder is complete through ⑤ — all five stages merged AND deployed (2026-08-24). _(2026-08-24)_
+- L1950 · Model routing differs BY RENDER SERVICE (verified 2026-08-24). _(2026-08-24)_
+- L1975 · The Render estate — six services, two of them behind main (API-read 2026-08-24). _(2026-08-24)_
+- L2013 · What the brain has produced on the pilot: proven machinery, empty corpus (2026-08-24). _(2026-08-24)_
+- L2024 · In flight, NOT on main: the one-call collapse _(2026-08-24)_
+- L2029 · Tenants on the pilot DB — FOUR, not two (2026-08-24). _(2026-08-24)_
+- L2041 · The demo schedule has run out — re-shift before the next demo (2026-08-24). _(2026-08-24)_
+- L2047 · Roster: 31 technician rows, and the flag is a STATE, not a boolean (2026-08-24). _(2026-08-24)_
+- L2054 · Sandbox map on trades-box-1 (2026-08-24) _(2026-08-24)_
+- L2067 · sandbox_pool is a partial ledger, not the pool — never answer "which seats exist" from it.
+- L2072 · Board:
+- L2085 · Live: _(2026-07-20)_
+- L2433 · Deferred / backlog (each has an owner-stated reason — check before resurrecting): _(2026-07-25)_
+- L2703 · FIXED 2026-07-30 — agent turns took 60–80s; cause was ONE tool's schema. _(2026-07-30)_
+- L2775 · Dated debts (reviewed 2026-08-24): _(2026-08-24)_
+- L2798 · Pending human tests:
+- L2855 · Money's structure in the spine is load-bearing for FUTURE BUSINESS ANALYTICS _(2026-08-19)_
 
 **5. The walls — traps by the time you'd hit them**
 
-- L2849 · md5 a box-local bootstrap-box.sh against the repo before running it
-- L2852 · wire needs the WHOLE Box_Setup_Stuff/ tree
-- L2854 · 4 of the 9 AGENTS.md blocks are append-once
-- L2857 · s2 is the canary and must stay the most up-to-date seat
-- L2898 · Concurrent local stacks are the top cause of phantom test failures on this machine.
-- L2923 · Retuning a constant is retroactive.
-- L2926 · TEST ROT — hit three times in one day.
-- L2946 · A tool DESCRIPTION change is not deploy-only; a result-side field is. _(2026-07-31)_
-- L2968 · A sandbox can hold a badge the doorman no longer knows — and nothing says so. _(2026-08-04)_
-- L2996 · Credentials inject into a sandbox's process env at container launch ONLY.
-- L3014 · NEVER change a sandbox's openclaw.json with openclaw config patch. _(2026-07-30)_
-- L3052 · nemoclaw rebuild can destroy the sandbox's device private key
-- L3057 · The placeholder versioning trap:
-- L3061 · nemoclaw onboard/rebuild resets the gateway inference route
-- L3064 · Tool VOCABULARY lives in three places, and one of them self-reapplies. _(2026-07-25)_
-- L3072 · There is NO per-tool allowlist file
-- L3077 · The Telegram sender allowlist lives in TWO places
-- L3080 · Never health-check via nemoclaw <s> agent
-- L3083 · Trust box evidence over vendor status pages
-- L3085 · DeepInfra balance runs out roughly monthly and NOTHING alerts on it _(2026-07-11)_
-- L3098 · A deactivated seat's bot goes silent but alive
-- L3103 · Don't verify badges by extracting them from /proc/<pid>/environ
-- L3117 · CLI chat probes run on the EMBEDDED agent, not the gateway _(2026-07-23)_
-- L3145 · /hooks/agent (the gateway's HTTP webhook) CANNOT drive an agent turn on this box.
-- L3171 · A status gate outlives its truth — date it, or delete it. _(2026-08-06)_
-- L3181 · Resolve merge state with merge-base, never by eyeballing git log on a feature branch. _(2026-08-06)_
-- L3190 · When inbound email "stops working", check the webhook subscription FIRST
-- L3230 · npm test truncates the local stack, and that wipes the spine-eval world.
-- L3236 · An eval's own fixtures collide unless each scenario owns its rows AND its people. _(2026-08-12)_
-- L3243 · Fixture data must look like customer data.
-- L3248 · A missing BOARD_BOT_HANDLE makes the agent invent board links. _(2026-07-22)_
-- L3255 · resolve_date now has calendar-PERIOD modes _(2026-08-12)_
-- L3336 · Design consequence worth reusing: make the cheap tier the control group.
-- L3340 · The pilot DB is an accepted test-write target (user decision, 2026-08-12) _(2026-08-12)_
-- L3350 · L1 PINS L2: a stamped capture makes its customer permanently undeletable. _(2026-08-12)_
-- L3371 · A new tenant in the pilot silently enlists in the lifecycle cron.
-- L3422 · No reachable technician, so rung 1 can never mint a nudge. _(2026-08-19)_
-- L3428 · Nothing is fresh any more, and nothing new is arriving. _(2026-08-24)_
+- L2900 · md5 a box-local bootstrap-box.sh against the repo before running it
+- L2903 · wire needs the WHOLE Box_Setup_Stuff/ tree
+- L2905 · 4 of the 9 AGENTS.md blocks are append-once
+- L2908 · s2 is the canary and must stay the most up-to-date seat
+- L2949 · Concurrent local stacks are the top cause of phantom test failures on this machine.
+- L2974 · Retuning a constant is retroactive.
+- L2977 · TEST ROT — hit three times in one day.
+- L2997 · A tool DESCRIPTION change is not deploy-only; a result-side field is. _(2026-07-31)_
+- L3019 · A sandbox can hold a badge the doorman no longer knows — and nothing says so. _(2026-08-04)_
+- L3047 · Credentials inject into a sandbox's process env at container launch ONLY.
+- L3073 · NEVER change a sandbox's openclaw.json with openclaw config patch. _(2026-07-30)_
+- L3111 · nemoclaw rebuild can destroy the sandbox's device private key
+- L3116 · The placeholder versioning trap:
+- L3120 · nemoclaw onboard/rebuild resets the gateway inference route
+- L3123 · Tool VOCABULARY lives in three places, and one of them self-reapplies. _(2026-07-25)_
+- L3131 · There is NO per-tool allowlist file
+- L3136 · The Telegram sender allowlist lives in TWO places
+- L3139 · Never health-check via nemoclaw <s> agent
+- L3142 · Trust box evidence over vendor status pages
+- L3144 · DeepInfra balance runs out roughly monthly and NOTHING alerts on it _(2026-07-11)_
+- L3157 · A deactivated seat's bot goes silent but alive
+- L3162 · Don't verify badges by extracting them from /proc/<pid>/environ
+- L3176 · CLI chat probes run on the EMBEDDED agent, not the gateway _(2026-07-23)_
+- L3204 · /hooks/agent (the gateway's HTTP webhook) CANNOT drive an agent turn on this box.
+- L3230 · A status gate outlives its truth — date it, or delete it. _(2026-08-06)_
+- L3240 · Resolve merge state with merge-base, never by eyeballing git log on a feature branch. _(2026-08-06)_
+- L3249 · When inbound email "stops working", check the webhook subscription FIRST
+- L3289 · npm test truncates the local stack, and that wipes the spine-eval world.
+- L3295 · An eval's own fixtures collide unless each scenario owns its rows AND its people. _(2026-08-12)_
+- L3302 · Fixture data must look like customer data.
+- L3307 · A missing BOARD_BOT_HANDLE makes the agent invent board links. _(2026-07-22)_
+- L3314 · resolve_date now has calendar-PERIOD modes _(2026-08-12)_
+- L3395 · Design consequence worth reusing: make the cheap tier the control group.
+- L3399 · The pilot DB is an accepted test-write target (user decision, 2026-08-12) _(2026-08-12)_
+- L3409 · L1 PINS L2: a stamped capture makes its customer permanently undeletable. _(2026-08-12)_
+- L3430 · A new tenant in the pilot silently enlists in the lifecycle cron.
+- L3481 · No reachable technician, so rung 1 can never mint a nudge. _(2026-08-19)_
+- L3487 · Nothing is fresh any more, and nothing new is arriving. _(2026-08-24)_
 
 **6a. The build order — the harness rebuild (2026-08-28 → )**
 
-- L3556 · The seats are an eye.
-- L3559 · AUTHORSHIP: the seat PROPOSES, the planner RECORDS.
-- L3564 · SCOPE: build 7 is the subject decision + authorship.
-- L3615 · It cost one line of code.
-- L3619 · The metric does not widen.
-- L3633 · Volume.
-- L3637 · The quiet-firm skip becomes materially more reachable.
-- L3714 · A looked-up citation stamps NO capture id.
-- L3717 · THE PLANNER COULD CITE ITSELF
-- L3722 · ACCEPTED RESIDUE:
-- L3726 · ORDERING:
-- L3733 · The regression this phase introduced and review caught:
-- L3793 · The turn ceiling binds before the clock.
-- L3796 · A 15-minute tick eats the cadence behind it. _(2026-08-29)_
-- L3836 · MIN_TURN_BUDGET_MS = 15_000
-- L3841 · MAX_TOOL_CALL_MS = 90_000
-- L3858 · Context exhaustion is now the de-facto outer limit.
-- L3862 · The model is NOT told its remaining time
-- L3949 · Doctrine, not a code-enforced phase
-- L3951 · Churn: no brake
-- L3953 · Crowding out: watched, not prevented.
-- L4018 · No cap on the NUMBER of memory files, or on total bytes per firm.
-- L4024 · write_memory has NO mode gate
-- L4054 · The record grows without bound.
-- L4059 · The planner curates it.
-- L4064 · Detectors stay ours, and that is the point.
-- L4068 · The detector must not be the only way a gap opens.
-- L4126 · NUDGES_MODE is RETIRED
-- L4161 · agent informs the office
-- L4167 · agent asks the office _(2026-09-01)_
-- L4182 · the office reaches an agent
-- L4193 · seat-to-seat informs
-- L4241 · A partial index is only usable when the query IMPLIES its predicate.
-- L4354 · Durability.
-- L4356 · Observability.
-- L4416 · 1 · the firm's roster.
-- L4418 · 2 · who you can reach.
-- L4420 · 3 · a message need not be about a gap.
-- L4422 · 4 · one verb.
-- L4425 · 5 · seeing what you sent.
-- L4437 · as: 'board'
-- L4440 · Several addressees on one message
-- L4443 · The quiet-firm skip
-- L4446 · No v_office_messages
-- L4448 · B65-REACH-A-MANAGER
-- L4647 · ON DELETE SET NULL is an UPDATE.
-- L4649 · Naive-local vs real UTC, again. _(2026-09-08)_
-- L4654 · A once-ever index plus stable ids = a detector that fires once, forever.
-- L4661 · A liveness filter can be bypassed by an id rename.
-- L4665 · A compat view bridges the deploy. _(2026-09-05)_
-- L4679 · schedule_events.assignment_id KEEPS ITS NAME this rung.
-- L4682 · The completed-stamp CHECK was dropped.
-- L4754 · A green suite proves nothing when you mass-edit tests.
-- L4759 · A test can pin the bug.
-- L4762 · Reachability is not a compile error.
-- L4832 · A technician's seat agent has NO scheduling verb at any tier.
-- L4835 · Live specimen in the pilot _(2026-09-01)_
-- L4845 · Counting.
-- L4847 · Detection.
-- L4852 · Booking.
-- L4865 · Build 6 (vocabulary): _(2026-09-01)_
-- L4870 · Build 7 (detectors report): _(2026-09-05)_
-- L4880 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L3615 · The seats are an eye.
+- L3618 · AUTHORSHIP: the seat PROPOSES, the planner RECORDS.
+- L3623 · SCOPE: build 7 is the subject decision + authorship.
+- L3674 · It cost one line of code.
+- L3678 · The metric does not widen.
+- L3692 · Volume.
+- L3696 · The quiet-firm skip becomes materially more reachable.
+- L3773 · A looked-up citation stamps NO capture id.
+- L3776 · THE PLANNER COULD CITE ITSELF
+- L3781 · ACCEPTED RESIDUE:
+- L3785 · ORDERING:
+- L3792 · The regression this phase introduced and review caught:
+- L3852 · The turn ceiling binds before the clock.
+- L3855 · A 15-minute tick eats the cadence behind it. _(2026-08-29)_
+- L3895 · MIN_TURN_BUDGET_MS = 15_000
+- L3900 · MAX_TOOL_CALL_MS = 90_000
+- L3917 · Context exhaustion is now the de-facto outer limit.
+- L3921 · The model is NOT told its remaining time
+- L4008 · Doctrine, not a code-enforced phase
+- L4010 · Churn: no brake
+- L4012 · Crowding out: watched, not prevented.
+- L4077 · No cap on the NUMBER of memory files, or on total bytes per firm.
+- L4083 · write_memory has NO mode gate
+- L4113 · The record grows without bound.
+- L4118 · The planner curates it.
+- L4123 · Detectors stay ours, and that is the point.
+- L4127 · The detector must not be the only way a gap opens.
+- L4185 · NUDGES_MODE is RETIRED
+- L4220 · agent informs the office
+- L4226 · agent asks the office _(2026-09-01)_
+- L4241 · the office reaches an agent
+- L4252 · seat-to-seat informs
+- L4300 · A partial index is only usable when the query IMPLIES its predicate.
+- L4413 · Durability.
+- L4415 · Observability.
+- L4475 · 1 · the firm's roster.
+- L4477 · 2 · who you can reach.
+- L4479 · 3 · a message need not be about a gap.
+- L4481 · 4 · one verb.
+- L4484 · 5 · seeing what you sent.
+- L4496 · as: 'board'
+- L4499 · Several addressees on one message
+- L4502 · The quiet-firm skip
+- L4505 · No v_office_messages
+- L4507 · B65-REACH-A-MANAGER
+- L4706 · ON DELETE SET NULL is an UPDATE.
+- L4708 · Naive-local vs real UTC, again. _(2026-09-08)_
+- L4713 · A once-ever index plus stable ids = a detector that fires once, forever.
+- L4720 · A liveness filter can be bypassed by an id rename.
+- L4724 · A compat view bridges the deploy. _(2026-09-05)_
+- L4738 · schedule_events.assignment_id KEEPS ITS NAME this rung.
+- L4741 · The completed-stamp CHECK was dropped.
+- L4828 · A green suite proves nothing when you mass-edit tests.
+- L4833 · A test can pin the bug.
+- L4836 · Reachability is not a compile error.
+- L4906 · A technician's seat agent has NO scheduling verb at any tier.
+- L4909 · Live specimen in the pilot _(2026-09-01)_
+- L4919 · Counting.
+- L4921 · Detection.
+- L4926 · Booking.
+- L4939 · Build 6 (vocabulary): _(2026-09-01)_
+- L4944 · Build 7 (detectors report): _(2026-09-05)_
+- L4954 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L5276 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L5299 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L5346 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L5383 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L5415 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L5420 · Every member row stores the FULL grouped message in question.
-- L5424 · The attribution stamp is an audit link, not a gate.
-- L5428 · The derived stamp requires a capture a badge-holder SPOKE
-- L5432 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L5438 · The follow-up loop has two halves and both had to be written down.
-- L5444 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L5518 · Batching works.
-- L5520 · The follow-up leg works, including the half that fails silently.
-- L5524 · Both attribution paths fired, each in its designed case.
-- L5528 · Escalation fired correctly
-- L5529 · The planner's group-aware pacing is the result worth keeping.
+- L5350 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L5373 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L5420 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L5457 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L5489 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L5494 · Every member row stores the FULL grouped message in question.
+- L5498 · The attribution stamp is an audit link, not a gate.
+- L5502 · The derived stamp requires a capture a badge-holder SPOKE
+- L5506 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L5512 · The follow-up loop has two halves and both had to be written down.
+- L5518 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L5592 · Batching works.
+- L5594 · The follow-up leg works, including the half that fails silently.
+- L5598 · Both attribution paths fired, each in its designed case.
+- L5602 · Escalation fired correctly
+- L5603 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L5710 · Evals:
-- L5717 · Runbooks:
-- L5722 · Decision history with citations:
-- L5726 · This file
+- L5933 · Evals:
+- L5940 · Runbooks:
+- L5945 · Decision history with citations:
+- L5949 · This file
 
 <!-- INDEX:END -->
 
@@ -277,6 +279,23 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   half-edited `server.ts`). The CLAUDE.md worktree rule exists for parallel /implement runs —
   apply it to ANY two sessions that might touch code on one branch, and prefer `git add <paths>`
   over `-a` when another session may be active.
+- **Two operators on trades-box-1 at once is an outage waiting to happen** (2026-09-05). Four
+  keys carry `sudo` there — the user's `tradebox1_key`, `yutao`, Joy's `jc0329@…`, and
+  `tradesbox automation` (badge-pull) — and Yutao runs committed box procedures directly. His
+  gateway adoption at 00:58 PDT killed all six sandboxes while another session was reading
+  them, and for ten minutes it looked like that session's doing. Before any `sudo`, restart or
+  route change on the box: `loginctl list-sessions` (show `RemoteHost`) and
+  `journalctl _COMM=sshd --since -1h` for a second key, and say so in chat. When the box
+  changes under you: `journalctl _COMM=sudo --since today`, then map the sshd fingerprint to
+  `authorized_keys` (`ssh-keygen -lf`) BEFORE suspecting yourself or an intruder.
+- **Never size anything from the pilot's accumulated state — including inference cost** (user,
+  four times: 2026-08-26 ×2, 08-31, 09-05). The box and the pilot DB are a test suite; their
+  session sizes, counts, hit rates and daily spend describe how WE poked at them, not a real
+  firm. What is fine: vendor prices, hardware constants, config defaults, code-derived rules, and
+  the measured shape of ONE driven turn or probe (tokens per call, cache hit on a repeat). What is
+  not: `cost_events` daily totals, "typical active day", any monthly projection built on them.
+  When a number depends on real usage: stress-test it, read the rule from the code, or say you
+  do not know. Standing authorisation to stress-test the box exists.
 - **A new table that references ONLY `tenants` escapes every cleanup cascade** (2026-08-15,
   firm-profile review): the eval world reset, `seed.mjs`'s truncateSpine, and the test-suite
   truncates all clear spine tables and let `cascade` catch dependents — but they deliberately
@@ -506,7 +525,11 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   to invoke a LoRA model that failed to load". So 412 is an ACCOUNT-STATUS code, not
   specifically a spend cap, and it has a non-billing cause — which matters because the fleet
   routes through a *router* id. Check billing first either way.
-  Current: **GLM-5.2 via FIREWORKS FAST**
+  **↳ SUPERSEDED 2026-09-05: the fleet is on `openrouter-prod / @preset/trades-seats` (Muse
+  Spark 1.3 → Gemini Flash, chained by OpenRouter per request) — see "The OpenRouter switch —
+  the fleet (2026-09-05)" in §6 and `docs/inference-recovery-runbook.md`. There is no rollback
+  provider any more; the block below is the 2026-08-15 → 09-05 record.**
+  Was: **GLM-5.2 via FIREWORKS FAST**
   (`fireworks-prod / accounts/fireworks/routers/glm-5p2-fast`, switched 2026-08-15 — spine
   Render env + fleet route + medic all flipped and verified: fireworks `cost_events` rows with
   the cached split landed 18:13Z, medic tick "serving verified (tool call returned)" 18:17Z).
@@ -529,7 +552,7 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   2× list-price ratio. Latency comparisons are unaffected (Nebius numbers already include the
   prefix-cache speedup). Console "prompt presets" = playground templates, not caching.
   **Provider-trial verdict (2026-08-15, full record in the research doc): GLM-5.2 on
-  FIREWORKS FAST — now PRODUCTION (deployed 2026-08-15, see Current above)** — 57/59 spine
+  FIREWORKS FAST — PRODUCTION 2026-08-15 → 2026-09-05 (see the superseded block above)** — 57/59 spine
   eval (≡ 59/59 anchor-adjusted), wall p50 7.8s (2.4× DeepInfra),
   billed cache $0.21/M but **per-replica: a stable `prompt_cache_key`+`user` is MANDATORY** or
   hits are routing luck. **the GPT-5.6 FAMILY is RULED OUT on this toolset (Terra medium, unthrottled: 31/59 with the identical failure signature — 10× price, +1 scenario; console-verified caching is excellent (~96% hits, Luna 4 runs billed $0.88) but economics don't fix discipline)**. Luna detail: none/medium/xhigh scored
@@ -2649,6 +2672,34 @@ above), and the demo schedule window it describes has expired.
   decision — Nemotron quality rules out flash-tier models). Original mechanics, revert recipe and
   citations:
   [thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md](../thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md).
+- **2026-09-05 — "Programmatic tool calling" assessed as a latency lever: NOT reachable as the
+  Anthropic feature, and OpenClaw's Code Mode is the tool-search bridge above under a new name.**
+  Anthropic's programmatic tool calling (Claude writes code that calls tools inside the
+  code-execution container; intermediate results never enter context) is Claude-only, on the Claude
+  API / Claude Platform on AWS / Foundry, needs the `code_execution_20260120` tool, and cannot call
+  MCP-connector tools
+  (https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling).
+  OpenRouter executes nothing server-side — "The LLM does not call the tools directly"
+  (https://openrouter.ai/docs/guides/features/tool-calling) — and the installed OpenClaw 2026.6.34
+  has zero references to `allowed_callers` / `code_execution` in `dist/`, so the seats could not
+  reach it even on a Claude model. OpenClaw's own equivalent is `tools.codeMode` (present in
+  2026.6.34: QuickJS-WASI runtime, the model writes a JS program per turn; the only `mode` is
+  `"only"` — every tool hidden behind `exec`/`wait`; the quick index "omits descriptions, full
+  schemas, MCP entries", so `trades-spine__*` must be found via `catalog.search()` and its
+  doctrine-carrying descriptions via `describe()`; Muse is not in the `auto` preferred list;
+  https://docs.openclaw.ai/tools/code-mode). That is the surface measured 2026-08-04 above
+  (32–139s vs 4–13s, `resolve_date` skipped) and the one Nemotron could not drive at all.
+  **Measured turn shapes 2026-09-05 (s2/s5/eval transcripts): zero assistant messages with 2+ tool
+  calls on any seat** — Muse never emits parallel calls, so OpenClaw's parallel execution buys
+  nothing; real chains are DEPENDENT (s5: `record_field_note` → `needs_identity` →
+  `find_customer` → `record_field_note` = 4 model calls; dated schedule reads: `resolve_date` →
+  read). Code mode would save one model call (+3–5s each) per link of such a chain, but costs a
+  code cell on the majority one-tool turns and collapses the two-step confirm gate into one program
+  — the server enforces only a 15-min TTL on staged confirms (`server.ts` "confirmation expired"),
+  never that a human message intervened. **Decision: keep direct tools.** The round-trip savings
+  belong in the SPINE — fold the lookup into the tool that needs it (`record_field_note` resolving
+  a customer name server-side; schedule reads/booking accepting the spoken day and returning the
+  resolved `phrase`) — the same lesson as "put it in the data, not in a rule".
 - **FIXED 2026-07-30 — agent turns took 60–80s; cause was ONE tool's schema.** Every request
   compiles each tool's `parameters` JSON-Schema into a constrained-decoding grammar *before the
   first token* (the router converts tools to `response_format: structural_tag`, not native
@@ -3011,6 +3062,14 @@ Two mechanics that bite every time: **`wire` needs the whole tree** (the weekday
   healthy or not (s3 and s5 took ~10s blips as bystanders on 2026-08-12). So: before any manual
   container restart, run the medic (or check the token's `exp`) — the credential-restart rule
   above still applies, it just needs a valid sandbox token to survive the restart.
+  **Hit again 2026-09-05 00:58 PDT — a GATEWAY restart is a container restart for every seat.**
+  The committed systemd adoption (`pkill openshell-gateway` → `systemctl enable --now`,
+  25d15ee/5ca763d) had the new gateway "resume" all six sandboxes and immediately re-provision
+  them (docker: SIGTERM ×6, then SIGKILL ×6 ten seconds later). s2/s3/s5 came back on their
+  own; s6/s7/s8 looped on `ExpiredSignature` (revive counter reached 20) until the medic ran
+  eight minutes later. `sandbox-token-medic.service` is `Before=nemoclaw-boot.service`, so it
+  only protects a REBOOT — a hand-run gateway restart gets no re-mint. So: **run the token
+  medic BEFORE restarting the gateway**, and expect every seat to blip regardless.
 - **NEVER change a sandbox's `openclaw.json` with `openclaw config patch`.** It writes the file
   but does NOT update nemoclaw's `.config-hash`, so the next `gateway restart` fails
   `GATEWAY_UNSAFE_CONFIG_PATH` and leaves the gateway DOWN (3 bots went down learning this on
@@ -4713,6 +4772,21 @@ with `anon` and `authenticated` false — which also CLOSED a pre-existing expos
 over non-interactive ssh must use `bash -lc` or it dies at `nemoclaw: command not found`. The fleet
 is now **s2, s3, s5, s6, s7, s8** — not the s1–s6 older notes record.
 
+**Manual checks run through the seats, 2026-09-05** (the plan's three Phase-3 manual items, agent-driven,
+maker ≠ checker, DB read-back via `supabase-test`): s2 (manager-sam, 17:36–17:45Z, from the fleet-to-OpenRouter
+session) and s8 (manager-joy, 19:40–19:43Z), both on the GATEWAY path (no `[agent/embedded]`), model
+`meta/muse-spark-1.3`. **Book with no time** → `book_visit {jobId}` in ONE step; row `confirmed / starts_at NULL /
+technician_id NULL` — exactly the tray reader's predicate. **Move** → `moved` in one step, untimed→Tue AND
+Tue→Wed, zero `review_items` minted, each move = cancel+insert with `created_at` carried. **Unschedule a PLACED
+visit** → `needs_confirmation` + an open `pending_visit_cancel` row; "Yes" → `unscheduled`, item `resolved`
+("unschedule confirmed by manager-joy"), row `cancelled`, job stays `open`, tray rows for the job 0. Verification
+job: customer Marcus Ellery / job `9b014ad9…` — reuse it. Recipe = `scripts/spine-eval/run-gateway.mjs`'s turn line
+(`nemoclaw <s> exec --no-tty -- bash -lc 'openclaw agent --agent main --session-id <fresh> -m …'`, no `--local`,
+no `--deliver`, fresh session id so the manager's Telegram context is untouched); 15–30 s per turn after the
+first. s2 was carrying a date-eval at the time, so s8 was used — any manager seat of the tenant works. A staged
+confirmation that is never answered stays `open` and VISIBLE in `list_review_items` (no sweeper); the clean way out is
+the app path — a late "yes" hits the 15-minute expiry, which dismisses it as `confirmation expired` (proven on s2, 19:46Z).
+
 
 Three phases, all landed and gated (typecheck / lint / 2545 tests / build, and `supabase db reset`
 proving both migrations apply from scratch). Plan:
@@ -5571,7 +5645,8 @@ comparison across that date is measuring two different prompts.
 ### The OpenRouter switch — the spine only (2026-08-28)
 
 **The spine moved to OpenRouter on `z-ai/glm-5.3`; the FLEET did not.** Seat agents stay on
-Fireworks / `glm-5p2-fast` until the deferred seat plan lands. `docs/inference-recovery-runbook.md`
+Fireworks / `glm-5p2-fast` until the deferred seat plan lands *(it landed 2026-09-05 — see
+"The OpenRouter switch — the fleet" below; both halves now share one key)*. `docs/inference-recovery-runbook.md`
 now opens with that split — it covers the fleet only, and the first person to follow it during a
 spine outage would otherwise drive the wrong system.
 
@@ -5704,6 +5779,154 @@ unpaced pool loses ~95% of calls to the rate cap and prints `0.0%`; and `max_tok
 reasoning unset lets the thinking trace eat the answer — the same artifact that once produced a
 false "GLM weaker than Haiku" verdict here. An 11% score was reported off both before the user
 pushed back. **Read errors and truncation BEFORE reading a date-eval number.**
+
+### The OpenRouter switch — the fleet (2026-09-05)
+
+**Route:** `openrouter-prod / @preset/trades-seats` — an OpenRouter **preset** serving
+`meta/muse-spark-1.3` (standard tier; multimodal is the reason) and falling through, per request
+with no memory, to `~google/gemini-flash-latest`. Fireworks ran out of credits on 2026-09-04 and
+the fleet was inference-dead until this landed. Plan (with every measurement):
+`thoughts/shared/plans/2026-09-05-fleet-to-openrouter-muse-spark.md`; research:
+`thoughts/shared/research/2026-09-05-fleet-to-openrouter-gemini-3-8-flash.md`.
+
+**Why a preset.** The gateway rewrites every request's `model` to its one configured string and
+openclaw has no extra-body hook, so a `models[]` fallback chain cannot be sent by the seats
+(NVIDIA/OpenShell#2039). A preset is invoked *as a model id*, which the gateway can carry, and
+OpenRouter applies the chain server-side. **The medic therefore never reroutes** — the 08-12
+ruling's intent holds — and the second lane is verified daily by a direct probe. Verified live
+before the flip: the medic's exact payload with `models:[muse, ~gemini]` fell through to Gemini
+(the primary was 403-gated at the time) and passed the tool-call gate.
+
+**Measured, 2026-09-05 (unit costs and one-turn shapes — NOT volumes):** Muse: reasoning
+mandatory, medium 160–374 tokens, peaked 478/512 → `max_tokens` 1024 in the probe, 8192 on the
+seats; implicit caching engaged 1,137/1,264 on a repeat; probe ≈ $0.0014 cached / $0.0033 not.
+Gemini: 570 tokens for the same payload (tokenizer ≈ 2.2x more efficient than Muse's), reasoning
+mandatory and NOT controllable (`none` still burned 124), probe ≈ $0.0011. (The "never caches on
+this path" claim recorded here on 2026-09-05 morning was WRONG — measured that evening, Gemini
+caches implicitly through the gateway's plain requests, session-stickily; see the Gemini caching
+entry below.) Muse honours `reasoning_effort`
+(minimal 12–90). `~google/gemini-flash-latest` resolves to `google/gemini-3.8-flash` and
+retargets on release. Only Meta hosts Muse, only Google hosts Gemini.
+
+**Medic v6:** balance check every tick for FREE (`/api/v1/key` + `/api/v1/credits`, both 200 on
+this key though `/credits` is documented management-key-only; floor $2; sources named in the log
+so a half-missing watch is visible; NO BALANCE WATCH said loudly); route asserted with
+`--no-verify`; the v4 tool-call probe **hourly** (user: "stretch the medic to 60 minutes"),
+stamped only on a pass; `served=` logged; fallback probed daily; state in `StateDirectory=`
+(RuntimeDirectory is wiped when a oneshot stops); `EnvironmentFile=-`; `TimeoutStartSec=300`.
+≈ $2/month vs ≈ $28 had the 5-minute cadence stayed on Muse.
+
+**Seats:** honest model id, `input:["text","image"]`, `contextWindow` 262144 on manager seats
+(s2 s3 s6 s7 s8 — five of six) and 131072 on s5, `maxTokens` 8192,
+`compat.supportsReasoningEffort` so `thinkingDefault:"adaptive"` → medium and a per-message level
+reaches the wire (`/think <level>` on the chat path; `--thinking <level>` on the `nemoclaw … agent`
+CLI, which passes `/think` through as plain text). Written by `bootstrap-box.sh wire <s>` with
+`NEMOCLAW_CTX_WINDOW`. **Two traps found live (2026-09-05):** openclaw's config `compat` is a
+STRICT object — `supportsParallelToolCalls` is not a field, and the s2 canary crash-looped on
+`compat: Invalid input` until it was dropped; and the preset must NOT carry `reasoning.effort` —
+with the seats sending `reasoning_effort`, OpenRouter's shallow merge kept both keys and returned
+`400 … both provided with conflicting values` for every non-medium level (preset v2 removes it).
+
+**The coupling to know:** the fleet now shares the PLANNER's key (user ruling: test suite). A
+balance-out stops both in the same minute; the medic's first gate exists for that. Seat spend is
+account-level (never itemised in `cost_events`; the rollup nets the spine out of the invoice);
+seat requests arrive at OpenRouter untitled (the gateway strips headers) — "untitled = the
+fleet". `docs/inference-recovery-runbook.md` is rewritten for this shape.
+
+### Muse Spark latency, double texting, and the photo path (2026-09-05)
+
+**Where a seat turn's time goes (measured on s2, Telegram text turn):** Telegram→gateway 1–3s ·
+gateway prep→first model call 1.6s (s7 0.8s) · Muse TTFT ~3s · thinking ~4s (avg 407 reasoning
+tokens at ~100 tok/s) · answer ~1.5s · spine tool call via doorman→Render 0.3–0.7s ·
+**+3–5s for every additional model call** · reply delivery 2.1–2.7s (preview + edit). ≈13–15s for
+a one-tool turn, ≈8s with no tool; model-to-model mean 7.9s, p90 13s over 21 date-eval turns.
+The date-eval's 23s/question includes ~11–13s of `nemoclaw … agent` CLI boot (two plugin loads
+and a failed pairing handshake) that a Telegram user never pays. Ruled out with measurements:
+the egress proxy (0.48s to `api.telegram.org`), tool-schema count (40 schemas ≈ +0s — the old
+51s grammar penalty does not exist on this route), prompt size (33k tokens ≈ +1s TTFT), MCP
+handshakes (pooled per session, 10-minute idle TTL). Muse's reasoning is MANDATORY
+(`reasoning_effort:"none"` → 400): open-ended prose burns 3,465–4,519 reasoning tokens for a
+600-token answer and the effort knob barely moves it, while grounded seat turns think 83 (low)
+to 727 (high) tokens — effort works where the prompt is specific. Prompt caching: the FIRST call of a fresh session hits 99.4% of the 37.9k-token prefix, but over the whole 82-question run (252 generations, 3.07 calls/question, summed from OpenRouter's own generation records) only **67.7%** of prompt tokens were cached — later calls in a turn carry tool results the cache does not cover — and the run billed **$5.33**: median **$0.064 per question**, $0.021 per call, reasoning 73% of completion tokens. Cache reads ARE billed at the $0.15/M rate (verified: an identical second call's prompt cost fell $0.0345 → $0.0042). Unit costs only — never multiply by this suite's volume.
+
+**Double texting:** OpenClaw's inbound debouncer `messages.inbound.debounceMs` defaults to
+**0 = off**, and no seat ever carried a `messages` block. User approved **2000 ms** (the vendor's
+example); `bootstrap-box.sh wire` now writes it — apply s2 first, then the fleet. Its documented
+limit (https://docs.openclaw.ai/concepts/messages): text only — a photo flushes immediately. The queue's default
+`steer` mode could not merge the mango-cake pair either: the Telegram handler ran turn 1 inline,
+so the follow-up text was not even read until turn 1's reply had gone out (20s after it was sent).
+
+**Photo-then-question costs 44s:** the turn the photo arrives on sends it as native vision input
+(40k input tokens, 7.4s, correct). The NEXT turn sees it only as `MediaPath` metadata, so the
+agent ran three `exec` probes hunting for the file (~16s) and then a 20.8s `image` tool call — a
+second vision pass. Fix is a doctrine line ("a prior photo's `MediaPath` is already in the
+transcript — pass it straight to `image`") plus captioning the photo; no config fixes it. A photo
+turn also pays ~6s before the agent starts that a text turn does not (11.6s vs 1.6s pre-model),
+unexplained at `info` logging — a `logging.level: trace` turn on s2 is the next step.
+
+**s2 is uniquely heavy:** 2,453 sessions, a 14.7 MB `sessions.json`, 204 MB of transcripts (s7:
+35 sessions, 235 KB) — every eval question, verifier run and lever check leaves one behind, and
+s2's per-turn prep is 2.3–2.6s against s7's 0.8s. Prune `dateval-*`/`verify-*` sessions (never the
+live Telegram session) and make the eval harness clean up. Other levers, none applied: skip
+`resolve_date` on plain date questions if the eval shows Muse is right in-head (~4–5s), thinking
+`low` vs adaptive (~2.5–3s/call, against the medium-default doctrine — measure quality first),
+`channels.telegram.streaming: "off"` (~1s, no flicker). Harness defect, unfixed:
+`scripts/provider-trial/provider-bench.mjs` counts `delta.reasoning_content` but OpenRouter
+streams `delta.reasoning`, so it reports a reasoning model's whole thinking phase as TTFT and a
+fake tok/s ("33.7s / 4,498 tok/s" for Muse).
+
+**Gemini 3.8 Flash caching, measured 2026-09-05 (the research doc's "needs explicit breakpoints"
+line is superseded — see its amendment):** implicit caching WORKS through the seats' plain
+OpenAI-completions requests (fleet eval: call 2 of every session read 28,002/32,260 tokens; direct
+probe $0.0207 → $0.0041), but it is **session-sticky** — the first call of every fresh session
+missed, because `prompt_cache_key` (= session id) pins a Google replica; Muse's cache is
+prefix-global (99.4% on fresh sessions). Explicit `cache_control` beats it (99.98% cached, read
+$0.0021/33k, a fresh WRITE billed only $0.0041 — cache-read price + storage, not the docs formula)
+but is unreachable from openclaw 2026.6.34 by config: it emits breakpoints only for
+`openrouter` + `anthropic/*`, and `compat.cacheControlFormat` is rejected by the strict schema —
+a payload-patch plugin would be the route. Unit costs from the eval's first four questions:
+Gemini ≈ $0.031/question (call 1 uncached $0.025 + call 2 cached $0.005; reasoning ~300 tokens)
+vs Muse's measured $0.064 — cheaper despite the worse cache, on $0.75/M input and short thinking.
+
+### Gemini 3.8 Flash becomes the primary; Muse Spark 1.3 the fallback (2026-09-05, evening)
+
+**User decision, after both models ran the same 82-question date eval on the same Saturday:**
+preset `trades-seats` v3 = `["google/gemini-3.8-flash","meta/muse-spark-1.3"]` (both pinned — the
+eval gate, the medic's `served_of` and the response's `model` field all compare exact strings, so
+the floating `~google/gemini-flash-latest` alias is retired); medic v7 swaps `PRIMARY_MODEL` /
+`FALLBACK_MODEL` and nothing else; `bootstrap-box.sh wire` writes the honest id
+`google/gemini-3.8-flash` (all six reasoning-effort levels accepted by both lanes, probed);
+`scripts/date-eval/plan.mjs` defaults to it.
+
+**The evidence, side by side** (runs `date-eval-runs/2026-09-05-{muse,gemini}`, costs summed from
+OpenRouter's generation records, latency from its per-call `latency`/`generation_time`):
+
+| | Muse Spark 1.3 | Gemini 3.8 Flash |
+|---|---|---|
+| substantive score | 81/82 (D08: read "a week from tomorrow" as the week) | 80/82 (T04/T05: named both readings but leaned and did not ask) |
+| weekday↔date contradictions reaching text | 0 | 0 — the guard had nothing to catch on either |
+| `resolve_date` bypassed | 0/78 | 0/78 |
+| median agent turn (in-sandbox) | 14.1s | 10.2s |
+| per call: before first answer token / total | 2.62s / 3.7s | 1.65s / 2.0s |
+| reasoning tokens per call (median, p90) | 264, 604 — thinks every call | 0, 474 — thinks on ~⅓ of calls |
+| billed | $5.33 = $0.064/question, $0.021/call, 3.07 calls | $3.40 = $0.038/question, $0.012/call, 3.57 calls |
+| cache share (whole run) | 67.7% (prefix-global; fresh sessions hit 99.4%) | 61.4% (session-sticky; every fresh session's first call misses) |
+
+**What decided it:** the biggest latency factor is the fixed cost *per model call* before the first
+answer token (prefill + mandatory thinking) × ~3 calls a turn — Gemini's is ~1s shorter and it skips
+thinking on mechanical calls; that alone is the 11.7s vs 7.9s model-time gap. Accuracy was equal
+within noise. Accepted trade-off: Gemini leans on ambiguous dates (T04/T05) where doctrine says ask —
+watch it on Telegram. For reference, GLM 5.2 on Fireworks ran ~8s a turn (08-15, ×5), the NVIDIA
+94/94 baseline 14.1s; the CLI harness adds ~15s to every run and is not the variable.
+
+**Rollout (done 2026-09-05 20:27–20:45Z):** medic v7 installed (md5 = repo) → preset v3 published
+(`POST /api/v1/presets/trades-seats/chat/completions`; a new version is designated on POST) → probe
+forced (`rm` the two stamps in `/var/lib/nemoclaw-inference-medic/`): `served=google/gemini-3.8-flash`,
+no warning, `fallback lane verified — meta/muse-spark-1.3` → `wire s2` (model entry + the 2000 ms inbound
+debounce), canary turn's two generations both `google/gemini-3.8-flash-20260902`/Google → s3 s6 s7 s8
+(262144) and s5 (131072). Six-seat check: id, tier, `debounceMs 2000`, gateway listening/ready, Telegram
+polling, zero `invalid input`. The bootstrap copy that ran is `/home/ubuntu/Box_Setup_Stuff/bootstrap-box.sh`
+(synced from the repo first — md5 `2e80e4b4…`; the other five copies on the box are older vintages).
 
 ## 7. Where the deep detail lives
 

@@ -174,12 +174,12 @@ export async function listRawCapturesForJob(jobId: string): Promise<RawCapture[]
 // technician note always LINKS a visit — so listNoteTimesForJobs catches what
 // this one misses, and vice versa for job-stamped email/call captures.
 //
-// KNOWN GAP, rung 9b (owed to Phase 3): an INBOUND capture (email/call) that
-// matched an EXISTING customer AND job now links nothing — it no longer mints a
-// visit, because `visits` is the schedule and a customer's email is not a trip.
-// Such a capture is unstamped, so BOTH homes miss it and the job reads silent.
-// The fix is the attach rule: any channel may ATTACH to a visit that already
-// exists; only a technician channel may CREATE one.
+// NARROWED by phase 3, not closed: any channel may now ATTACH to a visit that
+// already exists, so an inbound capture about a BOOKED trip is visible to both
+// homes through its visit_notes link. What survives is the LINK-LESS shape — an
+// inbound capture on a job with no live visit at all. It is unstamped and links
+// nothing, so both homes still miss it and the job reads silent. Rung 10 closes
+// that by letting inbound (call AND email) create a COMMITTED visit.
 export async function listJobStampedCaptureTimes(
   tenantId: string,
   jobIds: string[],

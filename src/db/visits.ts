@@ -268,6 +268,40 @@ export async function attachVisitTechnician(
   return data;
 }
 
+// Fold a field note's findings ONTO a trip that already exists. Attaching, not
+// overwriting: labor hours ACCUMULATE (two technicians on one crew each report
+// their own, and a trip's cost is the sum), while L3 attributes shallow-merge
+// with the newer note winning a clash — the same "latest wins" the extractor's
+// own bundles use.
+//
+// Read-modify-write, deliberately not a CAS: notes about one trip arrive minutes
+// or days apart, never concurrently, and losing a retry here would drop a
+// technician's labor hours on the floor — worse than the race it would prevent.
+export async function recordVisitReport(
+  id: string,
+  input: { laborHours?: number | null; attributes?: Json },
+): Promise<Visit> {
+  const current = await getVisit(id);
+  if (!current) throw new Error(`recordVisitReport: visit ${id} not found`);
+  const addedHours = input.laborHours ?? null;
+  const mergedHours =
+    addedHours === null ? current.labor_hours : Number(current.labor_hours ?? 0) + addedHours;
+  const incoming = (input.attributes ?? {}) as Record<string, Json>;
+  const existing = (current.attributes ?? {}) as Record<string, Json>;
+  const { data, error } = await getClient()
+    .from('visits')
+    .update({
+      labor_hours: mergedHours,
+      attributes: { ...existing, ...incoming } as Json,
+    })
+    .eq('id', id)
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`recordVisitReport failed: ${error.message}`);
+  if (!data) throw new Error(`recordVisitReport: visit ${id} vanished`);
+  return data;
+}
+
 // The lifecycle as ONE WORD, mirroring the `stage` case in v_schedule
 // (20260906140000). A db test pins the two equal for the four stages the view
 // can show — if they drift, the agent's SQL and the app's objects would
@@ -861,6 +895,20 @@ export async function captureHasVisitNote(captureId: string): Promise<boolean> {
     .maybeSingle();
   if (error) throw new Error(`captureHasVisitNote failed: ${error.message}`);
   return !!data;
+}
+
+// Which trips a capture is linked to. One capture normally reaches one visit,
+// but the shape is a list because nothing in the schema forbids two — and a
+// retraction has to follow its target onto every one of them.
+export async function listVisitNotesForCapture(
+  captureId: string,
+): Promise<{ visit_id: string; tenant_id: string }[]> {
+  const { data, error } = await getClient()
+    .from('visit_notes')
+    .select('visit_id, tenant_id')
+    .eq('capture_id', captureId);
+  if (error) throw new Error(`listVisitNotesForCapture failed: ${error.message}`);
+  return data ?? [];
 }
 
 // The watcher's OTHER activity home — always paired with rawCaptures'

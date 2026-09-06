@@ -91,7 +91,10 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
         tech.id,
         `${day}T00:00:00.000Z`,
         new Date(Date.parse(`${day}T00:00:00.000Z`) + 86_400_000).toISOString(),
-        ['confirmed'],
+        // 'completed' too, since rung 9b: the technician's FIRST note of the day
+        // marks that visit completed, so a confirmed-only read would leave their
+        // second note of the same day with no schedule to match against.
+        ['confirmed', 'completed'],
       )
     ).filter((a) => a.starts_at.slice(0, 10) === day); // overlap-edge clamp (daySource precedent)
     const jobs = await listJobsWithCustomerByIds(tenantId, [

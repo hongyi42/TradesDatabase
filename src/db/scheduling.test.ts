@@ -469,7 +469,7 @@ describe('visits — the schedule half', () => {
     ).rejects.toThrow(/cannot move a cancelled visit/);
   });
 
-  test('a move loses the CAS when the status flips between the read and the write', async () => {
+  test('a status change under a move SURFACES — it is never silently overwritten', async () => {
     // The guard the terminal check cannot cover: the row was LIVE when
     // moveVisitRow read it, and something cancelled it before the UPDATE.
     //
@@ -500,7 +500,14 @@ describe('visits — the schedule half', () => {
       });
       await locker.query("update visits set status = 'cancelled' where id = $1", [original.id]);
       await locker.query('commit');
-      await expect(racer).rejects.toThrow(/changed concurrently/);
+      // EITHER message is a pass, and the disjunction is the honest assertion.
+      // Both statements are in flight at once, so the move's own SELECT may see
+      // the row before OR after the cancel commits: before → the CAS finds no
+      // matching row ("changed concurrently"); after → the terminal guard fires
+      // first. Pinning one of them would be pinning a race. What must ALWAYS
+      // hold is that the move refuses and changes nothing, which is what the
+      // read-back below proves.
+      await expect(racer).rejects.toThrow(/changed concurrently|cannot move a cancelled visit/);
     } finally {
       await locker.end();
     }

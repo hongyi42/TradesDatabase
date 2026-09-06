@@ -1575,6 +1575,18 @@ describe('retract_capture + retraction folding', () => {
     expect(typeof done.data.restoreHint).toBe('string');
     expect(done.data.restoreHint).toContain('SEQUENTIALLY');
 
+    // The retraction FOLLOWS its target onto the trip (rung 9b). The target
+    // reached its visit through visit_notes, so a retraction that did not
+    // travel the same road would sit on the record with no connection to the
+    // thing it neutralizes — invisible to every reader that walks the link.
+    const links = await pg.query<{ capture_id: string }>(
+      'select capture_id from visit_notes where visit_id = $1',
+      [visit.id],
+    );
+    expect(links.rows.map((r) => r.capture_id).sort()).toEqual(
+      [cap.id, done.data.retractionId as string].sort(),
+    );
+
     // Parity: the preview must equal what the fold ACTUALLY removes — the
     // predicted facts/visit are gone from the default context view, nothing
     // else. Ties "what will disappear" to "what does disappear" so predicate

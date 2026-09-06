@@ -10,18 +10,22 @@ import {
   getJob,
   listJobsForCustomer,
   updateJobStatus,
-  createVisit,
   insertVisitNote,
+  recordVisitReport,
+  updateVisitStatus,
+  stageOf,
+  appendScheduleEvent,
   getTechnician,
+  getTenant,
   ALLOWED_TRANSITIONS,
   type CaptureChannel,
   type Job,
   type JobStatus,
   type Json,
-  type Visit,
 } from '../db/index.js';
 import { defaultExtractor, type Extractor, type ExtractedFields } from './extract.js';
 import { matchIdentity, type MatchResult, type ScheduledCustomerDraft } from './identityMatch.js';
+import { resolveVisitForNote } from './attachNote.js';
 
 // Identity resolved during the staged-confirm flow (MCP tool path): commit must
 // use EXACTLY what the preview showed, so the resolution travels here and
@@ -71,6 +75,8 @@ export interface RecordFieldNoteResult {
   customerId?: string;
   jobId?: string;
   visitId?: string;
+  /** The trip's lifecycle in one word once a note has landed on it. */
+  stage?: string;
   suggestion?: { address: string; visitId: string };
 }
 
@@ -275,41 +281,99 @@ export async function recordFieldNote(
     });
   }
 
-  // The visit is this note's trip — for a TECHNICIAN channel only (rung 9b).
+  // WHICH TRIP IS THIS NOTE ABOUT? (rung 9b phase 3 — see attachNote.ts.)
   //
-  // Before the merge this mint was harmless for every channel, because the row
-  // landed in a table no schedule surface read. Now `visits` IS the schedule: a
-  // customer's inbound email or an inbound call would otherwise appear on the
-  // board as a trip that happened, and brief as past work nobody made. A note
-  // filed BY A TECHNICIAN is the only inbound that evidences a trip. (Calls
-  // committing a visit is rung 10, and creates an UNPLACED one deliberately.)
+  // It used to mint a row per note, which was harmless only while `visits` was
+  // a table nothing scheduled from. Now a note ATTACHES to the trip it reports:
+  // the visit placed on its own firm-local day, else the job's one live visit,
+  // else — for a technician channel only — a new one, already happened.
   //
-  // Phase 1 keeps the old one-visit-per-note shape verbatim so existing tests
-  // still describe real behaviour; Phase 3 replaces it with the attach rule.
+  // ATTACH runs for EVERY channel. A customer's email answering a question
+  // about a booked visit is evidence about that trip, and linking nothing left
+  // it invisible to the planner's evidence read and the watcher's activity
+  // probe — which is how a customer's own answer could leave a gap looking
+  // unanswered. Only CREATE is technician-gated: an email is not a trip.
   const isTechnicianChannel =
     channel === 'technician_voice' || channel === 'technician_photo' || channel === 'technician_note';
-  let visit: Visit | null = null;
-  if (isTechnicianChannel) {
-    // The person column is a real foreign key now, not the old free TEXT name:
-    // resolve the badge's roster ref, and leave it null when the ref is not on
-    // this tenant's roster rather than inventing a link.
-    const technician = await getTechnician(tenantId, technicianRef);
-    visit = await createVisit({
-      tenantId,
-      jobId: job.id,
-      technicianId: technician?.id ?? null,
-      startsAt: null,
-      endsAt: null,
-      status: 'completed',
-      // NAIVE-LOCAL like every other time on this row. Phase 3 converts
-      // capturedAt (real UTC) into the firm's wall clock; until then a note
-      // records only THAT the trip happened, and nothing compares this value.
-      completedAt: capturedAt,
-      laborHours: extracted.laborHours ?? null,
-      attributes: buildVisitAttributes(extracted),
-      sourceCaptureId: captureId,
-    });
+  // The person column is a real foreign key now, not the old free TEXT name:
+  // resolve the badge's roster ref, and leave it null when the ref is not on
+  // this tenant's roster rather than inventing a link.
+  const technician = await getTechnician(tenantId, technicianRef);
+  const timezone = (await getTenant(tenantId))?.timezone ?? 'UTC';
+  const noteAttributes = buildVisitAttributes(extracted);
+  const resolved = await resolveVisitForNote({
+    tenantId,
+    jobId: job.id,
+    technicianId: technician?.id ?? null,
+    capturedAt,
+    timezone,
+    captureId,
+    mayCreate: isTechnicianChannel,
+    laborHours: extracted.laborHours ?? null,
+    attributes: noteAttributes,
+  });
+  let visit = resolved.visit;
+  if (visit) {
+    // The LINK is what every channel gets: it is the evidence citation, and the
+    // whole reason attach is channel-blind.
     await insertVisitNote({ tenantId, visitId: visit.id, captureId });
+    // What a TECHNICIAN reports is a report; what arrives from a customer is
+    // correspondence. Folding an inbound extractor's labor hours into the trip's
+    // billing would let a customer's email edit the job's cost, so the report
+    // fields — and the happened flip below — stay technician-only.
+    if (isTechnicianChannel && !resolved.created) {
+      // A visit that already existed absorbs what the note found; a created one
+      // was born with it.
+      visit = await recordVisitReport(visit.id, {
+        laborHours: extracted.laborHours ?? null,
+        attributes: noteAttributes,
+      });
+    }
+    // A TECHNICIAN'S REPORT IS EVIDENCE THE TRIP HAPPENED — and only a
+    // technician's. An inbound email saying "nobody ever showed up" arrives
+    // after the start too, and flipping the visit to completed on it would
+    // delete the trip from `listOverdueConfirmedVisits` (confirmed-only)
+    // FOREVER — silencing the detector with the very message complaining that
+    // nobody came (review finding).
+    //
+    // Even from a technician, only if the note was filed at or after the
+    // visit's start. One landing BEFORE it ("running late", "customer
+    // rescheduled at the door") attaches as evidence and leaves the visit
+    // exactly where it is, for the same reason. Both sides of the comparison
+    // are the firm's wall clock (attachNote.noteLocalOf).
+    // Date.parse, NOT a string compare: both sides are naive-local, but the DB
+    // renders `…T09:00:00+00:00` while naiveLocalISO writes `…T09:00:00.000Z`.
+    // Those differ after the seconds, so `<=` on the raw strings is decided by
+    // '+' vs '.' rather than by the clock — right by luck today, wrong the
+    // moment either format shifts. (The same trap the planner simulator hit.)
+    if (
+      isTechnicianChannel &&
+      visit.status === 'confirmed' &&
+      visit.starts_at !== null &&
+      Date.parse(visit.starts_at) <= Date.parse(resolved.noteLocal)
+    ) {
+      // ADVISORY, like the retraction link: L1, the note link and the report
+      // have all landed by now, so a visit cancelled out from under us between
+      // resolveVisitForNote's read and this write must not turn a recorded note
+      // into "note NOT recorded" and invite the technician to file it twice.
+      try {
+        visit = await updateVisitStatus(visit.id, 'completed', null, resolved.noteLocal);
+        // Plain-text kind, no push — the 'job_cancelled' precedent. The manager
+        // does not need a notification that work they already know about is done.
+        await appendScheduleEvent({
+          tenantId,
+          visitId: visit.id,
+          kind: 'happened',
+          actorRef: technicianRef,
+          detail: { reportedAt: resolved.noteLocal, captureId },
+        });
+      } catch (err) {
+        console.error(
+          `recordFieldNote: note ${captureId} linked, but visit ${visit.id} was not marked ` +
+            `happened — ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }
 
   // Status transition only if note-blessed (subset of the hardcoded machine,
@@ -331,7 +395,8 @@ export async function recordFieldNote(
     captureId,
     customerId,
     jobId: job.id,
-    ...(visit ? { visitId: visit.id } : {}),
+    // `true`: this note IS a link, so the visit is reported by construction.
+    ...(visit ? { visitId: visit.id, stage: stageOf(visit, true) } : {}),
   };
 }
 

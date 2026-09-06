@@ -229,7 +229,11 @@ export async function listCostGapCandidates(
     .from('visits')
     .select('technician_id, ends_at, job_id, jobs!inner(id, title, status, tenant_id, customers(name))')
     .eq('tenant_id', tenantId)
-    .eq('status', 'confirmed')
+    // 'completed' BELONGS here since rung 9b: a field note now marks the visit
+    // it reports as completed, so filtering to 'confirmed' alone would go blind
+    // on exactly the trips a technician told us about — which are the ones most
+    // likely to have a cost to record.
+    .in('status', ['confirmed', 'completed'])
     .gte('ends_at', endedFromNaive)
     .lt('ends_at', endedToNaive)
     // 'paid' BELONGS here (final-review finding): deriveStatusTarget walks a job

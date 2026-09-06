@@ -76,6 +76,8 @@ import {
   MAX_DURATION_MINUTES,
   getVisitForTenant,
   stageOf,
+  insertVisitNote,
+  listVisitNotesForCapture,
   getTechnicianById,
   unwrapAttributes,
   appendCostEvents,
@@ -2207,6 +2209,9 @@ async function commitNote(input: {
     customerId: result.customerId,
     jobId: result.jobId,
     visitId: result.visitId,
+    // The trip's lifecycle in one word, so the seat can say "reported" rather
+    // than infer it from a status and a timestamp it was never given.
+    ...(result.stage ? { stage: result.stage } : {}),
     // No ids: no technician tool takes a gap id, and a ref in a person's face is
     // the machine artifact the (re: …) anchor exists to keep out of the chat.
     ...(openQuestions.length > 0 ? { openQuestions } : {}),
@@ -3606,6 +3611,22 @@ async function dispatch(
           metadata: { retractedBy: subjectRef },
         });
         retractionId = row.id;
+        // The retraction FOLLOWS its target onto the trip (rung 9b). The target
+        // note reached its visit through visit_notes, so the retraction has to
+        // travel the same road or it lands on the record with no connection to
+        // the thing it neutralizes — invisible to every reader that walks the
+        // link. Advisory: a retraction that is written but not linked is still
+        // a valid retraction, so this must never fail the confirm.
+        try {
+          for (const link of await listVisitNotesForCapture(target.id)) {
+            await insertVisitNote({ tenantId, visitId: link.visit_id, captureId: row.id });
+          }
+        } catch (err) {
+          console.error(
+            `retract_capture: retraction ${row.id} not linked to its visit — ` +
+              `${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       } catch (err) {
         if (!isUniqueViolation(err)) throw err;
         // Two indexes can fire: our own externalId (this confirm's retry after

@@ -52,6 +52,294 @@ async function visitCount(): Promise<number> {
   return Number(rows[0].n);
 }
 
+// ---- Rung 9b phase 3: a note ATTACHES to the trip it reports ----------------
+//
+// The old shape minted a visit per note, which meant two technicians on one crew
+// produced two trips and one technician filing twice produced two more. `visits`
+// is the schedule now, so these pin which trip a note lands on.
+//
+// TIMES ARE RELATIVE TO THE FIRM'S CURRENT DAY, not a fixed date: `captured_at`
+// is stamped by the database at insert and cannot be injected, so a fixture on a
+// future day would always read as "filed before the visit". The visit is placed
+// to span today instead, which holds whatever time the suite runs at. The one
+// exception is the before-the-start case, which needs a visit still to come and
+// so books the last two minutes of the day — it would misjudge only if the suite
+// ran inside them (the date-eval midnight rule, applied here).
+describe('a field note attaches to its trip (rung 9b)', () => {
+  const TZ = 'America/Los_Angeles';
+  let DAY: string;
+  let TOMORROW: string;
+  let YESTERDAY: string;
+  const naive = (hhmm: string, day?: string) => `${day ?? DAY}T${hhmm}:00.000Z`;
+
+  let phoneSeq = 7000;
+  let techSeq = 0;
+  async function jobFor(name: string) {
+    // Identity matches on the PHONE, so every fixture carries a distinct one
+    // and hands it back for the stub to echo.
+    const phone = `555-${phoneSeq++}`;
+    const customer = await createCustomer({ tenantId, name, phone });
+    const job = await createJob({ tenantId, customerId: customer.id, title: `${name} work` });
+    return { customer, job, phone };
+  }
+  // A technician PER TEST: they all place visits on the same day, and one
+  // person cannot hold two overlapping confirmed visits (no_confirmed_overlap).
+  // seatExempt: these fixtures must not consume the tenant's technician seats —
+  // the file's other suites insert their own roster rows and would hit
+  // seat_cap_exceeded behind us.
+  const freshTech = async () =>
+    (await insertTechnician({
+      tenantId,
+      ref: `attach-tech-${techSeq++}`,
+      displayName: `Attach Tech ${techSeq}`,
+      seatExempt: true,
+    })).id;
+  const placed = (
+    jobId: string,
+    from: string,
+    to: string,
+    technicianId: string | null,
+    day?: string,
+  ) =>
+    createVisit({
+      tenantId,
+      jobId,
+      technicianId,
+      startsAt: naive(from, day),
+      endsAt: naive(to, day),
+      status: 'confirmed',
+    });
+  const noteLinks = async (visitId: string) => {
+    const { rows } = await pg.query<{ n: string }>(
+      'select count(*)::int as n from visit_notes where visit_id = $1',
+      [visitId],
+    );
+    return Number(rows[0].n);
+  };
+  const visitRow = async (id: string) => {
+    const { rows } = await pg.query('select * from visits where id = $1', [id]);
+    return rows[0] as { status: string; completed_at: string | null; labor_hours: string | null };
+  };
+  const noteBy = (ref: string, channel: 'technician_note' | 'email', text: string) => ({
+    tenantId,
+    technicianRef: ref,
+    channel,
+    text,
+  });
+
+  beforeAll(async () => {
+    await pg.query('update tenants set timezone = $1 where id = $2', [TZ, tenantId]);
+    DAY = localDateISO(new Date().toISOString(), TZ);
+    const shift = (days: number) =>
+      localDateISO(new Date(Date.now() + days * 86_400_000).toISOString(), TZ);
+    TOMORROW = shift(1);
+    YESTERDAY = shift(-1);
+  });
+
+  test('a note on the visit’s own day ATTACHES to it — no second row, and it reads as happened', async () => {
+    const { job, phone } = await jobFor('Attach Amy');
+    const tech = await freshTech();
+    const visit = await placed(job.id, '00:00', '23:59', tech);
+    const before = await visitCount();
+    const r = await recordFieldNote(
+      noteBy(`attach-tech-${techSeq - 1}`, 'technician_note', 'all done'),
+      stub({ phone, customerName: 'Attach Amy', jobTitle: 'Attach Amy work', laborHours: 2 }),
+    );
+    expect(r.visitId).toBe(visit.id); // the SAME trip, not a new one
+    expect(await visitCount()).toBe(before);
+    expect(await noteLinks(visit.id)).toBe(1);
+    const row = await visitRow(visit.id);
+    expect(row.status).toBe('completed'); // a report is evidence the trip happened
+    expect(row.completed_at).not.toBeNull();
+    expect(Number(row.labor_hours)).toBe(2); // the note's hours landed on the trip
+    expect(r.stage).toBe('reported');
+  });
+
+  test('two notes about one trip make ONE visit and TWO links, and the hours ACCUMULATE', async () => {
+    const { job, phone } = await jobFor('Crew Cass');
+    const visit = await placed(job.id, '00:00', '23:59', null); // unassigned: anyone may report
+    const before = await visitCount();
+    for (const [i, hours] of [1.5, 2].entries()) {
+      const ref = `crew-tech-${i}`;
+      await insertTechnician({ tenantId, ref, displayName: `Crew ${i}`, seatExempt: true });
+      await recordFieldNote(
+        noteBy(ref, 'technician_note', `did ${hours}h`),
+        stub({ phone, customerName: 'Crew Cass', jobTitle: 'Crew Cass work', laborHours: hours }),
+      );
+    }
+    expect(await visitCount()).toBe(before); // still ONE trip
+    expect(await noteLinks(visit.id)).toBe(2);
+    // Two people on one crew each report their own hours; the trip cost both.
+    expect(Number((await visitRow(visit.id)).labor_hours)).toBe(3.5);
+  });
+
+  test('a note filed BEFORE the visit starts attaches as evidence, and leaves it PLACED', async () => {
+    const { job, phone } = await jobFor('Early Ed');
+    const tech = await freshTech();
+    // TOMORROW, not the last two minutes of today: a fixture that depends on the
+    // suite not running near local midnight is a fixture that fails at 23:58.
+    // It also exercises step 2 of the attach rule — the job's ONE live visit,
+    // whatever day it sits on — which no same-day fixture reaches.
+    const visit = await placed(job.id, '00:00', '01:00', tech, TOMORROW); // still to come
+    const r = await recordFieldNote(
+      noteBy(`attach-tech-${techSeq - 1}`, 'technician_note', 'running late, customer knows'),
+      stub({ phone, customerName: 'Early Ed', jobTitle: 'Early Ed work' }),
+    );
+    expect(r.visitId).toBe(visit.id);
+    expect(await noteLinks(visit.id)).toBe(1);
+    // NOT completed: marking it done would close the very gap this note is
+    // often complaining about.
+    expect((await visitRow(visit.id)).status).toBe('confirmed');
+  });
+
+  test('with two visits that day, the note lands on the one THIS technician holds', async () => {
+    const { job, phone } = await jobFor('Split Sam');
+    const otherTech = await freshTech();
+    const theirs = await placed(job.id, '00:00', '12:00', otherTech);
+    const mineTech = await freshTech();
+    const mineRef = `attach-tech-${techSeq - 1}`;
+    const mine = await placed(job.id, '00:00', '23:59', mineTech);
+    const r = await recordFieldNote(
+      noteBy(mineRef, 'technician_note', 'mine, the long one'),
+      stub({ phone, customerName: 'Split Sam', jobTitle: 'Split Sam work' }),
+    );
+    expect(r.visitId).toBe(mine.id);
+    expect(r.visitId).not.toBe(theirs.id);
+  });
+
+  test('yesterday’s trip, reported this morning: the job’s ONE live visit still takes it', async () => {
+    // Step 2 of the attach rule. The common shape — a technician writes up the
+    // day after — and the one a same-day rule alone would get wrong by minting
+    // a second trip for work that already has one.
+    const { job, phone } = await jobFor('Late Larry');
+    const visit = await placed(job.id, '09:00', '11:00', await freshTech(), YESTERDAY);
+    const before = await visitCount();
+    const r = await recordFieldNote(
+      noteBy(`attach-tech-${techSeq - 1}`, 'technician_note', 'wrote it up this morning'),
+      stub({ phone, customerName: 'Late Larry', jobTitle: 'Late Larry work' }),
+    );
+    expect(r.visitId).toBe(visit.id);
+    expect(await visitCount()).toBe(before); // no second trip
+    expect((await visitRow(visit.id)).status).toBe('completed'); // filed after it ran
+  });
+
+  test('an inbound email NEVER marks a trip happened — the detector must keep asking', async () => {
+    // The failure this prevents: a customer emails "nobody ever showed up" at
+    // 10am for a 9am visit. Attaching is right — that IS evidence about the
+    // trip. Flipping it to completed would delete it from the overdue detector
+    // (confirmed-only) forever, silencing the alarm with the complaint.
+    const { job, phone } = await jobFor('Nobody Nora');
+    const visit = await placed(job.id, '00:00', '23:59', await freshTech());
+    const r = await recordFieldNote(
+      noteBy('connector:gmail', 'email', 'nobody ever showed up today'),
+      stub({ phone, customerName: 'Nobody Nora', jobTitle: 'Nobody Nora work', laborHours: 9 }),
+    );
+    expect(r.visitId).toBe(visit.id); // attached — the evidence is linked
+    const row = await visitRow(visit.id);
+    expect(row.status).toBe('confirmed'); // and STILL overdue-detectable
+    expect(row.completed_at).toBeNull();
+    // A customer's mail cannot edit the trip's billing hours either.
+    expect(row.labor_hours).toBeNull();
+  });
+
+  test('no visit to attach to → a technician note CREATES one, already happened and untimed', async () => {
+    const { phone } = await jobFor('Walkin Wanda');
+    await freshTech();
+    const before = await visitCount();
+    const r = await recordFieldNote(
+      noteBy(`attach-tech-${techSeq - 1}`, 'technician_note', 'walk-in, fixed it'),
+      stub({ phone, customerName: 'Walkin Wanda', jobTitle: 'Walkin Wanda work', laborHours: 1 }),
+    );
+    expect(await visitCount()).toBe(before + 1); // the walk-in IS a trip
+    expect(r.visitId).toBeDefined();
+    const row = await visitRow(r.visitId as string);
+    expect(row.status).toBe('completed');
+    expect(row.completed_at).not.toBeNull();
+  });
+
+  test('an INBOUND email attaches to a booked visit — attach is channel-blind, create is not', async () => {
+    // THE ENTRY CRITERION for this phase. Phase 1 gated the whole visit step on
+    // a technician channel, which left a customer's own answer linked to
+    // nothing: invisible to the planner's evidence read and to the watcher's
+    // activity probe, so a gap the customer had already answered still looked
+    // unanswered.
+    const { job, phone } = await jobFor('Inbound Ida');
+    const visit = await placed(job.id, '00:00', '23:59', await freshTech());
+    const before = await visitCount();
+    const r = await recordFieldNote(
+      noteBy('connector:gmail', 'email', 'yes, someone came out this morning — all good'),
+      stub({ phone, customerName: 'Inbound Ida', jobTitle: 'Inbound Ida work' }),
+    );
+    expect(r.visitId).toBe(visit.id); // ATTACHED
+    expect(await visitCount()).toBe(before); // and created NOTHING
+    expect(await noteLinks(visit.id)).toBe(1);
+  });
+
+  test('an INBOUND email with no visit to attach to creates NOTHING — a customer’s email is not a trip', async () => {
+    const { phone } = await jobFor('Emailer Eve');
+    const before = await visitCount();
+    const r = await recordFieldNote(
+      noteBy('connector:gmail', 'email', 'any update?'),
+      stub({ phone, customerName: 'Emailer Eve', jobTitle: 'Emailer Eve work' }),
+    );
+    expect(r.visitId).toBeUndefined();
+    expect(await visitCount()).toBe(before);
+  });
+
+  test('a LINK-LESS inbound redelivery can still re-apply a stale forward signal — the gap rung 10 closes', async () => {
+    // The edge the plan named, pinned as OPEN rather than left implicit. An
+    // inbound capture on a job with NO live visit links nothing, so
+    // captureHasLinkedL2 cannot short-circuit it: a redelivery re-runs the
+    // extractor, and a `completed` signal that was correctly SKIPPED on pass 1
+    // (the job was still 'open') becomes legal once the job has reached
+    // 'in_progress'. Nothing is duplicated — but a five-week-old email can
+    // close a job late. Rung 10 closes it by giving inbound its own visit.
+    const { job, phone } = await jobFor('Stale Stan'); // deliberately NO visit
+    const note = {
+      ...noteBy('connector:gmail', 'email' as const, 'all finished on our end'),
+      externalId: 'gmail-stale-signal-1',
+    };
+    const ext = { phone, customerName: 'Stale Stan', statusSignal: 'completed' as const };
+    const first = await recordFieldNote(note, stub(ext));
+    expect(first.visitId).toBeUndefined(); // link-less, as designed
+    const { rows: after1 } = await pg.query<{ status: string }>(
+      'select status from jobs where id = $1',
+      [job.id],
+    );
+    expect(after1[0].status).toBe('open'); // 'completed' is not legal from 'open'
+
+    // The job moves on, then the same message is delivered again.
+    await pg.query("update jobs set status = 'in_progress' where id = $1", [job.id]);
+    const second = await recordFieldNote(note, stub(ext));
+    expect(second.captureId).toBe(first.captureId); // same L1 row, re-run
+    const { rows: after2 } = await pg.query<{ status: string }>(
+      'select status from jobs where id = $1',
+      [job.id],
+    );
+    // DOCUMENTS the gap: the stale signal lands the second time around.
+    expect(after2[0].status).toBe('completed');
+  });
+
+  test('a redelivered note is a DUPLICATE once its link exists — the hole phase 1 accepted', async () => {
+    // Phase 1 accepted a re-run here because nothing carried the capture id.
+    // With the note linked to a trip, captureHasLinkedL2 sees it and the second
+    // delivery short-circuits — no repeat extractor call, and no chance for a
+    // stale forward status signal to land late on a job that has since moved on.
+    const { job, phone } = await jobFor('Redeliver Rita');
+    await placed(job.id, '00:00', '23:59', await freshTech());
+    const note = {
+      ...noteBy('connector:gmail', 'email' as const, 'confirming the visit happened'),
+      externalId: 'gmail-attach-dedup-1',
+    };
+    const first = await recordFieldNote(note, stub({ phone, customerName: 'Redeliver Rita' }));
+    expect(first.status).toBe('matched');
+    expect(first.visitId).toBeDefined();
+    const second = await recordFieldNote(note, stub({ phone, customerName: 'Redeliver Rita' }));
+    expect(second.status).toBe('duplicate');
+    expect(second.captureId).toBe(first.captureId);
+  });
+});
+
 describe('recordFieldNote', () => {
   test('matched note writes L1 + reuses customer + creates job/visit with provenance & labor hours; a completed-signal on a new (open) job is skipped, not thrown', async () => {
     const customer = await createCustomer({ tenantId, name: 'Reuse Me', phone: '555-0177' });

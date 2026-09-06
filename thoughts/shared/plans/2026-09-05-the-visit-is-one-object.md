@@ -378,9 +378,33 @@ live visit → created as happened; note before start → attached, still `place
 two-visit day → the matching one; retraction linked; `mv_whiplash` suppressed by a linked note in the window;
 `watchers.test.ts`: a linked note counts as freshness.
 
-### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `npx supabase db reset && npm test`; the new tests above pass
+### Automated verification — ✅ 2026-09-05
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` — **2556 passed / 12 skipped
+      (2568)**; Phase 2 ended at 2544 / 12 (2556). +12 tests, **0 deleted** (11 new attach/edge cases, one
+      `mv_whiplash` case; the retraction-link assertion joined an existing test).
+- [x] `npx supabase db reset && npm test` — green from a clean database. (One unrelated flake seen once:
+      `src/model/toolLoop.test.ts`'s wall-clock-budget test is timing-sensitive and untouched by this
+      branch.)
+
+**The rule, stated once:** ATTACH is channel-blind; CREATE and REPORT are technician-only. Any channel may
+link a capture to a trip that already exists — that is the evidence citation, and it is what makes a
+customer's own answer visible to the planner and the watcher again. Only a technician channel may create a
+trip, fold labor hours and L3 onto one, or mark one happened.
+
+**Reviewer findings, fixed.** (1) The happened flip was channel-blind, so a customer emailing *"nobody ever
+showed up"* at 10am for a 9am visit would have marked it completed — deleting it from
+`listOverdueConfirmedVisits` (confirmed-only) FOREVER, silencing the detector with the complaint. Gated to
+technician channels, with a test named for that failure. The same gate now covers `recordVisitReport`, so an
+inbound extractor cannot edit a job's billing hours. (2) The flip is ADVISORY: L1, the link and the report
+have all landed by then, so a visit cancelled mid-flight must not turn a recorded note into "note NOT
+recorded" and invite a re-file. (3) `record_field_note` now returns `stage`. (4) Step 2 of the attach rule
+(the job's ONE live visit, on any day) had no test — the write-up-the-next-morning case, which a same-day
+rule alone gets wrong by minting a second trip. (5) The before-the-start fixture booked the last two minutes
+of the day and would have failed if the suite ran inside them; it books tomorrow instead, which also covers
+step 2. (6) The redelivery gap is NARROWED, not closed, and now says so in `rawCaptures.ts` and in a test
+that documents it: an inbound capture on a job with no live visit still links nothing, so a redelivery
+re-runs the extractor and a stale forward status signal can land late. **Rung 10 closes it** by giving
+inbound (call AND email) its own committed visit.
 
 ### Live verification (agent-executable) — none until Phase 4. ### Manual verification — none.
 *Continue to Phase 4.*

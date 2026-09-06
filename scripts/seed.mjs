@@ -137,7 +137,8 @@ async function truncateSpine(hasScheduling) {
   // tenants is intentionally left intact (keeps Default Tenant). dropped_audit is
   // standalone (no spine FK) but cleared too, so privacy receipts reset as well.
   // technicians/review_items only go when the roster reseed was explicitly asked for.
-  let tables = 'customers, jobs, visits, visit_notes, raw_captures, schedule_entries, dropped_audit';
+  let tables =
+    'customers, jobs, visits, visit_participants, visit_notes, raw_captures, schedule_entries, dropped_audit';
   if (hasScheduling) tables += ', technician_time_off, job_type_durations, schedule_events';
   if (WITH_ROSTER) tables += ', technicians, review_items';
   const client = new pg.Client({ connectionString: dbUrl });

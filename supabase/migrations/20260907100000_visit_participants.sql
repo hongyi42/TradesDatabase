@@ -148,12 +148,22 @@ create trigger visit_participants_fill
 -- — a slot Ben holds on another job — and raise 23P01 before he is removed.
 -- So it is one function, and the person is reconciled FIRST.
 --
--- Arm (1) is the DEPLOY BRIDGE. Until 20260907100100 drops the column, old code
--- (and new code, which keeps writing technician_id = the first of the crew)
--- expresses "who is on this trip" through it, and this arm materialises that
--- person as a participant. It NEVER deletes every participant — a crew's other
--- members are the typed layer's business, and a blanket delete-all would let an
--- old-code UPDATE silently drop the partner.
+-- Arm (1) is the DEPLOY BRIDGE, and it is STRICTLY ONE-WAY: old code expresses
+-- "who is on this trip" through `visits.technician_id`, and this arm
+-- materialises that person as a participant. NEW code writes the column
+-- NOWHERE — `createVisit` omits it and no other writer sets it — so during the
+-- mixed window a crew booked by new code leaves `technician_id` NULL and the
+-- OLD `v_schedule` shows that trip with an empty `technician_ref`, i.e. as
+-- UNASSIGNED. That is the window's real cost and it is a WRITE hazard, not
+-- just a display one: an old-code surface (the board tray, `unassignedOnly`)
+-- will offer such a trip for assignment, and an old-code
+-- `update visits set technician_id = …` then rewrites the crew through this
+-- arm — adding an uninvited person, or on a second write DELETING a real one.
+-- Keep the window short and keep the board shut during it.
+--
+-- It NEVER deletes every participant — a crew's other members are the typed
+-- layer's business, and a blanket delete-all would let an old-code UPDATE
+-- silently drop the partner.
 --
 -- Arm (2) is permanent: it is the whole reason the participant knows WHEN.
 --

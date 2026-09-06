@@ -240,4 +240,4 @@ create trigger visits_participants_after
 -- and the index with it, but naming them makes the intent reviewable.
 alter table visits drop constraint if exists no_confirmed_overlap;
 drop index if exists idx_visits_technician;
-alter table visits drop column technician_id;
+alter table visits drop column if exists technician_id;

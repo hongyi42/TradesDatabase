@@ -273,6 +273,14 @@ export interface LooseBucket {
     // live-assignment anti-join — invisible on every surface at once).
     // Always false for an untimed visit: with no date, nothing can be late.
     overdue: boolean;
+    // WHO IS ALREADY ON IT (rung 9c). The tray holds two different rows: a
+    // visit with NOBODY on it, and an UNTIMED visit that has a full crew. They
+    // look identical without this, and the tray's Assign button REPLACES the
+    // crew — so a manager tapping Assign on the second kind silently takes a
+    // real crew off a real trip. The board renders these and names what the
+    // tap will remove.
+    technicianRefs: string[];
+    technicianNames: string[];
   }[];
   unscheduledJobs: UnscheduledJob[];
 }
@@ -324,6 +332,10 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
       // every date field reads null, and nothing untimed can be overdue.
       const placedRow = isPlaced(row);
       const date = placedRow ? row.starts_at.slice(0, 10) : null;
+      // Nameable crew only, tenant-checked at both levels (participantsOf) —
+      // the same withhold-the-field-keep-the-row rule the rest of this reader
+      // applies to job and customer names.
+      const crew = participantsOf(row, tenantId);
       return {
         visitId: row.id,
         date,
@@ -333,6 +345,8 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
         customer: customer?.name ?? null,
         jobTitle: job ? job.title : null,
         overdue: placedRow ? (date as string) < today : false,
+        technicianRefs: crew.map((p) => p.ref),
+        technicianNames: crew.map((p) => p.displayName),
         // Sort key only — stripped below so the endpoint serves exactly the
         // declared LooseBucket shape.
         _createdAt: row.created_at,

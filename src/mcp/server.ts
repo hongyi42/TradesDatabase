@@ -752,7 +752,10 @@ const SPINE_VIEW_CATALOG =
   'ONE ROW PER TRIP, and a trip can carry SEVERAL technicians: technician_refs and ' +
   'technician_names are ARRAYS (text[]), so a two-person job is one row with two names — ' +
   "count(*) counts TRIPS. Test membership with `where 'ben-shelton' = any(technician_refs)`, " +
-  'never `technician_ref = …` (there is no such column). When the question is about PEOPLE ' +
+  'never `technician_ref = …` (there is no such column). A trip with NOBODY on it has ' +
+  'technician_refs NULL, not an empty array — ask `where technician_refs is null`; ' +
+  "`cardinality(technician_refs) = 0` and `technician_refs = '{}'` both match NOTHING and " +
+  'will silently report that no work is unassigned. When the question is about PEOPLE ' +
   'rather than trips ("how many visits did Ben go on"), use v_visit_participants, which has ' +
   'one row per person per trip. ' +
   'v_cancelled_visits(visit_id, local_day, local_weekday, starts_at, ends_at, reason, ' +

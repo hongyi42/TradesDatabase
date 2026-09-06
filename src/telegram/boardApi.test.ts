@@ -1003,6 +1003,50 @@ describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {
     expect(body.unscheduledJobs.some((j) => j.title === 'Bucket parked visit')).toBe(false);
   });
 
+  test('the tray names the crew already on an UNTIMED visit (rung 9c)', async () => {
+    // THE TRAP THIS CLOSES. The tray holds two rows that look identical: a
+    // visit with NOBODY on it, and an untimed visit carrying a full crew —
+    // the latter is here because it sits on no day, not because it is
+    // unmanned (listUnassignedVisitsWithRefs' `|| starts_at === null` arm).
+    // The tray's Assign button REPLACES the crew, so without these fields the
+    // board cannot tell the two apart and one tap silently takes a real crew
+    // off a real trip, with no history table to recover from.
+    const casaId = (await pg.query("select id from customers where name = 'Board Casa'"))
+      .rows[0].id as string;
+    const crewed = await bookVisit({
+      tenantId,
+      customerId: casaId,
+      title: 'Bucket untimed CREWED',
+      actorRef: 'board-mgr',
+      technicianRefs: ['board-t1', 'board-t2'],
+    });
+    try {
+      const resp = await bucket(tma(900000001));
+      expect(resp.status).toBe(200);
+      const body = (await resp.json()) as {
+        parkedVisits: Array<{
+          jobTitle: string | null;
+          technicianRefs: string[];
+          technicianNames: string[];
+        }>;
+      };
+      const row = body.parkedVisits.find((v) => v.jobTitle === 'Bucket untimed CREWED');
+      expect(row).toBeDefined();
+      // BOTH people, not the first of them — a first-of-crew field is exactly
+      // what made the sheet claim a two-person trip belonged to one person.
+      expect([...(row?.technicianRefs ?? [])].sort()).toEqual(['board-t1', 'board-t2']);
+      expect(row?.technicianNames).toHaveLength(2);
+      // And a genuinely person-less row still reads as EMPTY, so the board's
+      // "Replace the crew" warning cannot fire on an ordinary assign.
+      const bare = body.parkedVisits.find((v) => v.jobTitle === 'Bucket parked visit');
+      expect(bare?.technicianRefs).toEqual([]);
+      expect(bare?.technicianNames).toEqual([]);
+    } finally {
+      await pg.query("update visits set status = 'cancelled' where job_id = $1", [crewed.job.id]);
+      await pg.query("update jobs set status = 'cancelled' where id = $1", [crewed.job.id]);
+    }
+  });
+
   test('a cancelled job leaves BOTH tray halves (cancel-vocabulary plan)', async () => {
     const casaId = (await pg.query("select id from customers where name = 'Board Casa'"))
       .rows[0].id as string;

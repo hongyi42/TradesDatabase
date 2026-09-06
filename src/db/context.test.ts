@@ -1,11 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from './client.js';
-import { createAssignment } from './assignments.js';
 import { createCustomer } from './customers.js';
 import { createJob } from './jobs.js';
 import { createTenant } from './tenants.js';
-import { createVisit } from './visits.js';
+import { createVisit, insertVisitNote } from './visits.js';
 import { appendRawCapture, listRawCapturesForCustomer } from './rawCaptures.js';
 import { getCustomerContext } from './context.js';
 
@@ -36,12 +35,18 @@ describe('getCustomerContext', () => {
       channel: 'technician_voice',
       rawText: 'tech said this',
     });
+    // A reported trip: the visit, plus the note link recordFieldNote writes.
     const visit = await createVisit({
       tenantId,
       jobId: job.id,
-      technicianName: 'tech-x',
+      technicianId: null,
+      startsAt: null,
+      endsAt: null,
+      status: 'completed',
+      completedAt: '2026-08-16T13:00:00.000Z',
       sourceCaptureId: techNote.id,
     });
+    await insertVisitNote({ tenantId, visitId: visit.id, captureId: techNote.id });
 
     // A capture stamped directly with the customer (e.g. an inbound call).
     const call = await appendRawCapture({
@@ -70,7 +75,7 @@ describe('getCustomerContext', () => {
     const job = await createJob({ tenantId, customerId: customer.id, title: 'Radiator bleed' });
 
     // Placed future visit (naive-local convention: display slices, no tz math).
-    const placed = await createAssignment({
+    const placed = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: null,
@@ -79,7 +84,7 @@ describe('getCustomerContext', () => {
       status: 'confirmed',
     });
     // Unplaced (time-TBD) visit holding only a scheduling window.
-    const unplaced = await createAssignment({
+    const unplaced = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: null,
@@ -88,7 +93,7 @@ describe('getCustomerContext', () => {
       status: 'confirmed',
     });
     // Noise that must NOT surface: a cancelled row and a long-past visit.
-    await createAssignment({
+    await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: null,
@@ -96,7 +101,7 @@ describe('getCustomerContext', () => {
       endsAt: '2027-03-06T09:00:00Z',
       status: 'cancelled',
     });
-    await createAssignment({
+    await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: null,
@@ -106,12 +111,12 @@ describe('getCustomerContext', () => {
     });
 
     const ctx = await getCustomerContext(customer.id);
-    const ids = ctx.upcomingVisits.map((u) => u.assignmentId);
+    const ids = ctx.upcomingVisits.map((u) => u.visitId);
     expect(ids).toContain(placed.id);
     expect(ids).toContain(unplaced.id);
     expect(ids).toHaveLength(2); // cancelled + past excluded
 
-    const placedRow = ctx.upcomingVisits.find((u) => u.assignmentId === placed.id);
+    const placedRow = ctx.upcomingVisits.find((u) => u.visitId === placed.id);
     // Display convention: raw wall-clock slices, never timezone-converted —
     // and the day label is SERVER-composed (the resolve_date phrase pattern:
     // the eval caught the model writing "Tuesday, Aug 19" for a served
@@ -123,7 +128,7 @@ describe('getCustomerContext', () => {
       phrase: 'Friday 2027-03-05',
     });
 
-    const windowRow = ctx.upcomingVisits.find((u) => u.assignmentId === unplaced.id);
+    const windowRow = ctx.upcomingVisits.find((u) => u.visitId === unplaced.id);
     // INVERTED (rung 9a): this used to carry a stored range, and the phrase
     // read "between Monday … and Friday …". Nothing records when an untimed
     // visit should happen, so the ONLY honest phrase says so — the brief must
@@ -143,7 +148,7 @@ describe('getCustomerContext', () => {
     const theirs = await createCustomer({ tenantId: other.id, name: 'Leak Cust B' });
     const myJob = await createJob({ tenantId, customerId: mine.id, title: 'Mine' });
     const theirJob = await createJob({ tenantId: other.id, customerId: theirs.id, title: 'Theirs' });
-    await createAssignment({
+    await createVisit({
       tenantId,
       jobId: myJob.id,
       technicianId: null,
@@ -151,7 +156,7 @@ describe('getCustomerContext', () => {
       endsAt: '2027-04-01T10:00:00Z',
       status: 'confirmed',
     });
-    const theirRow = await createAssignment({
+    const theirRow = await createVisit({
       tenantId: other.id,
       jobId: theirJob.id,
       technicianId: null,
@@ -161,10 +166,10 @@ describe('getCustomerContext', () => {
     });
 
     const ctx = await getCustomerContext(mine.id);
-    expect(ctx.upcomingVisits.map((u) => u.assignmentId)).not.toContain(theirRow.id);
+    expect(ctx.upcomingVisits.map((u) => u.visitId)).not.toContain(theirRow.id);
     // And reading the OTHER tenant's customer directly never mixes mine in.
     const otherCtx = await getCustomerContext(theirs.id);
-    expect(otherCtx.upcomingVisits.map((u) => u.assignmentId)).toEqual([theirRow.id]);
+    expect(otherCtx.upcomingVisits.map((u) => u.visitId)).toEqual([theirRow.id]);
   });
 
   test('listRawCapturesForCustomer returns newest first', async () => {

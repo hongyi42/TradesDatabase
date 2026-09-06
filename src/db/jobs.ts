@@ -209,7 +209,7 @@ export async function listJobsWithCustomerByIds(
 // ask. It also bounds the first-run backfill to the same 72h window the visit
 // detector uses, instead of surfacing every historical job at once.
 //
-// Rows with no technician are DROPPED here: assignments.technician_id has been
+// Rows with no technician are DROPPED here: visits.technician_id has been
 // nullable since 20260717120000, and createPendingNudge requires one — there is
 // nobody to ask.
 export type CostGapCandidate = {
@@ -226,10 +226,14 @@ export async function listCostGapCandidates(
   endedToNaive: string, // ISO, firm wall-clock as if UTC — exclusive
 ): Promise<CostGapCandidate[]> {
   const { data, error } = await getClient()
-    .from('assignments')
+    .from('visits')
     .select('technician_id, ends_at, job_id, jobs!inner(id, title, status, tenant_id, customers(name))')
     .eq('tenant_id', tenantId)
-    .eq('status', 'confirmed')
+    // 'completed' BELONGS here since rung 9b: a field note now marks the visit
+    // it reports as completed, so filtering to 'confirmed' alone would go blind
+    // on exactly the trips a technician told us about — which are the ones most
+    // likely to have a cost to record.
+    .in('status', ['confirmed', 'completed'])
     .gte('ends_at', endedFromNaive)
     .lt('ends_at', endedToNaive)
     // 'paid' BELONGS here (final-review finding): deriveStatusTarget walks a job

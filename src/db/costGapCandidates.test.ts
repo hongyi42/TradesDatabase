@@ -58,7 +58,7 @@ async function mkAssignment(
   tenant = tenantId,
 ): Promise<void> {
   const startsAt = new Date(Date.parse(endsAt) - 3_600_000).toISOString();
-  const { error } = await getClient().from('assignments').insert({
+  const { error } = await getClient().from('visits').insert({
     tenant_id: tenant,
     job_id: jobId,
     technician_id: technicianId,
@@ -79,7 +79,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await pg.query('truncate table assignments, jobs, customers, technicians cascade');
+  await pg.query('truncate table visits, jobs, customers, technicians cascade');
   await pg.query('delete from tenants where id = any($1)', [[tenantId, otherTenantId]]);
   await pg.end();
 });

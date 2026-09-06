@@ -62,7 +62,7 @@ export function serializeContextForPrompt(context: CustomerContext): string {
     ? (upcomingVisits ?? [])
         .map(
           (u) =>
-            `- [upcoming ${u.assignmentId}] ${u.jobTitle ?? '(untitled)'} ` +
+            `- [upcoming ${u.visitId}] ${u.jobTitle ?? '(untitled)'} ` +
             (u.untimed
               ? 'booked, but NO time set yet — say exactly that'
               : `${u.phrase} ${u.startTime ?? ''}${u.endTime ? `–${u.endTime}` : ''}`) +
@@ -75,7 +75,7 @@ export function serializeContextForPrompt(context: CustomerContext): string {
     ? recentVisits
         .map(
           (v) =>
-            `- [visit ${v.id}] tech=${v.technician_name ?? '—'} ` +
+            `- [visit ${v.id}] tech=${v.technicians?.display_name ?? '—'} ` +
             `labor=${v.labor_hours ?? '—'} source_capture=${v.source_capture_id ?? '—'} ` +
             `attributes=${attrs(v.attributes)}`,
         )

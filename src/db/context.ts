@@ -1,8 +1,8 @@
 import { getCustomer, type Customer } from './customers.js';
 import { getTenant } from './tenants.js';
 import { listJobsForCustomer, type Job } from './jobs.js';
-import { listVisitsForCustomer, type Visit } from './visits.js';
-import { listUpcomingAssignmentsForCustomer } from './assignments.js';
+import { listVisitsForCustomer, type VisitWithTechnician } from './visits.js';
+import { listUpcomingVisitsForCustomer } from './visits.js';
 import { localDateISO } from '../schedule/availability.js';
 import { spineNowIso } from '../evalClock.js';
 // Full weekday name, matching resolve_date's phrase convention ("Monday
@@ -26,7 +26,7 @@ import { factSourceIds, foldRetractedFacts } from './standingFacts.js';
 // (rung 9a) carries no date at all — every date field is null and the phrase
 // says so.
 export interface UpcomingVisit {
-  assignmentId: string;
+  visitId: string;
   jobId: string;
   jobTitle: string | null;
   technicianRef: string | null;
@@ -51,7 +51,7 @@ export interface CustomerContext {
   customer: Customer | null;
   jobs: Job[];
   /**
-   * Confirmed FUTURE work from the assignments table — placed visits from
+   * Confirmed FUTURE work from the visits table — placed visits from
    * today forward plus unplaced (time-TBD) visits with a live scheduling
    * window. Added 2026-08-13: this aggregate previously read only `visits`
    * (L2 evidence of PAST work), so "when is X's next visit?" answered "none"
@@ -59,7 +59,7 @@ export interface CustomerContext {
    * from this context.
    */
   upcomingVisits: UpcomingVisit[];
-  recentVisits: Visit[];
+  recentVisits: VisitWithTechnician[];
   recentCaptures: RawCapture[];
 }
 
@@ -96,7 +96,7 @@ export async function getCustomerContext(
     // the upcoming/recent split must agree with the anchored resolve_date, or
     // an anchored run charges the model for the harness's own inconsistency.
     const todayLocal = localDateISO(spineNowIso(customer.tenant_id), tz);
-    const rows = await listUpcomingAssignmentsForCustomer(customer.tenant_id, customerId, todayLocal);
+    const rows = await listUpcomingVisitsForCustomer(customer.tenant_id, customerId, todayLocal);
     upcomingVisits = rows
       // Re-check the embed's tenant: "a job shares its customer's tenant" is
       // an unenforced invariant (id-only FK) — drop rows that violate it.
@@ -105,7 +105,7 @@ export async function getCustomerContext(
         const date = r.starts_at?.slice(0, 10) ?? null;
         const phrase = date ? `${weekdayFull(date)} ${date}` : 'no time set yet';
         return {
-          assignmentId: r.id,
+          visitId: r.id,
           jobId: r.job_id,
           jobTitle: r.jobs?.title ?? null,
           technicianRef: r.technicians?.ref ?? null,

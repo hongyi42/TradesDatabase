@@ -3,7 +3,7 @@ import {
   findCustomersByAddress,
   getTechnician,
   getTenant,
-  listAssignmentsForTechnician,
+  listVisitsForTechnician,
   listJobsWithCustomerByIds,
 } from '../db/index.js';
 import { localDateISO } from '../schedule/availability.js';
@@ -24,7 +24,7 @@ export interface MatchInput {
 
 // Denormalized customer fields used to prefill a new customer when create-new
 // is the right move (dedup already ran and found none). No longer populated by
-// the schedule consultation — assignments always link a real customer — but
+// the schedule consultation — visits always link a real customer — but
 // still the shape the staged-confirm resume path (server.ts resolutionFrom /
 // recordFieldNote's create-new) carries.
 export interface ScheduledCustomerDraft {
@@ -40,7 +40,7 @@ export interface MatchResult {
   status: 'matched' | 'needs_confirmation' | 'needs_disambiguation';
   customerId?: string;
   jobId?: string;
-  suggestion?: { address: string; assignmentId: string };
+  suggestion?: { address: string; visitId: string };
   createFrom?: ScheduledCustomerDraft;
   reason?: string;
 }
@@ -70,40 +70,43 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
     if (byAddress.length === 1) return { status: 'matched', customerId: byAddress[0].id };
   }
 
-  // 2. Consult the DB-owned schedule (confirmed assignments) for this
+  // 2. Consult the DB-owned schedule (confirmed visits) for this
   // technician on the capture's FIRM-LOCAL day. Assignments are naive-local
   // (wall-clock stored as if UTC), but capturedAt is REAL UTC — slicing it
   // directly would consult tomorrow's schedule for any evening capture (a
   // 6pm PDT note is already the next UTC day). localDateISO with the firm's
   // timezone recovers the wall-clock day the technician is living in, which
   // is exactly the day key the naive-local rows are stored under.
-  // A badge with no roster row has no schedule to consult (assignments key on
+  // A badge with no roster row has no schedule to consult (visits key on
   // the technician UUID); every assignment links job → customer, so a hit
   // resolves BOTH ids directly.
   const tech = await getTechnician(tenantId, technicianRef);
   const timezone = tech ? ((await getTenant(tenantId))?.timezone ?? 'UTC') : 'UTC';
   const day = localDateISO(capturedAt, timezone);
-  let scheduled: { assignmentId: string; customerId: string; jobId: string; address: string | null }[] =
+  let scheduled: { visitId: string; customerId: string; jobId: string; address: string | null }[] =
     [];
   if (tech) {
-    const assignments = (
-      await listAssignmentsForTechnician(
+    const visits = (
+      await listVisitsForTechnician(
         tech.id,
         `${day}T00:00:00.000Z`,
         new Date(Date.parse(`${day}T00:00:00.000Z`) + 86_400_000).toISOString(),
-        ['confirmed'],
+        // 'completed' too, since rung 9b: the technician's FIRST note of the day
+        // marks that visit completed, so a confirmed-only read would leave their
+        // second note of the same day with no schedule to match against.
+        ['confirmed', 'completed'],
       )
     ).filter((a) => a.starts_at.slice(0, 10) === day); // overlap-edge clamp (daySource precedent)
     const jobs = await listJobsWithCustomerByIds(tenantId, [
-      ...new Set(assignments.map((a) => a.job_id)),
+      ...new Set(visits.map((a) => a.job_id)),
     ]);
     const jobById = new Map(jobs.map((j) => [j.id, j]));
-    scheduled = assignments.flatMap((a) => {
+    scheduled = visits.flatMap((a) => {
       const job = jobById.get(a.job_id);
       if (!job) return [];
       return [
         {
-          assignmentId: a.id,
+          visitId: a.id,
           customerId: job.customer_id,
           jobId: a.job_id,
           address: job.customers?.address_line1 ?? null,
@@ -127,7 +130,7 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
   if (scheduled.length === 1 && scheduled[0].address) {
     return {
       status: 'needs_confirmation',
-      suggestion: { address: scheduled[0].address, assignmentId: scheduled[0].assignmentId },
+      suggestion: { address: scheduled[0].address, visitId: scheduled[0].visitId },
     };
   }
 

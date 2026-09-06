@@ -25,8 +25,9 @@ import type { ReviewKind } from '../db/reviewItems.js';
 // query would quietly turn it into a per-row read.
 
 // Everything a spec may know about the world this tick, pre-fetched by the
-// sweep. Keyed the way the batched reads already key: activity by job,
-// assignment status by the item's subject_ref, job status by job id.
+// sweep. Keyed the way the batched reads already key: activity by job, visit
+// status by VISIT ID (parse the subject with visitIdOfSubject), job status by
+// job id.
 export interface SweepFacts {
   hasActivitySince: (jobId: string, sinceLocal: string) => boolean;
   visitStatusById: Map<string, string>;
@@ -58,16 +59,52 @@ export interface OpenItemView {
 
 export interface NudgeKindSpec {
   kind: ReviewKind;
-  // Does subject_ref name a VISIT (an assignment id), or something else? The
-  // sweep uses this to decide which batched status read a kind's subjects
-  // belong in — a job-scoped kind's subject is a job id, and looking it up in
-  // the assignments table is both wasted work and a lie about what the id
-  // means.
+  // Does subject_ref name a VISIT (`<visit id>@<starts_at>`, see
+  // visitSubjectRef), or something else? The sweep uses this to decide which
+  // batched status read a kind's subjects belong in — a job-scoped kind's
+  // subject is a job id, and looking it up in the visits table is both wasted
+  // work and a lie about what the id means.
   subjectIsVisit: boolean;
   // How an open MANAGER REVIEW ITEM of this kind closes itself → resolution
   // text, or null to leave it open. The one judgment the sweep kept (build 5):
   // an item asks the MANAGER for something, and this says whether they did it.
   itemResolved(item: OpenItemView, f: SweepFacts): string | null;
+}
+
+// ---- The visit-scoped subject key (rung 9b) --------------------------------
+//
+// `subject_ref` for a visit-scoped kind used to be a bare assignment id, and
+// that was enough BECAUSE A MOVE MINTED A NEW ID: a visit flagged, moved, and
+// overdue again arrived as a different subject, so `uq_observations_subject_ever`
+// — unique per (tenant, kind, subject_ref) for detector rows, ONCE EVER — let it
+// through as new.
+//
+// Rung 9b made the id survive a move. Keyed on the id alone, that once-ever
+// index would silently make "we already told you about this visit" permanent:
+// the visit could slide a week and go overdue again and the detector would
+// never speak. So the subject is the visit AT A TIME — the same distinction the
+// old id churn provided by accident, now stated on purpose.
+//
+// An untimed visit has no time to key on and cannot be overdue, so it keeps the
+// bare id. Rows written before this change are bare ids too, and parse fine.
+const SUBJECT_SEP = '@';
+
+export function visitSubjectRef(visitId: string, startsAt: string | null): string {
+  return startsAt ? `${visitId}${SUBJECT_SEP}${startsAt}` : visitId;
+}
+
+export function visitIdOfSubject(subjectRef: string): string {
+  const at = subjectRef.indexOf(SUBJECT_SEP);
+  return at === -1 ? subjectRef : subjectRef.slice(0, at);
+}
+
+// Both spellings of one visit's subject: the bare id every row written before
+// rung 9b used, and the composite written since. The dedup probe must ask for
+// BOTH — asking only for the new one would read every historical gap as never
+// surfaced and re-flag the lot on the first tick after deploy.
+export function visitSubjectCandidates(visitId: string, startsAt: string | null): string[] {
+  const composite = visitSubjectRef(visitId, startsAt);
+  return composite === visitId ? [visitId] : [visitId, composite];
 }
 
 export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
@@ -84,7 +121,8 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
       return 'field report arrived after this was flagged';
     }
     if (!item.escalated) {
-      const status = f.visitStatusById.get(item.subjectRef);
+      // The map is keyed by VISIT ID; the subject carries the time too.
+      const status = f.visitStatusById.get(visitIdOfSubject(item.subjectRef));
       if (status === 'cancelled' || status === 'completed') {
         return `visit was ${status} after this was flagged`;
       }

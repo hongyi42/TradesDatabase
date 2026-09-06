@@ -1,5 +1,6 @@
 import type { Database, Json } from './database.types.js';
 import { getClient } from './client.js';
+import { captureHasVisitNote } from './visits.js';
 
 export type RawCapture = Database['public']['Tables']['raw_captures']['Row'];
 export type CaptureChannel = Database['public']['Enums']['capture_channel'];
@@ -145,7 +146,11 @@ export async function captureHasLinkedL2(captureId: string): Promise<boolean> {
     if (error) throw new Error(`captureHasLinkedL2 failed on ${table}: ${error.message}`);
     if (data) return true;
   }
-  return false;
+  // The note-link arm (rung 9b). source_capture_id alone stopped being the
+  // whole story once a note could ATTACH to a trip it did not create: such a
+  // note leaves no source_capture_id anywhere, so a redelivery of it would read
+  // as an unprocessed orphan, re-run extraction, and re-attach.
+  return await captureHasVisitNote(captureId);
 }
 
 // Captures directly stamped with a job_id, newest first. (Tech notes resolved via
@@ -161,13 +166,20 @@ export async function listRawCapturesForJob(jobId: string): Promise<RawCapture[]
 }
 
 // The watcher's activity probe — one of TWO homes, always paired with visits'
-// listVisitTimesForJobs: job-stamped capture times since a UTC floor. The
+// listNoteTimesForJobs: job-stamped capture times since a UTC floor. The
 // floor keeps the read bounded (PostgREST silently caps result sets at 1000
 // rows); the precise naive-local comparison happens in the caller. Reading
 // only one home UNDER-COUNTS activity: a tech note's capture often carries no
-// job_id stamp (identity resolves after L1, which is immutable), but
-// recordFieldNote ALWAYS mints its visit row — so the visits lister catches
-// what this one misses, and vice versa for job-stamped email/call captures.
+// job_id stamp (identity resolves after L1, which is immutable), but a
+// technician note always LINKS a visit — so listNoteTimesForJobs catches what
+// this one misses, and vice versa for job-stamped email/call captures.
+//
+// NARROWED by phase 3, not closed: any channel may now ATTACH to a visit that
+// already exists, so an inbound capture about a BOOKED trip is visible to both
+// homes through its visit_notes link. What survives is the LINK-LESS shape — an
+// inbound capture on a job with no live visit at all. It is unstamped and links
+// nothing, so both homes still miss it and the job reads silent. Rung 10 closes
+// that by letting inbound (call AND email) create a COMMITTED visit.
 export async function listJobStampedCaptureTimes(
   tenantId: string,
   jobIds: string[],
@@ -203,14 +215,10 @@ export async function listJobStampedCaptureTimes(
 // crashed mid-L2" (review finding: reporting the latter as a clean duplicate
 // silently loses the note's labor hours/attributes forever).
 export async function captureHasLinkedVisit(captureId: string): Promise<boolean> {
-  const { data, error } = await getClient()
-    .from('visits')
-    .select('id')
-    .eq('source_capture_id', captureId)
-    .limit(1)
-    .maybeSingle();
-  if (error) throw new Error(`captureHasLinkedVisit failed: ${error.message}`);
-  return !!data;
+  // Rung 9b: the marker is the LINK, not ownership of the row. A note that
+  // attached to an already-booked trip owns nothing, and reporting it as
+  // "an earlier commit crashed mid-L2" would re-run the whole build.
+  return await captureHasVisitNote(captureId);
 }
 
 // The retraction rows targeting any of the given captures. "Retracted" is a
@@ -238,9 +246,11 @@ export async function findRetractionsFor(captureIds: string[]): Promise<RawCaptu
 //
 // It unions the SAME two homes the watcher's activity probe does, and for the
 // same reason: a technician's reply lands in L1 before identity is resolved, so
-// its raw_captures.job_id is often null and the only link is the visit that
-// recordFieldNote minted from it (visits.source_capture_id). Reading job-stamped
-// captures alone would miss exactly the answers this exists to find.
+// its raw_captures.job_id is often null and the only link is the visit_notes row
+// tying it to the trip it reported. Reading job-stamped captures alone would
+// miss exactly the answers this exists to find. (Same rung-9b gap as
+// listJobStampedCaptureTimes documents: an inbound capture matched to an
+// existing job links nothing until Phase 3's attach rule lands.)
 //
 // Two things are dropped, both deliberately:
 //  * manager_only rows — the team lead holds no manager badge, and its citations
@@ -286,26 +296,31 @@ export async function listJobEvidenceSince(
     }
   }
 
-  // (2) Visits minted since the floor — their source capture carries the words.
+  // (2) Notes LINKED to a trip since the floor — the capture carries the words.
+  // Rung 9b re-sourced this from "visit rows minted since the floor": a note now
+  // attaches to a trip that may have been booked weeks earlier, so the row's own
+  // created_at is no longer the moment the evidence landed. The LINK's is.
   const viaVisit = new Map<string, string>(); // captureId -> jobId
   for (let i = 0; i < jobIds.length; i += CHUNK) {
     const slice = jobIds.slice(i, i + CHUNK);
     for (let from = 0; ; from += PAGE) {
       const { data, error } = await getClient()
-        .from('visits')
-        .select('job_id, source_capture_id, created_at')
+        .from('visit_notes')
+        .select('capture_id, created_at, visits!inner(job_id)')
         .eq('tenant_id', tenantId)
-        .in('job_id', slice)
+        .in('visits.job_id', slice)
         .gte('created_at', sinceUtcIso)
-        .not('source_capture_id', 'is', null)
         .order('created_at', { ascending: true })
         .range(from, from + PAGE - 1);
       if (error) throw new Error(`listJobEvidenceSince failed: ${error.message}`);
-      for (const row of (data ?? []) as { job_id: string; source_capture_id: string | null }[]) {
+      for (const row of (data ?? []) as {
+        capture_id: string;
+        visits: { job_id: string } | null;
+      }[]) {
         // A capture already found by its own job stamp keeps that provenance —
         // the direct link is the stronger claim.
-        if (row.source_capture_id && !found.has(row.source_capture_id)) {
-          viaVisit.set(row.source_capture_id, row.job_id);
+        if (row.visits && !found.has(row.capture_id)) {
+          viaVisit.set(row.capture_id, row.visits.job_id);
         }
       }
       if (!data || data.length < PAGE) break;

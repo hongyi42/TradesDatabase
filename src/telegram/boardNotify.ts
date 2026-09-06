@@ -1,11 +1,11 @@
 import {
-  getAssignmentForTenant,
+  getVisitForTenant,
   getTechnicianById,
   isInactiveState,
   latestScheduleVersion,
   listScheduleEventsSince,
   listTenantIdsWithTelegramBindings,
-  type Assignment,
+  type Visit,
   type ScheduleEvent,
   type Technician,
 } from '../db/index.js';
@@ -21,9 +21,10 @@ import { sendBoardMessage } from './boardBot.js';
 // Two null-technician realities (Feature A):
 //  - assignment.technician_id can be NULL (unassigned booking/move) — there is
 //    nobody to notify for that side; skip cleanly, never crash.
-//  - a `moved` event hangs off the NEW row, so a reassignment must ALSO notify
-//    the person the visit was taken FROM: detail.previousAssignmentId points at
-//    the old (cancelled) row, which still holds the old technician_id.
+//  - a `moved` event hangs off the visit itself (rung 9b: a move EDITS the row,
+//    so there is no "new row"), and a reassignment must ALSO notify the person
+//    it was taken FROM: detail.previousTechnicianId names them directly, since
+//    the row no longer remembers who held it a moment ago.
 
 interface Push {
   userId: string;
@@ -55,25 +56,31 @@ function digestText(pushes: Push[]): string {
 // A push must never render 'undefined–undefined' at a technician. An UNTIMED
 // visit (rung 9a) has neither a day nor times, so `when` collapses to one
 // honest phrase instead of pairing two placeholders.
-const day = (row: Assignment): string => row.starts_at?.slice(0, 10) ?? 'no date yet';
-const span = (row: Assignment): string =>
+const day = (row: Visit): string => row.starts_at?.slice(0, 10) ?? 'no date yet';
+const span = (row: Visit): string =>
   row.starts_at && row.ends_at
     ? `${row.starts_at.slice(11, 16)}–${row.ends_at.slice(11, 16)}`
     : 'time not set';
 // "2026-10-20, 09:00–10:00" for a placed visit; "no time set yet" when there
 // is nothing to say.
-const when = (row: Assignment): string =>
+const when = (row: Visit): string =>
   row.starts_at ? `${day(row)}, ${span(row)}` : 'no time set yet';
 
 const detailStr = (detail: Record<string, unknown>, key: string): string | null =>
   typeof detail[key] === 'string' ? (detail[key] as string) : null;
 
-async function technicianOf(
-  row: Assignment | null,
+// ONE definition of "a person we may still message", by id. Both callers go
+// through it: the visit's current holder, and — since rung 9b, where a move
+// edits the row instead of replacing it — the previous holder named on the
+// event. Resolving the previous one directly with getTechnicianById would skip
+// the liveness filter below, which is exactly how an offboarded person's phone
+// keeps receiving schedule details.
+async function liveTechnician(
+  technicianId: string | null | undefined,
   tenantId: string,
 ): Promise<Technician | null> {
-  if (!row?.technician_id) return null; // unassigned — nobody to notify
-  const tech = await getTechnicianById(row.technician_id, tenantId);
+  if (!technicianId) return null; // unassigned — nobody to notify
+  const tech = await getTechnicianById(technicianId, tenantId);
   // Deactivation revokes the badge and board access but does NOT clear
   // telegram_user_id — the liveness filter every other Telegram surface
   // applies must hold here too, or offboarding a person (and reassigning
@@ -82,11 +89,15 @@ async function technicianOf(
   return tech && !isInactiveState(tech.state) ? tech : null;
 }
 
+async function technicianOf(row: Visit | null, tenantId: string): Promise<Technician | null> {
+  return liveTechnician(row?.technician_id, tenantId);
+}
+
 // The pushes one event produces. Best-effort resolution: a vanished row or an
 // unbound person simply yields fewer pushes, never an error.
 async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
   const detail = (ev.detail ?? {}) as Record<string, unknown>;
-  const row = ev.assignment_id ? await getAssignmentForTenant(ev.assignment_id, tenantId) : null;
+  const row = ev.assignment_id ? await getVisitForTenant(ev.assignment_id, tenantId) : null;
   const tech = await technicianOf(row, tenantId);
   const out: Push[] = [];
 
@@ -103,9 +114,21 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
     case 'moved': {
       const fromDay = detailStr(detail, 'fromDay') ?? '?';
       const toDay = detailStr(detail, 'toDay') ?? (row ? day(row) : '?');
-      const prevId = detailStr(detail, 'previousAssignmentId');
-      const oldRow = prevId ? await getAssignmentForTenant(prevId, tenantId) : null;
-      const oldTech = await technicianOf(oldRow, tenantId);
+      // Rung 9b: a move EDITS the visit, so there is no predecessor row to
+      // fetch — `row` IS the moved visit, before and after. What the push needs
+      // is who HELD it, which the event now carries directly.
+      const prevTechId = detailStr(detail, 'previousTechnicianId');
+      let oldTech = await liveTechnician(prevTechId, tenantId);
+      if (!prevTechId) {
+        // Every `moved` event written BEFORE rung 9b — and every one written
+        // during the deploy window by a service still on the old commit — names
+        // the predecessor ROW rather than the person. schedule_events is
+        // append-only, so those rows are permanent: without this fallback the
+        // person who LOST the visit silently stops being told.
+        const prevRowId = detailStr(detail, 'previousAssignmentId');
+        const oldRow = prevRowId ? await getVisitForTenant(prevRowId, tenantId) : null;
+        oldTech = await technicianOf(oldRow, tenantId);
+      }
       if (tech && oldTech && tech.id === oldTech.id) {
         // Same person, different slot — one message, not an add + a remove.
         if (tech.telegram_user_id && row) {

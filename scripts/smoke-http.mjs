@@ -171,15 +171,20 @@ async function main() {
       : bad('no L1 raw_capture found for marker');
 
     if (captureId) {
-      const { data: visits } = await db
-        .from('visits')
-        .select('id,technician_name,source_capture_id')
+      // RUNG 9b: a note no longer OWNS a visit row keyed by source_capture_id
+      // and there is no technician_name column — `visits` is the schedule, the
+      // note LINKS its trip through visit_notes, and the person is a real FK.
+      // The identity assertion is the point of this check and it survives: the
+      // technician is the one the SIGNED HEADER named, never a tool argument.
+      const { data: links } = await db
+        .from('visit_notes')
+        .select('visit_id, visits!inner(id,tenant_id,technician_id,technicians(ref))')
         .eq('tenant_id', tenantId)
-        .eq('source_capture_id', captureId);
-      const v = visits?.[0];
-      v && v.technician_name === TECH
-        ? ok(`L2 visit links to L1 via source_capture_id; technician_name='${v.technician_name}' (from signed header, not args)`)
-        : bad('no L2 visit linked to the capture, or technician_name mismatch');
+        .eq('capture_id', captureId);
+      const v = links?.[0]?.visits;
+      v && v.technicians?.ref === TECH
+        ? ok(`L2 visit links to L1 through visit_notes; technician ref='${v.technicians.ref}' (from signed header, not args)`)
+        : bad('no L2 visit linked to the capture, or technician mismatch');
     }
   } finally {
     await c1.close().catch(() => {});

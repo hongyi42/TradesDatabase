@@ -85,12 +85,24 @@ customers ── (1:N) ── jobs ── (1:N) ── visits
 
 raw_captures (L1)  →  each row links back to the customer / job / visit it informed
                       (raw_text for transcripts/notes; a blob pointer for audio/photos)
+
+visit_notes        →  append-only link table (visit_id, capture_id): which capture
+                      reported which trip. It SPLITS a completed visit into
+                      `happened` (no note) vs `reported` (a note) — a link on a
+                      visit that is still `confirmed` does not change its stage.
 ```
 
 - A **customer** is a person/household/site you serve over time.
 - A **job** (work order) is one piece of work at an address; it can span **multiple visits** and
   carry change orders.
-- A **visit** is one trip by one technician.
+- A **visit** is one trip by one technician. **One row per trip, from the moment it is agreed
+  until the note that reports it** (rung 9b, 2026-09-05) — booking, moving, and reporting all edit
+  the same row, so a visit's id is stable and anything can point at it. Its lifecycle is *derived
+  from what is on the row*, never stored in a status ladder: **committed** (agreed, no time yet) →
+  **placed** (on the calendar) → **happened** (done, but nothing on file says so) → **reported**
+  (done, and a capture is linked through `visit_notes`), plus **cancelled**. Status is checked
+  first, so a note attached to a visit that has not been marked done leaves it at **placed**.
+  Crews of two are counted as one visit; naming the second technician is a later rung.
 - A **raw capture** is one verbatim input event, linked to whichever of the above it produced.
 
 > **Design note:** model job `status` as a **state machine** (e.g. `open → in_progress →

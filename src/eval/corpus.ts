@@ -269,7 +269,7 @@ export function buildCorpus(): Scenario[] {
     endState: {
       describe: 'the visit exists with no time set at all',
       query: (ctx) => ({
-        text: `select count(*)::int n from assignments
+        text: `select count(*)::int n from visits
                 where job_id = $1 and status = 'confirmed' and starts_at is null`,
         params: [jobId(ctx.tenant, 'job-t2-bk-05')],
       }),
@@ -344,7 +344,7 @@ export function buildCorpus(): Scenario[] {
     endState: {
       describe: 'the visit sits at 09:30 on the named day with the named technician',
       query: (ctx) => ({
-        text: `select count(*)::int n from assignments a
+        text: `select count(*)::int n from visits a
                  join technicians t on t.id = a.technician_id
                 where a.job_id = $1 and a.status = 'confirmed'
                   and (a.starts_at)::date = $2::date
@@ -391,7 +391,7 @@ export function buildCorpus(): Scenario[] {
     endState: {
       describe: 'the visit moved',
       query: (ctx) => ({
-        text: `select count(*)::int n from assignments
+        text: `select count(*)::int n from visits
                 where job_id = $1 and status = 'confirmed' and (starts_at)::date = $2::date`,
         params: [jobId(ctx.tenant, 'job-t2-rs-01'), nextWorkday(visitDate(ctx.tenant, 'visit-t2-rs-01'), 2)],
       }),
@@ -474,7 +474,7 @@ export function buildCorpus(): Scenario[] {
     endState: {
       describe: 'the job ends up scheduled again',
       query: (ctx) => ({
-        text: `select count(*)::int n from assignments where job_id = $1 and status = 'confirmed'`,
+        text: `select count(*)::int n from visits where job_id = $1 and status = 'confirmed'`,
         params: [jobId(ctx.tenant, 'job-t2-rs-03')],
       }),
       predicate: (rows) => count(rows) >= 1,
@@ -1012,7 +1012,7 @@ export function buildCorpus(): Scenario[] {
     endState: {
       describe: "a confirmed visit exists on Theo Marsh's book for this job",
       query: (ctx) => ({
-        text: `select count(*)::int n from assignments a
+        text: `select count(*)::int n from visits a
                  join technicians t on t.id = a.technician_id
                 where a.job_id = $1 and a.status = 'confirmed' and t.ref = 'wf-tech-t2'`,
         params: [jobId(ctx.tenant, 'job-t2-wf-01')],
@@ -1045,7 +1045,7 @@ export function buildCorpus(): Scenario[] {
       // must be true is that the work landed in the future at all.
       describe: 'the job gained a confirmed future visit',
       query: (ctx) => ({
-        text: `select count(*)::int n from assignments
+        text: `select count(*)::int n from visits
                 where job_id = $1 and status = 'confirmed' and (starts_at)::date > $2::date`,
         params: [jobId(ctx.tenant, 'job-t2-wf-02'), ctx.anchor],
       }),
@@ -1073,8 +1073,8 @@ export function buildCorpus(): Scenario[] {
       describe: 'the called-off visit is gone from that day and the other job holds its 09:00 slot',
       query: (ctx) => ({
         text: `select
-                 (select count(*) from assignments where job_id = $1 and status = 'confirmed' and (starts_at)::date = $3::date)::int as still_there,
-                 (select count(*) from assignments where job_id = $2 and status = 'confirmed' and (starts_at)::date = $3::date and (starts_at)::time = time '09:00')::int as handed_over`,
+                 (select count(*) from visits where job_id = $1 and status = 'confirmed' and (starts_at)::date = $3::date)::int as still_there,
+                 (select count(*) from visits where job_id = $2 and status = 'confirmed' and (starts_at)::date = $3::date and (starts_at)::time = time '09:00')::int as handed_over`,
         params: [
           jobId(ctx.tenant, 'job-t2-wf-04'),
           jobId(ctx.tenant, 'job-t2-wf-03'),
@@ -1132,12 +1132,12 @@ export function buildCorpus(): Scenario[] {
       `Theo Marsh's afternoon on ${visitDate(ctx.tenant, 'visit-t2-wf-07')} just fell through — both customers are flexible and nothing was promised. Push each of those visits to his next open slots after that day.`,
       'yes, go ahead',
     ],
-    // Finding the two assignmentIds requires reading the day first.
+    // Finding the two visitIds requires reading the day first.
     graders: () => [gradeToolChoice({ required: ['get_team_schedule', 'move_visit'] })],
     endState: {
       describe: 'both afternoon visits now sit on later days',
       query: (ctx) => ({
-        text: `select count(*)::int n from assignments
+        text: `select count(*)::int n from visits
                 where job_id in ($1, $2) and status = 'confirmed' and (starts_at)::date > $3::date`,
         params: [
           jobId(ctx.tenant, 'job-t2-wf-07'),
@@ -1173,10 +1173,10 @@ export function buildCorpus(): Scenario[] {
       describe: 'the new work landed that day clear of the 10:00 blocker, which is untouched',
       query: (ctx) => ({
         text: `select
-                 (select count(*) from assignments a
+                 (select count(*) from visits a
                    where a.job_id = $1 and a.status = 'confirmed' and (a.starts_at)::date = $3::date
                      and not ((a.starts_at)::time < time '11:00' and (a.ends_at)::time > time '10:00'))::int as booked_clear,
-                 (select count(*) from assignments a
+                 (select count(*) from visits a
                    where a.job_id = $2 and a.status = 'confirmed' and (a.starts_at)::time = time '10:00')::int as blocker_intact`,
         params: [
           jobId(ctx.tenant, 'job-t2-wf-10'),
@@ -1240,7 +1240,7 @@ export function buildCorpus(): Scenario[] {
       describe: 'the visit is booked AND the note is in the permanent record against this customer',
       query: (ctx) => ({
         text: `select
-                 (select count(*) from assignments where job_id = $1 and status = 'confirmed')::int as booked,
+                 (select count(*) from visits where job_id = $1 and status = 'confirmed')::int as booked,
                  (select count(*) from raw_captures
                    where tenant_id = $2 and raw_text ilike '%side gate%'
                      and customer_id = (select customer_id from jobs where id = $1))::int as noted`,
@@ -1283,7 +1283,7 @@ export function buildCorpus(): Scenario[] {
           text: `select
                    count(*) filter (where starts_at is not null and (starts_at)::date between $2::date and $3::date)::int as placed,
                    count(*)::int as total
-                  from assignments where job_id = $1 and status = 'confirmed'`,
+                  from visits where job_id = $1 and status = 'confirmed'`,
           params: [jobId(ctx.tenant, 'job-tbd-1'), from, addDays(from, 2)],
         };
       },

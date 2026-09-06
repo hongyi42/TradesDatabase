@@ -20,7 +20,7 @@ const visit = (over = {}) => ({
   context: {
     customerName: 'Marisol Duarte', jobTitle: 'Tankless descaling',
     technicianRef: 'ben-shelton', technicianName: 'Ben Shelton',
-    assignmentId: 'a1', jobId: 'j-tankless',
+    visitId: 'a1', jobId: 'j-tankless',
     startsAtLocal: '2026-08-18T12:00:00.000Z', endsAtLocal: '2026-08-18T13:30:00.000Z',
   },
   ...over,

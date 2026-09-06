@@ -57,8 +57,9 @@ Full watcher semantics + rollout state: engineering-memory §3.
    past-grace teardown (trigger, account, then the person's Composio session — per-row failure
    isolation, retried next tick).
    *(The former step 3, the schedule-sheet mirror sync, retired 2026-07-15 with the
-   Telegram-schedule series Plan 1: the DB owns the schedule — `assignments` + the manager
-   booking tools — and the Google Sheet is no longer an input. `SCHEDULE_SHEET_ID` /
+   Telegram-schedule series Plan 1: the DB owns the schedule — the `visits` table (it was
+   called `assignments` until rung 9b, 2026-09-05) + the manager booking tools — and the
+   Google Sheet is no longer an input. `SCHEDULE_SHEET_ID` /
    `GOOGLE_APPLICATION_CREDENTIALS` can be removed from the cron env.)*
 3. **Session provisioning (since 2026-07-04)** — every ACTIVE roster row missing a
    `composio_session_id` gets its tier-scoped Composio session (`ensurePersonSession`,

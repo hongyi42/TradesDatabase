@@ -12,6 +12,7 @@ import {
 import { addTimeOff, deleteTimeOff, listTimeOffForTechnician } from './timeOff.js';
 import { getJobDurationMinutes, upsertJobTypeDuration } from './jobTypeDurations.js';
 import { createCustomer } from './customers.js';
+import { appendRawCapture } from './rawCaptures.js';
 import {
   createJob,
   getJob,
@@ -21,19 +22,21 @@ import {
   formatDuration,
 } from './jobs.js';
 import {
-  createAssignment,
-  getAssignmentForTenant,
+  createVisit,
+  stageOf,
+  insertVisitNote,
+  getVisitForTenant,
   isOverlapViolation,
-  listAssignmentsForJob,
-  listAssignmentsForTechnician,
-  listAssignmentsForTenant,
-  listOverdueConfirmedAssignments,
-  listUnassignedAssignmentsWithRefs,
+  listVisitsForJob,
+  listVisitsForTechnician,
+  listVisitsForTenant,
+  listOverdueConfirmedVisits,
+  listUnassignedVisitsWithRefs,
   listUnassignedOpenJobs,
   listUnscheduledOpenJobsWithCustomer,
-  rescheduleAssignment,
-  updateAssignmentStatus,
-} from './assignments.js';
+  moveVisitRow,
+  updateVisitStatus,
+} from './visits.js';
 import {
   appendScheduleEvent,
   latestScheduleVersion,
@@ -47,7 +50,7 @@ import {
 // scheduling-adjacent tables. Phase 3's listUnassignedOpenJobs is tenant-wide,
 // so seeded open jobs (npm run seed leaves two) would pollute exactly-these
 // assertions without the beforeAll claim; the customers/jobs this file creates
-// for FK chains must self-clean, and `cascade` sweeps `assignments`.
+// for FK chains must self-clean, and `cascade` sweeps `visits`.
 const TRUNCATE =
   'truncate table customers, jobs, technicians, technician_time_off, job_type_durations, review_items, schedule_events cascade';
 
@@ -191,7 +194,56 @@ describe('time off', () => {
   });
 });
 
-describe('assignments', () => {
+describe('visit_notes — the note↔trip link (rung 9b)', () => {
+  test('UPDATE is refused; DELETE cascades with the visit instead of pinning it', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Link Cust' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Link job' });
+    const visit = await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianId: null,
+      startsAt: null,
+      endsAt: null,
+      status: 'completed',
+      completedAt: '2026-08-16T13:00:00.000Z',
+    });
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      rawText: 'linked note',
+    });
+    await insertVisitNote({ tenantId, visitId: visit.id, captureId: cap.id });
+
+    // A link, once made, is never silently re-pointed at a different trip.
+    await expect(
+      pg.query(`update visit_notes set capture_id = capture_id where visit_id = $1`, [visit.id]),
+    ).rejects.toThrow(/visit_notes is append-only/);
+
+    // Re-linking the same pair is a no-op, not a 23505: a redelivered capture
+    // resolves to the same trip and must not blow up the write path.
+    await expect(
+      insertVisitNote({ tenantId, visitId: visit.id, captureId: cap.id }),
+    ).resolves.toBeUndefined();
+
+    // DELETE is deliberately NOT blocked — the link dies with its visit. If it
+    // were append-only on delete too, a single note would make the L2 row
+    // undeletable forever, which is the trap this rung exists to escape.
+    await pg.query('delete from visits where id = $1', [visit.id]);
+    const left = await pg.query<{ n: string }>(
+      'select count(*)::int as n from visit_notes where visit_id = $1',
+      [visit.id],
+    );
+    expect(Number(left.rows[0].n)).toBe(0);
+    // The evidence itself is untouched: L1 keeps the capture forever.
+    const stillThere = await pg.query<{ n: string }>(
+      'select count(*)::int as n from raw_captures where id = $1',
+      [cap.id],
+    );
+    expect(Number(stillThere.rows[0].n)).toBe(1);
+  });
+});
+
+describe('visits — the schedule half', () => {
   // One customer + job per test where isolation matters; FK chain helpers.
   async function makeJob(title: string) {
     const customer = await createCustomer({ tenantId, name: `Cust for ${title}` });
@@ -201,7 +253,7 @@ describe('assignments', () => {
 
   test('legal transition walk proposed→confirmed→completed; illegal transitions throw', async () => {
     const job = await makeJob('walk');
-    const a = await createAssignment({
+    const a = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
@@ -209,17 +261,17 @@ describe('assignments', () => {
       endsAt: T(10),
     });
     expect(a.status).toBe('proposed');
-    expect((await updateAssignmentStatus(a.id, 'confirmed')).status).toBe('confirmed');
-    expect((await updateAssignmentStatus(a.id, 'completed')).status).toBe('completed');
+    expect((await updateVisitStatus(a.id, 'confirmed')).status).toBe('confirmed');
+    expect((await updateVisitStatus(a.id, 'completed')).status).toBe('completed');
     // completed is terminal — no cancel after the work happened.
-    await expect(updateAssignmentStatus(a.id, 'cancelled')).rejects.toThrow(
-      /Illegal assignment status transition: completed → cancelled/,
+    await expect(updateVisitStatus(a.id, 'cancelled')).rejects.toThrow(
+      /Illegal visit status transition: completed → cancelled/,
     );
   });
 
   test('out-of-band status flip surfaces instead of being overwritten', async () => {
     const job = await makeJob('concurrent');
-    const a = await createAssignment({
+    const a = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
@@ -227,13 +279,13 @@ describe('assignments', () => {
       endsAt: T(10),
     });
     // Another writer cancels it behind our back (raw update, no typed layer).
-    await pg.query(`update assignments set status = 'cancelled' where id = $1`, [a.id]);
+    await pg.query(`update visits set status = 'cancelled' where id = $1`, [a.id]);
     // The transition validates against a fresh read → illegal from 'cancelled'.
     // (The narrower .eq('status') zero-row race branch — a flip BETWEEN the
     // read and the update — is not reachable from in-process tests; same
     // accepted gap as jobs.ts's guard. This proves the flip surfaces.)
-    await expect(updateAssignmentStatus(a.id, 'confirmed')).rejects.toThrow(
-      /Illegal assignment status transition: cancelled → confirmed/,
+    await expect(updateVisitStatus(a.id, 'confirmed')).rejects.toThrow(
+      /Illegal visit status transition: cancelled → confirmed/,
     );
   });
 
@@ -242,7 +294,7 @@ describe('assignments', () => {
     // row ends terminal 'completed' (outside the constraint's WHERE). If this
     // test sees an unexpected 23P01 on the FIRST insert, walk broke mid-test.
     const job = await makeJob('overlap');
-    const first = await createAssignment({
+    const first = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
@@ -251,7 +303,7 @@ describe('assignments', () => {
       status: 'confirmed',
     });
     // Overlapping proposal is fine (alternatives may coexist)...
-    const rival = await createAssignment({
+    const rival = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
@@ -260,24 +312,26 @@ describe('assignments', () => {
     });
     // ...but confirming it hits no_confirmed_overlap.
     let err: unknown;
-    await updateAssignmentStatus(rival.id, 'confirmed').catch((e) => {
+    await updateVisitStatus(rival.id, 'confirmed').catch((e) => {
       err = e;
     });
     expect(err).toBeDefined();
     expect(isOverlapViolation(err)).toBe(true);
     expect(isOverlapViolation(new Error('random'))).toBe(false);
     // Loser untouched: still proposed; winner still confirmed.
-    const rows = await listAssignmentsForJob(job.id);
+    const rows = await listVisitsForJob(job.id);
     expect(rows.find((r) => r.id === rival.id)?.status).toBe('proposed');
     expect(rows.find((r) => r.id === first.id)?.status).toBe('confirmed');
   });
 
-  test('reschedule = cancel(reason kept) + fresh proposed row; job history shows both', async () => {
+  test('a move EDITS the visit: same id, new times, ONE row — never a cancel + insert', async () => {
+    // INVERTED by rung 9b. This used to assert the opposite: that a reschedule
+    // cancelled the row and minted a successor with a new id. It does not any
+    // more, and the difference is the whole point of the rung — a visit that
+    // keeps its id can be pointed at by a gap, a note, or a manager's link
+    // across a move, and an UPDATE cannot strand it half-way.
     const job = await makeJob('reschedule');
-    // Own calendar day: the 'overlap' test legitimately leaves a confirmed
-    // 09–11 row for this same technician on 2026-09-01, and the DB guard is
-    // table-wide — colliding fixtures would (correctly) be rejected.
-    const original = await createAssignment({
+    const original = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
@@ -285,27 +339,27 @@ describe('assignments', () => {
       endsAt: '2026-09-05T11:00:00.000Z',
       status: 'confirmed',
     });
-    const { cancelled, created } = await rescheduleAssignment(original.id, {
+    const moved = await moveVisitRow(original.id, {
       startsAt: '2026-09-05T14:00:00.000Z',
       endsAt: '2026-09-05T16:00:00.000Z',
       reason: 'customer asked for the afternoon',
     });
-    expect(cancelled.id).toBe(original.id);
-    expect(cancelled.status).toBe('cancelled');
-    expect(cancelled.reason).toBe('customer asked for the afternoon');
-    expect(created.status).toBe('proposed');
-    expect(created.technician_id).toBe(tech.id); // same tech unless overridden
-    // New row carries exactly the requested times (normalize tz formatting).
-    expect(new Date(created.starts_at as string).toISOString()).toBe('2026-09-05T14:00:00.000Z');
-    expect(new Date(created.ends_at as string).toISOString()).toBe('2026-09-05T16:00:00.000Z');
+    expect(moved.id).toBe(original.id); // the SAME visit
+    expect(moved.status).toBe('confirmed'); // still on the schedule
+    expect(moved.reason).toBe('customer asked for the afternoon');
+    expect(moved.technician_id).toBe(tech.id); // same tech unless overridden
+    expect(new Date(moved.starts_at as string).toISOString()).toBe('2026-09-05T14:00:00.000Z');
+    expect(new Date(moved.ends_at as string).toISOString()).toBe('2026-09-05T16:00:00.000Z');
 
-    const history = await listAssignmentsForJob(job.id);
-    expect(history.map((r) => r.id)).toEqual([created.id, cancelled.id]); // newest first
+    // ONE row on the job, not two: there is no cancelled predecessor to
+    // explain to anybody, and the history lives in schedule_events.
+    const history = await listVisitsForJob(job.id);
+    expect(history.map((r) => r.id)).toEqual([original.id]);
   });
 
-  test('reschedule technicianId:null DETACHES; undefined keeps the technician', async () => {
+  test('move technicianId:null DETACHES; undefined keeps the technician', async () => {
     const job = await makeJob('reschedule-detach');
-    const original = await createAssignment({
+    const original = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
@@ -315,25 +369,27 @@ describe('assignments', () => {
     });
     // Explicit null = detach (the !== undefined idiom — `??` would resurrect
     // the old technician; plan 4a.5).
-    const detached = await rescheduleAssignment(original.id, {
+    const detached = await moveVisitRow(original.id, {
       startsAt: '2026-09-25T09:00:00.000Z',
       endsAt: '2026-09-25T11:00:00.000Z',
       technicianId: null,
       reason: 'parked',
     });
-    expect(detached.created.technician_id).toBeNull();
+    expect(detached.technician_id).toBeNull();
+    expect(detached.id).toBe(original.id);
     // Omitted still means "same technician" — the pre-4a.5 contract holds.
-    const kept = await rescheduleAssignment(detached.created.id, {
+    const kept = await moveVisitRow(detached.id, {
       startsAt: '2026-09-25T13:00:00.000Z',
       endsAt: '2026-09-25T15:00:00.000Z',
       reason: 'shifted',
     });
-    expect(kept.created.technician_id).toBeNull(); // old row's (null) carried
+    expect(kept.technician_id).toBeNull(); // the row's own (null) kept
+    expect(kept.id).toBe(original.id);
   });
 
-  test('reschedule with an invalid new range throws BEFORE cancelling anything', async () => {
+  test('a move with an invalid new range throws and changes NOTHING', async () => {
     const job = await makeJob('reschedule-guard');
-    const original = await createAssignment({
+    const original = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
@@ -341,22 +397,189 @@ describe('assignments', () => {
       endsAt: '2026-09-06T11:00:00.000Z',
       status: 'confirmed',
     });
-    // Swapped start/end must not destroy the confirmed booking.
+    // Swapped start/end must not touch the confirmed booking.
     await expect(
-      rescheduleAssignment(original.id, {
+      moveVisitRow(original.id, {
         startsAt: '2026-09-06T16:00:00.000Z',
         endsAt: '2026-09-06T14:00:00.000Z',
         reason: 'oops',
       }),
-    ).rejects.toThrow(/invalid time range.*nothing cancelled/);
-    const rows = await listAssignmentsForJob(job.id);
+    ).rejects.toThrow(/invalid time range.*nothing changed/);
+    const rows = await listVisitsForJob(job.id);
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe('confirmed'); // untouched
+    expect(new Date(rows[0].starts_at as string).toISOString()).toBe('2026-09-06T09:00:00.000Z');
   });
 
-  test('listAssignmentsForTechnician: window overlap, live statuses by default', async () => {
+  test('a move onto a taken slot raises 23P01 and leaves the visit EXACTLY where it was', async () => {
+    // The property cancel-then-insert could not offer: a raced overlap used to
+    // leave the visit cancelled with no successor — stranded, invisible to
+    // every reader. One UPDATE either applies or does not.
+    const job = await makeJob('move-overlap');
+    const held = await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianId: tech.id,
+      startsAt: '2026-10-02T09:00:00.000Z',
+      endsAt: '2026-10-02T11:00:00.000Z',
+      status: 'confirmed',
+    });
+    const mover = await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianId: tech.id,
+      startsAt: '2026-10-02T14:00:00.000Z',
+      endsAt: '2026-10-02T15:00:00.000Z',
+      status: 'confirmed',
+    });
+    let raised: unknown;
+    try {
+      await moveVisitRow(mover.id, {
+        startsAt: '2026-10-02T09:30:00.000Z',
+        endsAt: '2026-10-02T10:30:00.000Z',
+        reason: 'onto a taken slot',
+      });
+    } catch (err) {
+      raised = err;
+    }
+    expect(isOverlapViolation(raised)).toBe(true);
+    const after = await getVisitForTenant(mover.id, tenantId);
+    expect(after?.status).toBe('confirmed');
+    expect(new Date(after?.starts_at as string).toISOString()).toBe('2026-10-02T14:00:00.000Z');
+    expect(held.id).not.toBe(mover.id);
+  });
+
+  test('a cancelled visit cannot be moved — the UPDATE primitive says so itself', async () => {
+    const job = await makeJob('move-cas');
+    const original = await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianId: tech.id,
+      startsAt: '2026-10-09T09:00:00.000Z',
+      endsAt: '2026-10-09T11:00:00.000Z',
+      status: 'confirmed',
+    });
+    await updateVisitStatus(original.id, 'cancelled', 'called off');
+    await expect(
+      moveVisitRow(original.id, {
+        startsAt: '2026-10-09T14:00:00.000Z',
+        endsAt: '2026-10-09T15:00:00.000Z',
+        reason: 'too late',
+      }),
+    ).rejects.toThrow(/cannot move a cancelled visit/);
+  });
+
+  test('a status change under a move SURFACES — it is never silently overwritten', async () => {
+    // The guard the terminal check cannot cover: the row was LIVE when
+    // moveVisitRow read it, and something cancelled it before the UPDATE.
+    //
+    // Made deterministic with a row lock rather than a sleep. A second
+    // connection holds `select … for update`, so the move's UPDATE blocks;
+    // the lock holder then cancels and commits, and READ COMMITTED re-evaluates
+    // the UPDATE's `status = 'confirmed'` qualifier against the new row —
+    // matching nothing. Without the lock the move can simply finish first and
+    // the test passes or fails on timing, which is worse than not having it.
+    const job = await makeJob('move-cas');
+    const original = await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianId: tech.id,
+      startsAt: '2026-10-23T09:00:00.000Z',
+      endsAt: '2026-10-23T11:00:00.000Z',
+      status: 'confirmed',
+    });
+    const locker = new Client({ connectionString: process.env.DATABASE_URL });
+    await locker.connect();
+    try {
+      await locker.query('begin');
+      await locker.query('select id from visits where id = $1 for update', [original.id]);
+      const racer = moveVisitRow(original.id, {
+        startsAt: '2026-10-23T14:00:00.000Z',
+        endsAt: '2026-10-23T15:00:00.000Z',
+        reason: 'moved while being cancelled',
+      });
+      await locker.query("update visits set status = 'cancelled' where id = $1", [original.id]);
+      await locker.query('commit');
+      // EITHER message is a pass, and the disjunction is the honest assertion.
+      // Both statements are in flight at once, so the move's own SELECT may see
+      // the row before OR after the cancel commits: before → the CAS finds no
+      // matching row ("changed concurrently"); after → the terminal guard fires
+      // first. Pinning one of them would be pinning a race. What must ALWAYS
+      // hold is that the move refuses and changes nothing, which is what the
+      // read-back below proves.
+      await expect(racer).rejects.toThrow(/changed concurrently|cannot move a cancelled visit/);
+    } finally {
+      await locker.end();
+    }
+    // Untouched by the loser: still cancelled, still at its original time.
+    const after = await getVisitForTenant(original.id, tenantId);
+    expect(after?.status).toBe('cancelled');
+    expect(new Date(after?.starts_at as string).toISOString()).toBe('2026-10-23T09:00:00.000Z');
+  });
+
+  test('stageOf agrees with v_schedule.stage, one row per stage', async () => {
+    // Two definitions of the same word — the SQL case in 20260906140000 and the
+    // TypeScript helper — so this pins them equal. If they drift, the agent's
+    // SQL and the app's objects disagree about what a visit IS.
+    const job = await makeJob('stages');
+    const mk = async (over: Parameters<typeof createVisit>[0]) => createVisit(over);
+    const committed = await mk({
+      tenantId, jobId: job.id, technicianId: null,
+      startsAt: null, endsAt: null, status: 'confirmed',
+    });
+    const placed = await mk({
+      tenantId, jobId: job.id, technicianId: null,
+      startsAt: '2026-10-16T09:00:00.000Z', endsAt: '2026-10-16T10:00:00.000Z', status: 'confirmed',
+    });
+    const happened = await mk({
+      tenantId, jobId: job.id, technicianId: null,
+      startsAt: null, endsAt: null, status: 'completed',
+      completedAt: '2026-10-16T11:00:00.000Z',
+    });
+    const reported = await mk({
+      tenantId, jobId: job.id, technicianId: null,
+      startsAt: null, endsAt: null, status: 'completed',
+      completedAt: '2026-10-16T11:00:00.000Z',
+    });
+    const cap = await appendRawCapture({
+      tenantId, channel: 'technician_note', rawText: 'stage fixture',
+    });
+    await insertVisitNote({ tenantId, visitId: reported.id, captureId: cap.id });
+    const cancelled = await mk({
+      tenantId, jobId: job.id, technicianId: null,
+      startsAt: null, endsAt: null, status: 'confirmed',
+    });
+    await updateVisitStatus(cancelled.id, 'cancelled', 'called off');
+
+    // The TypeScript side.
+    expect(stageOf(committed, false)).toBe('committed');
+    expect(stageOf(placed, false)).toBe('placed');
+    expect(stageOf(happened, false)).toBe('happened');
+    expect(stageOf(reported, true)).toBe('reported');
+    expect(stageOf({ ...cancelled, status: 'cancelled' }, false)).toBe('cancelled');
+
+    // The SQL side, read through the view exactly as the agent would. The view
+    // is tenant-scoped by a session setting, and shows confirmed + completed.
+    await pg.query(`select set_config('spine.tenant_id', $1, false)`, [tenantId]);
+    const { rows } = await pg.query<{ visit_id: string; stage: string }>(
+      'select visit_id, stage from v_schedule where visit_id = any($1)',
+      [[committed.id, placed.id, happened.id, reported.id]],
+    );
+    const byId = new Map(rows.map((r) => [r.visit_id, r.stage]));
+    expect(byId.get(committed.id)).toBe('committed');
+    expect(byId.get(placed.id)).toBe('placed');
+    expect(byId.get(happened.id)).toBe('happened');
+    expect(byId.get(reported.id)).toBe('reported');
+    // A cancelled visit is not in v_schedule at all — v_cancelled_visits owns it.
+    const { rows: gone } = await pg.query('select 1 from v_schedule where visit_id = $1', [
+      cancelled.id,
+    ]);
+    expect(gone).toHaveLength(0);
+  });
+
+  test('listVisitsForTechnician: window overlap, live statuses by default', async () => {
     const job = await makeJob('window');
-    const inWindow = await createAssignment({
+    const inWindow = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
@@ -364,15 +587,15 @@ describe('assignments', () => {
       endsAt: '2026-09-02T11:00:00.000Z',
       status: 'confirmed',
     });
-    const cancelledRow = await createAssignment({
+    const cancelledRow = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
       startsAt: '2026-09-02T12:00:00.000Z',
       endsAt: '2026-09-02T13:00:00.000Z',
     });
-    await updateAssignmentStatus(cancelledRow.id, 'cancelled');
-    await createAssignment({
+    await updateVisitStatus(cancelledRow.id, 'cancelled');
+    await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
@@ -380,7 +603,7 @@ describe('assignments', () => {
       endsAt: '2026-09-03T11:00:00.000Z',
     });
 
-    const hits = await listAssignmentsForTechnician(
+    const hits = await listVisitsForTechnician(
       tech.id,
       '2026-09-02T00:00:00.000Z',
       '2026-09-03T00:00:00.000Z',
@@ -396,14 +619,14 @@ describe('assignments', () => {
     // (live or terminal rows) — build two fresh, unambiguous cases instead.
     const bare = await makeJob('bare — never assigned');
     const cancelledOnly = await makeJob('cancelled-only');
-    const c = await createAssignment({
+    const c = await createVisit({
       tenantId,
       jobId: cancelledOnly.id,
       technicianId: tech.id,
       startsAt: T(8),
       endsAt: T(9),
     });
-    await updateAssignmentStatus(c.id, 'cancelled');
+    await updateVisitStatus(c.id, 'cancelled');
 
     const queue = await listUnassignedOpenJobs(tenantId);
     const ids = queue.map((j) => j.id);
@@ -432,7 +655,7 @@ describe('unplaced visits (Plan 4b-2): shapes + the narrowed overlap guard)', ()
     // typed layer and `assignment_placed_or_windowed`, because a visit had to
     // hold either times or a date range. The range is gone, so "no time set"
     // is now the legal shape for committed-but-unscheduled work.
-    const a = await createAssignment({
+    const a = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: null,
@@ -450,23 +673,23 @@ describe('unplaced visits (Plan 4b-2): shapes + the narrowed overlap guard)', ()
     // A start with no end, and an end with no start: still a half-filled row
     // that would read as placed to some surfaces and untimed to others.
     await expect(
-      createAssignment({
+      createVisit({
         tenantId, jobId: job.id, technicianId: null,
         startsAt: '2026-10-05T09:00:00.000Z', endsAt: null,
       }),
     ).rejects.toThrow(/BOTH times, or neither/);
     await expect(
-      createAssignment({
+      createVisit({
         tenantId, jobId: job.id, technicianId: null,
         startsAt: null, endsAt: '2026-10-05T10:00:00.000Z',
       }),
     ).rejects.toThrow(/BOTH times, or neither/);
     // INVERTED: the raw all-null insert used to raise
     // assignment_placed_or_windowed. That CHECK is dropped, and the surviving
-    // `assignments_check (ends_at > starts_at)` passes because a CHECK is
+    // `visits_check (ends_at > starts_at)` passes because a CHECK is
     // satisfied when it evaluates to NULL — so the row lands.
     const { rows } = await pg.query(
-      `insert into assignments (tenant_id, job_id) values ($1, $2)
+      `insert into visits (tenant_id, job_id) values ($1, $2)
        returning starts_at, ends_at`,
       [tenantId, job.id],
     );
@@ -474,7 +697,7 @@ describe('unplaced visits (Plan 4b-2): shapes + the narrowed overlap guard)', ()
     expect(rows[0].ends_at).toBeNull();
     // The constraint really is gone, not merely unreached.
     const { rows: cons } = await pg.query(
-      `select 1 from pg_constraint where conrelid = 'assignments'::regclass
+      `select 1 from pg_constraint where conrelid = 'visits'::regclass
         and conname = 'assignment_placed_or_windowed'`,
     );
     expect(cons).toHaveLength(0);
@@ -484,12 +707,12 @@ describe('unplaced visits (Plan 4b-2): shapes + the narrowed overlap guard)', ()
     const job = await makeJob('narrowed-guard');
     const D = (h: number) => `2026-10-12T${String(h).padStart(2, '0')}:00:00.000Z`;
     // Placed protection is EXACTLY as before.
-    await createAssignment({
+    await createVisit({
       tenantId, jobId: job.id, technicianId: tech.id,
       startsAt: D(8), endsAt: D(10), status: 'confirmed',
     });
     try {
-      await createAssignment({
+      await createVisit({
         tenantId, jobId: job.id, technicianId: tech.id,
         startsAt: D(9), endsAt: D(11), status: 'confirmed',
       });
@@ -502,11 +725,11 @@ describe('unplaced visits (Plan 4b-2): shapes + the narrowed overlap guard)', ()
     // blocked the whole calendar without the starts_at predicate. This matters
     // MORE after rung 9a, not less: untimed rows are now the normal way work
     // waits, so there are many more of them per technician.
-    const u1 = await createAssignment({
+    const u1 = await createVisit({
       tenantId, jobId: job.id, technicianId: tech.id,
       startsAt: null, endsAt: null, status: 'confirmed',
     });
-    const u2 = await createAssignment({
+    const u2 = await createVisit({
       tenantId, jobId: job.id, technicianId: tech.id,
       startsAt: null, endsAt: null, status: 'confirmed',
     });
@@ -520,14 +743,14 @@ describe('assignment reads + schedule events (Plan 1, schedule core)', () => {
     return createJob({ tenantId, customerId: customer.id, title, status: 'open' });
   }
 
-  test('getAssignmentForTenant tenant-guards; listAssignmentsForTenant spans technicians, confirmed-only default, overlap edges', async () => {
+  test('getVisitForTenant tenant-guards; listVisitsForTenant spans technicians, confirmed-only default, overlap edges', async () => {
     const job = await makeJob('tenant-list');
     const otherTech = await insertTechnician({
       tenantId,
       ref: 'sched-tech-2',
       displayName: 'Sched Tech Two',
     });
-    const a = await createAssignment({
+    const a = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
@@ -535,7 +758,7 @@ describe('assignment reads + schedule events (Plan 1, schedule core)', () => {
       endsAt: '2026-10-10T11:00:00.000Z',
       status: 'confirmed',
     });
-    const b = await createAssignment({
+    const b = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: otherTech.id,
@@ -544,7 +767,7 @@ describe('assignment reads + schedule events (Plan 1, schedule core)', () => {
       endsAt: '2026-10-10T01:00:00.000Z',
       status: 'confirmed',
     });
-    await createAssignment({
+    await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: otherTech.id,
@@ -553,7 +776,7 @@ describe('assignment reads + schedule events (Plan 1, schedule core)', () => {
     });
     // Half-open [from, to) boundary pins (Phase-3 day windows lean on these):
     // ends exactly AT the window start / starts exactly AT the window end.
-    await createAssignment({
+    await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
@@ -561,7 +784,7 @@ describe('assignment reads + schedule events (Plan 1, schedule core)', () => {
       endsAt: '2026-10-10T00:00:00.000Z', // == fromISO → excluded
       status: 'confirmed',
     });
-    await createAssignment({
+    await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
@@ -570,10 +793,10 @@ describe('assignment reads + schedule events (Plan 1, schedule core)', () => {
       status: 'confirmed',
     });
 
-    expect(await getAssignmentForTenant(a.id, tenantId)).toMatchObject({ id: a.id });
-    expect(await getAssignmentForTenant(a.id, '00000000-0000-0000-0000-000000000000')).toBeNull();
+    expect(await getVisitForTenant(a.id, tenantId)).toMatchObject({ id: a.id });
+    expect(await getVisitForTenant(a.id, '00000000-0000-0000-0000-000000000000')).toBeNull();
 
-    const day = await listAssignmentsForTenant(
+    const day = await listVisitsForTenant(
       tenantId,
       '2026-10-10T00:00:00.000Z',
       '2026-10-11T00:00:00.000Z',
@@ -731,7 +954,7 @@ describe('loose-bucket listers (Plan 4a)', () => {
     // Parked visit in the future (unassigned, confirmed).
     const parkedJob = await createJob({ tenantId, customerId: customer.id, title: 'Parked work' });
     parkedFutureId = (
-      await createAssignment({
+      await createVisit({
         tenantId,
         jobId: parkedJob.id,
         technicianId: null,
@@ -742,7 +965,7 @@ describe('loose-bucket listers (Plan 4a)', () => {
     ).id;
     // Parked visit in the PAST — must be excluded by the from bound.
     const pastJob = await createJob({ tenantId, customerId: customer.id, title: 'Past parked' });
-    await createAssignment({
+    await createVisit({
       tenantId,
       jobId: pastJob.id,
       technicianId: null,
@@ -756,7 +979,7 @@ describe('loose-bucket listers (Plan 4a)', () => {
       customerId: customer.id,
       title: 'Cancelled parked',
     });
-    const c = await createAssignment({
+    const c = await createVisit({
       tenantId,
       jobId: cancelledJob.id,
       technicianId: null,
@@ -764,7 +987,7 @@ describe('loose-bucket listers (Plan 4a)', () => {
       endsAt: rel(12, '11:00'),
       status: 'confirmed',
     });
-    await updateAssignmentStatus(c.id, 'cancelled');
+    await updateVisitStatus(c.id, 'cancelled');
     // Unscheduled open job (no assignment at all), priority carried.
     bucketJobId = (
       await createJob({
@@ -776,8 +999,8 @@ describe('loose-bucket listers (Plan 4a)', () => {
     ).id;
   });
 
-  test('listUnassignedAssignmentsWithRefs embeds names; past PLACED rows excluded; ASSIGNED UNTIMED rows included', async () => {
-    const rows = await listUnassignedAssignmentsWithRefs(
+  test('listUnassignedVisitsWithRefs embeds names; past PLACED rows excluded; ASSIGNED UNTIMED rows included', async () => {
+    const rows = await listUnassignedVisitsWithRefs(
       tenantId,
       `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`,
     );
@@ -798,11 +1021,11 @@ describe('loose-bucket listers (Plan 4a)', () => {
     const assignedJob = await createJob({
       tenantId, customerId: bucketCustomerId, title: 'Assigned untimed',
     });
-    const assignedUntimed = await createAssignment({
+    const assignedUntimed = await createVisit({
       tenantId, jobId: assignedJob.id, technicianId: tech.id,
       startsAt: null, endsAt: null, status: 'confirmed',
     });
-    const after = await listUnassignedAssignmentsWithRefs(
+    const after = await listUnassignedVisitsWithRefs(
       tenantId,
       `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`,
     );
@@ -819,10 +1042,10 @@ describe('loose-bucket listers (Plan 4a)', () => {
     expect(bare).toBeDefined();
     expect(bare?.customers?.name).toBe('Bucket Casa');
     expect(bare?.priority).toBe('urgent');
-    // The parked visits' jobs carry LIVE (confirmed) assignments → excluded.
+    // The parked visits' jobs carry LIVE (confirmed) visits → excluded.
     expect(jobs.some((j) => j.title === 'Parked work')).toBe(false);
     // The stripped embed key never leaks into the row shape.
-    expect(bare && 'assignments' in bare).toBe(false);
+    expect(bare && 'visits' in bare).toBe(false);
   });
 });
 
@@ -835,7 +1058,7 @@ describe('loose-bucket listers (Plan 4a)', () => {
 // calendar day where rel(-10) equals this window the exact-equality assertion
 // below would pick up its row (review finding — fixed fixtures + relative
 // fixtures must not share a tenant).
-describe('listOverdueConfirmedAssignments', () => {
+describe('listOverdueConfirmedVisits', () => {
   const FROM = '2026-08-10T08:00:00.000Z';
   const TO = '2026-08-10T12:00:00.000Z';
   let tenantW: string;
@@ -843,7 +1066,7 @@ describe('listOverdueConfirmedAssignments', () => {
   let tenantB: string | undefined;
 
   const mkVisit = async (jobId: string, startsAt: string, endsAt: string, tid?: string) =>
-    createAssignment({
+    createVisit({
       tenantId: tid ?? tenantW,
       jobId,
       technicianId: null,
@@ -864,7 +1087,7 @@ describe('listOverdueConfirmedAssignments', () => {
     // them explicitly first (querySpine.test.ts pattern).
     for (const t of [tenantW, tenantB]) {
       if (!t) continue;
-      await pg.query('delete from assignments where tenant_id = $1', [t]);
+      await pg.query('delete from visits where tenant_id = $1', [t]);
       await pg.query('delete from jobs where tenant_id = $1', [t]);
       await pg.query('delete from customers where tenant_id = $1', [t]);
       await pg.query('delete from tenants where id = $1', [t]);
@@ -876,10 +1099,10 @@ describe('listOverdueConfirmedAssignments', () => {
     const mid = await mkVisit(watchJobId, '2026-08-10T09:00:00.000Z', '2026-08-10T10:00:00.000Z');
     await mkVisit(watchJobId, '2026-08-10T11:00:00.000Z', TO); // ends exactly at to → OUT
     const done = await mkVisit(watchJobId, '2026-08-10T08:30:00.000Z', '2026-08-10T09:30:00.000Z');
-    await updateAssignmentStatus(done.id, 'completed');
+    await updateVisitStatus(done.id, 'completed');
     const gone = await mkVisit(watchJobId, '2026-08-10T10:15:00.000Z', '2026-08-10T10:45:00.000Z');
-    await updateAssignmentStatus(gone.id, 'cancelled', 'watcher test');
-    await createAssignment({
+    await updateVisitStatus(gone.id, 'cancelled', 'watcher test');
+    await createVisit({
       // unplaced (windowed) row — no times, can never match a time filter
       tenantId: tenantW,
       jobId: watchJobId,
@@ -889,7 +1112,7 @@ describe('listOverdueConfirmedAssignments', () => {
       status: 'confirmed',
     });
 
-    const rows = await listOverdueConfirmedAssignments(tenantW, FROM, TO);
+    const rows = await listOverdueConfirmedVisits(tenantW, FROM, TO);
     expect(rows.map((r) => r.id)).toEqual([atFrom.id, mid.id]); // oldest ends_at first
     expect(rows.every((r) => r.status === 'confirmed')).toBe(true);
   });
@@ -900,9 +1123,9 @@ describe('listOverdueConfirmedAssignments', () => {
     const bJob = await createJob({ tenantId: tenantB, customerId: bCustomer.id, title: 'B work' });
     const bRow = await mkVisit(bJob.id, '2026-08-10T09:00:00.000Z', '2026-08-10T10:00:00.000Z', tenantB);
 
-    const rowsA = await listOverdueConfirmedAssignments(tenantW, FROM, TO);
+    const rowsA = await listOverdueConfirmedVisits(tenantW, FROM, TO);
     expect(rowsA.some((r) => r.id === bRow.id)).toBe(false);
-    const rowsB = await listOverdueConfirmedAssignments(tenantB, FROM, TO);
+    const rowsB = await listOverdueConfirmedVisits(tenantB, FROM, TO);
     expect(rowsB.map((r) => r.id)).toEqual([bRow.id]);
   });
 });

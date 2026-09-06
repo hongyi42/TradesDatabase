@@ -11,7 +11,7 @@ import {
 import { getCustomerContext } from './context.js';
 import { createCustomer } from './customers.js';
 import { createJob } from './jobs.js';
-import { createVisit } from './visits.js';
+import { createVisit, insertVisitNote } from './visits.js';
 
 // Phase 1 of the note lifecycle: retraction schema + folding primitives.
 // Integration tests against the LOCAL stack (testEnvGuard-pinned).
@@ -130,12 +130,22 @@ describe('getCustomerContext retraction fold', () => {
     // (the tech-note shape: capture rows themselves carry NO customer stamp).
     const goodNote = await note({ rawText: 'good note' });
     const badNote = await note({ rawText: 'bad note — wrong customer' });
-    const goodVisit = await createVisit({
-      tenantId, jobId: job.id, technicianName: 'tech-fold', sourceCaptureId: goodNote.id,
-    });
-    const badVisit = await createVisit({
-      tenantId, jobId: job.id, technicianName: 'tech-fold', sourceCaptureId: badNote.id,
-    });
+    const reported = async (captureId: string) => {
+      const v = await createVisit({
+        tenantId,
+        jobId: job.id,
+        technicianId: null,
+        startsAt: null,
+        endsAt: null,
+        status: 'completed',
+        completedAt: '2026-08-16T13:00:00.000Z',
+        sourceCaptureId: captureId,
+      });
+      await insertVisitNote({ tenantId, visitId: v.id, captureId });
+      return v;
+    };
+    const goodVisit = await reported(goodNote.id);
+    const badVisit = await reported(badNote.id);
     const retraction = await retractionOf(badNote, { customerId: customer.id });
 
     const folded = await getCustomerContext(customer.id);

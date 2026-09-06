@@ -231,7 +231,7 @@ export async function handleBoardRequest(
     }
 
     // Tap-into-a-visit detail (both tiers). Technicians resolve ONLY their own
-    // visits — a crafted assignmentId for anyone else's (or an unassigned)
+    // visits — a crafted visitId for anyone else's (or an unassigned)
     // visit 404s exactly like a nonexistent id, so this endpoint reveals
     // nothing their self-filtered day view wouldn't.
     if (pathname === '/board/api/visit' && req.method === 'GET') {
@@ -240,22 +240,22 @@ export async function handleBoardRequest(
         deny(res, auth);
         return;
       }
-      const assignmentId = url.searchParams.get('assignmentId');
-      if (!assignmentId) {
-        json(res, 400, { error: 'assignmentId is required' });
+      const visitId = url.searchParams.get('visitId');
+      if (!visitId) {
+        json(res, 400, { error: 'visitId is required' });
         return;
       }
       // Non-UUID garbage must read exactly like an unknown id — without this,
       // PostgREST's 22P02 (invalid uuid syntax) throws through to a bare 500,
       // letting any authenticated caller spam the server-fault log on demand
       // and denting the 404 uniformity (review finding).
-      if (!/^[0-9a-fA-F-]{36}$/.test(assignmentId)) {
+      if (!/^[0-9a-fA-F-]{36}$/.test(visitId)) {
         json(res, 404, { error: 'visit not found' });
         return;
       }
       const detail = await readVisitDetail(
         auth.tenantId,
-        assignmentId,
+        visitId,
         auth.technician.tier === 'manager' ? null : auth.technician.id,
       );
       if (!detail) {
@@ -389,7 +389,7 @@ export async function handleBoardRequest(
           const booked = await bookVisit(input);
           json(res, 200, {
             status: 'booked',
-            assignmentId: booked.assignment.id,
+            visitId: booked.assignment.id,
             jobId: booked.job.id,
             date,
             startTime,
@@ -483,14 +483,14 @@ export async function handleBoardRequest(
         // the jobId-keyed verbs returned above, so the guard narrows cleanly
         // for the rest (final-review finding: the earlier negative-list guard
         // killed TS narrowing and needed four casts).
-        const assignmentId = str(body, 'assignmentId');
-        if (!assignmentId) {
-          json(res, 400, { error: 'assignmentId is required' });
+        const visitId = str(body, 'visitId');
+        if (!visitId) {
+          json(res, 400, { error: 'visitId is required' });
           return;
         }
         if (pathname === '/board/api/cancel') {
           if (preview) {
-            json(res, 200, await previewUnscheduleVisit(auth.tenantId, assignmentId));
+            json(res, 200, await previewUnscheduleVisit(auth.tenantId, visitId));
             return;
           }
           if (!reason) {
@@ -499,7 +499,7 @@ export async function handleBoardRequest(
           }
           const cancelled = await unscheduleVisit({
             tenantId: auth.tenantId,
-            assignmentId,
+            visitId,
             reason,
             actorRef: auth.technician.ref,
           });
@@ -526,10 +526,10 @@ export async function handleBoardRequest(
           }
           const attachRef = str(body, 'technicianRef');
           const detach = body.unassign === true;
-          const attachId = str(body, 'assignmentId');
+          const attachId = str(body, 'visitId');
           if (!attachId || !reason || (detach ? attachRef !== undefined : !attachRef)) {
             json(res, 400, {
-              error: 'assignmentId, reason, and ONE of technicianRef (attach) or unassign:true (park back) are required',
+              error: 'visitId, reason, and ONE of technicianRef (attach) or unassign:true (park back) are required',
             });
             return;
           }
@@ -544,7 +544,7 @@ export async function handleBoardRequest(
           if (preview) {
             const attachPreview = await previewAttachUnplacedVisit({
               tenantId: auth.tenantId,
-              assignmentId: attachId,
+              visitId: attachId,
               technicianRef: detach ? null : (attachRef as string),
             });
             json(res, 200, { status: 'preview', attach: true, ...attachPreview });
@@ -552,7 +552,7 @@ export async function handleBoardRequest(
           }
           const attached = await attachUnplacedVisit({
             tenantId: auth.tenantId,
-            assignmentId: attachId,
+            visitId: attachId,
             technicianRef: detach ? null : (attachRef as string),
             reason,
             actorRef: auth.technician.ref,
@@ -562,7 +562,7 @@ export async function handleBoardRequest(
             attach: !detach,
             unassigned: detach,
             untimed: true,
-            assignmentId: attached.created.id,
+            visitId: attached.visit.id,
           });
           return;
         }
@@ -600,7 +600,7 @@ export async function handleBoardRequest(
         }
         const input = {
           tenantId: auth.tenantId,
-          assignmentId,
+          visitId,
           date,
           startTime,
           endTime: str(body, 'endTime'),
@@ -616,10 +616,10 @@ export async function handleBoardRequest(
         const moved = await moveVisit(input);
         json(res, 200, {
           status: 'moved',
-          // A move ALWAYS produces a placed row (rescheduleAssignment requires
-          // times) — assert instead of widening the payload (plan 4b-2).
-          start: moved.created.starts_at as string,
-          end: moved.created.ends_at as string,
+          // A move ALWAYS lands a placed row (moveVisitRow requires times) —
+          // assert instead of widening the payload (plan 4b-2).
+          start: moved.visit.starts_at as string,
+          end: moved.visit.ends_at as string,
           ...(moved.warning ? { warning: moved.warning } : {}),
         });
         return;

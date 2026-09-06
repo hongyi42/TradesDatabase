@@ -28,11 +28,12 @@
 // would measure real seconds against sim hours. After every tick, that tick's
 // new time stamps are rewritten to sim-now.
 
+import { visitSubjectRef } from '../jobs/nudgeKinds.js';
 import { randomUUID } from 'node:crypto';
 import { getClient } from '../db/client.js';
 import type { Database } from '../db/database.types.js';
 import {
-  createAssignment,
+  createVisit,
   createCustomer,
   createJob,
   insertTechnician,
@@ -90,7 +91,7 @@ export function atOffset(t0Ms: number, offset: Offset): string {
 }
 
 /** Real-UTC instant → the firm's wall clock in the canonical naive-local
- *  storage form (assignments' convention — watchers.ts's own helper, mirrored). */
+ *  storage form (the visit row's convention — watchers.ts's own helper, mirrored). */
 export function toNaiveLocal(iso: string, tz: string = SIM_TZ): string {
   return naiveLocalISO(localDateISO(iso, tz), localTimeHHMM(iso, tz));
 }
@@ -190,7 +191,7 @@ export interface SeededScenario {
   t0Ms: number;
   customerId: string;
   jobId: string;
-  assignmentId: string | null;
+  visitId: string | null;
   technicianId: string;
   technicianRef: string;
   /** scenario nudge key → nudges.id */
@@ -225,13 +226,14 @@ export async function seedScenario(
     seatExempt: true, // active immediately, deliberately UNREACHABLE (no telegram/sandbox/host)
   });
 
-  let assignmentId: string | null = null;
+  let visitId: string | null = null;
+  let visitStartsAtRow: string | null = null;
   let startsAtLocal: string | null = null;
   let endsAtLocal: string | null = null;
   if (world.visit) {
     startsAtLocal = toNaiveLocal(atOffset(t0Ms, world.visit.startsAt), tz);
     endsAtLocal = toNaiveLocal(atOffset(t0Ms, world.visit.endsAt), tz);
-    const a = await createAssignment({
+    const a = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
@@ -239,7 +241,13 @@ export async function seedScenario(
       endsAt: endsAtLocal,
       status: (world.visit.status ?? 'confirmed') as never,
     });
-    assignmentId = a.id;
+    visitId = a.id;
+    // Keep the ROW's own rendering of the time, not the string we sent: the DB
+    // returns `…T09:00:00+00:00` where naiveLocalISO writes `…T09:00:00.000Z`.
+    // The watcher mints its subject from the row it read, so a key built from
+    // the input string would never match — and every sim tick would re-detect
+    // the same visit as fresh, minting a duplicate observation (review finding).
+    visitStartsAtRow = a.starts_at;
   }
 
   const nudgeIds: Record<string, string> = {};
@@ -249,10 +257,13 @@ export async function seedScenario(
   // canonical).
   const preAskKeys = new Set<string>();
   for (const spec of world.nudges) {
-    if (spec.kind === 'overdue_visit_gap' && !assignmentId) {
+    if (spec.kind === 'overdue_visit_gap' && !visitId) {
       throw new Error(`nudge '${spec.key}': a visit gap needs a visit in the world`);
     }
-    const subjectRef = spec.kind === 'overdue_visit_gap' ? assignmentId! : job.id;
+    // A visit gap's subject is the visit AT ITS TIME (rung 9b, visitSubjectRef)
+    // — the same key the watcher mints, or the planner's own lookup misses it.
+    const subjectRef =
+      spec.kind === 'overdue_visit_gap' ? visitSubjectRef(visitId!, visitStartsAtRow) : job.id;
     const context: Record<string, unknown> = {
       customerName: world.customer.name,
       jobTitle: world.job.title,
@@ -260,7 +271,7 @@ export async function seedScenario(
       technicianName: world.technician.name,
       jobId: job.id,
       ...(spec.kind === 'overdue_visit_gap'
-        ? { assignmentId: assignmentId!, startsAtLocal, endsAtLocal }
+        ? { visitId: visitId!, startsAtLocal, endsAtLocal }
         : { endsAtLocal }),
     };
     const askedAt = spec.askedAt ? atOffset(t0Ms, spec.askedAt) : null;
@@ -437,7 +448,7 @@ export async function seedScenario(
     t0Ms,
     customerId: customer.id,
     jobId: job.id,
-    assignmentId,
+    visitId,
     technicianId: tech.id,
     technicianRef: tech.ref,
     nudgeIds,

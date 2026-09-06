@@ -15,8 +15,8 @@ vi.mock('../db/index.js', { spy: true });
 
 import { sendBoardMessage } from './boardBot.js';
 import { pollOnce } from './boardNotify.js';
-import { getAssignmentForTenant } from '../db/index.js';
-import { getAssignmentForTenant as realGetAssignmentForTenant } from '../db/assignments.js';
+import { getVisitForTenant } from '../db/index.js';
+import { getVisitForTenant as realGetAssignmentForTenant } from '../db/visits.js';
 import { getClient } from '../db/client.js';
 import { setTenantSeats } from '../db/tenants.js';
 import { insertTechnician, updateTechnician } from '../db/technicians.js';
@@ -160,7 +160,7 @@ describe('pollOnce', () => {
     sends.mockClear();
     await moveVisit({
       tenantId,
-      assignmentId: assignment.id,
+      visitId: assignment.id,
       date: '2026-10-07',
       startTime: '10:00',
       reason: 'shifted a day',
@@ -183,7 +183,7 @@ describe('pollOnce', () => {
     sends.mockClear();
     await moveVisit({
       tenantId,
-      assignmentId: assignment.id,
+      visitId: assignment.id,
       date: '2026-10-08',
       startTime: '09:00',
       technicianRef: 'notify-n2',
@@ -214,7 +214,7 @@ describe('pollOnce', () => {
     sends.mockClear();
     await moveVisit({
       tenantId,
-      assignmentId: assignment.id,
+      visitId: assignment.id,
       date: '2026-10-12',
       startTime: '09:00',
       unassign: true,
@@ -244,13 +244,13 @@ describe('pollOnce', () => {
     sends.mockClear();
     await unscheduleVisit({
       tenantId,
-      assignmentId: a.assignment.id,
+      visitId: a.assignment.id,
       reason: 'customer away',
       actorRef: 'notify-mgr',
     });
     await unscheduleVisit({
       tenantId,
-      assignmentId: b.assignment.id,
+      visitId: b.assignment.id,
       reason: 'customer away too',
       actorRef: 'notify-mgr',
     });
@@ -282,7 +282,7 @@ describe('pollOnce', () => {
     await pg.query("update technicians set state = 'offboarding' where ref = 'notify-n2'");
     await moveVisit({
       tenantId,
-      assignmentId: assignment.id,
+      visitId: assignment.id,
       date: '2026-10-10',
       startTime: '09:00',
       technicianRef: 'notify-n1',
@@ -337,7 +337,7 @@ describe('pollOnce', () => {
     await book({ technicianRef: 'notify-n1', date: '2026-11-09', startTime: '12:00', endTime: '13:00' });
     // The first event resolves for real; the SECOND event's row lookup dies (a
     // transient DB blip); the third is never reached this tick.
-    vi.mocked(getAssignmentForTenant)
+    vi.mocked(getVisitForTenant)
       .mockImplementationOnce(realGetAssignmentForTenant)
       .mockImplementationOnce(async () => {
         throw new Error('transient db blip');

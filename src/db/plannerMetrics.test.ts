@@ -199,6 +199,37 @@ describe('mv_whiplash', () => {
     expect(rows).toEqual([]);
   });
 
+  test('a LINKED NOTE between the two decisions is evidence too (rung 9b)', async () => {
+    // The view's second arm used to read "a visit ROW was minted in the window",
+    // which only worked while every note minted one. A note now ATTACHES to a
+    // trip that may have been booked weeks earlier, so the row's own created_at
+    // stopped being the moment evidence landed — the LINK's is. Without this the
+    // planner would be scored for whiplash on a flip a technician had already
+    // answered.
+    const nudgeId = await insertNudge({ subjectRef: `metrics-link-${RUN}`, status: 'asked' });
+    await insertDecision(nudgeId, jobId, 'hold', '2026-08-22T17:00:00Z');
+    // A visit booked LONG before the window, and a note linked INSIDE it.
+    const { rows: v } = await pg.query<{ id: string }>(
+      `insert into visits (tenant_id, job_id, status, starts_at, ends_at)
+       values ($1, $2, 'confirmed', '2026-07-01T09:00:00Z', '2026-07-01T10:00:00Z')
+       returning id`,
+      [tenantId, jobId],
+    );
+    const { rows: c } = await pg.query<{ id: string }>(
+      `insert into raw_captures (tenant_id, channel, raw_text, captured_at)
+       values ($1, 'technician_note', 'answered it', '2026-08-22T17:30:00Z') returning id`,
+      [tenantId],
+    );
+    await pg.query(
+      `insert into visit_notes (tenant_id, visit_id, capture_id, created_at)
+       values ($1, $2, $3, '2026-08-22T17:30:00Z')`,
+      [tenantId, v[0].id, c[0].id],
+    );
+    await insertDecision(nudgeId, jobId, 'escalate', '2026-08-22T18:30:00Z');
+    const { rows } = await pg.query(`select * from mv_whiplash where nudge_id = $1`, [nudgeId]);
+    expect(rows).toEqual([]);
+  });
+
   test("'leave' and 'unmentioned' are not flip material", async () => {
     const nudgeId = await insertNudge({ subjectRef: `metrics-leave-${RUN}`, status: 'asked' });
     await insertDecision(nudgeId, jobId, 'leave', '2026-08-22T17:00:00Z');

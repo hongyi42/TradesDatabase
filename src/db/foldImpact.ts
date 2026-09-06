@@ -6,6 +6,17 @@ import { factEntriesCiting } from './standingFacts.js';
 // source capture it is. Computed server-side so the retraction preview never
 // depends on the agent noticing — a live retraction (2026-07-14) folded a job's
 // fact the agent's own warning missed.
+//
+// RUNG 9b SPLIT THE VISIT ARM IN TWO, and the distinction is the whole point of
+// the preview. A note used to OWN its visit row, so "linked to the capture" and
+// "disappears with the capture" were the same set. Now a note LINKS a trip that
+// may have been booked long before it, and the fold in src/db/context.ts drops
+// only visits whose `source_capture_id` is retracted — a real appointment must
+// NOT vanish from the board because a note about it was recorded in error, a
+// customer is expecting it. So: `visits` = the trips that actually disappear,
+// `visitsLosingEvidence` = the trips that survive and lose this note. Telling
+// the manager a booked trip "will disappear" when it will not is the failure
+// this split exists to prevent.
 export interface FoldedFact {
   rowType: 'customer' | 'job';
   rowId: string;
@@ -18,12 +29,15 @@ export interface FoldedVisit {
   visitId: string;
   jobId: string;
   scheduledAt: string | null;
-  technicianName: string | null;
+  technicianId: string | null;
 }
 
 export interface FoldImpact {
   facts: FoldedFact[];
+  /** Trips that DISAPPEAR with the capture — it is their `source_capture_id`. */
   visits: FoldedVisit[];
+  /** Trips that SURVIVE the retraction and merely lose this note as evidence. */
+  visitsLosingEvidence: FoldedVisit[];
 }
 
 // PostgREST caps every response at db-max-rows (1000 in supabase/config.toml
@@ -67,12 +81,17 @@ export async function findFoldImpact(tenantId: string, captureId: string): Promi
         .eq('tenant_id', tenantId)
         .range(from, to),
     ),
-    fetchAll('visits', (from, to) =>
+    // Rung 9b: a note no longer OWNS a visit row — it LINKS one through
+    // visit_notes, and the same trip may carry several notes. So the fold's
+    // visit arm walks the link, not source_capture_id: retracting a note must
+    // still tell the manager which trip loses its evidence, including when the
+    // trip was booked long before the note existed.
+    fetchAll('visit_notes', (from, to) =>
       client
-        .from('visits')
-        .select('id, job_id, scheduled_at, technician_name')
+        .from('visit_notes')
+        .select('visit_id, visits!inner(id,tenant_id,job_id,starts_at,technician_id,source_capture_id)')
         .eq('tenant_id', tenantId)
-        .eq('source_capture_id', captureId)
+        .eq('capture_id', captureId)
         .range(from, to),
     ),
   ]);
@@ -99,11 +118,28 @@ export async function findFoldImpact(tenantId: string, captureId: string): Promi
       })),
     ),
   ];
-  const foldedVisits: FoldedVisit[] = visits.map((v) => ({
-    visitId: v.id,
-    jobId: v.job_id,
-    scheduledAt: v.scheduled_at,
-    technicianName: v.technician_name,
-  }));
-  return { facts, visits: foldedVisits };
+  const linked = visits
+    // !inner guarantees the embed, but the FK is ID-ONLY: re-check the tenant
+    // before surfacing anything about the trip (the DETAIL_SELECT doctrine).
+    .filter((n) => n.visits && n.visits.tenant_id === tenantId)
+    .map((n) => ({
+      folded: {
+        visitId: n.visits.id,
+        jobId: n.visits.job_id,
+        // The trip's own time, which is what "scheduled" meant all along — the
+        // old column of that name was never written by anything.
+        scheduledAt: n.visits.starts_at,
+        technicianId: n.visits.technician_id,
+      },
+      // Mirrors src/db/context.ts's fold predicate exactly. Only attachNote's
+      // step 3 sets this (book_visit never does), and every visit it creates is
+      // linked in the same call — so walking visit_notes is a SUPERSET of the
+      // rows the fold removes, never a subset.
+      disappears: n.visits.source_capture_id === captureId,
+    }));
+  return {
+    facts,
+    visits: linked.filter((v) => v.disappears).map((v) => v.folded),
+    visitsLosingEvidence: linked.filter((v) => !v.disappears).map((v) => v.folded),
+  };
 }

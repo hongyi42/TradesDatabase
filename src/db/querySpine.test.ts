@@ -4,7 +4,7 @@ import { createTenant } from './tenants.js';
 import { insertTechnician } from './technicians.js';
 import { createCustomer } from './customers.js';
 import { createJob } from './jobs.js';
-import { createAssignment } from './assignments.js';
+import { createVisit } from './visits.js';
 import { upsertTenantProfile } from './tenantProfiles.js';
 
 // The security properties of the query_spine read surface, asserted against the
@@ -75,7 +75,7 @@ beforeAll(async () => {
     hour: number,
     tag: 'a' | 'b' = 'a',
   ) => {
-    const row = await createAssignment({
+    const row = await createVisit({
       tenantId: tag === 'a' ? tenantA : tenantB,
       jobId: jobIds[tag],
       technicianId: techIds[tag],
@@ -92,7 +92,7 @@ beforeAll(async () => {
   // Tenant B gets a cancelled row too, so the isolation test.each has real
   // cross-tenant data to leak on v_cancelled_visits, not a vacuous empty set.
   await slot('cancelled', 9, 'b');
-  await pg.query(`update assignments set reason = 'QS customer away' where id = $1`, [
+  await pg.query(`update visits set reason = 'QS customer away' where id = $1`, [
     ids.cancelled,
   ]);
 });
@@ -102,7 +102,7 @@ afterAll(async () => {
     await pg.query('delete from query_audit where tenant_id = $1', [t]);
     // Before the tenants delete — tenant_profiles' FK is NO ACTION.
     await pg.query('delete from tenant_profiles where tenant_id = $1', [t]);
-    await pg.query('delete from assignments where tenant_id = $1', [t]);
+    await pg.query('delete from visits where tenant_id = $1', [t]);
     await pg.query(
       'delete from jobs where customer_id in (select id from customers where tenant_id = $1)',
       [t],
@@ -162,19 +162,19 @@ describe('query_spine — tenant isolation', () => {
 });
 
 describe('query_spine — v_schedule means the schedule (2026-08-12 eval finding)', () => {
-  // The regression under pin: count(*) from v_schedule was every assignment
+  // The regression under pin: count(*) from v_schedule was every visit
   // ever made — cancelled included — so "how many visits this month?" came
   // back +90. These tests assert exact id membership per status, so a future
   // view rewrite that drops the filter fails here, not in a manager chat.
   // query_spine returns a bare jsonb array of rows (the {status, rows} wrapper
   // seen in agent trajectories is added by the MCP layer above it).
   const rowsOf = (r: { rows: { result: unknown }[] }) =>
-    r.rows[0].result as { assignment_id: string; status?: string; reason?: string }[];
+    r.rows[0].result as { visit_id: string; status?: string; reason?: string }[];
 
   test('v_schedule returns confirmed and completed visits — and nothing else', async () => {
-    const r = await run(tenantA, "select assignment_id, status from v_schedule where local_day = '2027-03-02'");
+    const r = await run(tenantA, "select visit_id, status from v_schedule where local_day = '2027-03-02'");
     const got = rowsOf(r);
-    expect(new Set(got.map((x) => x.assignment_id))).toEqual(
+    expect(new Set(got.map((x) => x.visit_id))).toEqual(
       new Set([ids.confirmed, ids.completed]),
     );
     expect(new Set(got.map((x) => x.status))).toEqual(new Set(['confirmed', 'completed']));
@@ -191,17 +191,17 @@ describe('query_spine — v_schedule means the schedule (2026-08-12 eval finding
   test('cancelled visits live in v_cancelled_visits, with the reason', async () => {
     const r = await run(
       tenantA,
-      "select assignment_id, reason from v_cancelled_visits where local_day = '2027-03-02'",
+      "select visit_id, reason from v_cancelled_visits where local_day = '2027-03-02'",
     );
     const got = rowsOf(r);
-    expect(got.map((x) => x.assignment_id)).toEqual([ids.cancelled]);
+    expect(got.map((x) => x.visit_id)).toEqual([ids.cancelled]);
     expect(got[0].reason).toBe('QS customer away');
   });
 
   test('a proposed assignment is staged workflow state — visible in NEITHER view', async () => {
     for (const view of ['v_schedule', 'v_cancelled_visits']) {
-      const r = await run(tenantA, `select assignment_id from ${view}`);
-      expect(rowsOf(r).map((x) => x.assignment_id)).not.toContain(ids.proposed);
+      const r = await run(tenantA, `select visit_id from ${view}`);
+      expect(rowsOf(r).map((x) => x.visit_id)).not.toContain(ids.proposed);
     }
   });
 });
@@ -355,7 +355,7 @@ describe('query_spine — the view surface is closed', () => {
       'v_schedule',
       'v_team',
       'v_time_off',
-      'v_visits',
+      'v_visit_notes',
     ]);
   });
 

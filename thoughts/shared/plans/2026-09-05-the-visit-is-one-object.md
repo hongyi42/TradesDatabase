@@ -422,27 +422,57 @@ order that keeps five services alive, re-wires the fleet, and proves the object 
 §0c :694-742 names tools only — verify, leave. `2026-07-03-scheduling-foundation.md` :56 gets a superseded note.
 
 **Deploy order** (the 9a lessons: fork, five services, three `autoDeploy: no`):
-0. **KNOWN WINDOW the compat view does NOT cover** (found at deploy preflight, 2026-09-05): the view
-   bridges `assignments`, but the migration also renames the schedule ONTO the name `visits`, and the
-   still-running code's `createVisit` inserts `technician_name` / `scheduled_at` / `source_capture_id`
-   — columns the new table does not have. So between step 2 and step 3 **a field note's L2 write 400s**
-   (its L1 capture lands first and is preserved, so nothing is lost; the note can be re-filed). Reversing
-   the order is strictly worse: new code against the old schema 400s every schedule READ. `v_visits` is
-   also gone in that window. Mitigation is to keep the window short and pick a quiet moment — the pilot
-   has taken **0 captures in the last 3 days**, so exposure is nil today. Re-check before deploying.
+0. **KNOWN WINDOW the compat view does NOT cover.** The view bridges the NAME `assignments`, but the
+   migration also renames the schedule ONTO the name `visits`, and the still-running code reads and
+   writes the OLD per-note shape under that name. Reversing the order is strictly worse (new code
+   against the old schema 400s every schedule READ), so the window stays and the answer is to keep it
+   short. Final review enumerated SIX effects, not the one preflight found — and two are wrong ANSWERS,
+   which a quiet window does not close:
+
+   | | old code | result | service | effect |
+   |---|---|---|---|---|
+   | a | `createVisit` inserts `technician_name`/`scheduled_at` | **400** | web | a field note's L2 write fails. Its L1 capture lands first, so nothing is lost; re-file after. |
+   | b | `foldImpact` selects `scheduled_at, technician_name` | **400** | web | `retract_capture`'s preview THROWS. Hard failure. |
+   | c | `listVisitsForCustomer` has no status filter (that filter is new) | **200, WRONG** | web | `recentVisits` becomes every schedule row for the customer's jobs — future bookings and cancelled trips printed as past work. Pilot has 2 future + 8 untimed confirmed, so it fires on real rows. |
+   | d | `listVisitTimesForJobs` selects columns that all still exist | **200, WRONG** | cron | a visit BOOKED since the floor counts as field-note activity → the overdue detector is silently suppressed. |
+   | e | the tool catalog advertises `v_schedule(assignment_id)` and tells the planner to join `v_visits` | **relation does not exist** | cron + web | planner SQL through `query_spine` errors. |
+   | f | `captureHasLinkedVisit` on `visits.source_capture_id` | 200, benign | web + cron | all 467 renamed rows have it NULL, so the redelivery short-circuit is simply off — the already-accepted extractor re-run. |
+
+   **Exposure today is near-nil** — the pilot took **0 captures in 3 days** (11 in 14) and nobody is
+   watching a briefing. Re-check the capture count immediately before deploying; if it is not still
+   ~0, do the deploy at a quiet hour instead.
 1. Dismiss open `pending_visit_cancel` / `pending_job_cancel` items on the pilot (15-min tokens).
    *(2026-09-05: none open — `select … where kind in (…) and status='open'` returned 0 rows.)*
 2. `supabase-test` `apply_migration` `20260906140000` — the compat view keeps the running code alive. Read back
-   `information_schema.columns` for `visits` (merged columns), `visit_notes`, `schedule_events.visit_id`; and
-   `pg_class` shows `assignments` as relkind `v`. **Evidence is the query result.**
-2b. **PROVE THE BRIDGE before trusting it** (review finding): `GET /rest/v1/assignments?select=*,jobs(id),technicians(id)&limit=1`
-   as the service role. If embeds do not resolve through the view, the running code's board detail and
-   day reads 400 for the whole window — apply `20260906140100` early and rush the deploy instead.
+   `information_schema.columns` for `visits` (merged columns), `visit_notes`, and
+   **`schedule_events.assignment_id` — which KEEPS ITS NAME this rung** (an earlier draft of this line said
+   `schedule_events.visit_id`; that column does not exist and is not meant to, and an operator reading it
+   literally would get zero rows and call the migration failed); and `pg_class` shows `assignments` as
+   relkind `v`. **Evidence is the query result.**
+2b. **PROVE THE BRIDGE before trusting it.** ✅ **Already proven on a scratch stack** (final review,
+   2026-09-05): the compat view was created there and PostgREST probed directly — all five real shapes
+   returned 200, `information_schema.views` reports `is_insertable_into=YES, is_updatable=YES`, and the
+   NEW code's shapes also return 200 with the view present (no PGRST201 ambiguity from view and table
+   coexisting). Re-probe on the pilot anyway, and **include the REVERSE embed**, which the first draft of
+   this step missed and which is the direction most likely to fail:
+   - `assignments?select=*,jobs(id),technicians(id)&limit=1` — DETAIL / DAY / UNPLACED_STRIP
+   - `jobs?select=id,assignments(id,status)&limit=1` — **`UNSCHEDULED_JOBS_SELECT`, hit on every board load**
+   - `schedule_events?select=*,assignments(id)&limit=1`
+   If any 400s, apply `20260906140100` early and rush the deploy instead.
 3. Sync `Yu-C1/TradesDatabase` (owner action), deploy ALL FIVE services, verify each `live` on the commit.
+3b. **Wire all six seats IMMEDIATELY after the services go live, s2 first** — moved up from step 6
+   (review finding). The handlers accept only `visitId`, with no `assignmentId` alias, and the seats run
+   off the gateway's CACHED tools/list. So from the moment the deploy lands until a seat is re-wired,
+   every `move_visit` / `unschedule_visit` / `find_slots` from that seat fails. Leaving this at step 6
+   held the whole fleet down for schedule edits across two more migrations for no reason. Over
+   `bash -lc` (`nemoclaw` is login-shell PATH only). Confirm the cached list carries `visitId` with a
+   real seat turn that calls `move_visit` and gets `moved`.
 4. One `lifecycle-heart` tick: `ok:true`, `tenantErrors:0`.
 5. `apply_migration` `20260906140100` (drop the compat view); read back `pg_class` → no `assignments`.
-6. Wire all six seats, **s2 first**, over `bash -lc`; confirm the gateway's cached tools/list carries `visitId`
-   (a seat turn that calls `move_visit` with `visitId` and gets `moved`).
+6. **A board already open will keep failing until it is reloaded.** `boardApi` renamed the wire parameter
+   `assignmentId` → `visitId` with no alias, and `serveStatic` sends no `Cache-Control`/`ETag` on
+   `board.js` — so a stale client sends the old name and gets `400 visitId is required` on every action.
+   Self-heals on reload; say so rather than debugging it live. The manual check below assumes a fresh load.
 
 ### Automated verification
 - [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` (docs-only changes still run the gates)

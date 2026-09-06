@@ -3633,6 +3633,12 @@ async function dispatch(
         // a valid retraction, so this must never fail the confirm.
         try {
           for (const link of await listVisitNotesForCapture(target.id)) {
+            // capture_id is an id-only FK, so the link's own tenant is the only
+            // proof the trip is ours — check it before writing a row that would
+            // stamp this tenant onto another firm's visit. Not reachable today
+            // (a capture's links are written with the capture's tenant), which
+            // is exactly why it must be asserted rather than assumed.
+            if (link.tenant_id !== tenantId) continue;
             await insertVisitNote({ tenantId, visitId: link.visit_id, captureId: row.id });
           }
         } catch (err) {

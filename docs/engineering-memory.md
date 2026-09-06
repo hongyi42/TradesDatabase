@@ -200,46 +200,46 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L4649 · Naive-local vs real UTC, again. _(2026-09-08)_
 - L4654 · A once-ever index plus stable ids = a detector that fires once, forever.
 - L4661 · A liveness filter can be bypassed by an id rename.
-- L4665 · A compat view bridges the deploy.
-- L4673 · schedule_events.assignment_id KEEPS ITS NAME this rung.
-- L4676 · The completed-stamp CHECK was dropped.
-- L4748 · A green suite proves nothing when you mass-edit tests.
-- L4753 · A test can pin the bug.
-- L4756 · Reachability is not a compile error.
-- L4826 · A technician's seat agent has NO scheduling verb at any tier.
-- L4829 · Live specimen in the pilot _(2026-09-01)_
-- L4839 · Counting.
-- L4841 · Detection.
-- L4846 · Booking.
-- L4859 · Build 6 (vocabulary): _(2026-09-01)_
-- L4864 · Build 7 (detectors report): _(2026-09-05)_
-- L4874 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L4665 · A compat view bridges the deploy. _(2026-09-05)_
+- L4679 · schedule_events.assignment_id KEEPS ITS NAME this rung.
+- L4682 · The completed-stamp CHECK was dropped.
+- L4754 · A green suite proves nothing when you mass-edit tests.
+- L4759 · A test can pin the bug.
+- L4762 · Reachability is not a compile error.
+- L4832 · A technician's seat agent has NO scheduling verb at any tier.
+- L4835 · Live specimen in the pilot _(2026-09-01)_
+- L4845 · Counting.
+- L4847 · Detection.
+- L4852 · Booking.
+- L4865 · Build 6 (vocabulary): _(2026-09-01)_
+- L4870 · Build 7 (detectors report): _(2026-09-05)_
+- L4880 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L5270 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L5293 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L5340 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L5377 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L5409 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L5414 · Every member row stores the FULL grouped message in question.
-- L5418 · The attribution stamp is an audit link, not a gate.
-- L5422 · The derived stamp requires a capture a badge-holder SPOKE
-- L5426 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L5432 · The follow-up loop has two halves and both had to be written down.
-- L5438 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L5512 · Batching works.
-- L5514 · The follow-up leg works, including the half that fails silently.
-- L5518 · Both attribution paths fired, each in its designed case.
-- L5522 · Escalation fired correctly
-- L5523 · The planner's group-aware pacing is the result worth keeping.
+- L5276 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L5299 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L5346 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L5383 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L5415 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L5420 · Every member row stores the FULL grouped message in question.
+- L5424 · The attribution stamp is an audit link, not a gate.
+- L5428 · The derived stamp requires a capture a badge-holder SPOKE
+- L5432 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L5438 · The follow-up loop has two halves and both had to be written down.
+- L5444 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L5518 · Batching works.
+- L5520 · The follow-up leg works, including the half that fails silently.
+- L5524 · Both attribution paths fired, each in its designed case.
+- L5528 · Escalation fired correctly
+- L5529 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L5704 · Evals:
-- L5711 · Runbooks:
-- L5716 · Decision history with citations:
-- L5720 · This file
+- L5710 · Evals:
+- L5717 · Runbooks:
+- L5722 · Decision history with citations:
+- L5726 · This file
 
 <!-- INDEX:END -->
 
@@ -4668,8 +4668,14 @@ COMMITTED visit.
   PostgREST resolves EMBEDS through the view** (the running code does
   `from('assignments').select('*, jobs(…), technicians(…)')`) — cannot be covered by a test,
   because `20260906140100` drops the view in the same `db reset`, so no test ever sees the bridge.
-  Treat it as unverified until probed on the pilot itself, immediately after the first migration
-  and BEFORE trusting the window. Probe result recorded below.
+  **PROVEN by hand instead (2026-09-05):** the view was created on a scratch stack and PostgREST
+  probed directly — the forward embed, the `!inner` variant, `schedule_events → assignments`, and
+  the REVERSE `jobs?select=…,assignments(id,status)` (`UNSCHEDULED_JOBS_SELECT`, hit on every board
+  load, and the direction most likely to fail) all return 200; `information_schema.views` reports
+  `is_insertable_into=YES, is_updatable=YES`; and the NEW code's shapes also return 200 with the
+  view present, so view-and-table coexistence raises no PGRST201 ambiguity. **The lesson is the
+  method, not the result:** a claim that no test can reach is not "probably fine", it is unverified
+  until someone builds the situation and looks.
 - **`schedule_events.assignment_id` KEEPS ITS NAME this rung.** That table is append-only and a
   column has no bridge, so renaming it would 400 every schedule write in the deploy window. The TS
   input is `visitId`, mapped onto the column. Code-first rename later.

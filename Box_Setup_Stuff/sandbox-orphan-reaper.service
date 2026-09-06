@@ -1,0 +1,22 @@
+# /etc/systemd/system/sandbox-orphan-reaper.service
+#
+# Symptom treatment for the openclaw-device orphan leak found 2026-09-06 (see
+# sandbox-orphan-reaper.sh for the measurements and why this is labelled a
+# symptom treatment rather than a fix).
+[Unit]
+Description=Reap orphaned openclaw-device processes inside the sandboxes
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+# Only processes already abandoned to PID 1 and at least this old are taken.
+Environment=MIN_AGE_SECS=60
+ExecStart=/usr/local/sbin/sandbox-orphan-reaper.sh
+# The script bounds every docker call and always exits 0; this is the backstop
+# if it is ever edited into something that can hang.
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

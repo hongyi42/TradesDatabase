@@ -1,0 +1,21 @@
+# /etc/systemd/system/sandbox-orphan-reaper.timer
+#
+# EVERY MINUTE, deliberately. The leak measured on s3 runs at roughly 1.5
+# orphans/min holding ~300 MB each — about 450 MB/min. s3's cap is 3.85 GiB over
+# a ~1.1 GB clean baseline, so a slower cadence lets the cgroup walk back up to
+# the cap between runs and the OOM killer starts choosing again. At 60s the
+# steady state is one or two orphans, a few hundred MB, and the cap is never
+# approached.
+#
+# Not Persistent=: a missed reap is not worth catching up on — the next tick is
+# 60 seconds away and orphans are only ever reaped, never accumulated debt.
+[Unit]
+Description=Reap orphaned openclaw-device processes every minute
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=60s
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

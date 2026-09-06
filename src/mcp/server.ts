@@ -557,12 +557,16 @@ const TOOLS = [
     description:
       'Retract a wrongly recorded capture — two-step. The record is append-only, so this never ' +
       'deletes: it permanently marks the capture as recorded-in-error (with your reason); the ' +
-      'note, its visit, AND any standing fact citing it as evidence all stop appearing in ' +
-      'briefings/context/lists automatically — retracting a fact\'s evidence capture IS how a ' +
-      'wrong standing fact is removed (no follow-up write needed). The staged preview\'s ' +
-      'willAlsoRemove lists exactly which standing facts and visits will disappear — show it ' +
-      'to the person as part of the confirmation. The confirm response echoes the final list ' +
-      'as alsoRemoved with a restoreHint when facts folded; if alsoRemoved is absent, the ' +
+      'note, any trip the note itself created, AND any standing fact citing it as evidence all ' +
+      'stop appearing in briefings/context/lists automatically — retracting a fact\'s evidence ' +
+      'capture IS how a wrong standing fact is removed (no follow-up write needed). The staged ' +
+      "preview's willAlsoRemove lists exactly which standing facts and visits will disappear — " +
+      'show it to the person as part of the confirmation. A trip that was BOOKED separately and ' +
+      'merely mentioned in this note does NOT disappear: it keeps its place on the schedule and ' +
+      'only loses this note as evidence, and it is listed under alsoLosesEvidence instead. Never ' +
+      'tell anyone a booked visit is going away because of a retraction. The confirm response ' +
+      'echoes the final list as alsoRemoved (plus alsoLostEvidence) with a restoreHint when ' +
+      'facts folded; if alsoRemoved is absent, the ' +
       'post-commit scan failed — fall back to the staged willAlsoRemove. Only other side ' +
       'effects the note caused — e.g. a job status change — are NOT auto-reverted. ' +
       'First call with captureId + reason: nothing happens yet; you get ' +
@@ -2289,7 +2293,14 @@ async function retractedResult(
     status: 'retracted',
     captureId,
     retractionId,
-    alsoRemoved: impact,
+    // `alsoRemoved` must name ONLY what actually went. Trips that merely lost
+    // this note as evidence ride alongside under their own key (rung 9b) —
+    // folding them into alsoRemoved would tell the manager a live appointment
+    // had disappeared.
+    alsoRemoved: impact && { facts: impact.facts, visits: impact.visits },
+    ...(impact && impact.visitsLosingEvidence.length > 0
+      ? { alsoLostEvidence: { visits: impact.visitsLosingEvidence } }
+      : {}),
     ...(impact === undefined
       ? {
           alsoRemovedNote:
@@ -3551,8 +3562,11 @@ async function dispatch(
           captureId: staged.captureId ?? target.id,
           reason: staged.reason ?? reason,
           targetPreview: staged.targetPreview,
-          willAlsoRemove: impact,
-          note: 'Nothing was retracted. Show the person the capture and this reason; on their explicit yes call again with ONLY confirmId. A retraction is permanent (the audit trail keeps both rows). If willAlsoRemove.facts or willAlsoRemove.visits has entries, the shown preview MUST include them.',
+          willAlsoRemove: { facts: impact.facts, visits: impact.visits },
+          ...(impact.visitsLosingEvidence.length > 0
+            ? { alsoLosesEvidence: { visits: impact.visitsLosingEvidence } }
+            : {}),
+          note: 'Nothing was retracted. Show the person the capture and this reason; on their explicit yes call again with ONLY confirmId. A retraction is permanent (the audit trail keeps both rows). If willAlsoRemove.facts or willAlsoRemove.visits has entries, the shown preview MUST include them. If alsoLosesEvidence.visits has entries, say those trips STAY on the schedule and only lose this note — never that they disappear.',
         };
       }
       // CONFIRM. Guarded token lookup, then commit-first (the unique index +

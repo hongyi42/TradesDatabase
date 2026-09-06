@@ -515,7 +515,7 @@ describe('moveVisit', () => {
     expect(new Date(still?.starts_at as string).toISOString()).toBe('2026-11-19T14:00:00.000Z');
   });
 
-  test('cross-tenant / unknown assignment ids read as not found (move AND cancel)', async () => {
+  test('cross-tenant / unknown visit ids read as not found (move AND cancel)', async () => {
     const customer = await createCustomer({ tenantId, name: 'Guard Gil' });
     const { assignment } = await bookVisit({
       tenantId,
@@ -535,7 +535,7 @@ describe('moveVisit', () => {
         reason: 'wrong tenant',
         actorRef: 'intruder',
       }),
-    ).rejects.toThrow(/assignment not found/);
+    ).rejects.toThrow(/visit not found/);
     await expect(
       unscheduleVisit({
         tenantId: OTHER_TENANT,
@@ -543,7 +543,7 @@ describe('moveVisit', () => {
         reason: 'wrong tenant',
         actorRef: 'intruder',
       }),
-    ).rejects.toThrow(/assignment not found/);
+    ).rejects.toThrow(/visit not found/);
   });
 });
 

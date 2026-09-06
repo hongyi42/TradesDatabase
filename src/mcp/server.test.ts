@@ -1598,6 +1598,55 @@ describe('retract_capture + retraction folding', () => {
     expect(ctx.data.recentVisits.map((v: { id: string }) => v.id)).not.toContain(visit.id);
   });
 
+  // RUNG 9b: a note LINKS a trip it did not create, so "linked to the capture"
+  // and "disappears with the capture" stopped being the same set. A trip booked
+  // separately must SURVIVE its note's retraction — a customer is expecting it —
+  // and the preview must not promise otherwise. This ties findFoldImpact's split
+  // to context.ts's fold predicate: if either side drifts, one half fails here
+  // instead of telling a manager their appointment is gone.
+  test('fold impact: a visit the note only reports loses evidence, it does not disappear', async () => {
+    const customer = await createCustomer({
+      tenantId,
+      name: 'Survivor Cust',
+      phone: '555-7009',
+    });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Furnace tune-up' });
+    // Booked, not minted by a note: source_capture_id stays NULL, which is what
+    // book_visit does and what attachNote step 1 leaves alone.
+    const booked = await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianId: techMcpId,
+      startsAt: null,
+      endsAt: null,
+      status: 'completed',
+      completedAt: '2026-08-16T13:00:00.000Z',
+    });
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'wrote up the furnace trip',
+    });
+    await insertVisitNote({ tenantId, visitId: booked.id, captureId: cap.id });
+
+    const staged = await call('retract_capture', { captureId: cap.id, reason: 'wrong job' });
+    expect(staged.isError).toBe(false);
+    expect(staged.data.willAlsoRemove.visits).toEqual([]);
+    expect(staged.data.alsoLosesEvidence.visits).toEqual([
+      { visitId: booked.id, jobId: job.id, scheduledAt: null, technicianId: techMcpId },
+    ]);
+
+    const done = await call('retract_capture', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('retracted');
+    expect(done.data.alsoRemoved.visits).toEqual([]);
+    expect(done.data.alsoLostEvidence.visits).toEqual(staged.data.alsoLosesEvidence.visits);
+
+    // The half that would actually hurt: the trip is still on the record.
+    const ctx = await call('get_customer_context', { customerId: customer.id });
+    expect(ctx.data.recentVisits.map((v: { id: string }) => v.id)).toContain(booked.id);
+  });
+
   test('fold impact: a capture nothing cites previews and commits empty, with no restoreHint', async () => {
     const cap = await appendRawCapture({
       tenantId,

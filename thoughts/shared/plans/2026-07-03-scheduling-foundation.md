@@ -53,10 +53,19 @@ kept because both remove implementer ambiguity (same call as the 2026-07-02 plan
   sheet row number; writing scheduler rows there collides with sync semantics) and not
   `visits.scheduled_at` (visits are trip records minted by field notes, one per capture).
   User decision "DB owns the schedule" needs a table the scheduler owns outright.
-- **Reschedule = cancel + insert, never edit times** — an assignment row's times are
+- ⚠️ **SUPERSEDED 2026-09-05 by rung 9b** (`thoughts/shared/plans/2026-09-05-the-visit-is-one-object.md`)
+  — this was the ONLY decision here that 9b overturns; everything else on this page stands.
+  It read: *"Reschedule = cancel + insert, never edit times — an assignment row's times are
   immutable; changing a booking cancels the row (with `reason`) and inserts a new one. Full
-  history falls out of the rows themselves (addendum: every change auditable) — no separate
-  events table, no trigger machinery.
+  history falls out of the rows themselves — no separate events table, no trigger machinery."*
+  **A move is now an UPDATE in place and the visit keeps its id.** Two things happened after
+  this was written. (a) The separate events table arrived anyway (`schedule_events`, 2026-07-15),
+  so "history falls out of the rows" stopped being the reason not to edit. (b) A changing id
+  turned out to be an active hazard, not a neutral cost: it stranded anything pointing at a
+  visit (nudges, observations, review items, board deep links), it forced `created_at` to be
+  hand-carried onto each successor so the unscheduled queue stayed oldest-first, and it silently
+  re-armed a once-ever detector index on every move. See the rung-9b record in
+  `docs/engineering-memory.md`.
 - **Double-booking blocked by the database, not app code** — a Postgres exclusion constraint
   (btree_gist) rejects overlapping `confirmed` assignments for the same technician.
   `proposed` rows may overlap deliberately (alternative proposals). Mirrors the seat-cap
@@ -173,6 +182,8 @@ create trigger job_type_durations_set_updated_at
 
 -- The schedule itself. Times are IMMUTABLE per row (reschedule = cancel + insert);
 -- status is the only mutable business field. History = the accumulated rows.
+-- ⚠️ SUPERSEDED 2026-09-05 (rung 9b): this table is now named `visits`, its times ARE
+-- edited in place, and history lives in `schedule_events`. See the Decisions note above.
 create type assignment_status as enum ('proposed', 'confirmed', 'cancelled', 'completed');
 create extension if not exists btree_gist with schema extensions;
 create table assignments (

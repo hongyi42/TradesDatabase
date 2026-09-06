@@ -563,9 +563,9 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
   const { tenantId } = input;
   if (!input.reason?.trim()) throw new Error('reason is required for a move');
   const old = await getVisitForTenant(input.visitId, tenantId);
-  if (!old) throw new Error('assignment not found');
+  if (!old) throw new Error('visit not found');
   if (old.status !== 'confirmed' && old.status !== 'proposed') {
-    throw new Error(`cannot move a ${old.status} assignment`);
+    throw new Error(`cannot move a ${old.status} visit`);
   }
 
   if (input.unassign && input.technicianRef) {
@@ -770,9 +770,9 @@ export async function previewUnscheduleVisit(
   visitId: string,
 ): Promise<UnscheduleVisitPreview> {
   const target = await getVisitForTenant(visitId, tenantId);
-  if (!target) throw new Error('assignment not found');
+  if (!target) throw new Error('visit not found');
   if (target.status !== 'confirmed' && target.status !== 'proposed') {
-    throw new Error(`cannot unschedule a ${target.status} assignment`);
+    throw new Error(`cannot unschedule a ${target.status} visit`);
   }
   const job = await getJob(target.job_id);
   const customer = job ? await getCustomer(job.customer_id) : null;
@@ -792,15 +792,16 @@ export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Visi
   // Tenant guard first — this module is the reuse surface for Plans 2–3, and
   // updateVisitStatus alone is id-only.
   const target = await getVisitForTenant(input.visitId, input.tenantId);
-  if (!target) throw new Error('assignment not found');
-  // Actionable message when the row went terminal between stage and confirm
-  // (e.g. a move cancelled it and re-created the visit under a new id) — the
-  // raw state-machine error ("cancelled → cancelled") tells the manager
-  // nothing useful.
+  if (!target) throw new Error('visit not found');
+  // Actionable message when the row went terminal between stage and confirm.
+  // Since rung 9b a move EDITS the row, so the id never changes underneath a
+  // staged confirmation — what can still happen is that someone cancelled it,
+  // or a field note marked it completed. The raw state-machine error
+  // ("cancelled → cancelled") tells the manager nothing useful.
   if (target.status !== 'confirmed' && target.status !== 'proposed') {
     throw new Error(
-      `cannot unschedule a ${target.status} assignment — the visit may have been moved or already ` +
-        'cancelled; check get_team_schedule for its current booking',
+      `cannot unschedule a ${target.status} visit — it may have been cancelled already, or a ` +
+        'field note may have reported it as done; check get_team_schedule for its current state',
     );
   }
   const cancelled = await updateVisitStatus(target.id, 'cancelled', input.reason);
@@ -847,9 +848,9 @@ async function resolveAttachUnplaced(
 ): Promise<{ old: Visit; technician: Technician | null }> {
   const { tenantId } = input;
   const old = await getVisitForTenant(input.visitId, tenantId);
-  if (!old) throw new Error('assignment not found');
+  if (!old) throw new Error('visit not found');
   if (old.status !== 'confirmed' && old.status !== 'proposed') {
-    throw new Error(`cannot attach to a ${old.status} assignment`);
+    throw new Error(`cannot attach to a ${old.status} visit`);
   }
   if (isPlaced(old)) {
     throw new Error('this visit has times — attach a person with move_visit (same day/time)');

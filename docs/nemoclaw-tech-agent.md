@@ -512,7 +512,8 @@ register side-by-side in the gateway's `mcp.servers`.
   (`schedule_entries.technician_ref`, exact case-sensitive match) — otherwise schedule-assisted
   matching is dead for that person and L1↔badge joins fail. *(The schedule sheet retired
   2026-07-15 with the Telegram-schedule series Plan 1 — the DB owns the schedule
-  (`assignments`, keyed to the roster row by UUID), so the vocabulary contract is now just
+  (the `visits` table — named `assignments` until rung 9b, 2026-09-05 — keyed to the roster
+  row by UUID), so the vocabulary contract is now just
   badge ref ⇔ roster ref ⇔ Composio user_id; there is no sheet column to keep in sync.)*
   The `connector:` prefix is reserved (webhook rejects composite refs that use it). (4) **Refs are unique per tenant — mint
   from full-name slugs or employee ids, never bare first names** (two Janes as `…:jane` would merge

@@ -422,10 +422,22 @@ order that keeps five services alive, re-wires the fleet, and proves the object 
 §0c :694-742 names tools only — verify, leave. `2026-07-03-scheduling-foundation.md` :56 gets a superseded note.
 
 **Deploy order** (the 9a lessons: fork, five services, three `autoDeploy: no`):
+0. **KNOWN WINDOW the compat view does NOT cover** (found at deploy preflight, 2026-09-05): the view
+   bridges `assignments`, but the migration also renames the schedule ONTO the name `visits`, and the
+   still-running code's `createVisit` inserts `technician_name` / `scheduled_at` / `source_capture_id`
+   — columns the new table does not have. So between step 2 and step 3 **a field note's L2 write 400s**
+   (its L1 capture lands first and is preserved, so nothing is lost; the note can be re-filed). Reversing
+   the order is strictly worse: new code against the old schema 400s every schedule READ. `v_visits` is
+   also gone in that window. Mitigation is to keep the window short and pick a quiet moment — the pilot
+   has taken **0 captures in the last 3 days**, so exposure is nil today. Re-check before deploying.
 1. Dismiss open `pending_visit_cancel` / `pending_job_cancel` items on the pilot (15-min tokens).
+   *(2026-09-05: none open — `select … where kind in (…) and status='open'` returned 0 rows.)*
 2. `supabase-test` `apply_migration` `20260906140000` — the compat view keeps the running code alive. Read back
    `information_schema.columns` for `visits` (merged columns), `visit_notes`, `schedule_events.visit_id`; and
    `pg_class` shows `assignments` as relkind `v`. **Evidence is the query result.**
+2b. **PROVE THE BRIDGE before trusting it** (review finding): `GET /rest/v1/assignments?select=*,jobs(id),technicians(id)&limit=1`
+   as the service role. If embeds do not resolve through the view, the running code's board detail and
+   day reads 400 for the whole window — apply `20260906140100` early and rush the deploy instead.
 3. Sync `Yu-C1/TradesDatabase` (owner action), deploy ALL FIVE services, verify each `live` on the commit.
 4. One `lifecycle-heart` tick: `ok:true`, `tenantErrors:0`.
 5. `apply_migration` `20260906140100` (drop the compat view); read back `pg_class` → no `assignments`.
@@ -433,7 +445,11 @@ order that keeps five services alive, re-wires the fleet, and proves the object 
    (a seat turn that calls `move_visit` with `visitId` and gets `moved`).
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` (docs-only changes still run the gates)
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` (docs-only changes still run the gates)
+      — 2026-09-05: typecheck/lint/build clean, **2557 passed · 12 skipped**; `npm run decisions:index` regenerated.
+      **Not docs-only, and deliberately so** (review findings): model-facing error strings in
+      `src/schedule/booking.ts` still said "assignment" (the rung's "rename all the way" decision reaches
+      text a model reads), and `src/db/foldImpact.ts` had to split its visit arm — see below.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP, Render MCP, `ssh tradesbox` (all connected today); fork access (above)
@@ -448,6 +464,31 @@ order that keeps five services alive, re-wires the fleet, and proves the object 
 ### Manual verification
 - [ ] Telegram board: a moved visit's detail link still opens (`visitId`), the tray shows committed visits, a
       reported visit shows as done. *Manual list is non-empty — pause for the user after Phase 4.*
+
+**Phase 4 review findings, fixed here** (fresh-context reviewer, 2026-09-05):
+- **The retraction preview over-promised.** `findFoldImpact` walks `visit_notes` (phase 3), so it
+  returns every visit LINKED to the capture — but `src/db/context.ts` folds only visits whose
+  `source_capture_id` is retracted. A trip booked separately and merely reported on was listed as
+  "will disappear" when it stays on the schedule. `FoldImpact` now splits `visits` (actually
+  removed) from `visitsLosingEvidence`, the tool prose says a booked trip keeps its place, and a
+  test pins BOTH halves — the preview and the fold — so the two predicates cannot drift apart.
+- **Both docs stated the `reported` stage wrong.** Status is tested FIRST: a `visit_notes` row only
+  splits a *completed* visit into `reported` vs `happened`; a note on a still-`confirmed` visit
+  leaves it `placed`. `stage` is model-facing through the view catalog, so a planner taught the
+  loose rule would write `where stage='reported'` and silently miss noted-but-not-completed trips.
+- **`happened` was described as "the technician reported back"** — that is the case producing
+  `reported`. `happened` is completed with nothing on file.
+- **Seven stale claims elsewhere in `docs/engineering-memory.md`**, each marked rather than deleted:
+  `rescheduleAssignment` as live guidance; a schema note telling verifiers the schedule is in
+  `assignments` and NOT `visits` (now exactly backwards); the "do not re-derive" corrections block
+  whose two items are the very things 9b fixed; the 9c scoping note claiming **no id names a visit
+  across its rows** (there is one now — a future 9c planner would have rebuilt `visit_group_id`
+  for a solved problem); the world re-anchoring recipe; the anon-posture table list; `v_visits`.
+- **`uq_observations_subject_ever` is PARTIAL** (`where author='detector'`) — the record said
+  unqualified.
+- **The PostgREST-embed-through-the-view claim was uncited** and cannot be tested (the compat view
+  is dropped in the same `db reset`). Downgraded to unverified in the record, with a pilot probe
+  added to the deploy order as step 2b.
 
 **Recorded, not built:** rung 9c multi-technician (participant table; `technician_id` stays the lead); **rung 10
 — INBOUND commits a visit: CALL AND EMAIL** (user, 2026-09-05), extractor creates it untimed via `createVisit`,

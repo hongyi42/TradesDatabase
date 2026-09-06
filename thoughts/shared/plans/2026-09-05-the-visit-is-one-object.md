@@ -498,8 +498,13 @@ order that keeps five services alive, re-wires the fleet, and proves the object 
       introduced by this rung, and local differs. Left for an owner decision rather than changed here.
 
 ### Manual verification
-- [ ] Telegram board: a moved visit's detail link still opens (`visitId`), the tray shows committed visits, a
-      reported visit shows as done. *Manual list is non-empty — pause for the user after Phase 4.*
+- [~] Telegram board: a moved visit's detail link still opens (`visitId`), the tray shows committed visits, a
+      reported visit shows as done. **DEFERRED by the user, 2026-09-06:** *"We'll be rebuilding the board
+      after we build the entire schedule rung."* The board still WORKS (the API renamed its wire parameter
+      and the deployed `board.js` matches); what is not being checked by hand is the visual pass, because
+      the surface is being replaced. One carry-forward for whoever opens a stale tab: `serveStatic` sends no
+      `Cache-Control`/`ETag`, so a client cached before this deploy sends `assignmentId` and gets
+      `400 visitId is required` until reloaded.
 
 **Phase 4 review findings, fixed here** (fresh-context reviewer, 2026-09-05):
 - **The retraction preview over-promised.** `findFoldImpact` walks `visit_notes` (phase 3), so it

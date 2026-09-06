@@ -153,95 +153,95 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 **6a. The build order — the harness rebuild (2026-08-28 → )**
 
-- L3615 · The seats are an eye.
-- L3618 · AUTHORSHIP: the seat PROPOSES, the planner RECORDS.
-- L3623 · SCOPE: build 7 is the subject decision + authorship.
-- L3674 · It cost one line of code.
-- L3678 · The metric does not widen.
-- L3692 · Volume.
-- L3696 · The quiet-firm skip becomes materially more reachable.
-- L3773 · A looked-up citation stamps NO capture id.
-- L3776 · THE PLANNER COULD CITE ITSELF
-- L3781 · ACCEPTED RESIDUE:
-- L3785 · ORDERING:
-- L3792 · The regression this phase introduced and review caught:
-- L3852 · The turn ceiling binds before the clock.
-- L3855 · A 15-minute tick eats the cadence behind it. _(2026-08-29)_
-- L3895 · MIN_TURN_BUDGET_MS = 15_000
-- L3900 · MAX_TOOL_CALL_MS = 90_000
-- L3917 · Context exhaustion is now the de-facto outer limit.
-- L3921 · The model is NOT told its remaining time
-- L4008 · Doctrine, not a code-enforced phase
-- L4010 · Churn: no brake
-- L4012 · Crowding out: watched, not prevented.
-- L4077 · No cap on the NUMBER of memory files, or on total bytes per firm.
-- L4083 · write_memory has NO mode gate
-- L4113 · The record grows without bound.
-- L4118 · The planner curates it.
-- L4123 · Detectors stay ours, and that is the point.
-- L4127 · The detector must not be the only way a gap opens.
-- L4185 · NUDGES_MODE is RETIRED
-- L4220 · agent informs the office
-- L4226 · agent asks the office _(2026-09-01)_
-- L4241 · the office reaches an agent
-- L4252 · seat-to-seat informs
-- L4300 · A partial index is only usable when the query IMPLIES its predicate.
-- L4413 · Durability.
-- L4415 · Observability.
-- L4475 · 1 · the firm's roster.
-- L4477 · 2 · who you can reach.
-- L4479 · 3 · a message need not be about a gap.
-- L4481 · 4 · one verb.
-- L4484 · 5 · seeing what you sent.
-- L4496 · as: 'board'
-- L4499 · Several addressees on one message
-- L4502 · The quiet-firm skip
-- L4505 · No v_office_messages
-- L4507 · B65-REACH-A-MANAGER
-- L4752 · ON DELETE SET NULL is an UPDATE.
-- L4754 · Naive-local vs real UTC, again. _(2026-09-08)_
-- L4759 · A once-ever index plus stable ids = a detector that fires once, forever.
-- L4766 · A liveness filter can be bypassed by an id rename.
-- L4770 · A compat view bridges the deploy. _(2026-09-05)_
-- L4784 · schedule_events.assignment_id KEEPS ITS NAME this rung.
-- L4787 · The completed-stamp CHECK was dropped.
-- L4874 · A green suite proves nothing when you mass-edit tests.
-- L4879 · A test can pin the bug.
-- L4882 · Reachability is not a compile error.
-- L4952 · A technician's seat agent has NO scheduling verb at any tier.
-- L4955 · Live specimen in the pilot _(2026-09-01)_
-- L4965 · Counting.
-- L4967 · Detection.
-- L4972 · Booking.
-- L4985 · Build 6 (vocabulary): _(2026-09-01)_
-- L4990 · Build 7 (detectors report): _(2026-09-05)_
-- L5000 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L3622 · The seats are an eye.
+- L3625 · AUTHORSHIP: the seat PROPOSES, the planner RECORDS.
+- L3630 · SCOPE: build 7 is the subject decision + authorship.
+- L3681 · It cost one line of code.
+- L3685 · The metric does not widen.
+- L3699 · Volume.
+- L3703 · The quiet-firm skip becomes materially more reachable.
+- L3780 · A looked-up citation stamps NO capture id.
+- L3783 · THE PLANNER COULD CITE ITSELF
+- L3788 · ACCEPTED RESIDUE:
+- L3792 · ORDERING:
+- L3799 · The regression this phase introduced and review caught:
+- L3859 · The turn ceiling binds before the clock.
+- L3862 · A 15-minute tick eats the cadence behind it. _(2026-08-29)_
+- L3902 · MIN_TURN_BUDGET_MS = 15_000
+- L3907 · MAX_TOOL_CALL_MS = 90_000
+- L3924 · Context exhaustion is now the de-facto outer limit.
+- L3928 · The model is NOT told its remaining time
+- L4015 · Doctrine, not a code-enforced phase
+- L4017 · Churn: no brake
+- L4019 · Crowding out: watched, not prevented.
+- L4084 · No cap on the NUMBER of memory files, or on total bytes per firm.
+- L4090 · write_memory has NO mode gate
+- L4120 · The record grows without bound.
+- L4125 · The planner curates it.
+- L4130 · Detectors stay ours, and that is the point.
+- L4134 · The detector must not be the only way a gap opens.
+- L4192 · NUDGES_MODE is RETIRED
+- L4227 · agent informs the office
+- L4233 · agent asks the office _(2026-09-01)_
+- L4248 · the office reaches an agent
+- L4259 · seat-to-seat informs
+- L4307 · A partial index is only usable when the query IMPLIES its predicate.
+- L4420 · Durability.
+- L4422 · Observability.
+- L4482 · 1 · the firm's roster.
+- L4484 · 2 · who you can reach.
+- L4486 · 3 · a message need not be about a gap.
+- L4488 · 4 · one verb.
+- L4491 · 5 · seeing what you sent.
+- L4503 · as: 'board'
+- L4506 · Several addressees on one message
+- L4509 · The quiet-firm skip
+- L4512 · No v_office_messages
+- L4514 · B65-REACH-A-MANAGER
+- L4759 · ON DELETE SET NULL is an UPDATE.
+- L4761 · Naive-local vs real UTC, again. _(2026-09-08)_
+- L4766 · A once-ever index plus stable ids = a detector that fires once, forever.
+- L4773 · A liveness filter can be bypassed by an id rename.
+- L4777 · A compat view bridges the deploy. _(2026-09-05)_
+- L4791 · schedule_events.assignment_id KEEPS ITS NAME this rung.
+- L4794 · The completed-stamp CHECK was dropped.
+- L4881 · A green suite proves nothing when you mass-edit tests.
+- L4886 · A test can pin the bug.
+- L4889 · Reachability is not a compile error.
+- L4959 · A technician's seat agent has NO scheduling verb at any tier.
+- L4962 · Live specimen in the pilot _(2026-09-01)_
+- L4972 · Counting.
+- L4974 · Detection.
+- L4979 · Booking.
+- L4992 · Build 6 (vocabulary): _(2026-09-01)_
+- L4997 · Build 7 (detectors report): _(2026-09-05)_
+- L5007 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L5396 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L5419 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L5466 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L5503 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L5535 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L5540 · Every member row stores the FULL grouped message in question.
-- L5544 · The attribution stamp is an audit link, not a gate.
-- L5548 · The derived stamp requires a capture a badge-holder SPOKE
-- L5552 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L5558 · The follow-up loop has two halves and both had to be written down.
-- L5564 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L5638 · Batching works.
-- L5640 · The follow-up leg works, including the half that fails silently.
-- L5644 · Both attribution paths fired, each in its designed case.
-- L5648 · Escalation fired correctly
-- L5649 · The planner's group-aware pacing is the result worth keeping.
+- L5403 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L5426 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L5473 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L5510 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L5542 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L5547 · Every member row stores the FULL grouped message in question.
+- L5551 · The attribution stamp is an audit link, not a gate.
+- L5555 · The derived stamp requires a capture a badge-holder SPOKE
+- L5559 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L5565 · The follow-up loop has two halves and both had to be written down.
+- L5571 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L5645 · Batching works.
+- L5647 · The follow-up leg works, including the half that fails silently.
+- L5651 · Both attribution paths fired, each in its designed case.
+- L5655 · Escalation fired correctly
+- L5656 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L5979 · Evals:
-- L5986 · Runbooks:
-- L5991 · Decision history with citations:
-- L5995 · This file
+- L5986 · Evals:
+- L5993 · Runbooks:
+- L5998 · Decision history with citations:
+- L6002 · This file
 
 <!-- INDEX:END -->
 
@@ -3557,15 +3557,22 @@ what to do. Attention curation is a WEIGHTING, never a gate (user, 2026-08-28).
 7  the record has authors        the planner opens its own; the seats are an eye  [BUILT 2026-09-02]
 8  the schedule is the manager's  DEMOLISH the solver ritual + pinning   [BUILT 2026-09-04; §8b below]
 9a the rails come out            promise ladder + stored window DELETED  [BUILT 2026-09-05; §8 below]
-9b the visit is one object        committed→placed→happened→reported; absorbs old 8  [BUILT 2026-09-05; §9b]
+9b the visit is one object        committed→placed→happened→reported; absorbs old 8  [DEPLOYED 2026-09-06; §9b]
+9c a visit is not a person        multi-technician: a participant table; lead stays single  [SPLIT OUT of 9b]
 10 inbound commits a visit        CALL **AND EMAIL** → extractor creates UNPLACED  [user 2026-09-05]
 11 the planner learns the schedule  recommends; passes the firm's pattern to seats   [user 2026-09-03]
 12 new eyes                       contradiction detectors — ours, SQL, cheap   [was 9; now on ONE visit]
 ```
 
 **Hard dependencies:** 1 < 5 · 4 < 6 · 6 < 7 · 2 < 3 · 6.5 < 7 · 7 < 9 · 8 < 9 · 9a < 9b ·
-9b < 10 · 9b < 12 (9b changes what a gap's SUBJECT is — a visit id — so every detector after it
-reads one visit).
+9b < 9c · 9b < 10 · 9b < 12 (9b changes what a gap's SUBJECT is — a visit id — so every detector
+after it reads one visit). **9c and 10 are INDEPENDENT of each other** — both only need 9b.
+
+**THE BOARD IS REBUILT AFTER THE WHOLE SCHEDULE STORY, not per rung (user, 2026-09-06):** *"We'll be
+rebuilding the board after we build the entire schedule rung."* So do NOT spend effort keeping
+`web/board/` pretty through 9c/10/11 — keep it WORKING (it is the manager's hands) and let the
+rebuild absorb the UX. This is also why 9b's Telegram-board manual check was closed as deferred
+rather than run.
 
 **Rung 9 SPLIT at plan review (2026-09-05):** the ruling that killed the window turned rung 9 into
 two independent pieces. **9a — the rails come out** deletes the promise ladder and the stored

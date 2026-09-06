@@ -220,7 +220,24 @@ unit_status() {
       next_rt="$(timeout 5 systemctl show "$u" -p NextElapseUSecRealtime --value 2>/dev/null || echo '')"
       next_mono="$(timeout 5 systemctl show "$u" -p NextElapseUSecMonotonic --value 2>/dev/null || echo '')"
       if [ -z "$next_rt" ] && { [ "$next_mono" = infinity ] || [ -z "$next_mono" ]; }; then
-        echo "down active/unscheduled"
+        # UNSCHEDULED is also what a HEALTHY timer reads while the unit it
+        # triggers is mid-run: an OnUnitActiveSec next-elapse cannot be
+        # computed until that unit goes inactive again. Measured on
+        # trades-box-1 by sampling sandbox-orphan-reaper.timer every 0.3s
+        # across a firing: 2 of ~250 samples read realtime empty +
+        # monotonic `infinity` with the service `activating`. That ~1% window
+        # produced two false `down` reports in 24h (nemoclaw-inference-medic
+        # 21:14, badge-pull 22:40), each surrounded by clean sweeps.
+        #
+        # So only call it down when nothing is running to explain it.
+        local trig trig_state
+        trig="$(timeout 5 systemctl show "$u" -p Unit --value 2>/dev/null || echo '')"
+        trig_state=""
+        [ -n "$trig" ] && trig_state="$(timeout 5 systemctl show "$trig" -p ActiveState --value 2>/dev/null || echo '')"
+        case "$trig_state" in
+          active|activating|reloading|deactivating) echo "ok $active/running" ;;
+          *)                                        echo "down active/unscheduled" ;;
+        esac
       else
         echo "ok $active"
       fi

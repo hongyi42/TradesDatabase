@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 216 documents · 206 live · 10 superseded.
+Regenerate with `npm run decisions:index`. 217 documents · 207 live · 10 superseded.
 
 ## Superseded — do not build on these
 
@@ -50,6 +50,7 @@ Regenerate with `npm run decisions:index`. 216 documents · 206 live · 10 super
 ## Live
 
 - `2026-09-06` `plan` [2026-09-06-a-visit-carries-a-crew](shared/plans/2026-09-06-a-visit-carries-a-crew.md) — Rung 9c — a visit carries a crew: move the person off the visit row into visit_participants, relocate the dou…
+- `2026-09-06` `plan` [2026-09-06-rung-10-inbound-commits-a-visit-ask-first](shared/plans/2026-09-06-rung-10-inbound-commits-a-visit-ask-first.md) · _draft_ — Rung 10 — inbound commits a visit, ASK FIRST. The extractor is the planner's eye on call → job → visit; a det…
 - `2026-09-06` `research` [2026-09-06-a-visit-carries-a-crew](shared/research/2026-09-06-a-visit-carries-a-crew.md) `landed` — "Rung 9c — a visit carries a crew: what it takes for ONE visit row to name SEVERAL technicians, and where the…
 - `2026-09-06` `research` [2026-09-06-rung-10-inbound-commits-a-visit](shared/research/2026-09-06-rung-10-inbound-commits-a-visit.md) `landed` — Rung 10 — inbound commits a visit. How a call or an email reaches the spine today, where the extractor runs,…
 - `2026-09-05` `plan` [2026-09-05-fleet-to-openrouter-muse-spark](shared/plans/2026-09-05-fleet-to-openrouter-muse-spark.md) · _draft_ — Move the six-seat fleet from Fireworks/GLM-5.2 to OpenRouter — Muse Spark 1.3 primary, Gemini Flash (floating…

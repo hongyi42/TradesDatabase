@@ -67,6 +67,19 @@ visits finding from the 9b deploy is deliberately NOT here.
 - **Out of scope** — stale-confirmed visits defeating attach step 2; any-participant ask-of-record; the
   board rebuild; rungs 10–12.
 
+### Amended during Phase 2
+- **A present-but-empty `technicianRef`/`technicianRefs` is REFUSED by the verb**, not read. `''`
+  used to mean "keep the crew" and `[]` means "park it" — two readings of the same accident, and the
+  two surfaces already refuse both at their own edge. The shared verb is now the floor under them.
+- **A race names only the joiner who is actually busy.** One collision rolls the whole upsert back,
+  so every joiner is missing — calling them all busy tells the manager something false about the
+  innocent one. The warning re-checks each at the new slot.
+- **`move_visit`'s singular `technicianRef` says it REPLACES the crew**, like its plural sibling. An
+  agent told "send Joy too" that reached for the singular field would silently drop Ben.
+- **Carried into Phase 4:** once the bridge column goes, `upsertParticipants` becomes responsible for
+  participant #1, and a joiner failure after the leavers were removed can leave a trip with NOBODY on
+  it. Neither `moveVisit`'s warning nor the MCP result would say so today. Phase 4 must cover it.
+
 ### Amended during Phase 1 (probed on the local stack, 2026-09-06)
 - **SURROGATE PRIMARY KEY on `visit_participants`, not (visit_id, technician_id)** — PostgREST reads a
   two-FK table whose PK is exactly those FKs as a JUNCTION and synthesises a many-to-many
@@ -278,21 +291,21 @@ joined and who left, and the Telegram pushes reach all of them.
 unchanged (it sends the shorthand).
 
 ### Automated verification
-- [ ] `typecheck` · `lint` · `test` · `build`
-- [ ] `booking.test.ts`: book two refs → two participants + one `booked` event carrying both; an unknown
+- [x] `typecheck` · `lint` · `test` · `build`
+- [x] `booking.test.ts`: book two refs → two participants + one `booked` event carrying both; an unknown
       second ref is refused by name and NO visit is left behind; move with `technicianRefs` replaces the
       crew and the event carries `previousTechnicianIds`; move onto a slot one crew member holds elsewhere
       is refused per person BEFORE the write; **reassign-and-move where the LEAVER is busy at the target
       succeeds** (review F2); the joiner-failure message; `unassign:true` empties it.
-- [ ] `boardNotify.test.ts`: a booked crew → one push each; a reassignment → the leaver told, the joiner
+- [x] `boardNotify.test.ts`: a booked crew → one push each; a reassignment → the leaver told, the joiner
       told; a historical `previousTechnicianId` still resolves.
-- [ ] `server.test.ts`: `technicianRefs` on book and move, `crewNote` present for N > 1; the catalog
+- [x] `server.test.ts`: `technicianRefs` on book and move, `crewNote` present for N > 1; the catalog
       regression pin that `technicianRef` still works alone.
-- [ ] `boardApi.test.ts`: `technicianRefs` accepted on all three routes.
+- [x] `boardApi.test.ts`: `technicianRefs` accepted on all three routes.
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack.
-- [ ] none beyond the suite (all codifiable).
+- [x] none beyond the suite (all codifiable).
 
 ### Manual verification
 - [ ] none

@@ -1031,6 +1031,9 @@ const ADMIN_TOOLS = [
       'choice when a day or time was stated. Omit technicianRef to ' +
       'book WITHOUT a technician (put it on the calendar, assign later — attach someone with ' +
       'move_visit; find these via get_team_schedule unassignedOnly:true). ' +
+      'SEVERAL PEOPLE ON ONE TRIP: pass technicianRefs with every ref ("Ben and Joy on the ' +
+      'Henderson job") — that is ONE visit carrying a crew, not two bookings. Booking it ' +
+      'twice makes two separate trips, each chased and reported separately. ' +
       'When talking to customers, offer DAYS, not times. ' +
       'When the result carries dayPhrase, SAY IT VERBATIM whenever you name the day — never ' +
       'work out the weekday yourself; you are unreliable at calendar math. ' +
@@ -1041,7 +1044,8 @@ const ADMIN_TOOLS = [
       properties: {
         customerId: { type: 'string', description: 'Exactly one of customerId/jobId.' },
         jobId: { type: 'string', description: 'Exactly one of customerId/jobId.' },
-        technicianRef: { type: 'string', description: 'Roster ref of the technician. OPTIONAL — omit to book unassigned ("assign later").' },
+        technicianRef: { type: 'string', description: 'Roster ref of ONE technician — shorthand for a one-person crew. OPTIONAL — omit to book unassigned ("assign later").' },
+        technicianRefs: { type: 'array', items: { type: 'string' }, description: 'Roster refs of EVERY technician going on this trip. Two people on one job at one time is ONE visit with both refs here — never two book_visit calls.' },
         title: { type: 'string', description: 'Job title when booking by customerId (a new job is created).' },
         date: { type: 'string', description: 'YYYY-MM-DD, firm-local. Required WITH both times — or omit all three to book an untimed visit.' },
         startTime: { type: 'string', description: 'HH:MM 24h. Required with date and endTime — no default; ask the manager if unstated.' },
@@ -1057,13 +1061,15 @@ const ADMIN_TOOLS = [
     description:
       'Move a booked visit (manager only) — also how a technician gets ATTACHED to an ' +
       'unassigned visit (pass technicianRef with the same day/time), and how one gets TAKEN ' +
-      'OFF: unassign:true parks the visit — pulls the person off, keeps day/time; find it ' +
+      'OFF: unassign:true parks the visit — pulls everyone off, keeps day/time; find it ' +
       'under get_team_schedule unassignedOnly:true or the board\'s loose bucket. Reversible ' +
       'and internal → done in ONE call ({status:"moved"}) — ALWAYS tell the ' +
       'manager what moved; never act silently. Before moving a visit, READ the job\'s own ' +
       'record (get_job / list_recent_captures): if the firm told this customer a day or a ' +
       'time, moving it is a promise someone must now un-tell them. Call with visitId + ' +
-      'date + startTime (+ optional endTime/technicianRef OR unassign) + reason. When the ' +
+      'date + startTime (+ optional endTime/technicianRef/technicianRefs OR unassign) + reason. ' +
+      'technicianRefs REPLACES the crew: to ADD a second person to a visit, pass BOTH refs, ' +
+      'or the one already on it comes off. When the ' +
       'result carries ' +
       'boardNote, ALWAYS end your report with its exact [See it on the board](…) line — it ' +
       'renders as a tappable link. When the result carries dayPhrase, SAY IT VERBATIM whenever ' +
@@ -1075,8 +1081,9 @@ const ADMIN_TOOLS = [
         date: { type: 'string', description: 'New YYYY-MM-DD.' },
         startTime: { type: 'string', description: 'New HH:MM.' },
         endTime: { type: 'string', description: 'New HH:MM (default: keep the old duration).' },
-        technicianRef: { type: 'string', description: 'Reassign to this roster ref (default: same technician). Mutually exclusive with unassign.' },
-        unassign: { type: 'boolean', description: 'true = park the visit: pull the person off, keep day/time (the reverse of attaching). Mutually exclusive with technicianRef.' },
+        technicianRef: { type: 'string', description: 'Reassign to THIS ONE person — it REPLACES the crew, so anyone else on the visit comes off. To keep them, pass technicianRefs with every ref instead. Omit both to leave the crew unchanged. Mutually exclusive with unassign.' },
+        technicianRefs: { type: 'array', items: { type: 'string' }, description: 'The crew AFTER the move — it REPLACES whoever is on the visit, so list everyone still going, not just the person being added. Omit to keep the crew unchanged. Mutually exclusive with unassign.' },
+        unassign: { type: 'boolean', description: 'true = park the visit: pull EVERYONE off, keep day/time (the reverse of attaching). Mutually exclusive with technicianRef/technicianRefs.' },
         reason: { type: 'string', description: 'Why it is moving (kept on the record).' },
       },
       required: [],
@@ -2362,6 +2369,18 @@ async function dispatch(
   const { tenantId } = identity;
   const str = (k: string): string | undefined =>
     typeof args[k] === 'string' ? (args[k] as string) : undefined;
+  // A list of roster refs (rung 9c: a visit can carry a crew). Absent = the
+  // caller said nothing; present-but-malformed is an agent bug and is refused
+  // loudly rather than silently read as "nobody" — the same contract the
+  // present-but-empty technicianRef check has.
+  const strArray = (k: string): string[] | undefined => {
+    const v = args[k];
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v) || v.some((x) => typeof x !== 'string' || x.trim() === '')) {
+      throw new Error(`${k} must be an array of roster refs (non-empty strings)`);
+    }
+    return (v as string[]).map((x) => x.trim());
+  };
 
   // ONE roster read gates every call. Badge revocation propagates to hosts on
   // the ≤5-min pull, so a deactivated person's badge can briefly outlive their
@@ -4328,6 +4347,15 @@ async function dispatch(
             'technicianRef was empty — pass the roster ref, or omit the field entirely to book unassigned',
           );
         }
+        // The CREW (rung 9c). A present-but-EMPTY array is the same accident as
+        // an empty ref: the agent meant to name people and the value dropped.
+        const technicianRefs = strArray('technicianRefs');
+        if (technicianRefs !== undefined && technicianRefs.length === 0) {
+          throw new Error(
+            'technicianRefs was empty — list every technician going, or omit the field entirely ' +
+              'to book unassigned',
+          );
+        }
 
         const date = str('date');
 
@@ -4374,6 +4402,7 @@ async function dispatch(
         const bookInput = {
           tenantId,
           ...(technicianRef ? { technicianRef } : {}),
+          ...(technicianRefs ? { technicianRefs } : {}),
           ...(customerId ? { customerId } : {}),
           ...(jobId ? { jobId } : {}),
           title: str('title') ?? null,
@@ -4406,8 +4435,18 @@ async function dispatch(
             ...(booked.assignment.starts_at
               ? { dayPhrase: servedDayPhrase(booked.assignment.starts_at.slice(0, 10)) }
               : {}),
-            technicianRef: technicianRef ?? null,
-            unassigned: booked.assignment.technician_id === null,
+            technicianRef: booked.technicianRefs[0] ?? null,
+            // EVERYBODY who is going. A one-person booking still carries the
+            // list, so a surface never has to guess which field to read.
+            technicianRefs: booked.technicianRefs,
+            ...(booked.technicianRefs.length > 1
+              ? {
+                  crewNote:
+                    `${booked.technicianRefs.length} people are on this visit — it is ONE trip, ` +
+                    'not one each. Name all of them when you report it.',
+                }
+              : {}),
+            unassigned: booked.technicianRefs.length === 0,
             // ROW-derived, never the input, so the echo can never name a day
             // the row does not hold (final-review finding). Null on an untimed
             // booking — there is no day, and inventing one is the whole class
@@ -4447,10 +4486,23 @@ async function dispatch(
         if (!date || !startTime) throw new Error('date and startTime are required');
         if (!reason) throw new Error('reason is required — say why the visit is moving');
         const technicianRefArg = str('technicianRef');
+        const technicianRefsArg = strArray('technicianRefs');
+        if (technicianRefsArg !== undefined && technicianRefsArg.length === 0) {
+          throw new Error(
+            'technicianRefs was empty — list the crew AFTER the move, or pass unassign:true to ' +
+              'take everyone off',
+          );
+        }
         if (args.unassign !== undefined && typeof args.unassign !== 'boolean') {
           throw new Error('unassign must be a boolean');
         }
         const unassignArg = args.unassign === true;
+        if (unassignArg && (technicianRefArg || technicianRefsArg)) {
+          throw new Error(
+            'pass technicianRef/technicianRefs to attach or reassign, OR unassign:true to park ' +
+              'the visit — not both',
+          );
+        }
         const preview = await previewMoveVisit({
           tenantId,
           visitId,
@@ -4458,6 +4510,7 @@ async function dispatch(
           startTime,
           ...(str('endTime') ? { endTime: str('endTime') } : {}),
           ...(technicianRefArg ? { technicianRef: technicianRefArg } : {}),
+          ...(technicianRefsArg ? { technicianRefs: technicianRefsArg } : {}),
           unassign: unassignArg,
           reason,
           actorRef: subjectRef,
@@ -4474,6 +4527,7 @@ async function dispatch(
             startTime,
             endTime: preview.endTime, // resolved — preview == commit
             ...(technicianRefArg ? { technicianRef: technicianRefArg } : {}),
+            ...(technicianRefsArg ? { technicianRefs: technicianRefsArg } : {}),
             unassign: unassignArg,
             reason,
             actorRef: subjectRef,
@@ -4489,6 +4543,23 @@ async function dispatch(
             ...(date ? { dayPhrase: servedDayPhrase(date) } : {}),
             startTime,
             endTime: preview.endTime,
+            // Who is on it AFTER the move, read back from the row itself.
+            technicianRefs: moved.technicianRefs,
+            ...(moved.technicianRefs.length > 1
+              ? {
+                  crewNote:
+                    `${moved.technicianRefs.length} people are on this visit — it is ONE trip, ` +
+                    'not one each. Name all of them when you report it.',
+                }
+              : {}),
+            ...(moved.crewNotAdded.length > 0
+              ? {
+                  crewNotAdded: moved.crewNotAdded,
+                  crewNotAddedNote:
+                    'The visit DID move, but these people are booked elsewhere at the new time ' +
+                    'and are NOT on it. Say both halves to the manager.',
+                }
+              : {}),
             ...(unassignArg ? { unassigned: true } : {}),
             ...(moved.warning ? { warning: moved.warning } : {}),
             note: unassignArg

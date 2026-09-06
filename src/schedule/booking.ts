@@ -21,9 +21,11 @@ import {
   getTechnician,
   getTechnicianById,
   isInactiveState,
+  isJoinerFailure,
   isOverlapViolation,
   isValidDuration,
   listVisitsForTechnician,
+  listParticipants,
   listTimeOffForTechnician,
   listVisitsForJob,
   listIdenticalUnassignedVisits,
@@ -42,6 +44,7 @@ import {
   type Json,
   type UpdateJobDetailsInput,
   type Technician,
+  type ParticipantRef,
   type WeeklyPattern,
 } from '../db/index.js';
 import { isTechnicianAvailableOn } from './availability.js';
@@ -96,6 +99,67 @@ async function resolveTechnician(tenantId: string, ref: string): Promise<Technic
   return technician;
 }
 
+// A PRESENT-but-empty ref or list is an accident — the caller meant to name
+// somebody and the value dropped — so it is refused here, in the shared verb,
+// rather than read as "nobody" by one surface and "keep them" by another. Both
+// callers already refuse it at their own edge; this is the floor under them.
+function refuseEmptyCrewFields(
+  input: { technicianRef?: string | null; technicianRefs?: string[] },
+  omitAdvice: string,
+): void {
+  if (typeof input.technicianRef === 'string' && input.technicianRef.trim() === '') {
+    throw new Error(`technicianRef was empty — pass a roster ref, or ${omitAdvice}`);
+  }
+  if (input.technicianRefs !== undefined && input.technicianRefs.length === 0) {
+    throw new Error(`technicianRefs was empty — list the crew, or ${omitAdvice}`);
+  }
+}
+
+// A CREW, resolved (rung 9c). `technicianRef` names one person and
+// `technicianRefs` names the crew; the union is the crew, deduped, and order is
+// the order they were named — that is what the participant tiebreak reads, and
+// it is a tiebreak, not a rank. An unknown ref names ITSELF in the error, so
+// "book Ben and Jo" tells the manager which of the two is not on the roster.
+async function resolveCrew(
+  tenantId: string,
+  ref: string | undefined,
+  refs: string[] | undefined,
+): Promise<Technician[]> {
+  const seen = new Set<string>();
+  const crew: Technician[] = [];
+  for (const r of [...(ref ? [ref] : []), ...(refs ?? [])]) {
+    if (!r || seen.has(r)) continue;
+    seen.add(r);
+    crew.push(await resolveTechnician(tenantId, r));
+  }
+  return crew;
+}
+
+// The people on a visit RIGHT NOW, as roster rows. A participant whose
+// technician row has vanished is dropped — near-unreachable (techs deactivate,
+// they are not deleted), and a name we cannot resolve is not one we can print.
+async function currentCrew(visitId: string, tenantId: string): Promise<Technician[]> {
+  const out: Technician[] = [];
+  for (const p of await listParticipants(visitId)) {
+    const t = await getTechnicianById(p.technician_id, tenantId);
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+// One phrase for a crew, in a sentence a manager reads: "Ben", "Ben and Joy",
+// "Ben, Joy and Sam".
+function crewNames(crew: { display_name: string }[]): string {
+  const names = crew.map((t) => t.display_name);
+  if (names.length <= 1) return names[0] ?? 'the technician';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+// The crew as the shape every surface reports (matches db/visits' ParticipantRef).
+function crewRefs(crew: Technician[]): ParticipantRef[] {
+  return crew.map((t) => ({ technicianId: t.id, ref: t.ref, displayName: t.display_name }));
+}
+
 // Day-level availability advisory (never blocks — the manager may deliberately
 // book outside the pattern; window-level fit is Plan 3). Naive timestamps →
 // timezone 'UTC' so the pattern day matches the stored wall-clock day.
@@ -144,6 +208,9 @@ function validateDayAndTimes(date: string, startTime: string, endTime: string): 
 export interface BookVisitInput {
   tenantId: string;
   technicianRef?: string; // omit = book UNASSIGNED ("on the calendar, assign later")
+  // The CREW (rung 9c): two technicians on one trip are ONE visit, not two.
+  // Merged with technicianRef; either alone is fine, both together is the union.
+  technicianRefs?: string[];
   customerId?: string;
   jobId?: string;
   title?: string | null; // job-shell title on the customerId path
@@ -199,7 +266,7 @@ export function cancelRequiresConfirmation(row: Visit): boolean {
 }
 
 interface ResolvedBooking {
-  technician: Technician | null; // null = unassigned booking
+  crew: Technician[]; // empty = unassigned booking
   customer: Customer;
   existingJob: Job | null;
   // PLACED: all four set. UNTIMED: all four null. There is no third shape.
@@ -243,12 +310,11 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
   if ((input.customerId ? 1 : 0) + (input.jobId ? 1 : 0) !== 1) {
     throw new Error('provide exactly one of customerId or jobId');
   }
-  // No ref = an UNASSIGNED booking: the visit goes on the calendar with nobody
-  // attached (attach later via moveVisit). No technician → no overlap pre-check
-  // and no availability advisory; the DB guard likewise ignores NULL rows.
-  const technician = input.technicianRef
-    ? await resolveTechnician(tenantId, input.technicianRef)
-    : null;
+  refuseEmptyCrewFields(input, 'omit the field entirely to book unassigned');
+  // No refs = an UNASSIGNED booking: the visit goes on the calendar with nobody
+  // attached (attach later via moveVisit). Nobody → no overlap pre-check and no
+  // availability advisory; the DB guard likewise ignores participant-less rows.
+  const crew = await resolveCrew(tenantId, input.technicianRef, input.technicianRefs);
 
   // Tenant-guard the target and resolve the customer BEFORE any write.
   let customer: Customer;
@@ -295,10 +361,13 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
     // person-or-nobody, while a second untimed visit on a DIFFERENT job for
     // one customer is legitimate work, not a twin.
     if (existingJob) {
+      // Keyed on the FIRST of the crew: a retry carries the same crew in the
+      // same order, so the same first person — and a genuinely different
+      // second visit for one job is what the manager is told to explain.
       const twins = await listUntimedVisitsForJob(
         tenantId,
         existingJob.id,
-        technician?.id ?? null,
+        crew[0]?.id ?? null,
       );
       if (twins.length > 0) {
         throw new Error(
@@ -308,7 +377,7 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
       }
     }
     return {
-      technician,
+      crew,
       customer,
       existingJob,
       startTime: null,
@@ -329,12 +398,17 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
   const startISO = naiveLocalISO(input.date, startTime);
   const endISO = naiveLocalISO(input.date, endTime);
 
-  if (technician) {
-    const clashes = await overlappingConfirmed(technician.id, startISO, endISO);
-    if (clashes.length > 0) {
-      throw new Error(
-        `${technician.display_name} already has a confirmed visit overlapping ${input.date} ${startTime}–${endTime}`,
-      );
+  if (crew.length > 0) {
+    // PER PERSON — one busy crew member refuses the whole trip, and the error
+    // names WHICH one. (The DB exclusion is still the authority under a race;
+    // this is the check that can explain itself.)
+    for (const t of crew) {
+      const clashes = await overlappingConfirmed(t.id, startISO, endISO);
+      if (clashes.length > 0) {
+        throw new Error(
+          `${t.display_name} already has a confirmed visit overlapping ${input.date} ${startTime}–${endTime}`,
+        );
+      }
     }
   } else {
     // Unassigned rows are exempt from the DB overlap guard (NULL never
@@ -354,11 +428,16 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
       );
     }
   }
-  const warning = technician
-    ? await availabilityWarning(technician, input.date, startISO)
-    : undefined;
+  // One advisory line per person who is off that day — a crew where both are
+  // off should say both, or the manager fixes one and re-hits the other.
+  const warnings: string[] = [];
+  for (const t of crew) {
+    const w = await availabilityWarning(t, input.date, startISO);
+    if (w) warnings.push(w);
+  }
+  const warning = warnings.length > 0 ? warnings.join('; ') : undefined;
   return {
-    technician,
+    crew,
     customer,
     existingJob,
     startTime,
@@ -370,8 +449,14 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
 }
 
 export interface BookVisitPreview {
+  // FIRST-OR-NULL, kept for every caller that shows one name. The crew is
+  // technicianRefs/technicianNames — read those when the answer may be two
+  // people (rung 9c).
   technicianRef: string | null; // null = unassigned booking
   technicianName: string | null;
+  technicianRefs: string[];
+  technicianNames: string[];
+  participants: ParticipantRef[];
   customerId: string;
   customerName: string;
   newJob: boolean; // true = confirming will mint a job shell
@@ -398,8 +483,11 @@ export interface BookVisitPreview {
 export async function previewBookVisit(input: BookVisitInput): Promise<BookVisitPreview> {
   const r = await resolveBooking(input);
   return {
-    technicianRef: r.technician?.ref ?? null,
-    technicianName: r.technician?.display_name ?? null,
+    technicianRef: r.crew[0]?.ref ?? null,
+    technicianName: r.crew[0]?.display_name ?? null,
+    technicianRefs: r.crew.map((t) => t.ref),
+    technicianNames: r.crew.map((t) => t.display_name),
+    participants: crewRefs(r.crew),
     customerId: r.customer.id,
     customerName: r.customer.name,
     newJob: r.existingJob === null,
@@ -441,6 +529,11 @@ export interface BookVisitResult {
   assignment: Visit;
   job: Job;
   customer: Customer;
+  // Everybody who went, in the order they were named. `technicianRefs` is the
+  // list a surface echoes; `participants` carries the ids with it.
+  technicianRefs: string[];
+  technicianNames: string[];
+  participants: ParticipantRef[];
   warning?: string;
 }
 
@@ -476,7 +569,7 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
     assignment = await createVisit({
       tenantId,
       jobId: job.id,
-      technicianId: r.technician?.id ?? null,
+      technicianIds: r.crew.map((t) => t.id),
       startsAt: r.startISO,
       endsAt: r.endISO,
       status: 'confirmed',
@@ -494,10 +587,12 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       }
     }
     if (isOverlapViolation(err)) {
-      // Only reachable with a technician attached — the DB guard never fires
-      // on NULL rows; the fallback text is TS-narrowing, not a real case.
+      // Only reachable with somebody attached — the DB guard never fires on a
+      // participant-less row. Which crew member lost the race is not in the
+      // SQLSTATE, so the message names the crew; for the ordinary one-person
+      // booking it reads exactly as it always did.
       throw new Error(
-        `${r.technician?.display_name ?? 'the technician'} already has a confirmed visit overlapping ${input.date ?? ''} ${r.startTime ?? ''}–${r.endTime ?? ''}`,
+        `${crewNames(r.crew)} already has a confirmed visit overlapping ${input.date ?? ''} ${r.startTime ?? ''}–${r.endTime ?? ''}`,
       );
     }
     throw err;
@@ -514,7 +609,10 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       ...(r.startISO
         ? { date: input.date, startTime: r.startTime, endTime: r.endTime }
         : { untimed: true }),
-      technicianRef: r.technician?.ref ?? null,
+      // The CREW, not one person (rung 9c). The old singular key is not
+      // written any more: a reader that took it would have been told one name
+      // for a two-person trip, which is the failure this rung removes.
+      technicianRefs: r.crew.map((t) => t.ref),
       customerId: r.customer.id,
       jobId: job.id,
     },
@@ -524,6 +622,9 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
     assignment,
     job,
     customer: r.customer,
+    technicianRefs: r.crew.map((t) => t.ref),
+    technicianNames: r.crew.map((t) => t.display_name),
+    participants: crewRefs(r.crew),
     ...(r.warning ? { warning: r.warning } : {}),
   };
 }
@@ -534,7 +635,11 @@ export interface MoveVisitInput {
   date: string; // YYYY-MM-DD
   startTime: string; // HH:MM
   endTime?: string; // HH:MM, default = preserve the old duration
-  technicianRef?: string; // omit = same technician
+  technicianRef?: string; // omit = same crew
+  // The crew AFTER the move — it REPLACES whoever is on the visit, it does not
+  // add to them (user, 2026-09-06). Omit both ref fields to keep the crew as
+  // it is; unassign:true empties it.
+  technicianRefs?: string[];
   unassign?: boolean; // true = DETACH: park the visit person-less (plan 4a.5)
   reason: string;
   // Extra ledger-event detail — same contract as BookVisitInput's (4b-3).
@@ -546,11 +651,14 @@ interface ResolvedMove {
   // May be UNPLACED (plan 4b-2): moving an unplaced visit to real times IS
   // the placing verb — the reschedule produces a placed row either way.
   old: Visit;
-  // The TARGET technician. null has two readings — an UNASSIGNED visit staying
-  // unassigned (the common case: old.technician_id is null and no ref given),
-  // or a roster row that vanished (near-unreachable: techs deactivate, never
-  // delete). Discriminate with old.technician_id when it matters.
-  technician: Technician | null;
+  // The crew AFTER the move. Empty means nobody goes — either a park
+  // (unassign) or an unassigned visit staying unassigned.
+  crew: Technician[];
+  // Who is on it NOW, so the caller can record who left without re-reading.
+  currentCrewIds: string[];
+  // Did the caller say anything about WHO? false = keep the crew untouched,
+  // which is what lets a pure time-move leave a two-person trip alone.
+  crewGiven: boolean;
   endTime: string;
   startISO: string;
   endISO: string;
@@ -568,9 +676,11 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
     throw new Error(`cannot move a ${old.status} visit`);
   }
 
-  if (input.unassign && input.technicianRef) {
+  refuseEmptyCrewFields(input, 'omit it to keep the crew, or pass unassign:true to park the visit');
+  if (input.unassign && (input.technicianRef || (input.technicianRefs?.length ?? 0) > 0)) {
     throw new Error(
-      'pass ONE of technicianRef (attach/reassign) or unassign:true (park the visit) — not both',
+      'pass ONE of technicianRef/technicianRefs (attach/reassign) or unassign:true (park the ' +
+        'visit) — not both',
     );
   }
   // Resolve the TARGET technician either way — the availability warning must
@@ -579,14 +689,14 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
   // passing a ref is how a person gets ATTACHED to an unassigned visit;
   // unassign:true DETACHES — the target is nobody, so there is no availability
   // advisory and no overlap pre-check (NULL rows are exempt from the DB guard).
-  const technician = input.unassign
-    ? null
-    : input.technicianRef
-      ? await resolveTechnician(tenantId, input.technicianRef)
-      : old.technician_id
-        ? await getTechnicianById(old.technician_id, tenantId)
-        : null;
-  const targetTechnicianId = input.unassign ? null : (technician?.id ?? old.technician_id);
+  const crewGiven =
+    !!input.unassign || input.technicianRef !== undefined || input.technicianRefs !== undefined;
+  const currentCrewIds = (await listParticipants(old.id)).map((p) => p.technician_id);
+  const crew = input.unassign
+    ? []
+    : input.technicianRef !== undefined || input.technicianRefs !== undefined
+      ? await resolveCrew(tenantId, input.technicianRef, input.technicianRefs)
+      : await currentCrew(old.id, tenantId);
 
   // Default length for the new slot: the old booked span when placed; for an
   // UNPLACED subject there is no span — the job's own recorded length (4b-1)
@@ -618,12 +728,18 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
   // identical-duplicate refusal instead (same customer + exact window,
   // excluding the moved row itself): a park must not silently land on top of
   // an existing identical parked visit.
-  if (targetTechnicianId) {
-    const clashes = await overlappingConfirmed(targetTechnicianId, startISO, endISO, old.id);
-    if (clashes.length > 0) {
-      throw new Error(
-        `that slot overlaps a confirmed visit on ${input.date} — the booking was NOT moved`,
-      );
+  if (crew.length > 0) {
+    // PER PERSON, excluding the moved row itself. One busy crew member refuses
+    // the whole move — the trip is one object, so it goes as a unit or not at
+    // all. Somebody who is LEAVING is not checked: they are not going.
+    for (const t of crew) {
+      const clashes = await overlappingConfirmed(t.id, startISO, endISO, old.id);
+      if (clashes.length > 0) {
+        throw new Error(
+          `that slot overlaps a confirmed visit for ${t.display_name} on ${input.date} — ` +
+            'the booking was NOT moved',
+        );
+      }
     }
   } else {
     // Same guard as resolveBooking's, excluding the moved row itself; the two
@@ -643,16 +759,30 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
       );
     }
   }
-  const warning = technician
-    ? await availabilityWarning(technician, input.date, startISO)
-    : undefined;
-  return { old, technician, endTime, startISO, endISO, ...(warning ? { warning } : {}) };
+  const warnings: string[] = [];
+  for (const t of crew) {
+    const w = await availabilityWarning(t, input.date, startISO);
+    if (w) warnings.push(w);
+  }
+  const warning = warnings.length > 0 ? warnings.join('; ') : undefined;
+  return {
+    old,
+    crew,
+    currentCrewIds,
+    crewGiven,
+    endTime,
+    startISO,
+    endISO,
+    ...(warning ? { warning } : {}),
+  };
 }
 
 export interface MoveVisitPreview {
   visitId: string;
   customerName: string | null;
-  technicianName: string | null;
+  technicianName: string | null; // first-or-null; the crew is technicianNames
+  technicianRefs: string[];
+  technicianNames: string[];
   fromDay: string;
   toDay: string;
   startTime: string;
@@ -669,7 +799,9 @@ export async function previewMoveVisit(input: MoveVisitInput): Promise<MoveVisit
   return {
     visitId: r.old.id,
     customerName: customer?.name ?? null,
-    technicianName: r.technician?.display_name ?? null,
+    technicianName: r.crew[0]?.display_name ?? null,
+    technicianRefs: r.crew.map((t) => t.ref),
+    technicianNames: r.crew.map((t) => t.display_name),
     fromDay: visitDay(r.old),
     toDay: input.date,
     startTime: input.startTime,
@@ -688,6 +820,16 @@ export interface MoveVisitResult {
   // needs to tell the person who LOST the visit.
   visit: Visit;
   previousTechnicianId: string | null;
+  // Everyone who was on it before, and everyone on it after (rung 9c). The
+  // singular field above is the bridge person and is kept for callers that
+  // still read it; the pushes and the ledger read these.
+  previousTechnicianIds: string[];
+  technicianRefs: string[];
+  participants: ParticipantRef[];
+  // Named when the visit MOVED but somebody could not be added to it — they
+  // are booked elsewhere at the new time. The move is real; the omission is
+  // real; both get said.
+  crewNotAdded: string[];
   warning?: string;
 }
 
@@ -695,6 +837,7 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
   const { tenantId } = input;
   const r = await resolveMove(input);
   const previousTechnicianId = r.old.technician_id;
+  const previousTechnicianIds = r.currentCrewIds;
   const fromDay = visitDay(r.old);
 
   // ONE statement, so there is no window to be stranded in. The old code
@@ -704,26 +847,57 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
   // trips the exclusion constraint changes nothing at all, so the honest
   // report is simply "that slot is taken".
   let visit: Visit;
+  let joinerFailure: unknown;
   try {
     visit = await moveVisitRow(r.old.id, {
+      // Omitted entirely when the caller said nothing about WHO — that is what
+      // keeps a pure time-move from re-writing a two-person crew.
+      ...(r.crewGiven ? { technicianIds: r.crew.map((t) => t.id) } : {}),
       startsAt: r.startISO,
       endsAt: r.endISO,
-      ...(input.unassign
-        ? { technicianId: null } // explicit null = DETACH (the !== undefined idiom)
-        : input.technicianRef && r.technician
-          ? { technicianId: r.technician.id }
-          : {}),
       reason: input.reason,
       status: 'confirmed', // a moved visit is on the schedule, never 'proposed'
     });
   } catch (err) {
-    if (isOverlapViolation(err)) {
+    // A JOINER failure is not a refusal: the visit HAS moved and one person
+    // could not come along. Falling into the branch below would tell the
+    // manager the opposite of what happened, so it is handled after the move
+    // as a warning on a real result (see below).
+    if (isJoinerFailure(err)) {
+      joinerFailure = err;
+      visit = (err as { visit: Visit }).visit;
+    } else if (isOverlapViolation(err)) {
       throw new Error(
-        `${r.technician?.display_name ?? 'that technician'} already has a confirmed visit ` +
+        `${crewNames(r.crew)} already has a confirmed visit ` +
           `overlapping ${input.date} ${input.startTime}–${r.endTime} — the visit has NOT moved`,
       );
+    } else {
+      throw err;
     }
-    throw err;
+  }
+
+  // READ BACK who is actually on it, rather than assuming the intended crew
+  // landed: on a joiner failure the whole upsert rolled back, so the ledger and
+  // the pushes must record the trip as it really is.
+  const landed = await currentCrew(visit.id, tenantId);
+  const landedIds = new Set(landed.map((t) => t.id));
+  const notAdded = r.crew.filter((t) => !landedIds.has(t.id));
+  // WHICH of them is actually busy. The upsert is one statement, so a single
+  // collision rolls back every joiner — saying "they already have a confirmed
+  // visit there" about all of them would tell the manager something false about
+  // the innocent ones. Re-check each at the new slot and name only the busy.
+  let crewWarning: string | undefined;
+  if (joinerFailure && notAdded.length > 0) {
+    const busy: Technician[] = [];
+    for (const t of notAdded) {
+      if ((await overlappingConfirmed(t.id, r.startISO, r.endISO, visit.id)).length > 0) busy.push(t);
+    }
+    const where = `moved to ${input.date} ${input.startTime}–${r.endTime}, but `;
+    crewWarning =
+      busy.length === notAdded.length
+        ? `${where}${crewNames(notAdded)} already has a confirmed visit there — they were NOT added`
+        : `${where}${crewNames(notAdded)} could not be added` +
+          (busy.length > 0 ? ` (${crewNames(busy)} already has a confirmed visit there)` : '');
   }
 
   await appendScheduleEvent({
@@ -736,15 +910,23 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
       fromDay,
       toDay: input.date,
       // The visit keeps its id now, so "who held it before" is the thing a
-      // reader actually needs — the old id would just be this one.
-      previousTechnicianId,
+      // reader actually needs — the old id would just be this one. Both sides
+      // are LISTS since rung 9c: a crew move has several people on each.
+      previousTechnicianIds,
+      technicianRefs: landed.map((t) => t.ref),
     },
   });
 
   return {
     visit,
     previousTechnicianId,
-    ...(r.warning ? { warning: r.warning } : {}),
+    previousTechnicianIds,
+    technicianRefs: landed.map((t) => t.ref),
+    participants: crewRefs(landed),
+    crewNotAdded: notAdded.map((t) => t.ref),
+    ...(r.warning || crewWarning
+      ? { warning: [crewWarning, r.warning].filter(Boolean).join('; ') }
+      : {}),
   };
 }
 
@@ -831,12 +1013,16 @@ export interface AttachUnplacedResult {
   // visit, so its id survives and the tray row the manager tapped still exists.
   visit: Visit;
   previousTechnicianId: string | null;
+  previousTechnicianIds: string[];
+  technicianRefs: string[];
 }
 
 interface AttachUnplacedGuardInput {
   tenantId: string;
   visitId: string;
   technicianRef: string | null; // null = DETACH (park back unassigned)
+  // The crew, same contract as move: it REPLACES whoever is on the visit.
+  technicianRefs?: string[];
 }
 
 // Shared front-half: every guard the commit enforces, writes NOTHING — the
@@ -845,7 +1031,7 @@ interface AttachUnplacedGuardInput {
 // preview, so a stale tab walked the picker + confirm into a guaranteed 409).
 async function resolveAttachUnplaced(
   input: AttachUnplacedGuardInput,
-): Promise<{ old: Visit; technician: Technician | null }> {
+): Promise<{ old: Visit; crew: Technician[]; currentIds: string[] }> {
   const { tenantId } = input;
   const old = await getVisitForTenant(input.visitId, tenantId);
   if (!old) throw new Error('visit not found');
@@ -858,18 +1044,21 @@ async function resolveAttachUnplaced(
   // The board's past-date floor used to live here, comparing the stored range
   // to today. Rung 9a deleted the range: an untimed visit holds no date, so
   // there is nothing that can have passed and nothing to refuse.
-  if (input.technicianRef === null && old.technician_id === null) {
+  const detaching = !input.technicianRef && (input.technicianRefs?.length ?? 0) === 0;
+  const currentIds = (await listParticipants(old.id)).map((p) => p.technician_id);
+  if (detaching && currentIds.length === 0) {
     throw new Error('this visit is already unassigned');
   }
-  const technician = input.technicianRef
-    ? await resolveTechnician(tenantId, input.technicianRef)
-    : null;
-  return { old, technician };
+  const crew = detaching
+    ? []
+    : await resolveCrew(tenantId, input.technicianRef ?? undefined, input.technicianRefs);
+  return { old, crew, currentIds };
 }
 
 export interface AttachUnplacedPreview {
   visitId: string;
-  technicianRef: string | null; // resolved target; null = detach
+  technicianRef: string | null; // resolved target, first-or-null; null = detach
+  technicianRefs: string[];
   // An attach is reversible (unassign:true parks it back) — never
   // confirm-gated (the confirmation doctrine).
   requiresConfirmation: false;
@@ -878,10 +1067,11 @@ export interface AttachUnplacedPreview {
 export async function previewAttachUnplacedVisit(
   input: AttachUnplacedGuardInput,
 ): Promise<AttachUnplacedPreview> {
-  const { old, technician } = await resolveAttachUnplaced(input);
+  const { old, crew } = await resolveAttachUnplaced(input);
   return {
     visitId: old.id,
-    technicianRef: technician?.ref ?? null,
+    technicianRef: crew[0]?.ref ?? null,
+    technicianRefs: crew.map((t) => t.ref),
     requiresConfirmation: false,
   };
 }
@@ -894,14 +1084,14 @@ export async function attachUnplacedVisit(
 ): Promise<AttachUnplacedResult> {
   const { tenantId } = input;
   if (!input.reason?.trim()) throw new Error('reason is required for an attach');
-  const { old, technician } = await resolveAttachUnplaced(input);
+  const { old, crew, currentIds } = await resolveAttachUnplaced(input);
   const previousTechnicianId = old.technician_id;
 
   // An attach only changes WHO — the visit stays untimed. One guarded UPDATE,
   // so the row the manager tapped in the tray cannot vanish underneath them
   // (which is exactly what the old cancel-then-insert could do on a failure).
   const visit = await attachVisitParticipants(old.id, {
-    technicianIds: technician ? [technician.id] : [],
+    technicianIds: crew.map((t) => t.id),
     reason: input.reason,
     status: 'confirmed', // never leave it 'proposed' — see the note on the core
   });
@@ -918,11 +1108,16 @@ export async function attachUnplacedVisit(
     detail: {
       fromDay: visitDay(old),
       toDay: visitDay(visit),
-      attachedTechnicianRef: technician?.ref ?? null,
-      previousTechnicianId,
+      attachedTechnicianRefs: crew.map((t) => t.ref),
+      previousTechnicianIds: currentIds,
     },
   });
-  return { visit, previousTechnicianId };
+  return {
+    visit,
+    previousTechnicianId,
+    previousTechnicianIds: currentIds,
+    technicianRefs: crew.map((t) => t.ref),
+  };
 }
 
 // ---- Shared edit cores (plan 4a.5): ONE body per verb, every surface calls it ----
@@ -987,7 +1182,8 @@ export interface CancelJobVisit {
   visitId: string;
   day: string;
   startTime: string;
-  technicianRef: string | null;
+  technicianRef: string | null; // first-or-null; the crew is technicianRefs
+  technicianRefs: string[];
 }
 
 export interface CancelJobPreview {
@@ -1031,15 +1227,21 @@ export async function previewCancelJob(
   const rows = await liveRowsForJob(job.id);
   // Ref resolution mirrors findDisplacementCandidates: cache per technician.
   const refCache = new Map<string, string | null>();
+  const refOf = async (technicianId: string): Promise<string | null> => {
+    if (!refCache.has(technicianId)) {
+      const t = await getTechnicianById(technicianId, tenantId);
+      refCache.set(technicianId, t?.ref ?? null);
+    }
+    return refCache.get(technicianId) ?? null;
+  };
   const visits: CancelJobVisit[] = [];
   for (const row of rows) {
-    let ref: string | null = null;
-    if (row.technician_id) {
-      if (!refCache.has(row.technician_id)) {
-        const t = await getTechnicianById(row.technician_id, tenantId);
-        refCache.set(row.technician_id, t?.ref ?? null);
-      }
-      ref = refCache.get(row.technician_id) ?? null;
+    // EVERY person on the trip — a crew cancellation that named one of two
+    // would leave the manager telling half the people who need telling.
+    const refs: string[] = [];
+    for (const p of await listParticipants(row.id)) {
+      const ref = await refOf(p.technician_id);
+      if (ref) refs.push(ref);
     }
     visits.push({
       visitId: row.id,
@@ -1047,7 +1249,8 @@ export async function previewCancelJob(
       // An unplaced visit has a day but no time — say so rather than crash
       // the cancel preview (its cascade must cover EVERY live row).
       startTime: row.starts_at ? row.starts_at.slice(11, 16) : 'no time set',
-      technicianRef: ref,
+      technicianRef: refs[0] ?? null,
+      technicianRefs: refs,
     });
   }
   return {

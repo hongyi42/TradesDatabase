@@ -1593,6 +1593,120 @@ describe('board quick-edit API (plan 4a.5): roster, book, job, detail additions'
     expect(((await clash.json()) as { error: string }).error).toContain('already has a confirmed visit');
   });
 
+  test('technicianRefs: a crew books, moves and attaches through the board routes (rung 9c)', async () => {
+    const CREW_DAY = relDate(23);
+    const crewJob = (
+      await pg.query<{ id: string }>(
+        `insert into jobs (tenant_id, customer_id, title, status)
+         select $1, customer_id, 'Board crew job', 'open' from jobs where id = $2
+         returning id`,
+        [tenantId, probeJobId],
+      )
+    ).rows[0].id;
+
+    // A malformed list is refused, never read as "nobody".
+    expect(
+      (
+        await post(
+          '/board/api/book',
+          { jobId: crewJob, date: CREW_DAY, startTime: '09:00', endTime: '10:00', technicianRefs: [] },
+          900000001,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await post(
+          '/board/api/book',
+          { jobId: crewJob, date: CREW_DAY, startTime: '09:00', endTime: '10:00', technicianRefs: ['board-t1', 3] },
+          900000001,
+        )
+      ).status,
+    ).toBe(400);
+
+    // BOOK a crew.
+    const booked = await post(
+      '/board/api/book',
+      {
+        jobId: crewJob,
+        date: CREW_DAY,
+        startTime: '09:00',
+        endTime: '10:00',
+        technicianRefs: ['board-t1', 'board-t2'],
+      },
+      900000001,
+    );
+    expect(booked.status).toBe(200);
+    const b = (await booked.json()) as { visitId: string };
+    const crewRows = await pg.query(
+      `select t.ref from visit_participants p join technicians t on t.id = p.technician_id
+        where p.visit_id = $1 order by p.created_at, p.technician_id`,
+      [b.visitId],
+    );
+    expect(crewRows.rows.map((r) => r.ref)).toEqual(['board-t1', 'board-t2']);
+
+    // MOVE, replacing the crew with one person.
+    const moved = await post(
+      '/board/api/move',
+      {
+        visitId: b.visitId,
+        date: CREW_DAY,
+        startTime: '14:00',
+        technicianRefs: ['board-t2'],
+        reason: 'board crew move',
+      },
+      900000001,
+    );
+    expect(moved.status).toBe(200);
+    const after = await pg.query(
+      `select t.ref from visit_participants p join technicians t on t.id = p.technician_id
+        where p.visit_id = $1`,
+      [b.visitId],
+    );
+    expect(after.rows.map((r) => r.ref)).toEqual(['board-t2']);
+
+    // unassign + a crew is a contradiction here too.
+    expect(
+      (
+        await post(
+          '/board/api/move',
+          {
+            visitId: b.visitId,
+            date: CREW_DAY,
+            startTime: '14:00',
+            technicianRefs: ['board-t1'],
+            unassign: true,
+            reason: 'contradiction',
+          },
+          900000001,
+        )
+      ).status,
+    ).toBe(400);
+
+    // ATTACH an untimed visit to a crew.
+    const untimed = (
+      await pg.query<{ id: string }>(
+        `insert into visits (tenant_id, job_id, status) values ($1, $2, 'confirmed') returning id`,
+        [tenantId, crewJob],
+      )
+    ).rows[0].id;
+    const attached = await post(
+      '/board/api/move',
+      {
+        visitId: untimed,
+        attachUnplaced: true,
+        technicianRefs: ['board-t1', 'board-t2'],
+        reason: 'board crew attach',
+      },
+      900000001,
+    );
+    expect(attached.status).toBe(200);
+    const a = (await attached.json()) as { technicianRefs: string[]; untimed: boolean };
+    expect(a.technicianRefs).toEqual(['board-t1', 'board-t2']);
+    expect(a.untimed).toBe(true);
+    await pg.query("update visits set status = 'cancelled' where id in ($1, $2)", [b.visitId, untimed]);
+  });
+
   test('final-review guards: one-shot verbs refuse ?preview=1; board writes refuse past dates; book refuses stray priority', async () => {
     // One-shot verbs 400 a preview request instead of silently committing.
     const jv = await fetch(`${base}/board/api/job?preview=1`, {

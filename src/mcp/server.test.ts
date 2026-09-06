@@ -4483,6 +4483,107 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       await mgrClient.close();
     }
   });
+
+  test('a crew books and moves as ONE visit (rung 9c)', { timeout: 30_000 }, async () => {
+    const customer = await createCustomer({ tenantId, name: 'Crew Carla' });
+    const second = await insertTechnician({
+      tenantId,
+      ref: 'crew-two',
+      displayName: 'Crew Two',
+    });
+    await setTechnicianState(second.id, 'active');
+    const { client: mgrClient, callWith } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const booked = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'two-person lift',
+        technicianRefs: ['tech-mcp', 'crew-two'],
+        date: '2026-12-18',
+        startTime: '09:00',
+        endTime: '11:00',
+      });
+      expect(booked.data.status).toBe('booked');
+      expect(booked.data.technicianRefs).toEqual(['tech-mcp', 'crew-two']);
+      // The steer that stops the agent reporting it as two jobs.
+      expect(booked.data.crewNote).toContain('2 people are on this visit');
+      expect(booked.data.unassigned).toBe(false);
+      // ONE visit row, two participants.
+      const { rows } = await pg.query(
+        'select count(*)::int as n from visit_participants where visit_id = $1',
+        [booked.data.visitId],
+      );
+      expect(rows[0].n).toBe(2);
+
+      // A move REPLACES the crew.
+      const moved = await callWith('move_visit', {
+        visitId: booked.data.visitId,
+        date: '2026-12-18',
+        startTime: '14:00',
+        technicianRefs: ['crew-two'],
+        reason: 'tech-mcp is needed elsewhere',
+      });
+      expect(moved.data.status).toBe('moved');
+      expect(moved.data.technicianRefs).toEqual(['crew-two']);
+      expect(moved.data.crewNote).toBeUndefined(); // one person again
+
+      // The shorthand still works alone, and says nothing about a crew.
+      const solo = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'one-person call',
+        forceNewJob: true,
+        technicianRef: 'tech-mcp',
+        date: '2026-12-19',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      expect(solo.data.technicianRefs).toEqual(['tech-mcp']);
+      expect(solo.data.crewNote).toBeUndefined();
+
+      // A present-but-empty list is an agent bug, not "book unassigned".
+      const empty = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'empty crew',
+        forceNewJob: true,
+        technicianRefs: [],
+        date: '2026-12-20',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      expect(empty.isError).toBe(true);
+      expect(empty.text).toContain('technicianRefs was empty');
+
+      // And so is a list with a non-string in it.
+      const junk = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'junk crew',
+        forceNewJob: true,
+        technicianRefs: ['tech-mcp', 7],
+        date: '2026-12-20',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      expect(junk.isError).toBe(true);
+      expect(junk.text).toContain('array of roster refs');
+
+      // unassign and a crew together is a contradiction.
+      const both = await callWith('move_visit', {
+        visitId: booked.data.visitId,
+        date: '2026-12-18',
+        startTime: '14:00',
+        technicianRefs: ['crew-two'],
+        unassign: true,
+        reason: 'contradiction',
+      });
+      expect(both.isError).toBe(true);
+      expect(both.text).toContain('not both');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
 });
 
 describe('schedule-input verbs (Plan 3a)', () => {

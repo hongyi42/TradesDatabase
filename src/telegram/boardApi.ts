@@ -161,6 +161,22 @@ const str = (body: Record<string, unknown>, key: string): string | undefined =>
     ? (body[key] as string)
     : undefined;
 
+// A crew of roster refs (rung 9c). Absent = the caller said nothing. Present
+// but not a list of non-empty strings is a caller bug — refused with 400 by the
+// routes below, never read as "nobody", which is the same contract the
+// present-but-empty technicianRef checks already enforce. `board.js` sends the
+// singular shorthand and is unchanged.
+const strList = (body: Record<string, unknown>, key: string): string[] | undefined | 'bad' => {
+  const v = body[key];
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v) || v.length === 0) return 'bad';
+  if (v.some((x) => typeof x !== 'string' || (x as string).trim() === '')) return 'bad';
+  return (v as string[]).map((x) => x.trim());
+};
+
+const CREW_LIST_ERROR =
+  'technicianRefs must be a non-empty array of roster refs — omit it entirely to leave the crew alone';
+
 // Board writes never target the past — the SERVER floor under the client
 // gates (final review: stale-tab midnight crossings and hand-crafted calls
 // bypass client checks; the chat surface deliberately keeps its
@@ -373,6 +389,11 @@ export async function handleBoardRequest(
             });
             return;
           }
+          const bookCrew = strList(body, 'technicianRefs');
+          if (bookCrew === 'bad') {
+            json(res, 400, { error: CREW_LIST_ERROR });
+            return;
+          }
           const input = {
             tenantId: auth.tenantId,
             jobId,
@@ -380,6 +401,7 @@ export async function handleBoardRequest(
             ...(startTime ? { startTime } : {}),
             ...(endTime ? { endTime } : {}),
             technicianRef: str(body, 'technicianRef'),
+            ...(bookCrew ? { technicianRefs: bookCrew } : {}),
             actorRef: auth.technician.ref,
           };
           if (preview) {
@@ -525,11 +547,19 @@ export async function handleBoardRequest(
             return;
           }
           const attachRef = str(body, 'technicianRef');
+          const attachCrew = strList(body, 'technicianRefs');
+          if (attachCrew === 'bad') {
+            json(res, 400, { error: CREW_LIST_ERROR });
+            return;
+          }
           const detach = body.unassign === true;
           const attachId = str(body, 'visitId');
-          if (!attachId || !reason || (detach ? attachRef !== undefined : !attachRef)) {
+          const namesSomebody = !!attachRef || !!attachCrew;
+          if (!attachId || !reason || (detach ? namesSomebody : !namesSomebody)) {
             json(res, 400, {
-              error: 'visitId, reason, and ONE of technicianRef (attach) or unassign:true (park back) are required',
+              error:
+                'visitId, reason, and ONE of technicianRef/technicianRefs (attach) or ' +
+                'unassign:true (park back) are required',
             });
             return;
           }
@@ -545,7 +575,8 @@ export async function handleBoardRequest(
             const attachPreview = await previewAttachUnplacedVisit({
               tenantId: auth.tenantId,
               visitId: attachId,
-              technicianRef: detach ? null : (attachRef as string),
+              technicianRef: detach ? null : (attachRef ?? null),
+              ...(detach || !attachCrew ? {} : { technicianRefs: attachCrew }),
             });
             json(res, 200, { status: 'preview', attach: true, ...attachPreview });
             return;
@@ -553,7 +584,8 @@ export async function handleBoardRequest(
           const attached = await attachUnplacedVisit({
             tenantId: auth.tenantId,
             visitId: attachId,
-            technicianRef: detach ? null : (attachRef as string),
+            technicianRef: detach ? null : (attachRef ?? null),
+            ...(detach || !attachCrew ? {} : { technicianRefs: attachCrew }),
             reason,
             actorRef: auth.technician.ref,
           });
@@ -563,6 +595,7 @@ export async function handleBoardRequest(
             unassigned: detach,
             untimed: true,
             visitId: attached.visit.id,
+            technicianRefs: attached.technicianRefs,
           });
           return;
         }
@@ -588,9 +621,16 @@ export async function handleBoardRequest(
           return;
         }
         const unassign = body.unassign === true;
-        if (unassign && str(body, 'technicianRef')) {
+        const moveCrew = strList(body, 'technicianRefs');
+        if (moveCrew === 'bad') {
+          json(res, 400, { error: CREW_LIST_ERROR });
+          return;
+        }
+        if (unassign && (str(body, 'technicianRef') || moveCrew)) {
           json(res, 400, {
-            error: 'pass technicianRef to attach/reassign OR unassign:true to park — not both',
+            error:
+              'pass technicianRef/technicianRefs to attach/reassign OR unassign:true to park — ' +
+              'not both',
           });
           return;
         }
@@ -605,6 +645,9 @@ export async function handleBoardRequest(
           startTime,
           endTime: str(body, 'endTime'),
           technicianRef: str(body, 'technicianRef'), // set = assign/reassign (Feature A attach)
+          // A crew REPLACES whoever is on the visit — the same contract the MCP
+          // layer states, so the two surfaces cannot drift.
+          ...(moveCrew ? { technicianRefs: moveCrew } : {}),
           ...(unassign ? { unassign: true } : {}),
           reason,
           actorRef: auth.technician.ref,

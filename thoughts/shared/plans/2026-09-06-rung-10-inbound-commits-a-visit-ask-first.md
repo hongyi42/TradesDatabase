@@ -42,8 +42,11 @@ call / email ─► L1 ─► extractor ─visitCommitted─► attaches to a LI
   customer + job as today. A committed capture stops after identity **and after the attach**:
   linked to a live visit ⇒ correspondence about booked work, no ask. Otherwise an observation
   carrying the customer and, when one exists, the open job.
-- **Matched customers only** (overview §5). Unmatched ⇒ today's `unlinked_call`. FOLLOW-UP: the
-  new-caller path (no seat verb creates a customer).
+- **Matched customers only** (overview §5). Unmatched ⇒ today's `unlinked_call`. **Rung 10b, stacked
+  after this** *(user 2026-09-07)*: an `inbound_unmatched` observation through the SAME ping loop (one
+  observation per capture, `visitCommitted` carried inside it), the planner as the second opinion via
+  `spine_read`, and a manager `add_customer` verb that re-runs the one door with the identity resolved,
+  ask-first. So every helper below is kind-blind and reads `PINGED_KINDS`: 10b appends a kind, nothing else.
 - **Immediate, and about one thing** *(user, both)*. The always-on process is `Calls-worker`
   (the web service is Render free-plan and spins down). A second loop in the same process polls
   for unclaimed commitments and runs a **focused pass**: `runPlanner` for one tenant with the
@@ -115,18 +118,18 @@ to send someone out — never because the caller asked, requested a quote, or it
 
 **`supabase/migrations/20260908100000_observations_commitment_marks.sql`** — `alter table
 observations add column if not exists pinged_at timestamptz, add column if not exists asked_at
-timestamptz;` + a partial index on `(tenant_id, noticed_at) where kind='inbound_commitment' and
-status='open' and pinged_at is null`. Comments: `pinged_at` = the planner was called about it;
+timestamptz;` + a partial index on `(tenant_id, noticed_at) where
+status='open' and pinged_at is null` (kind-blind, for 10b). Comments: `pinged_at` = the planner was called about it;
 `asked_at` = a text went out. Additive; applied to the pilot BEFORE the deploy.
 **`src/db/database.types.ts`** — regenerate with `npm run gen:types:local` after `supabase db
 reset` (NEVER `gen:types`); commit it.
 
-**`src/db/observations.ts`** — `captureHasObservation(captureId)`;
-`listUnpingedCommitments(limit)` (open, kind, `pinged_at is null and asked_at is null`, oldest
-first, fleet-wide); `claimCommitmentPing(id)` — guarded `set pinged_at=now() where id and
-pinged_at is null`, null = taken; `markCommitmentAsked(id, notBeforeIso)` — guarded `set
+**`src/db/observations.ts`** — `captureHasObservation(captureId)`; `PINGED_KINDS: ReviewKind[] = ['inbound_commitment']` (10b appends);
+`listUnpingedObservations(kinds, limit)` (open, kind, `pinged_at is null and asked_at is null`, oldest
+first, fleet-wide); `claimObservationPing(id)` — guarded `set pinged_at=now() where id and
+pinged_at is null`, null = taken; `markObservationAsked(id, notBeforeIso)` — guarded `set
 asked_at=now(), not_before=… where id and status='open' and asked_at is null`, null = already
-asked; `stampCommitmentsPinged(ids)` — best-effort, `where pinged_at is null`.
+asked; `stampObservationsPinged(ids)` — best-effort, `where pinged_at is null`.
 **`src/db/rawCaptures.ts`** — `captureHasLinkedL2` (`:137-155`): final arm `captureHasObservation`.
 
 **`src/writePath/recordFieldNote.ts`** — `RecordFieldNoteResult` (`:73-82`): `observationId?`.
@@ -177,14 +180,14 @@ unchanged. `observations.test.ts`: the five helpers, second claim/ask null. Sche
 **`src/jobs/plannerPass.ts`** (new) — `runPlannerPass(nowIso, mode, extra: Partial<PlannerDeps>,
 impl = runPlanner)` wraps `lifecycle.ts:485-493` (`tools`, `execute` via `dispatchForIdentity`
 + `TEAM_LEAD_REF`); `lifecycle.ts` calls it passing `deps.runPlanner` as `impl` so the injectable
-seam at `lifecycle.test.ts:804-834` survives (round-2 #3). `runFocusedCommitmentPass(obs, impl?)`
+seam at `lifecycle.test.ts:804-834` survives (round-2 #3). `runFocusedObservationPass(obs, impl?)`
 = `runPlannerPass(now, mode, { focus: { observationId: obs.id, budgetMs: 180_000 },
 listTenants: [obs.tenant_id], listObservations: [obs], listNudges: [], listOfficeMessages: [],
 listDeskTranscripts: [], plannerRun: async () => {} })`; no-op when `PLANNER_MODE` is unset/off
 or `!hasModelCredentials()`.
 
-**`src/calls/commitmentPing.ts`** (new) — `drainOneCommitmentPing(deps)`:
-`listUnpingedCommitments(1)` → `claimCommitmentPing` → `runFocusedCommitmentPass`; a throw is
+**`src/calls/observationPing.ts`** (new) — `drainOneObservationPing(deps)`:
+`listUnpingedObservations(PINGED_KINDS, 1)` → `claimObservationPing` → `runFocusedObservationPass`; a throw is
 logged, never rethrown; the claim stays (the heartbeat is the fallback). **`src/calls/runWorker.ts`**
 (`:14-27`): `main` becomes `Promise.all([callLoop(), pingLoop()])` — two independent loops, each
 with its own backoff (round-2 #4).
@@ -194,18 +197,18 @@ with its own backoff (round-2 #4).
   `plannerRun`; pass `budgetMs` into the `runLoop` request; the user message's `This firm has N
   open gap(s).` (`:2951`) becomes *"This pass shows 1 item; the firm's other open work is not
   shown and is not yours now."* (round-2 #6); `PlannerSummary` (`:367`) gains optional
-  `focused?: true`, `pingedByCommitment?`.
-- Per-tenant due check (`:3652-3656`): focused ⇒ due; else `pinged = openObs.some(o => o.kind ===
-  'inbound_commitment' && !o.pinged_at && !o.asked_at && noticed_at > lastMs)` with the guarded
+  `focused?: true`, `pingedByObservation?`.
+- Per-tenant due check (`:3652-3656`): focused ⇒ due; else `pinged = openObs.some(o => PINGED_KINDS.includes(o.kind)
+  && !o.pinged_at && !o.asked_at && noticed_at > lastMs)` with the guarded
   `lastRunAt` read hoisted from `:3942-3966` (failure ⇒ not pinged); `if (!pinged &&
-  !plannerCadenceDue(…))`. After a SUCCESSFUL non-focused pass, `stampCommitmentsPinged` on the
+  !plannerCadenceDue(…))`. After a SUCCESSFUL non-focused pass, `stampObservationsPinged` on the
   commitments it showed (best-effort).
 - `buildGapView` (`:1181`, after `:1313-1326`) for this kind: `  the caller's words (${channel},
   from ${from}, ${agoLabel}): "${words}"`, `  customer: … (id …)`, `  they asked for: …`, `  on
   file: open job … (job id …) | no open job — a job would be created`, `  capture id: … (spine_read
   v_captures for the full words)`, and when `asked_at`: `  you texted a manager about this ${ago}`.
   No clock label; `dateLabels` unchanged.
-- `apply` `case 'send'` (`:3017`): for this kind, FIRST `markCommitmentAsked(id, now + 24h)`;
+- `apply` `case 'send'` (`:3017`): for this kind, FIRST `markObservationAsked(id, now + 24h)`;
   null ⇒ `{ outcome: 'refused', detail: 'already asked' }`; then the office row `via: 'chat'`.
   Validate: `as` must be `'chat'`, `to` present, `countsAsTheAsk` absent.
 - `mootFactFor`: `listVisitsCreatedSince(tenantId, minNoticedAt)` (new in `src/db/visits.ts`:
@@ -213,7 +216,7 @@ with its own backoff (round-2 #4).
   observation a row after `noticed_at` on `context.jobId` (or the customer) ⇒ `'a visit was
   booked for this after it was noticed'`.
 
-**`src/jobs/lifecycle.ts`** — `LifecycleDeps` (`:79` region): `listFreshCommitments?`. Keep
+**`src/jobs/lifecycle.ts`** — `LifecycleDeps` (`:79` region): `listFreshPings?`. Keep
 `:452`; the `!plannerTick` arm (`:481-482`) becomes a lazy `else if (!plannerTick && !(await
 freshPing()))` — the dep over `now − 35 min`, `pinged_at is null and asked_at is null`,
 try/caught ⇒ false + log. Skip text: `'off-cadence tick (no firm due, no unclaimed commitment)'`
@@ -234,7 +237,7 @@ unpinged + unasked after `lastRunAt` makes 09:45 run (hours 8-16); pinged, asked
 skipped; a successful pass stamps `pinged_at`; (10) gap-view lines, no weekday anywhere; (11)
 `mootFactFor` after vs before; (12) `send` sets `asked_at`; a second `send` refused; `hold` then
 `send` on a later tick succeeds; `as:'assistant'` refused; (13) the heading. `lifecycle.test.ts`:
-`listFreshCommitments: async () => []` in `STUBS` (`:796`); extend `:877`. `commitmentPing.test.ts`:
+`listFreshPings: async () => []` in `STUBS` (`:796`); extend `:877`. `observationPing.test.ts`:
 claim → pass once; second claim null; a throwing pass keeps the claim.
 
 ### Automated verification
@@ -262,7 +265,7 @@ webhook-only truth. **Delete `src/email/ingest.ts`, `ingest.test.ts`; `npm unins
 **Docs** — `engineering-memory.md`: ladder row `:3573` → `10 inbound commits a visit — ASK FIRST:
 extractor → observation → focused planner pass → manager's agent books [BUILT …; §10]`; rewrite
 `:5064-5077` (dated 2026-09-06); `:4558`, `onboarding.md:307`, `nemoclaw-tech-agent.md:277` →
-"rung 11"; a `### ✅ BUILT — rung 10` record in `- **Title**` bullets (new-caller follow-up;
+"rung 11"; a `### ✅ BUILT — rung 10` record in `- **Title**` bullets (new-caller path = rung 10b;
 uncommitted-redelivery gap; the silent `assistant` leg; the two markers). Overview §4
 (`:121-157`): one sentence. `npm run decisions:index`.
 

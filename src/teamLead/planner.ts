@@ -1503,7 +1503,18 @@ export function buildGapView(
     // The moot fact gets a RECORD line for EVERY kind, on the same terms.
     lines.push(`  THE RECORD: ${mootFact}. ${closeOnTheRecord}`);
   }
-  if (n.not_before) lines.push(`  currently held until: ${n.not_before}`);
+  if (n.not_before) {
+    // NO RAW DATE FOR THE INBOUND KINDS. Every other gap may print its hold as
+    // an ISO instant, but these forbid a date the planner did not receive in
+    // `dateLabels` — and the doctrine actively RECOMMENDS `hold` here, so the
+    // hazard is on the recommended path. The fact is what it needs; the exact
+    // instant is not, and printing it would let an echo drop the whole message.
+    lines.push(
+      (PINGED_KINDS as string[]).includes(n.kind)
+        ? '  you are holding this one — it will come back to you'
+        : `  currently held until: ${n.not_before}`,
+    );
+  }
   // WHAT DELIVERY HAS DONE WITH IT (build 6 Phase 5). Until now the planner was
   // asked to judge a stuck question with no way to tell stuck from slow: a row
   // frozen after ten serve attempts and one queued forty seconds ago rendered
@@ -4584,10 +4595,16 @@ export async function runPlanner(
       // The doctrine line is what covers it there, and the cost of the planner
       // forgetting is a second text at the next tick, not a lost call.
       const dropped = outcome.dropped;
+      // THE FIRST *CHAT* SEND, not the first send of any leg. An inbound ask can
+      // only be made by a message a person READS, and a bound `assistant`-leg
+      // send is refused at apply — so binding one would consume the binding,
+      // leave the real chat message gap-less and unmarked, and the next
+      // heartbeat would text the manager about the same call again.
       let boundGapless = false;
       const decisions = focus
         ? outcome.decisions.map((d) => {
             if (d.action !== 'send' || d.nudgeId || boundGapless) return d;
+            if ((d.as ?? 'assistant') !== 'chat') return d;
             boundGapless = true;
             return { ...d, nudgeId: focus.observationId };
           })

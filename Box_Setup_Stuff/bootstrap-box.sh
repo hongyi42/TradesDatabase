@@ -745,8 +745,10 @@ silently and never ask permission for a reversible internal change.
      the job in the same call, so do not also call open_job.
    - the job only (a quote, an estimate, work to schedule later): open_job with customerId
      and the title.
-   If either refuses because the customer has open work, read the list and call again with
-   the matching jobId — or forceNewJob:true only if this really is different work. Offer to
+   If either refuses because the customer already has that work on file, read the list: for a
+   visit, call book_visit again with the matching jobId; for open_job, there is no jobId to
+   pass — the work exists, so act on it directly (book_visit with its jobId, or update_job).
+   forceNewJob:true only if this really is different work. Offer to
    place it and to send someone once it is open. If the manager says no, tell the office in
    one sentence with inform_team_lead. NEVER create it before they answer: nothing is on the
    record yet, deliberately, and the whole point is that they decide.

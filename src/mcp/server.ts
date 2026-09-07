@@ -85,6 +85,7 @@ import {
   createJob,
   appendJobCorrespondence,
   listObservationsByStatus,
+  setObservationStatus,
   PINGED_KINDS,
   CORRESPONDENCE_KEY,
   correspondenceEntries,
@@ -3867,9 +3868,31 @@ async function dispatch(
             if (link.tenant_id !== tenantId) continue; // same id-only-FK guard
             await insertJobCapture({ tenantId, jobId: link.job_id, captureId: row.id });
           }
+          // AND THE ASK DIES WITH IT (rung 10). An inbound observation carries
+          // its own verbatim copy of the caller's words in `context.words`, and
+          // no fold reaches inside an observation — so without this the planner
+          // would keep being shown a capture a manager has formally marked
+          // recorded-in-error, and could still text somebody about it.
+          // Retraction IS the manager saying "this should not be on the
+          // record", which is exactly what dismissing the ask means; `recover`
+          // is there if they change their mind.
+          for (const o of await listObservationsByStatus(tenantId, ['open'])) {
+            if (o.subject_ref !== target.id) continue;
+            if (!(PINGED_KINDS as string[]).includes(o.kind)) continue;
+            await setObservationStatus(
+              o.id,
+              tenantId,
+              {
+                status: 'dismissed',
+                dismissReason: `the capture was retracted by ${subjectRef}: ${detail.reason}`,
+                dismissedAt: new Date().toISOString(),
+              },
+              ['open'],
+            );
+          }
         } catch (err) {
           console.error(
-            `retract_capture: retraction ${row.id} not linked to its visit/job — ` +
+            `retract_capture: retraction ${row.id} not fully followed through (links/ask) — ` +
               `${err instanceof Error ? err.message : String(err)}`,
           );
         }

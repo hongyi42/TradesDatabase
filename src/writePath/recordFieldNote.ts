@@ -535,12 +535,6 @@ export async function recordFieldNote(
   }
 
 
-  // The ask decided above returns HERE, so the words still reach the job on the
-  // way out: the correspondence and the link are written, and only then does
-  // this capture stop. Before the status signal, for the same reason the
-  // new-job arm sits before createJob — a capture that asks creates nothing.
-  if (asked) return asked;
-
   // Status transition only if note-blessed (subset of the hardcoded machine,
   // pinned by test; updateJobStatus re-validates legality at the write). A new
   // job is 'open', so a 'completed' signal is correctly skipped rather than
@@ -554,6 +548,14 @@ export async function recordFieldNote(
       job.status === 'completed' && signal === 'in_progress' && capturedAt <= job.updated_at;
     if (!staleReopen) await updateJobStatus(job.id, signal);
   }
+
+  // The ask decided above returns HERE — last, so an inbound capture on an open
+  // job behaves EXACTLY as an uncommitted one does all the way through: the
+  // words reach the job, the link is written, and a note-blessed status signal
+  // still moves the job. Whether the firm agreed to come out says nothing about
+  // whether the work started, and making one arm skip the signal would be a
+  // silent difference nobody asked for.
+  if (asked) return asked;
 
   return {
     status: 'matched',

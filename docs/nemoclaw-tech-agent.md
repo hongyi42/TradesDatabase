@@ -210,8 +210,9 @@ the test is now PLACEMENT:
   somebody is being sent (jobId if the office named one, else customerId + the work as the title,
   and NO date or times — it books untimed AND mints the job in one call), or the new `open_job`
   when only the job is wanted (a quote, an estimate, work to schedule later). Both refuse when the
-  customer already has open work, with the list — re-call with the matching jobId, or
-  `forceNewJob:true` only for genuinely different work. On a no: `inform_team_lead` in one
+  customer already has THAT work on file (a title naming an open job), with the list — for a
+  visit, re-call `book_visit` with the matching jobId; `open_job` takes no jobId, so act on the
+  existing work directly. `forceNewJob:true` only for genuinely different work. On a no: `inform_team_lead` in one
   sentence. **Never create it before they answer** — nothing is on the record yet, deliberately.
 
 `book_visit` has NO default times (2026-07-18, user decision — the 2h job-length default was
@@ -331,8 +332,16 @@ via `call_numbers.forward_to`) who has **no scheduling tools**, so the async cal
 channel: recording → STT → redact → **GLM-5.2 intent router** ([src/calls/classifyCall.ts](../src/calls/classifyCall.ts)).
 The router is **multi-label** — one call can be `[new_job, cancel]` and each is handled:
 
-- **`new_job`** → structures L2 (a job that surfaces in the board's unscheduled bucket); a new/unknown
-  caller still opens the `unlinked_call` review to link/create.
+- **`new_job`** → runs the extractor. ⚠ **What that means changed in rung 10 (2026-09-07):** it no
+  longer mints a job. For a caller we know, the words are pinned to their open job and kept on it;
+  with no open job — or when the firm agreed to come out and no trip carries it — an OBSERVATION is
+  raised and a manager is asked. **Nothing reaches the board's unscheduled bucket until somebody
+  says yes.** A new/unknown caller still opens the `unlinked_call` review to link/create (rung 10b).
+  - **KNOWN GAP:** only `new_job` runs the extractor at all, so a committed call about work already
+    on file ("we'll come out Tuesday to finish it") is classified `reschedule`/`other`, stops at L1,
+    and raises no `inbound_commitment`. Widening which intents structure was deliberately NOT part
+    of rung 10 — the 2026-08-06 router plan keeps the extractor off cancel/complaint calls. Email
+    has no such gate: every work email runs it.
 - **`reschedule` / `cancel` / `question` / `complaint`** → **L1 only** (the transcript is always kept as
   the call log), plus a `call_action` review that is **pushed to the tenant's managers** — these are
   **NEVER auto-executed** (a receptionist can't act, the worker's read is unverified, and move/cancel are

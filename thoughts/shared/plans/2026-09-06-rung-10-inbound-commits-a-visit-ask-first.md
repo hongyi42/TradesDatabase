@@ -2,12 +2,16 @@
 date: 2026-09-06
 task: Rung 10 — inbound ASKS before it creates, and what it creates cites the call. The extractor is the planner's eye on call → job → visit; a new job or a detected commitment calls the planner IMMEDIATELY for that one item (a focused pass, ~10 s); the planner decides in its own words whether to text the manager; the manager's own agent opens the job / books an untimed visit, and the row cites the capture; what the caller said is kept on the job.
 research: thoughts/shared/research/2026-09-06-rung-10-inbound-commits-a-visit.md
-status: draft
+status: complete
 supersedes: nothing as a document — AMENDS the 2026-09-03 ruling "create, don't stage" at docs/engineering-memory.md:5064-5077 and the ladder row at :3573. User, 2026-09-06: "Before creating the visit, someone gets asked"; "the planner should be specifically called for the one issue". User, 2026-09-07: "for new jobs, we also want the planner to ask the manager"; amendments A, B, C "are all necessary".
 ---
 
 **`supersedes:` is not optional bookkeeping.** No thoughts/ document is overturned. The ruling
 this plan changes lives in `docs/engineering-memory.md`; Phase 3 rewrites it in place.
+
+**COMPLETE 2026-09-07** — `930c5bf` (phase 1), `e05d6b5` (phase 2), `dafb694` (phase 3), plus a
+cross-phase review pass. NOT YET DEPLOYED: the migration, the env names and the six seat wires at
+the end of Phase 3 are the owner's call, and the live verification needs them.
 
 ## Overview
 
@@ -141,6 +145,10 @@ creates visits silently; the dead Gmail pull goes.
   `lifecycle-heart`: `INFERENCE_MODEL`, `INFERENCE_BASE_URL`, `INFERENCE_CACHE_KEY`,
   `MODEL_PROVIDER`, `PLANNER_MODE` (it has `INFERENCE_API_KEY`, `SUPABASE_*`, `BOARD_BOT_TOKEN`).
   Names only — never paste values.
+  **AND `ANTHROPIC_API_KEY` (final review):** `hasModelCredentials()` reads it whenever
+  `MODEL_PROVIDER=anthropic`, which is the recorded planner rollback lever. Flipping that on
+  `lifecycle-heart` ALONE now silently disables every focused pass on `Calls-worker` — one deduped
+  warn line, nothing red. **The rollback touches two services from now on.**
 - **Phase 3:** none. Deploy: fork push rights; `ssh tradesbox`; `supabase-test` MCP.
 
 ## Phase 1: The eye and the record — inbound attaches, keeps, or asks; never creates

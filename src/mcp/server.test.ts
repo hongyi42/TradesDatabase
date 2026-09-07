@@ -8347,6 +8347,82 @@ describe('rung 10 — open_job, and the citation on what a yes creates', () => {
     }
   });
 
+  test('(19) the preview NAMES a booked visit that cites the call — and says it STAYS', async () => {
+    // `findFoldImpact` walked visit_notes because attachNote's step 3 was the
+    // ONLY writer of visits.source_capture_id, and it links the same visit in
+    // the same call. `book_visit` cites a call now and mints a visit with NO
+    // note link — so the preview would say "nothing else goes" and the fold
+    // would then drop a real appointment out of every briefing while it stayed
+    // on the board. That is the exact failure foldImpact.ts exists to prevent.
+    const customer = await createCustomer({ tenantId, name: 'Booked Off A Call', phone: '555-8809' });
+    const { capture } = await askFor(customer.id);
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    let booked: { jobId: string; visitId: string };
+    try {
+      const r = await callWith('book_visit', { customerId: customer.id, title: 'agreed to come out' });
+      booked = { jobId: r.data.jobId, visitId: r.data.visitId };
+      expect(await sourceOf('visits', booked.visitId)).toBe(capture.id);
+      // There is no note link at all — this is not a reported trip.
+      const links = await pg.query<{ n: string }>(
+        'select count(*)::int as n from visit_notes where visit_id = $1',
+        [booked.visitId],
+      );
+      expect(Number(links.rows[0].n)).toBe(0);
+    } finally {
+      await client.close();
+    }
+
+    const { client: mgr, callWith: callMgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const staged = await callMgr('retract_capture', { captureId: capture.id, reason: 'wrong customer' });
+      expect(staged.isError).toBe(false);
+      // NAMED — the preview knows about it at all, which is the regression.
+      // And named under the RIGHT heading: a confirmed trip keeps its place on
+      // the schedule, so it LOSES this note as evidence rather than vanishing.
+      // Telling a manager a booked visit is going away when it is not is the
+      // failure the rung-9b split exists to prevent.
+      const willGo = staged.data.willAlsoRemove.visits as Array<{ visitId: string }>;
+      expect(willGo.map((v) => v.visitId)).not.toContain(booked.visitId);
+      const losing = staged.data.alsoLosesEvidence.visits as Array<{ visitId: string }>;
+      expect(losing.map((v) => v.visitId)).toContain(booked.visitId);
+
+      const done = await callMgr('retract_capture', { confirmId: staged.data.confirmId });
+      expect(done.data.status).toBe('retracted');
+      // PARITY: what the preview promised is what happens — the appointment is
+      // still there, and the customer is still expecting it.
+      const ctx = await callMgr('get_customer_context', { customerId: customer.id });
+      const upcoming = ctx.data.upcomingVisits as Array<{ visitId: string }>;
+      expect(upcoming.map((v) => v.visitId)).toContain(booked.visitId);
+    } finally {
+      await mgr.close();
+    }
+  });
+
+  test('(20) retracting the capture DISMISSES the ask — the planner stops being shown it', async () => {
+    // An observation keeps its own verbatim copy of the caller's words in
+    // `context.words`, and no fold reaches inside one. Without this the planner
+    // would keep being shown a capture a manager has formally marked
+    // recorded-in-error, and could still text somebody about it.
+    const customer = await createCustomer({ tenantId, name: 'Retracted Rita', phone: '555-8810' });
+    const { capture, observation } = await askFor(customer.id);
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const staged = await callWith('retract_capture', { captureId: capture.id, reason: 'personal mail' });
+      const done = await callWith('retract_capture', { confirmId: staged.data.confirmId });
+      expect(done.data.status).toBe('retracted');
+    } finally {
+      await client.close();
+    }
+    const { rows } = await pg.query<{ status: string; dismiss_reason: string | null }>(
+      'select status, dismiss_reason from observations where id = $1',
+      [observation.id],
+    );
+    expect(rows[0].status).toBe('dismissed');
+    expect(rows[0].dismiss_reason).toContain('retracted');
+    // `recover` is still there if the manager changes their mind — dismissal is
+    // revisable, which is why this is the right verb for code to use.
+  });
+
   test('(18) open_job opens work with NOTHING on the calendar, cites the call, and guards duplicates', async () => {
     const customer = await createCustomer({ tenantId, name: 'Quote Quentin', phone: '555-8804' });
     const { capture } = await askFor(customer.id);

@@ -95,9 +95,11 @@ call / email ─► L1 ─► extractor ─► matched customer? ──no──�
 - **Subject = capture id, author `detector`**; processed for `captureHasLinkedL2`.
 - **Technician report on a committed visit** → rung 12 *(user)*. **Web form** out *(user)*.
 - **Delete `ingestEmail`** and `googleapis` (its only importer).
-- **Deploy pair:** the additive migration goes BEFORE the fork sync; five env names go onto
-  `Calls-worker` first; `database.types.ts` is regenerated from the LOCAL stack (`gen:types`
-  targets the pilot and would write the old schema — round-2 #2).
+- **One PR, one deploy.** Phases 1–3 land together: after Phase 1 alone a matched new-job call is an
+  observation nobody pings until Phase 2, and the tray no longer shows it — `main` between the
+  phases is not deployable (round-3 #24). The additive migration goes BEFORE the fork sync; five
+  env names go onto `Calls-worker` first; `database.types.ts` is regenerated from the LOCAL stack
+  (`gen:types` targets the pilot and would write the old schema — round-2 #2).
 
 ## Plain-language walkthrough
 
@@ -144,13 +146,17 @@ to send someone out — never because the caller asked, requested a quote, or it
 
 **`supabase/migrations/20260908100000_inbound_asks_and_job_captures.sql`** — (a) `alter table
 observations add column if not exists pinged_at timestamptz, add column if not exists asked_at
-timestamptz;` + a partial index on `(tenant_id, noticed_at) where status='open' and pinged_at is
-null` (kind-blind, for 10b); comments: `pinged_at` = the planner was called about it, `asked_at`
-= a text went out. (b) `create table job_captures (tenant_id uuid not null references tenants(id),
-job_id uuid not null references jobs(id) on delete cascade, capture_id uuid not null references
+timestamptz;` + a partial index on `(noticed_at) where status='open' and pinged_at is null and
+asked_at is null` — fleet-wide, no tenant column, the exact predicate `listUnpingedObservations`
+scans (round-3 #5); comments: `pinged_at` = the planner was called about it, `asked_at` = a text
+went out. (b) `create table job_captures (tenant_id uuid not null references tenants(id), job_id
+uuid not null references jobs(id) on delete cascade, capture_id uuid not null references
 raw_captures(id), created_at timestamptz not null default now(), primary key (job_id, capture_id))`
-+ `idx_job_captures_capture` — mirror `visit_notes` (20260906140000:114-122) incl. its RLS/grants.
-Additive; applied to the pilot BEFORE the deploy.
++ `idx_job_captures_capture`, the append-only trigger as `visit_notes` (20260906140000:114-136),
+and BOTH `revoke all … from anon, authenticated` AND `enable row level security` — the
+`visit_participants` precedent (20260907100000:244-245), pinned by `schema.test.ts:308-317`;
+`visit_notes` itself never enabled RLS and the deny-all sweep was one-time (round-3 #6). (c) the
+`v_job_captures` view. Additive; applied to the pilot BEFORE the deploy.
 **`src/db/database.types.ts`** — regenerate with `npm run gen:types:local` after `supabase db
 reset` (NEVER `gen:types`); commit it.
 
@@ -158,49 +164,62 @@ reset` (NEVER `gen:types`); commit it.
 ['inbound_new_job', 'inbound_commitment']` (10b appends); `listUnpingedObservations(kinds, limit)`
 (open, kind, `pinged_at is null and asked_at is null`, oldest first, fleet-wide);
 `claimObservationPing(id)` — guarded `set pinged_at=now() where id and pinged_at is null`, null =
-taken; `markObservationAsked(id, notBeforeIso)` — guarded `set asked_at=now(), not_before=… where
-id and status='open' and asked_at is null`, null = already asked; `stampObservationsPinged(ids)` —
-best-effort, `where pinged_at is null`.
+taken; `markObservationAsked(id, notBeforeIso)` — guarded `set asked_at=<stamp>, not_before=… where
+id and status='open' and asked_at is null`, returns the stamp, null = already asked;
+`clearObservationAsked(id, stamp)` — `set asked_at=null where id and asked_at=<stamp>` (the send's
+compensation, round-3 #14); `stampObservationsPinged(ids)` — best-effort, `where pinged_at is null`.
 **`src/db/jobs.ts`** — `insertJobCapture({tenantId, jobId, captureId})` (ignore 23505);
-`captureHasJobCapture(captureId)`; `listJobCaptureTimesForJobs(tenantId, jobIds, sinceUtcIso)`
-(the twin of `visits.ts:1324`); `appendJobCorrespondence(jobId, entry)` — read → `[...existing,
-entry]` under key `correspondence` via `trySetJobAttribute` (`:90`), 3 attempts (the
-`setJobAttribute` loop at `:115`); `entry = { captureId, channel, at, followUp, facts }` where
-`facts` = `extracted.attributes` (object only), `followUp` = `extracted.followUp`; NEVER
-`laborHours`/`workPerformed`; skip the write when both are empty.
+`captureHasJobCapture(captureId)`; `listJobCapturesForCapture(captureId)` (the retraction twin);
+`appendJobCorrespondence(jobId, entry)` — read → `[...existing, entry]` under key `correspondence`
+via `trySetJobAttribute` (`:90`), 3 attempts (the `setJobAttribute` loop at `:115`); `entry = {
+captureId, channel, at, followUp, facts }` where `facts` = `extracted.attributes` (object only),
+`followUp` = `extracted.followUp`; NEVER `laborHours`/`workPerformed`; skip the write when both
+are empty.
 **`src/db/rawCaptures.ts`** — `captureHasLinkedL2` (`:137-155`): arms `captureHasJobCapture`,
-`captureHasObservation` after the visit-note arm. `listJobEvidenceSince` (`:262`) and
-`listJobStampedCaptureTimes` (`:183`): a third arm over `job_captures`, `via: 'job'` (widen the
-union; comments at `:172-182` rewritten — the link-less shape is closed).
+`captureHasObservation` after the visit-note arm. `JobEvidenceRow.via` (`:261`) gains `'job'`;
+`listJobEvidenceSince` (`:269`) and `listJobStampedCaptureTimes` (`:183`) each read `job_captures`
+joined to `raw_captures` (so the row carries `captured_at`, not the link's `created_at`) as a
+third arm; comments at `:172-182` rewritten — the link-less shape is closed.
 
 **`src/writePath/recordFieldNote.ts`** — `RecordFieldNoteResult` (`:73-82`): `observationId?`.
-Hoist `isTechnicianChannel` (`:297-298`), `technician`, `timezone` above job resolution; resolve
-`job` as today (`:268-274`) but **do not `createJob` for inbound**; then:
+Hoist `isTechnicianChannel` (`:297-298`) above job resolution. The attach block (`:305-381`)
+already runs for EVERY channel — only the report and the happened flip are technician-gated
+(round-3 #1) — so it is reused, not duplicated. Three insertion points:
 ```ts
-if (!isTechnicianChannel) {
-  // RUNG 10 — THE EYE. Inbound never creates: it attaches (A), keeps (C), or asks.
-  let visitId: string | undefined;
-  if (job) {
-    const r = await resolveVisitForNote({ tenantId, jobId: job.id, technicianId: null, capturedAt, timezone, captureId, mayCreate: false });
-    if (r.visit) { await insertVisitNote({ tenantId, visitId: r.visit.id, captureId }); visitId = r.visit.id; }
-    else await insertJobCapture({ tenantId, jobId: job.id, captureId });
-    await appendJobCorrespondence(job.id, correspondenceOf(captureId, channel, capturedAt, extracted));
-  }
-  if (job && (extracted.visitCommitted !== true || visitId)) { /* fall through to the status-signal block, then return as today */ }
-  else {
-    const kind = extracted.visitCommitted === true ? 'inbound_commitment' : 'inbound_new_job';
-    const obs = await createObservation({ tenantId, kind, subjectRef: captureId, technicianId: null,
-      context: { captureId, capturedAt, customerId, channel, customerName: (await getCustomer(customerId))?.name ?? null,
-        from: fromOf(input.sourceMeta), ...(job ? { jobId: job.id, jobTitle: job.title } : {}),
-        asked: { jobTitle, jobType, address, city, workPerformed, followUp, attributes } /* from extracted, nulls kept */,
-        words: rawText.slice(0, 1500) } });
-    return { status: 'matched', captureId, customerId, ...(job ? { jobId: job.id } : {}), observationId: obs.id };
-  }
-}
-if (!job) job = await createJob({ …as today });   // technician channels only now
+// (i) after job resolution (:268-274), BEFORE createJob (:275): inbound with no open job ASKS.
+if (!isTechnicianChannel && !job) return await observeInbound(null);
+if (!job) job = await createJob({ …as today });                       // technician channels only now
+// (ii) inside the attach block, `if (visit) { insertVisitNote… }` (:320-323) gains
+//   `else if (!isTechnicianChannel) await insertJobCapture({ tenantId, jobId: job.id, captureId });`      // A
+//   and, for inbound only, before the gated report:
+//   `await appendJobCorrespondence(job.id, correspondenceOf(captureId, channel, capturedAt, extracted));` // C
+// (iii) after the attach block, BEFORE the status signal (:390): a commitment with no trip ASKS.
+if (!isTechnicianChannel && extracted.visitCommitted === true && !visit) return await observeInbound(job);
 ```
-The technician path (`:305-381`) is untouched; the status-signal block (`:390-395`) runs for an
-inbound capture on an open job exactly as today.
+`observeInbound(job)` = `createObservation({ tenantId, kind: extracted.visitCommitted === true ?
+'inbound_commitment' : 'inbound_new_job', subjectRef: captureId, technicianId: null, context: {
+captureId, capturedAt, customerId, channel, customerName: (await getCustomer(customerId))?.name ??
+null, from: fromOf(input.sourceMeta), ...(job ? { jobId: job.id, jobTitle: job.title } : {}),
+asked: { jobTitle, jobType, address, city, workPerformed, followUp, attributes } /* nulls kept */,
+words: rawText.slice(0, 1500) } })` — which returns **`Observation | null`** (the once-ever
+detector index: a raced redelivery gets null — round-3 #2) ⇒ `{ status: 'matched', captureId,
+customerId, ...(job ? { jobId: job.id } : {}), ...(obs ? { observationId: obs.id } : {}) }`.
+`correspondenceOf` (exported; Phase 3's copy point reuses it) takes ONLY `followUp` +
+`attributes`: `asked` keeps `workPerformed` for the planner's eyes, correspondence never carries it
+(round-3 #4). The status-signal block (`:390-395`) runs for an inbound capture on an open job
+exactly as today; a `book_visit`-minted job is `open`, so nothing changes there.
+
+**Readers and the retraction (round-3 #7-#10)** — `listJobStampedCaptureTimes` (`:183`) and
+`listJobEvidenceSince` (`:269`) each gain the `job_captures` arm INSIDE them (joined to
+`raw_captures` for `captured_at`), so `watchers.ts:283-284` needs nothing; the `via:'job'` row type
+is the only visible change. `retract_capture` (`server.ts:3667-3688`) follows its target onto
+every `job_captures` link exactly as it does `visit_notes` (twin insert; `listJobCapturesForCapture`
+in `jobs.ts`). `src/db/context.ts:150-170` folds `correspondence`: entries whose `captureId` is
+retracted are dropped before any reader sees them (typed readers only — the SQL surface shows raw
+L3, as for every fact). `src/synthesis/grounding.ts:32-43` renders `correspondence` as the LAST 3
+entries + "(N earlier)", never the whole array. `set_fact` (`server.ts:3961-3964`) refuses the key
+`correspondence` (reserved). Migration (c): `create view v_job_captures` — the twin of
+`v_visit_notes` (20260906140000:278) — so `spine_read` can answer "what correspondence is on this job".
 
 **Tests** — `src/writePath/recordFieldNote.test.ts` (widen `noteBy` at `:123` with
 `'phone_call'`; afterAll `:35-39` also truncates `observations`, `job_captures`): (1) committed
@@ -214,10 +233,16 @@ email on an open job, no live visit → `job_captures` + correspondence, no obse
 redelivery of (5) AND of (1) → `duplicate`, extractor spy not called; (7) unmatched committed
 call → `needs_disambiguation`, nothing written; (8) `technician_note` + `visitCommitted:true` →
 walk-in unchanged, no correspondence; (9) correspondence never carries `laborHours`/`workPerformed`;
-a second capture appends (length 2); an existing top-level key survives. `observations.test.ts`:
-the five helpers, second claim/ask null. `rawCaptures.test.ts`: `listJobEvidenceSince` yields a
-`via:'job'` row; `captureHasLinkedL2` true on a `job_captures` link alone. Schema pin on
-`EXTRACTION_TOOL`.
+a second capture appends (length 2); an existing top-level key survives. **Four existing tests
+assert the old behaviour and are rewritten, not deleted (round-3 #3):** `:919-933` ("structure
+omitted → still structures") now expects `observationId` and no `jobId`; `:380-411` (the stale
+signal) and `:801-837` (the explicit `'matched'` fall-through) now expect `duplicate` on the second
+delivery — `job_captures` makes the capture read as processed; `:839-891` (orphan heal) expects one
+observation and zero jobs. `observations.test.ts`: the helpers, second claim/ask null.
+`rawCaptures.test.ts`: `listJobEvidenceSince` yields a `via:'job'` row; `captureHasLinkedL2` true on
+a `job_captures` link alone. `server.test.ts`: `retract_capture` on a job-linked capture writes the
+twin link; `set_fact` with key `correspondence` refused; `getCustomerContext` drops a retracted
+entry. `schema.test.ts`: `job_captures` RLS pin. Schema pin on `EXTRACTION_TOOL`.
 
 ### Automated verification
 - [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`; `supabase db reset` clean;
@@ -234,10 +259,12 @@ the five helpers, second claim/ask null. `rawCaptures.test.ts`: `listJobEvidence
 impl = runPlanner)` wraps `lifecycle.ts:485-493` (`tools`, `execute` via `dispatchForIdentity`
 + `TEAM_LEAD_REF`); `lifecycle.ts` calls it passing `deps.runPlanner` as `impl` so the injectable
 seam at `lifecycle.test.ts:804-834` survives (round-2 #3). `runFocusedObservationPass(obs, impl?)`
-= `runPlannerPass(now, mode, { focus: { observationId: obs.id, budgetMs: 180_000 },
-listTenants: [obs.tenant_id], listObservations: [obs], listNudges: [], listOfficeMessages: [],
-listDeskTranscripts: [], plannerRun: async () => {} })`; no-op when `PLANNER_MODE` is unset/off
-or `!hasModelCredentials()`.
+= `runPlannerPass(now, mode, { focus: { observationId: obs.id, budgetMs: 180_000 }, listTenants:
+async () => [tenantRow], listObservationsByStatus: async () => [obs], listNudges: async () => [],
+listOfficeMessages: async () => [], listDeskTranscripts: async () => [] })` — every `PlannerDeps`
+field is `typeof <fn>` (`planner.ts:543-583`), so overrides are FUNCTIONS, and the office reader
+must be stubbed (the skip at `:3630` reads it); `plannerRun` is NOT overridden — focus mode skips
+the call (round-3 #15). No-op when `PLANNER_MODE` is unset/off or `!hasModelCredentials()`.
 
 **`src/calls/observationPing.ts`** (new) — `drainOneObservationPing(deps)`:
 `listUnpingedObservations(PINGED_KINDS, 1)` → `claimObservationPing` → `runFocusedObservationPass`;
@@ -248,9 +275,14 @@ two independent loops, each with its own backoff (round-2 #4).
 **`src/teamLead/planner.ts`**
 - `PlannerDeps` (`:542`): `focus?: { observationId: string; budgetMs: number }`. In focus: skip
   `plannerRun`; pass `budgetMs` into the `runLoop` request; the user message's `This firm has N
-  open gap(s).` (`:2951`) becomes *"This pass shows 1 item; the firm's other open work is not
+  open gap(s).` (`:2947`) becomes *"This pass shows 1 item; the firm's other open work is not
   shown and is not yours now."* (round-2 #6); `PlannerSummary` (`:367`) gains optional
   `focused?: true`, `pingedByObservation?`.
+- `observationAsGapRow` (`:1585-1608`) keeps `asked_at: null` ON PURPOSE: mapping the real
+  `asked_at` through it would feed `clockLabel` (`:1261`) into `dateLabels` (`:1269`) — the exact
+  clock label these kinds forbid — and trip the asked-nudge block (`:1348-1373`) and the pacing
+  read (`:3712-3719`). The marks reach `buildGapView` OUT-OF-BAND, a `marks` map passed alongside
+  `mootFact` at `:3922` (round-3 #12).
 - Per-tenant due check (`:3652-3656`): focused ⇒ due; else `pinged = openObs.some(o =>
   PINGED_KINDS.includes(o.kind) && !o.pinged_at && !o.asked_at && noticed_at > lastMs)` with the
   guarded `lastRunAt` read hoisted from `:3942-3966` (failure ⇒ not pinged); `if (!pinged &&
@@ -261,15 +293,19 @@ two independent loops, each with its own backoff (round-2 #4).
   file: open job … (job id …) | no open job — a job would be opened`, `  the firm agreed to come
   out: yes | not said`, `  capture id: … (spine_read v_captures for the full words)`, and when
   `asked_at`: `  you texted a manager about this ${ago}`. No clock label; `dateLabels` unchanged.
-- `apply` `case 'send'` (`:3017`): for these kinds, FIRST `markObservationAsked(id, now + 24h)`;
-  null ⇒ `{ outcome: 'refused', detail: 'already asked' }`; then the office row `via: 'chat'`.
-  Validate: `as` must be `'chat'`, `to` present, `countsAsTheAsk` absent.
-- `mootFactFor`: exact arm — `listL2CitingCapture(captureId)` (new in `src/db/rawCaptures.ts`:
-  jobs + visits with `source_capture_id`) ⇒ `'a job/visit was created from this capture'`;
-  inferred arm — `listVisitsCreatedSince(tenantId, minNoticedAt)` (new in `src/db/visits.ts`:
-  `{ id, job_id, customer_id, created_at }` via `jobs!inner`, confirmed/completed, paged) on
-  `context.jobId` or the customer after `noticed_at` ⇒ `'a visit was booked for this customer
-  after it was noticed (not cited)'`.
+- `apply` `case 'send'` (`:3017`): for these kinds, FIRST `markObservationAsked(id, now + 24h)`
+  (returns the stamp); null ⇒ `{ outcome: 'refused', detail: 'already asked' }`; then the office
+  row `via: 'chat'`. If `createOffice` THROWS, `clearObservationAsked(id, stamp)` (guarded on the
+  same stamp) before rethrowing — otherwise a transient write failure leaves the row stamped with
+  nothing delivered and un-askable forever (round-3 #14). Validate: `as` must be `'chat'`, `to`
+  present, `countsAsTheAsk` absent.
+- `mootFactFor` (`:3819-3830`) stays a SYNC closure over pre-batched maps (round-3 #13): before the
+  per-gap loop, batch `listL2CitingCapture(captureIds)` (new in `src/db/rawCaptures.ts`: jobs +
+  visits with `source_capture_id in (…)`) and `listVisitsCreatedSince(tenantId, minNoticedAt)` (new
+  in `src/db/visits.ts`: `{ id, job_id, customer_id, created_at }` via `jobs!inner`,
+  confirmed/completed, paged) — the `visitStatusById` precedent. Exact arm ⇒ `'a job/visit was
+  created from this capture'`; inferred arm (a row after `noticed_at` on `context.jobId` or the
+  customer) ⇒ `'a visit was booked for this customer after it was noticed (not cited)'`.
 
 **`src/jobs/lifecycle.ts`** — `LifecycleDeps` (`:79` region): `listFreshPings?`. Keep
 `:452`; the `!plannerTick` arm (`:481-482`) becomes a lazy `else if (!plannerTick && !(await
@@ -277,8 +313,9 @@ freshPing()))` — the dep over `now − 35 min`, `pinged_at is null and asked_a
 try/caught ⇒ false + log. Skip text: `'off-cadence tick (no firm due, no unclaimed observation)'`
 (update the pin at `lifecycle.test.ts:903`).
 
-**`src/teamLead/plannerPrompt.ts`** — after the closing doctrine (`:186-208`), **REQUESTS FROM
-CALLS AND EMAIL**: what it is (the extractor heard a customer ask for work, or the firm agree to
+**`src/teamLead/plannerPrompt.ts`** — after the closing doctrine, which ends at `:217` (insert
+before `HOW TO JUDGE AN ANSWER` at `:219`; `:208` is the blank line INSIDE it — round-3 #17),
+**REQUESTS FROM CALLS AND EMAIL**: what it is (the extractor heard a customer ask for work, or the firm agree to
 come out; the words are shown; nothing has been created, deliberately — you decide); what can
 happen (the manager's agent can `open_job`, or `book_visit` an untimed visit when the manager says
 so; you cannot); the usual move (`send` a manager, `as:'chat'`, `to` required, no `countsAsTheAsk`,
@@ -306,16 +343,21 @@ throwing pass keeps the claim.
 ### Changes required
 
 **`src/schedule/booking.ts`** — `BookVisitInput` (`:208`): `sourceCaptureId?: string`; pass it to
-`createJob` (`:549`) and `createVisit` (`:569`). **`src/mcp/server.ts`** — a helper
-`inboundAskFor(tenantId, { customerId?, jobId? })`: `listObservationsByStatus(tenantId, ['open'])`
-filtered to `PINGED_KINDS` and `context.customerId`/`context.jobId`; exactly one ⇒ `{ captureId,
-asked }`, else `null` (log the count). `case 'book_visit'` (the `bookVisit(bookInput)` call):
-pass `sourceCaptureId` from it; after a job was minted, `appendJobCorrespondence` with the
-observation's `asked` (C at creation). New tool **`open_job`** (same tier as `book_visit`):
-`{ customerId, title, jobType?, priority? }`, one-shot (a job is cancellable), the same open-work
-refusal as `book_visit`'s customerId path (re-call with `forceNewJob:true` only for genuinely
-different work), `createJob` with `sourceCaptureId` from `inboundAskFor`, the correspondence copy,
-returns the job. Neither verb touches the observation — the planner closes it on the citation.
+`createJob` (`:549`) and `createVisit` (`:569`) — on the `jobId` path only the visit is minted,
+so only the visit cites (intended). **`src/mcp/server.ts`** — a helper `inboundAskFor(tenantId,
+{ customerId?, jobId? })`: `listObservationsByStatus(tenantId, ['open'])` (full rows, `context`
+included) filtered to `PINGED_KINDS` and `context.customerId`/`context.jobId`; exactly one ⇒
+`{ captureId, asked }`, else `null` (log the count). `case 'book_visit'` (the `bookVisit(bookInput)`
+call): pass `sourceCaptureId` from it; after a job was minted, `appendJobCorrespondence` with
+`correspondenceOf(…asked)` (C at creation; `workPerformed` never copied). New tool **`open_job`**
+inside the **`ADMIN_TOOLS` array** (`:867` block) — membership of `ADMIN_TOOL_NAMES` is the real
+gate at `:2473`; the `tools/list` filter is cosmetic (round-3 #19): `{ customerId, title,
+jobType?, priority? }`, one-shot (a job is cancellable), the open-work refusal via
+`openWorkSteer('opened', jobs)` — the union at `booking.ts:288` widens by that literal (round-3
+#20) — `forceNewJob:true` only for genuinely different work, `createJob` with `sourceCaptureId`
+from `inboundAskFor`, the correspondence copy, returns the job. Neither verb touches the
+observation — the planner closes it on the citation. The board's `/book` route (`boardApi.ts:350-354`)
+shares `bookVisit`, rejects `customerId`, and needs nothing — the inferred arm covers it.
 
 **`Box_Setup_Stuff/bootstrap-box.sh`** — inside the confirmation heredoc (`:701-738`), rule
 **7**: *When the office texts about a call or email asking whether to open a job — or to open one
@@ -328,8 +370,8 @@ On a no, `inform_team_lead` in one sentence. Never create it before they answer.
 
 **`docs/nemoclaw-tech-agent.md`** (`:190-212`): mirror rule 7; rewrite `:299-311` to the
 webhook-only truth. **Delete `src/email/ingest.ts`, `ingest.test.ts`; `npm uninstall googleapis`**
-(`package.json:53`); reword `classify.ts:15,44`, `planner.ts:923`, `planner.test.ts:3305`,
-`engineering-memory.md:1933, :5070`. Catalog text for `get_job`/`get_customer_context`: the
+(`package.json:53`); reword `classify.ts:15,44`, `planner.ts:924`, `planner.test.ts:3305`,
+`engineering-memory.md:1933, :4549, :5071`. Catalog text for `get_job`/`get_customer_context`: the
 `correspondence` entries are "what the caller/emailer said, labelled by capture".
 
 **Docs** — `engineering-memory.md`: ladder row `:3573` → `10 inbound asks before it creates —
@@ -341,11 +383,12 @@ rung 10` record in `- **Title**` bullets (new-caller path = rung 10b; the silent
 the two markers; A/B/C; the accepted focused-pass cost per non-request email). Overview §4
 (`:121-157`): one sentence. `npm run decisions:index`.
 
-**Tests** — `boardApi.test.ts`/`server.test.ts`: (16) `book_visit` by customerId with ONE open
-`inbound_new_job` observation → minted job and visit both carry `source_capture_id` = its capture;
-`attributes.correspondence[0]` = its `asked`; the observation is still `open`; (17) zero or two
-observations → no citation, booking unchanged; (18) `open_job` cites, copies, refuses with open work
-unless `forceNewJob`, and a technician-tier caller cannot see it.
+**Tests** — `server.test.ts` only (the board route rejects `customerId` — round-3 #21): (16)
+`book_visit` by customerId with ONE open `inbound_new_job` observation → minted job and visit both
+carry `source_capture_id` = its capture; `attributes.correspondence[0]` = `correspondenceOf(asked)`,
+no `workPerformed`; the observation is still `open`; (17) zero or two observations → no citation,
+booking unchanged; (18) `open_job` cites, copies, refuses with open work unless `forceNewJob`
+(the `'opened'` steer text), and a technician-tier caller is refused at the dispatch gate.
 
 **Deploy (owner's call):** 1. `apply_migration` on the pilot (additive: two columns + the table);
 2. set the five env names on `Calls-worker`; 3. fork sync → deploy `TradesDatabase`,
@@ -354,7 +397,8 @@ wire s2` (md5 the repo copy first), read rule 7 back, `nemoclaw s2 gateway resta
 
 ### Automated verification
 - [ ] gates green; `doctrine.test.ts` green; (16)–(18) pass;
-      `grep -rn "ingestEmail\|email/ingest\|googleapis" src scripts docs package.json` → 0
+      `grep -rn "ingestEmail\|email/ingest\|from 'googleapis'\|\"googleapis\"" src scripts docs package.json`
+      → 0 (`routes.googleapis.com` in `googleRoutes.ts:21` is a URL, not the package — round-3 #22)
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP, `ssh tradesbox`, Render logs for `Calls-worker`, a paired
   manager mailbox, and ONE human action: the owner emails it from a known customer's address with

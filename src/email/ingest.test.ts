@@ -21,7 +21,10 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await pg.query('truncate table schedule_entries, customers, jobs, visits, raw_captures, dropped_audit cascade');
+  await pg.query(
+    'truncate table schedule_entries, customers, jobs, visits, raw_captures, dropped_audit, ' +
+      'observations, job_captures cascade',
+  );
   await pg.end();
 });
 
@@ -63,9 +66,21 @@ describe('ingestEmail', () => {
     );
     expect(Number(caps.rows[0].n)).toBe(1);
 
-    // The work email matched the customer → an L2 job was created for them.
+    // The work email matched the customer → and since RUNG 10 that is where it
+    // stops: an inbound capture never creates a job. The manager is asked
+    // instead, through an observation the planner is called about. (This pull
+    // path is dead code with no production caller and goes in the same change;
+    // the assertion is corrected rather than deleted so the file stays honest
+    // until it does.)
     const jobs = await listJobsForCustomer(customer.id);
-    expect(jobs.length).toBe(1);
+    expect(jobs.length).toBe(0);
+    const asked = await pg.query<{ kind: string }>(
+      `select o.kind from observations o
+         join raw_captures c on c.id::text = o.subject_ref
+        where c.tenant_id = $1 and c.external_id = 'e1'`,
+      [tenantId],
+    );
+    expect(asked.rows.map((r) => r.kind)).toEqual(['inbound_new_job']);
 
     // The dropped newsletter left a CONTENT-FREE audit receipt: domain + external_id
     // only, no body/subject stored (the email itself was never persisted).

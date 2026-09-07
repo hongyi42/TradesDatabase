@@ -318,6 +318,38 @@ describe('context spine schema', () => {
     expect(grants).toEqual([]);
   });
 
+  // RUNG 10. `visit_notes` never enabled RLS — the one-time deny-all sweep
+  // (20260824120000) had already covered every table that existed then, and a
+  // new table gets nothing from it. Both halves are asserted, because either
+  // alone leaves the Data API a door: the grant revoke without RLS, or RLS
+  // without the revoke (auto_expose_new_tables re-grants SELECT).
+  test('job_captures is closed to the Data API', async () => {
+    const { rows } = await client.query<{ relrowsecurity: boolean }>(
+      `select relrowsecurity from pg_class where oid = 'public.job_captures'::regclass`,
+    );
+    expect(rows[0].relrowsecurity, 'RLS on, no policy → anon/authenticated get zero rows').toBe(true);
+    const { rows: grants } = await client.query<{ grantee: string }>(
+      `select distinct grantee from information_schema.role_table_grants
+        where table_schema = 'public' and table_name = 'job_captures'
+          and grantee in ('anon','authenticated')`,
+    );
+    expect(grants).toEqual([]);
+  });
+
+  // A LINK, ONCE MADE, IS NEVER RE-POINTED — the visit_notes rule, one rung
+  // down. UPDATE only: blocking DELETE would make a job undeletable the moment
+  // a customer emailed about it (`on delete cascade` would raise instead of
+  // cascading), which is the "L1 pins L2" trap.
+  test('job_captures is append-only on UPDATE, and its job cascade still works', async () => {
+    const { rows } = await client.query<{ def: string }>(
+      `select pg_get_triggerdef(oid) as def from pg_trigger
+        where tgrelid = 'public.job_captures'::regclass and not tgisinternal`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].def).toContain('BEFORE UPDATE');
+    expect(rows[0].def).not.toContain('DELETE');
+  });
+
   // The L1 invariant: raw_captures is append-only. The whole probe runs inside a
   // transaction that is rolled back, so nothing persists (and DELETE is blocked
   // by the same trigger, so a committed probe row could not be cleaned up).

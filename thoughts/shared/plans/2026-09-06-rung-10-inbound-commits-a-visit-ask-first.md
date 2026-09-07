@@ -245,11 +245,33 @@ twin link; `set_fact` with key `correspondence` refused; `getCustomerContext` dr
 entry. `schema.test.ts`: `job_captures` RLS pin. Schema pin on `EXTRACTION_TOOL`.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`; `supabase db reset` clean;
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`; `supabase db reset` clean;
       `git diff --stat src/db/database.types.ts` shows the two columns and the table
-- [ ] (1)–(9) pass; falsify (4) by restoring `createJob` for inbound → job count; (3) by moving the
+- [x] (1)–(9) pass; falsify (4) by restoring `createJob` for inbound → job count; (3) by moving the
       observation above the attach; (6) by dropping the `job_captures` arm from `captureHasLinkedL2`
 ### Live verification — none until Phase 3. ### Manual verification — none. *Continue.*
+
+**Landed 2026-09-07.** 2669 tests green. Three review rounds folded in; what they changed that the
+plan did not say:
+- **Order the tail by what it costs to lose** — ask → correspondence → link → status. Every link is
+  a "processed" marker `captureHasLinkedL2` reads, so writing one before the ask would let a
+  failure in between bury a promise permanently. The ask is itself a marker, so keeping it first
+  is a deliberate trade (a failed correspondence append then costs that job its own copy of the
+  words); the code says so, and a test pins both halves.
+- **`idx_observations_subject_ref`** — `captureHasObservation` reads by `subject_ref` alone, which
+  `uq_observations_subject_ever` cannot serve (tenant leads it, and its `author='detector'`
+  predicate is not implied). Without it, a Seq Scan per inbound delivery on a table with no delete
+  path. `EXPLAIN` confirms the Index Scan.
+- **`from` AND `fromNumber`** — the phone door spells the sender differently from the email door,
+  so the rung's headline channel was storing `from: null`.
+- **The retraction preview grew a `correspondence` arm**, and `get_job` folds it too: naming it in
+  `willAlsoRemove` without folding it there would have promised a removal that did not happen.
+- **The reserved key is refused on the confirm path as well**, before the L1 append — a token
+  staged pre-deploy would otherwise strand an orphan capture and loop on a retry that cannot
+  converge.
+- **Both `job_captures` readers re-check the embedded capture's tenant** (`capture_id` is an
+  id-only FK), and `validateCitations` accepts correspondence ids — an inbound capture is in no
+  other citeable list, so a model quoting what it was shown was being silently dropped.
 
 ## Phase 2: The focused pass — called at once, about one thing, in its own words
 

@@ -63,6 +63,51 @@ describe('serializeContextForPrompt', () => {
   });
 });
 
+// ---- Rung 10: what the caller said, on the job ----------------------------
+const withCorrespondence = (n: number): CustomerContext => {
+  const ctx = fixture();
+  ctx.jobs = [
+    job({
+      attributes: {
+        gateCode: '1234',
+        correspondence: Array.from({ length: n }, (_, i) => ({
+          captureId: `cap-corr-${i}`,
+          channel: 'email',
+          at: `2026-09-0${i + 1}T10:00:00.000Z`,
+          followUp: `follow up ${i}`,
+        })),
+      },
+    }),
+  ];
+  return ctx;
+};
+
+describe('correspondence in the brief (rung 10)', () => {
+  test('is LABELLED as the customer’s own words, not the firm’s facts', () => {
+    const text = serializeContextForPrompt(withCorrespondence(1));
+    expect(text).toContain('correspondence (what the customer said on their calls and emails)=');
+    // The neighbouring plain key is untouched.
+    expect(text).toContain('gateCode="1234"');
+  });
+
+  test('is BOUNDED to the newest three, and says how many are older', () => {
+    const text = serializeContextForPrompt(withCorrespondence(7));
+    // Newest three, in order.
+    expect(text).toContain('cap-corr-4');
+    expect(text).toContain('cap-corr-5');
+    expect(text).toContain('cap-corr-6');
+    // The four older ones are counted, never printed — a long-running job must
+    // not crowd every other fact out of the brief.
+    expect(text).not.toContain('cap-corr-0');
+    expect(text).not.toContain('cap-corr-3');
+    expect(text).toContain('(4 earlier)');
+  });
+
+  test('a single entry prints with no "(N earlier)" tail', () => {
+    expect(serializeContextForPrompt(withCorrespondence(1))).not.toContain('earlier)');
+  });
+});
+
 describe('validateCitations', () => {
   const context = fixture();
 
@@ -74,6 +119,18 @@ describe('validateCitations', () => {
   test('drops a citation with a fabricated captureId', () => {
     const out = validateCitations([{ claim: 'made up', captureId: 'cap-zzz' }], context);
     expect(out).toEqual([]);
+  });
+
+  test('accepts a CORRESPONDENCE capture id — an inbound capture is in no other list', () => {
+    // An inbound capture on an existing job is never stamped with a
+    // customer_id (identity resolves after L1, which is immutable), so it is in
+    // neither recentCaptures nor the standing-fact ids. The job line shows the
+    // model that id; dropping a citation of it would be the silent
+    // ungrounded-brief failure this function exists to prevent.
+    const ctx = withCorrespondence(1);
+    expect(serializeContextForPrompt(ctx)).toContain('cap-corr-0');
+    expect(validateCitations([{ claim: 'they asked for a washer', captureId: 'cap-corr-0' }], ctx))
+      .toEqual([{ claim: 'they asked for a washer', captureId: 'cap-corr-0' }]);
   });
 
   test('returns [] for undefined input', () => {

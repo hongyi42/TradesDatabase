@@ -1,6 +1,7 @@
 import { getClient } from './client.js';
 import { participantIdsOf } from './visits.js';
 import { factEntriesCiting } from './standingFacts.js';
+import { correspondenceEntriesCiting } from './jobs.js';
 
 // What disappears from default views if a given capture is retracted: standing
 // facts (customer/job attributes bundle-citing it as evidence) and visits whose
@@ -35,12 +36,29 @@ export interface FoldedVisit {
   technicianIds: string[];
 }
 
+// RUNG 10 ADDED A THIRD THING THAT DISAPPEARS. `attributes.correspondence` on a
+// job is what a caller said, one entry per inbound capture, and src/db/context.ts
+// drops the entries whose capture is retracted — exactly as it drops a standing
+// fact. A preview that did not name them would tell the manager "nothing else
+// goes" and then silently remove the customer's own words from the job, which is
+// the failure this whole module exists to prevent.
+export interface FoldedCorrespondence {
+  jobId: string;
+  jobLabel: string;
+  channel: string;
+  at: string;
+  /** What the caller asked us to do next, when the extractor found one. */
+  followUp: string | null;
+}
+
 export interface FoldImpact {
   facts: FoldedFact[];
   /** Trips that DISAPPEAR with the capture — it is their `source_capture_id`. */
   visits: FoldedVisit[];
   /** Trips that SURVIVE the retraction and merely lose this note as evidence. */
   visitsLosingEvidence: FoldedVisit[];
+  /** What this caller said, kept on a job, that stops being shown (rung 10). */
+  correspondence: FoldedCorrespondence[];
 }
 
 // PostgREST caps every response at db-max-rows (1000 in supabase/config.toml
@@ -144,9 +162,23 @@ export async function findFoldImpact(tenantId: string, captureId: string): Promi
       // rows the fold removes, never a subset.
       disappears: n.visits.source_capture_id === captureId,
     }));
+  // Off the SAME jobs scan the facts arm uses — no extra round trip, and the
+  // two can never disagree about which jobs were looked at.
+  const correspondence: FoldedCorrespondence[] = jobs.flatMap((j) =>
+    correspondenceEntriesCiting(j.attributes, captureId).map((e) => ({
+      jobId: j.id,
+      // Same `||` fallback as the facts arm: a blank title must not attribute
+      // the entry to a nameless row.
+      jobLabel: j.title?.trim() || j.job_type?.trim() || 'job',
+      channel: e.channel,
+      at: e.at,
+      followUp: e.followUp ?? null,
+    })),
+  );
   return {
     facts,
     visits: linked.filter((v) => v.disappears).map((v) => v.folded),
     visitsLosingEvidence: linked.filter((v) => !v.disappears).map((v) => v.folded),
+    correspondence,
   };
 }

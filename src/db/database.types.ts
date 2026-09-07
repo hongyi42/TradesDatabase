@@ -526,6 +526,77 @@ export type Database = {
         }
         Relationships: []
       }
+      job_captures: {
+        Row: {
+          capture_id: string
+          created_at: string
+          job_id: string
+          tenant_id: string
+        }
+        Insert: {
+          capture_id: string
+          created_at?: string
+          job_id: string
+          tenant_id: string
+        }
+        Update: {
+          capture_id?: string
+          created_at?: string
+          job_id?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "job_captures_capture_id_fkey"
+            columns: ["capture_id"]
+            isOneToOne: false
+            referencedRelation: "raw_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "job_captures_capture_id_fkey"
+            columns: ["capture_id"]
+            isOneToOne: false
+            referencedRelation: "v_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "job_captures_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "job_captures_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "job_captures_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "job_captures_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "job_captures_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       job_note_versions: {
         Row: {
           content: string
@@ -1152,6 +1223,7 @@ export type Database = {
       }
       observations: {
         Row: {
+          asked_at: string | null
           author: string
           context: Json
           dismiss_reason: string | null
@@ -1160,6 +1232,7 @@ export type Database = {
           kind: string
           not_before: string | null
           noticed_at: string
+          pinged_at: string | null
           status: string
           subject_ref: string
           technician_id: string | null
@@ -1167,6 +1240,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          asked_at?: string | null
           author?: string
           context?: Json
           dismiss_reason?: string | null
@@ -1175,6 +1249,7 @@ export type Database = {
           kind: string
           not_before?: string | null
           noticed_at?: string
+          pinged_at?: string | null
           status?: string
           subject_ref: string
           technician_id?: string | null
@@ -1182,6 +1257,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          asked_at?: string | null
           author?: string
           context?: Json
           dismiss_reason?: string | null
@@ -1190,6 +1266,7 @@ export type Database = {
           kind?: string
           not_before?: string | null
           noticed_at?: string
+          pinged_at?: string | null
           status?: string
           subject_ref?: string
           technician_id?: string | null
@@ -2937,6 +3014,100 @@ export type Database = {
           updated_at?: string | null
         }
         Relationships: []
+      }
+      v_job_captures: {
+        Row: {
+          capture_id: string | null
+          created_at: string | null
+          customer_id: string | null
+          job_id: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "job_captures_capture_id_fkey"
+            columns: ["capture_id"]
+            isOneToOne: false
+            referencedRelation: "raw_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "job_captures_capture_id_fkey"
+            columns: ["capture_id"]
+            isOneToOne: false
+            referencedRelation: "v_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "job_captures_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "job_captures_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "job_captures_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "job_captures_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "jobs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "jobs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "jobs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "jobs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "jobs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_money_events"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "jobs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["customer_id"]
+          },
+        ]
       }
       v_jobs: {
         Row: {

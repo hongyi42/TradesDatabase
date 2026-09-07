@@ -119,9 +119,15 @@ export async function processNextCall(deps: WorkerDeps = liveDeps): Promise<'idl
     } catch {
       unclassified = true;
     }
-    // Only a validated `new_job` builds L2 (a job that surfaces in the board's
-    // unscheduled bucket). Every other intent — and an unclassified call — keeps
-    // L1 and routes to a human, so structuring is OFF unless new_job is present.
+    // Only a validated `new_job` runs the extractor at all. Every other intent —
+    // and an unclassified call — keeps L1 and routes to a human, so structuring
+    // is OFF unless new_job is present.
+    // WHAT STRUCTURING MEANS SINCE RUNG 10: identity resolves, the words are
+    // pinned to the caller's open job if they have one, and an OBSERVATION is
+    // raised — a manager asked — when they have no open job, or when the firm
+    // agreed to come out and no trip on the calendar carries it. It no longer
+    // mints a job, so nothing from a call reaches the board's unscheduled
+    // bucket until somebody says yes.
     const structure = !unclassified && validated.includes('new_job');
 
     const result = await deps.recordFieldNote({

@@ -27,8 +27,11 @@
 // about that trip, and before this it linked nothing at all — invisible to the
 // planner's evidence read and to the watcher's activity probe, which is how a
 // customer's own answer could leave a gap looking unanswered. Step 3 is the
-// only technician-gated part, and rung 10 is where inbound (call AND email)
-// gets its own creation path: a COMMITTED visit, never a completed one.
+// only technician-gated part, and RUNG 10 LEFT IT THAT WAY: inbound got no
+// creation path here. When nothing attaches, the capture is pinned to the JOB
+// (`job_captures`) and — if the firm agreed to come out — a manager is asked
+// whether it should reach the calendar. What goes on the schedule is theirs
+// to say; the write-path's job is to make sure they are asked.
 import {
   createVisit,
   listParticipants,

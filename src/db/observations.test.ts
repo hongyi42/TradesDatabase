@@ -2,10 +2,17 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from './client.js';
 import {
+  PINGED_KINDS,
+  captureHasObservation,
+  claimObservationPing,
+  clearObservationAsked,
   createObservation,
   listObservationsByStatus,
   listObservedSubjectRefs,
+  listUnpingedObservations,
+  markObservationAsked,
   setObservationStatus,
+  stampObservationsPinged,
 } from './observations.js';
 import { createNudgeFromObservation } from './nudges.js';
 import {
@@ -393,5 +400,121 @@ describe('observations', () => {
     expect(view.rows[0].r).toBe(true);
     expect(view.rows[0].a).toBe(false);
     expect(view.rows[0].u).toBe(false);
+  });
+});
+
+// ---- Rung 10: the two markers ---------------------------------------------
+//
+// `pinged_at` = the planner was CALLED about this row; `asked_at` = a message
+// actually went out. They are separate so a planner that reads an item and
+// decides to WAIT has not consumed the ask, and so the focused pass and the
+// half-hourly heartbeat can never both text a manager about one call.
+describe('the ping markers (rung 10)', () => {
+  const mkInbound = async (kind: 'inbound_new_job' | 'inbound_commitment' = 'inbound_new_job') => {
+    const row = await createObservation({
+      tenantId,
+      kind,
+      subjectRef: subject(),
+      technicianId: null,
+      context: { words: 'they called' },
+    });
+    if (!row) throw new Error('fixture create returned null');
+    createdIds.push(row.id);
+    return row;
+  };
+  const mine = (rows: { id: string }[], ids: string[]) => rows.filter((r) => ids.includes(r.id));
+
+  test('PINGED_KINDS names the kinds the loop watches — kind-blind helpers, one list', () => {
+    expect(PINGED_KINDS).toEqual(['inbound_new_job', 'inbound_commitment']);
+  });
+
+  test('captureHasObservation is the write-path’s processed marker', async () => {
+    const row = await mkInbound();
+    expect(await captureHasObservation(row.subject_ref)).toBe(true);
+    expect(await captureHasObservation('00000000-0000-0000-0000-000000000000')).toBe(false);
+  });
+
+  test('the unpinged read finds open, unpinged, unasked rows of these kinds only', async () => {
+    const fresh = await mkInbound();
+    const committed = await mkInbound('inbound_commitment');
+    const other = await mkObservation(); // an overdue_visit_gap — not this loop's
+    const rows = await listUnpingedObservations(PINGED_KINDS, 1000);
+    const ids = rows.map((r) => r.id);
+    expect(ids).toContain(fresh.id);
+    expect(ids).toContain(committed.id);
+    expect(ids).not.toContain(other.id);
+    // Oldest first — the loop drains in the order the calls arrived.
+    const times = rows.map((r) => r.noticed_at);
+    expect([...times].sort()).toEqual(times);
+  });
+
+  test('a claim is exclusive: the second worker gets null, and the row leaves the read', async () => {
+    const row = await mkInbound();
+    const claimed = await claimObservationPing(row.id);
+    expect(claimed?.id).toBe(row.id);
+    expect(claimed?.pinged_at).not.toBeNull();
+    expect(await claimObservationPing(row.id)).toBeNull(); // somebody else has it
+    const rows = await listUnpingedObservations(PINGED_KINDS, 1000);
+    expect(rows.map((r) => r.id)).not.toContain(row.id);
+  });
+
+  test('the ask is once: a stamp the first time, null after, and not_before is set', async () => {
+    const row = await mkInbound();
+    const notBefore = new Date(Date.now() + 86_400_000).toISOString();
+    const stamp = await markObservationAsked(row.id, notBefore);
+    expect(stamp).not.toBeNull();
+    expect(await markObservationAsked(row.id, notBefore)).toBeNull(); // never twice
+    // `new Date(...)`, not Date.parse: node-postgres hands back a Date object
+    // for timestamptz, and Date.parse would stringify it and lose the
+    // milliseconds — the two sides would differ by up to 999ms at random.
+    const { rows } = await pg.query<{ asked_at: Date; not_before: Date }>(
+      'select asked_at, not_before from observations where id = $1',
+      [row.id],
+    );
+    expect(new Date(rows[0].asked_at).getTime()).toBe(Date.parse(stamp as string));
+    expect(new Date(rows[0].not_before).getTime()).toBe(Date.parse(notBefore));
+    // An asked row is out of the loop's read as surely as a pinged one.
+    expect(mine(await listUnpingedObservations(PINGED_KINDS, 1000), [row.id])).toHaveLength(0);
+  });
+
+  test('a dismissed row cannot be asked about — the guard names the status too', async () => {
+    const row = await mkInbound();
+    await setObservationStatus(row.id, tenantId, { status: 'dismissed' }, ['open']);
+    expect(await markObservationAsked(row.id, new Date().toISOString())).toBeNull();
+  });
+
+  test('the compensation clears ONLY its own stamp — a failed send must not eat a later ask', async () => {
+    const row = await mkInbound();
+    const stamp = (await markObservationAsked(row.id, new Date().toISOString())) as string;
+    // Somebody else's stamp: refused silently, the ask stands.
+    await clearObservationAsked(row.id, new Date(Date.parse(stamp) - 5000).toISOString());
+    const still = await pg.query('select asked_at from observations where id = $1', [row.id]);
+    expect(still.rows[0].asked_at).not.toBeNull();
+    // Its own: cleared, so the row can be asked about again.
+    await clearObservationAsked(row.id, stamp);
+    const cleared = await pg.query('select asked_at from observations where id = $1', [row.id]);
+    expect(cleared.rows[0].asked_at).toBeNull();
+    expect(await markObservationAsked(row.id, new Date().toISOString())).not.toBeNull();
+  });
+
+  test('the heartbeat’s best-effort stamp never overwrites a real claim', async () => {
+    const shown = await mkInbound();
+    const claimed = await mkInbound();
+    const first = await claimObservationPing(claimed.id);
+    await stampObservationsPinged([shown.id, claimed.id]);
+    const { rows } = await pg.query<{ id: string; pinged_at: Date }>(
+      'select id, pinged_at from observations where id = any($1::uuid[])',
+      [[shown.id, claimed.id]],
+    );
+    const byId = new Map(rows.map((r) => [r.id, r.pinged_at]));
+    expect(byId.get(shown.id)).not.toBeNull();
+    expect(new Date(byId.get(claimed.id) as Date).getTime()).toBe(
+      Date.parse(first?.pinged_at as string),
+    );
+  });
+
+  test('an empty id list is a no-op, and an empty kind list reads nothing', async () => {
+    await expect(stampObservationsPinged([])).resolves.toBeUndefined();
+    expect(await listUnpingedObservations([], 10)).toEqual([]);
   });
 });

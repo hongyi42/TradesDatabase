@@ -437,3 +437,144 @@ export async function updateJobDetails(
   }
   return data;
 }
+
+// ── RUNG 10: what landed on the job, and what the caller said ───────────────
+
+// The LINK. The twin of visit_notes one rung down: an inbound capture on an
+// open job with no live trip had nowhere to point, so both evidence homes
+// missed it and the job read silent. Idempotent by primary key — a redelivery is
+// a NO-OP, not an error (the insertVisitNote idiom). `ignoreDuplicates` is what
+// makes that `ON CONFLICT DO NOTHING`, and it must never become DO UPDATE: the
+// job_captures_append_only trigger would raise on it.
+export interface InsertJobCaptureInput {
+  tenantId: string;
+  jobId: string;
+  captureId: string;
+}
+
+export async function insertJobCapture(input: InsertJobCaptureInput): Promise<void> {
+  const { error } = await getClient()
+    .from('job_captures')
+    .upsert(
+      { tenant_id: input.tenantId, job_id: input.jobId, capture_id: input.captureId },
+      { onConflict: 'job_id,capture_id', ignoreDuplicates: true },
+    );
+  if (error) throw new Error(`insertJobCapture failed: ${error.message}`);
+}
+
+// True if this capture is linked to any job — one of the "already processed"
+// markers captureHasLinkedL2 reads. Fleet-wide by capture id, exactly like
+// captureHasVisitNote: holding the id is proof enough of tenancy.
+export async function captureHasJobCapture(captureId: string): Promise<boolean> {
+  const { data, error } = await getClient()
+    .from('job_captures')
+    .select('capture_id')
+    .eq('capture_id', captureId)
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`captureHasJobCapture failed: ${error.message}`);
+  return !!data;
+}
+
+// Which jobs a capture is linked to — the listVisitNotesForCapture twin, and
+// for the same reason: a retraction has to follow its target onto every link,
+// or it lands on the record with no connection to what it neutralizes.
+export async function listJobCapturesForCapture(
+  captureId: string,
+): Promise<{ job_id: string; tenant_id: string }[]> {
+  const { data, error } = await getClient()
+    .from('job_captures')
+    .select('job_id, tenant_id')
+    .eq('capture_id', captureId);
+  if (error) throw new Error(`listJobCapturesForCapture failed: ${error.message}`);
+  return data ?? [];
+}
+
+// The VALUES. `attributes.correspondence` is the job's running list of what
+// customers said about it — one entry per inbound capture, each carrying the
+// capture that evidences it. RESERVED: record_standing_fact refuses this key,
+// because a standing fact is a scalar bundle and writing one here would replace
+// the array outright.
+export const CORRESPONDENCE_KEY = 'correspondence';
+
+export interface JobCorrespondenceEntry {
+  captureId: string;
+  channel: string;
+  at: string;
+  /** What the caller asked us to do next, in the extractor's words. */
+  followUp?: string;
+  /** The extractor's long-tail L3 facts. NEVER laborHours/workPerformed — the
+   *  report and the bill stay technician-only (rung 9b's line). */
+  facts?: Record<string, Json>;
+}
+
+// Shape guard, exact-keys-free on purpose (entries are ours, not a user's, and
+// a future field must not make old rows unreadable): the three required
+// strings are what every reader relies on.
+export function isCorrespondenceEntry(v: Json): v is JobCorrespondenceEntry & { [k: string]: Json } {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  const e = v as Record<string, Json>;
+  return typeof e.captureId === 'string' && typeof e.channel === 'string' && typeof e.at === 'string';
+}
+
+// The entries stored on a job, or [] when the key is absent or malformed.
+export function correspondenceEntries(attrs: Json): JobCorrespondenceEntry[] {
+  if (typeof attrs !== 'object' || attrs === null || Array.isArray(attrs)) return [];
+  const raw = (attrs as Record<string, Json>)[CORRESPONDENCE_KEY];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((v): v is JobCorrespondenceEntry & { [k: string]: Json } =>
+    isCorrespondenceEntry(v ?? null),
+  );
+}
+
+// The entries that WOULD fold if `captureId` were retracted — the predicate
+// below, selecting instead of dropping. Lives here beside the fold for the
+// factEntriesCiting reason: "what will disappear" (the retraction preview) and
+// "what does disappear" (the fold) must never be able to drift apart.
+export function correspondenceEntriesCiting(
+  attrs: Json,
+  captureId: string,
+): JobCorrespondenceEntry[] {
+  return correspondenceEntries(attrs).filter((e) => e.captureId === captureId);
+}
+
+// Drop entries whose evidence capture was retracted — the correspondence twin
+// of foldRetractedFacts, and the only removal path (there is no delete tool).
+// Retaining the key with an empty array would be a lie of a different shape, so
+// an emptied list is removed outright.
+export function foldRetractedCorrespondence(attrs: Json, retractedIds: ReadonlySet<string>): Json {
+  if (typeof attrs !== 'object' || attrs === null || Array.isArray(attrs)) return attrs;
+  const map = attrs as Record<string, Json>;
+  if (!Array.isArray(map[CORRESPONDENCE_KEY])) return attrs;
+  const kept = correspondenceEntries(attrs).filter((e) => !retractedIds.has(e.captureId));
+  const out = { ...map };
+  if (kept.length === 0) delete out[CORRESPONDENCE_KEY];
+  else out[CORRESPONDENCE_KEY] = kept as unknown as Json;
+  return out;
+}
+
+// APPEND one entry under CAS (the setJobAttribute loop): read → append →
+// guarded write, retried on a concurrent change. Never a merge over the key —
+// two emails on one job are two entries, and a merge would keep only the last.
+// A null entry is a no-op: an inbound capture that yielded neither a follow-up
+// nor a fact adds nothing but noise, and the job_captures link already records
+// that it landed.
+export async function appendJobCorrespondence(
+  jobId: string,
+  entry: JobCorrespondenceEntry | null,
+): Promise<Job | null> {
+  if (!entry) return null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const row = await getJob(jobId);
+    if (!row) throw new Error(`appendJobCorrespondence: job ${jobId} not found`);
+    const existing = correspondenceEntries(row.attributes);
+    // Idempotent under redelivery: one capture leaves one entry.
+    if (existing.some((e) => e.captureId === entry.captureId)) return row;
+    const updated = await trySetJobAttribute(row, CORRESPONDENCE_KEY, [
+      ...existing,
+      entry,
+    ] as unknown as Json);
+    if (updated) return updated;
+  }
+  throw new Error(`appendJobCorrespondence: job ${jobId} changed concurrently; write not applied`);
+}

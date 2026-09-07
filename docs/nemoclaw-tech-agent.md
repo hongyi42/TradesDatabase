@@ -255,7 +255,8 @@ date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). Array
   `agent_action`) are manager-only, even for their author. Facts a note already wrote onto the
   job/customer record (e.g. a status change) are not auto-reverted by a retraction.
 - **Retraction blast radius (2026-07-14):** the retraction stage response carries
-  `willAlsoRemove` — the server-computed list of standing facts and visits that fold with the
+  `willAlsoRemove` — the server-computed list of standing facts, visits AND caller correspondence
+  (what a customer said on a call or email, kept on the job — rung 10) that fold with the
   capture. The agent must show that list as part of the confirmation. The confirm response
   echoes the final list as `alsoRemoved` plus a `restoreHint` when facts folded; the agent then
   offers to restore still-true facts by **staging** `record_standing_fact` (the preview is the

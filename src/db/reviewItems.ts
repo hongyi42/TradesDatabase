@@ -60,7 +60,20 @@ export type ReviewKind =
   // It is also the one kind outside `uq_observations_subject_ever`, which is
   // partial on author='detector' since 20260904110000. Its subject_ref is a
   // LABEL, not a dedup key — see createObservation.
-  | 'planner_observation';
+  | 'planner_observation'
+  // RUNG 10 — the extractor as the planner's EYE on inbound. A call or work
+  // email from a customer we know, where code cannot decide alone:
+  //   inbound_new_job    — they have no open job on file. Code used to mint one
+  //                        silently; the manager is asked instead.
+  //   inbound_commitment — the firm agreed to come out, and no trip attaches.
+  //                        (`context.jobId` absent ⇒ a job would be opened too:
+  //                        one observation per capture, never two texts for one
+  //                        call.)
+  // Both ride the Calls-worker's ping loop (PINGED_KINDS, src/db/observations.ts).
+  // subject_ref is the L1 capture id, author 'detector' — so the once-ever index
+  // makes a redelivered call converge instead of asking twice.
+  | 'inbound_new_job'
+  | 'inbound_commitment';
 
 export interface UpsertOpenReviewItemInput {
   tenantId: string;

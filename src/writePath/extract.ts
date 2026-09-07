@@ -18,6 +18,12 @@ export interface ExtractedFields {
   laborHours?: number | null;
   statusSignal?: 'completed' | 'in_progress' | null;
   followUp?: string | null;
+  // RUNG 10 — the one judgment call the planner's eye needs from the model:
+  // did the BUSINESS agree to send someone out? True is the trigger for an
+  // `inbound_commitment` observation (a manager is asked whether to book it),
+  // so a caller merely ASKING must never set it — that is the difference
+  // between "they want us" and "we said yes".
+  visitCommitted?: boolean | null;
   // L3 long-tail facts that don't deserve a column: gate codes, pets, access
   // notes, spotted replacement opportunities, etc.
   attributes?: Json;
@@ -30,17 +36,23 @@ export interface ExtractedFields {
 export type Extractor = (rawText: string, ctx?: CostContext) => Promise<ExtractedFields>;
 
 const EXTRACTION_SYSTEM =
-  'You extract structured fields from a trades technician field note (HVAC/plumbing/' +
-  'electrical/etc.). Map only what the note actually says — leave a field absent if ' +
-  'the note does not support it; never invent customers, addresses, or prices. ' +
+  'You extract structured fields from a trades technician field note, an inbound ' +
+  'phone-call transcript, or a customer email (HVAC/plumbing/electrical/etc.). ' +
+  'Map only what the text actually says — leave a field absent if ' +
+  'the text does not support it; never invent customers, addresses, or prices. ' +
   'Put durable long-tail facts (gate codes, pets, access notes, spotted ' +
-  'replacement opportunities) in `attributes`. Set `statusSignal` only if the note ' +
-  'clearly indicates the job is finished (completed) or actively underway (in_progress).';
+  'replacement opportunities) in `attributes`. Set `statusSignal` only if the text ' +
+  'clearly indicates the job is finished (completed) or actively underway (in_progress). ' +
+  'Set `visitCommitted` true ONLY when the BUSINESS agreed to send someone out — ' +
+  'never because the caller asked, requested a quote, or it is undecided.';
 
 // Single forced tool — the model's only move is to return this structured object.
-const EXTRACTION_TOOL: ForcedToolSpec = {
+// EXPORTED so a test pins the schema: `visitCommitted` is what decides whether a
+// call raises an ask, and a field silently dropped from here fails open (absent
+// reads as "not committed") with nothing to notice it.
+export const EXTRACTION_TOOL: ForcedToolSpec = {
   name: 'record_extraction',
-  description: 'Record the structured fields extracted from the technician field note.',
+  description: 'Record the structured fields extracted from this note, call transcript, or email.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -60,6 +72,12 @@ const EXTRACTION_TOOL: ForcedToolSpec = {
         description: 'Only if the note clearly signals job completion or active work.',
       },
       followUp: { type: 'string', description: 'Any follow-up needed (return visit, quote, part).' },
+      visitCommitted: {
+        type: 'boolean',
+        description:
+          'True ONLY if the business agreed to send someone out. Never true because the ' +
+          'customer asked for a visit, requested a quote, or it is still undecided.',
+      },
       attributes: {
         type: 'object',
         description: 'Long-tail L3 facts as key/value pairs (gate code, pets, lead opportunity).',

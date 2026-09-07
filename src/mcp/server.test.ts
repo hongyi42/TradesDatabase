@@ -5,7 +5,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { getClient } from '../db/client.js';
 import { appendRawCapture } from '../db/rawCaptures.js';
 import { createCustomer } from '../db/customers.js';
-import { createJob } from '../db/jobs.js';
+import { appendJobCorrespondence, createJob, insertJobCapture } from '../db/jobs.js';
 import { createVisit, insertVisitNote, updateVisitStatus } from '../db/visits.js';
 import { upsertJobTypeDuration } from '../db/jobTypeDurations.js';
 import {
@@ -22,6 +22,7 @@ import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
 import { createTenant, setTenantSeats } from '../db/tenants.js';
 import { PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
+import type { Json } from '../db/database.types.js';
 import { logWebRequests } from '../db/webRequests.js';
 import {
   attributeAnswerToGap,
@@ -1656,10 +1657,10 @@ describe('retract_capture + retraction folding', () => {
       rawText: 'uncited note',
     });
     const staged = await call('retract_capture', { captureId: cap.id, reason: 'noise' });
-    expect(staged.data.willAlsoRemove).toEqual({ facts: [], visits: [] });
+    expect(staged.data.willAlsoRemove).toEqual({ facts: [], visits: [], correspondence: [] });
     const done = await call('retract_capture', { confirmId: staged.data.confirmId });
     expect(done.data.status).toBe('retracted');
-    expect(done.data.alsoRemoved).toEqual({ facts: [], visits: [] });
+    expect(done.data.alsoRemoved).toEqual({ facts: [], visits: [], correspondence: [] });
     expect(done.data.restoreHint).toBeUndefined();
   });
 
@@ -7902,5 +7903,231 @@ describe('record_field_note — an answer remembers its question', () => {
         properties?: { confirmed?: { description?: string } };
       })?.properties?.confirmed?.description ?? '';
     expect(confirmedDesc).toMatch(/ALONE \(no confirmId\)/);
+  });
+});
+
+// ---- Rung 10: the job link, and the reserved key ---------------------------
+describe('rung 10 — job links and correspondence', () => {
+  test('a retraction FOLLOWS its target onto the JOB, not only onto the trip', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Job Link Cust', phone: '555-7788' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'leaking tap' });
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp', // the calling identity — retraction is the author's
+      rawText: 'linked straight to the job',
+    });
+    await insertJobCapture({ tenantId, jobId: job.id, captureId: cap.id });
+
+    const staged = await call('retract_capture', { captureId: cap.id, reason: 'wrong job' });
+    expect(staged.isError).toBe(false);
+    const done = await call('retract_capture', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('retracted');
+
+    // Both rows on the job: the target and the retraction that neutralizes it.
+    // Without this the retraction sits on the record with no connection to the
+    // thing it cancels — invisible to every reader that walks the link.
+    const links = await pg.query<{ capture_id: string }>(
+      'select capture_id from job_captures where job_id = $1',
+      [job.id],
+    );
+    expect(links.rows.map((r) => r.capture_id).sort()).toEqual(
+      [cap.id, done.data.retractionId as string].sort(),
+    );
+  });
+
+  test('`correspondence` is RESERVED — record_standing_fact refuses the key', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Reserved Cust', phone: '555-7799' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'reserved key job' });
+    const refused = await call('record_standing_fact', {
+      jobId: job.id,
+      key: 'Correspondence', // normalizes to the reserved key — the guard runs after
+      value: 'nope',
+    });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('reserved');
+    // A neighbouring key is untouched — the refusal is the key, not the tool.
+    const ok = await call('record_standing_fact', { jobId: job.id, key: 'symptom', value: 'drips' });
+    expect(ok.isError).toBe(false);
+  });
+
+  test('the retraction PREVIEW names the correspondence it will silence', async () => {
+    // The preview and the fold must never drift: src/db/context.ts drops a
+    // retracted entry from every typed read, so a willAlsoRemove that did not
+    // list it would tell the manager "nothing else goes" and then silently
+    // remove the customer's own words. That drift is the exact failure
+    // foldImpact.ts was written for (a live retraction, 2026-07-14).
+    const customer = await createCustomer({ tenantId, name: 'Preview Cust', phone: '555-7811' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'preview job' });
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note', // authored by the caller, so it can self-retract
+      technicianRef: 'tech-mcp',
+      rawText: 'the tap still drips',
+    });
+    await appendJobCorrespondence(job.id, {
+      captureId: cap.id,
+      channel: 'email',
+      at: '2026-09-07T10:00:00.000Z',
+      followUp: 'bring a washer',
+    });
+
+    const staged = await call('retract_capture', { captureId: cap.id, reason: 'wrong job' });
+    expect(staged.isError).toBe(false);
+    expect(staged.data.willAlsoRemove.correspondence).toEqual([
+      {
+        jobId: job.id,
+        jobLabel: 'preview job',
+        channel: 'email',
+        at: '2026-09-07T10:00:00.000Z',
+        followUp: 'bring a washer',
+      },
+    ]);
+    expect(staged.data.note).toContain('willAlsoRemove.correspondence');
+
+    // PARITY: what the preview promised is what the fold actually does.
+    const done = await call('retract_capture', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('retracted');
+    const ctx = await call('get_customer_context', { customerId: customer.id });
+    const folded = ctx.data.jobs.find((j: { id: string }) => j.id === job.id);
+    expect(folded.attributes.correspondence).toBeUndefined();
+  });
+
+  test('a token staged BEFORE this deploy cannot land on the reserved key either', async () => {
+    // Confirm re-reads `detail.facts` off the staged item and re-validates
+    // nothing, so the stage-side refusal alone leaves one destructive path open
+    // across the deploy boundary: a scalar fact bundle replacing the whole
+    // correspondence array, with no undo.
+    const customer = await createCustomer({ tenantId, name: 'Legacy Token', phone: '555-7822' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'legacy token job' });
+    await appendJobCorrespondence(job.id, {
+      captureId: (
+        await appendRawCapture({
+          tenantId,
+          channel: 'email',
+          technicianRef: 'connector:gmail',
+          rawText: 'keep me',
+        })
+      ).id,
+      channel: 'email',
+      at: '2026-09-07T11:00:00.000Z',
+    });
+    // The token carries the CURRENT value as `previousValue`, exactly as a real
+    // stage would — otherwise the pre-flight conflict scan refuses it first and
+    // the guard under test is never reached.
+    const { rows: before } = await pg.query<{ attributes: { correspondence: Json[] } }>(
+      'select attributes from jobs where id = $1',
+      [job.id],
+    );
+    const detail = {
+      target: 'job',
+      targetId: job.id,
+      customerId: customer.id,
+      targetName: 'legacy token job',
+      facts: [
+        {
+          key: 'correspondence',
+          value: 'clobber',
+          previousValue: before[0].attributes.correspondence,
+        },
+      ],
+      stagedAt: new Date().toISOString(),
+    };
+    const token = await upsertOpenReviewItem({
+      tenantId,
+      kind: 'pending_standing_fact',
+      subjectRef: 'tech-mcp', // the calling identity — the token lookup is guarded on it
+      detail,
+    });
+    // upsertOpenReviewItem is an UPSERT on (tenant, kind, subjectRef): another
+    // test in this file may already hold an open token for this person, in
+    // which case the row that comes back is THEIRS. Write the payload straight
+    // in so this test stages what it means to stage, whatever ran before it.
+    await pg.query('update review_items set detail = $1::jsonb where id = $2', [
+      JSON.stringify(detail),
+      token.id,
+    ]);
+    const refused = await call('record_standing_fact', { confirmId: token.id });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('reserved');
+    // The array is untouched — nothing was overwritten.
+    const { rows } = await pg.query<{ attributes: { correspondence?: unknown[] } }>(
+      'select attributes from jobs where id = $1',
+      [job.id],
+    );
+    expect(rows[0].attributes.correspondence).toHaveLength(1);
+    // AND NOTHING LANDED. The refusal has to come before the L1 evidence
+    // append: a throw after it would strand a permanent orphan capture (L1 has
+    // no delete path) and leave the token open, telling the agent to retry with
+    // the same confirmId to converge — which a reserved key never can.
+    const { rows: orphan } = await pg.query<{ n: string }>(
+      'select count(*)::int as n from raw_captures where external_id = $1',
+      [`fact:${token.id}`],
+    );
+    expect(Number(orphan[0].n)).toBe(0);
+    const { rows: tok } = await pg.query<{ status: string }>(
+      'select status from review_items where id = $1',
+      [token.id],
+    );
+    expect(tok[0].status).toBe('dismissed'); // the token dies rather than looping
+  });
+
+  test('a RETRACTED correspondence entry disappears from the customer’s context', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Folded Corr', phone: '555-7801' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'folded correspondence' });
+    const kept = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      technicianRef: 'connector:gmail',
+      rawText: 'the tap still drips',
+    });
+    const gone = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      technicianRef: 'connector:gmail',
+      rawText: 'ignore my last message',
+    });
+    await appendJobCorrespondence(job.id, {
+      captureId: kept.id,
+      channel: 'email',
+      at: new Date().toISOString(),
+      followUp: 'bring a washer',
+    });
+    await appendJobCorrespondence(job.id, {
+      captureId: gone.id,
+      channel: 'email',
+      at: new Date().toISOString(),
+      followUp: 'cancel the washer',
+    });
+
+    // A connector capture has no technician author, so a MANAGER retracts it.
+    const { client: mgrClient, callWith: callMgr } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const staged = await callMgr('retract_capture', { captureId: gone.id, reason: 'sent in error' });
+      expect(staged.isError).toBe(false);
+      const done = await callMgr('retract_capture', { confirmId: staged.data.confirmId });
+      expect(done.data.status).toBe('retracted');
+    } finally {
+      await mgrClient.close();
+    }
+
+    const ctx = await call('get_customer_context', { customerId: customer.id });
+    const folded = ctx.data.jobs.find((j: { id: string }) => j.id === job.id);
+    const entries = folded.attributes.correspondence as Array<{ captureId: string }>;
+    // The retracted email stops speaking; the other one still does. An inbound
+    // capture is never stamped with a customer_id (identity resolves after L1),
+    // so this only works because the fold looks the entries' own evidence up.
+    expect(entries.map((e) => e.captureId)).toEqual([kept.id]);
+
+    // AND get_job MUST AGREE. The raw-row tool folds independently, and a
+    // reader that still showed the retracted entry would let the agent quote
+    // words a manager has withdrawn — the drift the fold exists to prevent, and
+    // the one the retraction preview now promises does not happen.
+    const raw = await call('get_job', { jobId: job.id });
+    const rawEntries = raw.data.attributes.correspondence as Array<{ captureId: string }>;
+    expect(rawEntries.map((e) => e.captureId)).toEqual([kept.id]);
   });
 });

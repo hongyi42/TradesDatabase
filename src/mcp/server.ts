@@ -80,6 +80,11 @@ import {
   listParticipants,
   insertVisitNote,
   listVisitNotesForCapture,
+  listJobCapturesForCapture,
+  insertJobCapture,
+  CORRESPONDENCE_KEY,
+  correspondenceEntries,
+  foldRetractedCorrespondence,
   getTechnicianById,
   unwrapAttributes,
   appendCostEvents,
@@ -562,12 +567,14 @@ const TOOLS = [
       'note, any trip the note itself created, AND any standing fact citing it as evidence all ' +
       'stop appearing in briefings/context/lists automatically — retracting a fact\'s evidence ' +
       'capture IS how a wrong standing fact is removed (no follow-up write needed). The staged ' +
-      "preview's willAlsoRemove lists exactly which standing facts and visits will disappear — " +
+      "preview's willAlsoRemove lists exactly which standing facts, visits AND caller " +
+      'correspondence (what a customer said, kept on a job) will disappear — ' +
       'show it to the person as part of the confirmation. A trip that was BOOKED separately and ' +
       'merely mentioned in this note does NOT disappear: it keeps its place on the schedule and ' +
       'only loses this note as evidence, and it is listed under alsoLosesEvidence instead. Never ' +
       'tell anyone a booked visit is going away because of a retraction. The confirm response ' +
-      'echoes the final list as alsoRemoved (plus alsoLostEvidence) with a restoreHint when ' +
+      'echoes the final list as alsoRemoved (correspondence included, plus alsoLostEvidence) ' +
+      'with a restoreHint when ' +
       'facts folded; if alsoRemoved is absent, the ' +
       'post-commit scan failed — fall back to the staged willAlsoRemove. Only other side ' +
       'effects the note caused — e.g. a job status change — are NOT auto-reverted. ' +
@@ -797,7 +804,9 @@ const SPINE_VIEW_CATALOG =
   "(3) sensitivity is NULL on most rows — never filter it with != (SQL != drops the NULLs and " +
   "silently hides the normal rows); use IS DISTINCT FROM, or no filter. (4) job_id here is only " +
   'the DIRECT stamp and is usually NULL by design — the durable link from a note to its job is ' +
-  'the visit: join v_visit_notes on v_visit_notes.capture_id = v_captures.id. Filtering v_captures ' +
+  'the LINK: join v_visit_notes on v_visit_notes.capture_id = v_captures.id for anything that ' +
+  'reported a trip, and v_job_captures on v_job_captures.capture_id = v_captures.id for a call ' +
+  'or email that landed on a job with no trip. Filtering v_captures ' +
   'by job_id alone reads as "nobody said anything" on exactly the jobs where somebody did. ' +
   '(5) These are the words people actually said, so they may be QUOTED — copied exactly as they ' +
   'came back, never tidied up. (For the assistant that closes gaps: a quote must be findable in ' +
@@ -805,6 +814,9 @@ const SPINE_VIEW_CATALOG =
   'decision has not run yet — read first.) ' +
   'v_visit_notes(visit_id, capture_id, job_id, created_at) — which field note reported which ' +
   'trip; the note-to-job bridge (one trip can carry several notes); ' +
+  'v_job_captures(job_id, capture_id, customer_id, created_at) — which CALL OR EMAIL landed on ' +
+  'which job when no trip was on the calendar to carry it; the other half of the same bridge, ' +
+  'and where a customer chasing an open job shows up; ' +
   'v_nudges(id, kind, status, subject_ref, technician_ref, technician_name, job_id, question, ' +
   'resolution, answered_by_capture_id, not_before, escalate_after, created_at, queued_at, ' +
   'asked_at, resolved_at, serve_count, attempts) — questions the assistant has asked and how ' +
@@ -2324,7 +2336,11 @@ async function retractedResult(
     // this note as evidence ride alongside under their own key (rung 9b) —
     // folding them into alsoRemoved would tell the manager a live appointment
     // had disappeared.
-    alsoRemoved: impact && { facts: impact.facts, visits: impact.visits },
+    alsoRemoved: impact && {
+      facts: impact.facts,
+      visits: impact.visits,
+      correspondence: impact.correspondence,
+    },
     ...(impact && impact.visitsLosingEvidence.length > 0
       ? { alsoLostEvidence: { visits: impact.visitsLosingEvidence } }
       : {}),
@@ -3069,7 +3085,16 @@ async function dispatch(
       if (!job || job.tenant_id !== tenantId) return null;
       // Money position + retraction fold are independent reads — parallel
       // (one round-trip of latency instead of two on every get_job).
-      const factIds = factSourceIds(job.attributes);
+      // BOTH kinds of cited evidence (rung 10): standing facts AND the
+      // correspondence entries, which carry their own capture ids. Scanning
+      // only the facts would leave a retracted customer email visible here
+      // while the context view had already dropped it — and the retraction
+      // preview now PROMISES that it goes. "The raw-row tool must agree with
+      // the folded context view" is the rule below; this is what keeps it true.
+      const factIds = [
+        ...factSourceIds(job.attributes),
+        ...correspondenceEntries(job.attributes).map((e) => e.captureId),
+      ];
       const [moneyEvents, retractionRows] = await Promise.all([
         listMoneyEventsForJob(tenantId, jobId),
         factIds.length > 0 ? findRetractionsFor(factIds) : Promise.resolve([]),
@@ -3110,7 +3135,9 @@ async function dispatch(
         retractionRows.map((r) => r.retracts_capture_id).filter((id): id is string => !!id),
       );
       const attributes =
-        retracted.size > 0 ? foldRetractedFacts(job.attributes, retracted) : job.attributes;
+        retracted.size > 0
+          ? foldRetractedCorrespondence(foldRetractedFacts(job.attributes, retracted), retracted)
+          : job.attributes;
       return { ...job, attributes, ...money };
     }
     case 'resolve_date': {
@@ -3601,11 +3628,15 @@ async function dispatch(
           captureId: staged.captureId ?? target.id,
           reason: staged.reason ?? reason,
           targetPreview: staged.targetPreview,
-          willAlsoRemove: { facts: impact.facts, visits: impact.visits },
+          willAlsoRemove: {
+            facts: impact.facts,
+            visits: impact.visits,
+            correspondence: impact.correspondence,
+          },
           ...(impact.visitsLosingEvidence.length > 0
             ? { alsoLosesEvidence: { visits: impact.visitsLosingEvidence } }
             : {}),
-          note: 'Nothing was retracted. Show the person the capture and this reason; on their explicit yes call again with ONLY confirmId. A retraction is permanent (the audit trail keeps both rows). If willAlsoRemove.facts or willAlsoRemove.visits has entries, the shown preview MUST include them. If alsoLosesEvidence.visits has entries, say those trips STAY on the schedule and only lose this note — never that they disappear.',
+          note: 'Nothing was retracted. Show the person the capture and this reason; on their explicit yes call again with ONLY confirmId. A retraction is permanent (the audit trail keeps both rows). If willAlsoRemove.facts, willAlsoRemove.visits or willAlsoRemove.correspondence has entries, the shown preview MUST include them. If alsoLosesEvidence.visits has entries, say those trips STAY on the schedule and only lose this note — never that they disappear.',
         };
       }
       // CONFIRM. Guarded token lookup, then commit-first (the unique index +
@@ -3664,12 +3695,13 @@ async function dispatch(
           metadata: { retractedBy: subjectRef },
         });
         retractionId = row.id;
-        // The retraction FOLLOWS its target onto the trip (rung 9b). The target
-        // note reached its visit through visit_notes, so the retraction has to
-        // travel the same road or it lands on the record with no connection to
-        // the thing it neutralizes — invisible to every reader that walks the
-        // link. Advisory: a retraction that is written but not linked is still
-        // a valid retraction, so this must never fail the confirm.
+        // The retraction FOLLOWS its target onto EVERY link it has — the trip
+        // (rung 9b, visit_notes) and the job (rung 10, job_captures). The target
+        // reached them through those links, so the retraction has to travel the
+        // same roads or it lands on the record with no connection to the thing
+        // it neutralizes — invisible to every reader that walks the link.
+        // Advisory: a retraction that is written but not linked is still a valid
+        // retraction, so this must never fail the confirm.
         try {
           for (const link of await listVisitNotesForCapture(target.id)) {
             // capture_id is an id-only FK, so the link's own tenant is the only
@@ -3680,9 +3712,13 @@ async function dispatch(
             if (link.tenant_id !== tenantId) continue;
             await insertVisitNote({ tenantId, visitId: link.visit_id, captureId: row.id });
           }
+          for (const link of await listJobCapturesForCapture(target.id)) {
+            if (link.tenant_id !== tenantId) continue; // same id-only-FK guard
+            await insertJobCapture({ tenantId, jobId: link.job_id, captureId: row.id });
+          }
         } catch (err) {
           console.error(
-            `retract_capture: retraction ${row.id} not linked to its visit — ` +
+            `retract_capture: retraction ${row.id} not linked to its visit/job — ` +
               `${err instanceof Error ? err.message : String(err)}`,
           );
         }
@@ -3751,6 +3787,20 @@ async function dispatch(
               .replace(/^_+|_+$/g, '');
             if (!key || key.length > 64) {
               throw new Error('key must contain letters/digits and be at most 64 characters when normalized');
+            }
+            // RESERVED (rung 10): `correspondence` is the job's APPENDED list of
+            // what customers said, written by the inbound write-path. A standing
+            // fact is a scalar bundle, so writing this key would replace the
+            // whole array and lose every entry — silently, and with no undo.
+            if (key === CORRESPONDENCE_KEY) {
+              // Refused on a CUSTOMER target too, though correspondence only
+              // ever lives on a job: one reserved word beats a key that means
+              // one thing here and another there.
+              throw new Error(
+                `'${CORRESPONDENCE_KEY}' is reserved — on a job it holds what customers said ` +
+                  'on their calls and emails, written by the record itself, not by this tool; ' +
+                  'use a different key',
+              );
             }
             // Post-normalization dedupe: "Gate Code" and "gate_code" are the
             // same fact — a batch writing one key twice is ambiguous.
@@ -4016,6 +4066,33 @@ async function dispatch(
             : {}),
         };
       };
+      // THE RESERVED KEY, CHECKED ON THE CONFIRM PATH TOO (rung 10). The stage
+      // branch refuses it, but confirm re-reads `detail.facts` off the staged
+      // item and re-validates nothing — so a token staged BEFORE this deploy
+      // would still reach trySetJobAttribute and replace the whole
+      // correspondence ARRAY with a scalar fact bundle. That is the one
+      // destructive write on this path and it has no undo.
+      //
+      // HERE, not inside guardedMerge, and the position is the whole fix: a
+      // throw after the L1 append would strand a permanent orphan capture and
+      // leave the token open, and the wrapper below would tell the agent to
+      // "retry with the SAME confirmId to converge" — which it never can. A
+      // reserved key can only ever fail, so the token dies now, before
+      // anything lands (the conflictOut posture).
+      const reserved = facts.filter((f) => f.key === CORRESPONDENCE_KEY);
+      if (reserved.length > 0) {
+        try {
+          await resolveReviewItem(item.id, tenantId, 'dismissed', 'reserved key');
+        } catch {
+          /* advisory */
+        }
+        throw new Error(
+          `facts NOT recorded: '${CORRESPONDENCE_KEY}' is reserved — it holds what customers ` +
+            'said about this job, written from their calls and emails; restage under a ' +
+            'different key',
+        );
+      }
+
       const conflictOut = async (changedKeys: string[]): Promise<never> => {
         // The token dies: retrying it could only re-hit the conflict, and the
         // technician must see the CURRENT values before overwriting them.

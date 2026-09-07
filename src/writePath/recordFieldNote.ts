@@ -7,9 +7,14 @@ import {
   type RawCapture,
   createCustomer,
   createJob,
+  createObservation,
+  getCustomer,
   getJob,
   listJobsForCustomer,
   updateJobStatus,
+  insertJobCapture,
+  appendJobCorrespondence,
+  type JobCorrespondenceEntry,
   insertVisitNote,
   recordVisitReport,
   updateVisitStatus,
@@ -79,6 +84,12 @@ export interface RecordFieldNoteResult {
   /** The trip's lifecycle in one word once a note has landed on it. */
   stage?: string;
   suggestion?: { address: string; visitId: string };
+  /**
+   * RUNG 10: this inbound capture asked instead of creating. Present when an
+   * observation was written (absent on a raced redelivery, which the once-ever
+   * index converges to the FIRST row rather than a second ask).
+   */
+  observationId?: string;
 }
 
 // Terminal job states (no outgoing transitions) — never reused for a new note.
@@ -130,15 +141,15 @@ export async function recordFieldNote(
     // redelivery. Harmless (it writes nothing while still unresolved), just a repeat
     // model call. Append-only L1 can't carry a "processed" flag, so we accept the
     // re-run rather than mutate the capture.
-    // RUNG 9B WIDENED THAT CASE, deliberately: a non-technician capture (email,
-    // call, web form) no longer mints a visit, because `visits` IS the schedule
-    // now and a customer's email is not a trip. So when such a note resolves to
-    // an EXISTING customer AND an existing open job, nothing new carries the
-    // capture id and this dedup misses — same bounded cost as above, one repeat
-    // extractor call, and pinned as writing nothing twice in
-    // recordFieldNote.test.ts ("redelivered onto an EXISTING customer+job").
-    // The technician path is unaffected: it always writes a visit_notes link,
-    // which captureHasLinkedL2 reads.
+    // RUNG 9B WIDENED THAT CASE and RUNG 10 CLOSED IT. 9b stopped a
+    // non-technician capture minting a visit (`visits` IS the schedule now, and
+    // a customer's email is not a trip), which left an inbound capture on an
+    // EXISTING customer+job carrying no link at all: the dedup missed it and
+    // every redelivery re-ran the extractor. Rung 10 gives that capture its own
+    // links — `job_captures` when it lands on a job, an `observations` row when
+    // it asks instead — and captureHasLinkedL2 reads both, so a redelivery is a
+    // real duplicate. What still re-runs is a work-but-UNMATCHED capture, by
+    // design (rung 10b gives that one its own observation).
     let landed: RawCapture | null = null;
 
     if (input.externalId) {
@@ -265,13 +276,86 @@ export async function recordFieldNote(
     customerId = created.id;
   }
 
+  // WHO IS SPEAKING — hoisted above the job resolution by rung 10, because it
+  // now gates that too: only a technician's own note may create work silently.
+  const isTechnicianChannel =
+    channel === 'technician_voice' || channel === 'technician_photo' || channel === 'technician_note';
+
+  // RUNG 10 — THE ASK. An inbound capture that code cannot resolve alone becomes
+  // an observation in the planner's own record and NOTHING else: no job, no
+  // visit. The Calls-worker's ping loop calls the planner about it within
+  // seconds; the planner texts a manager in its own words; the manager's own
+  // agent creates whatever they say, citing this capture.
+  //
+  // `null` from createObservation means the once-ever index already holds this
+  // capture — a raced redelivery — so there is nothing new to report and the
+  // FIRST row keeps the ask.
+  const observeInbound = async (onJob: Job | null): Promise<RecordFieldNoteResult> => {
+    const customer = await getCustomer(customerId);
+    const obs = await createObservation({
+      tenantId,
+      // ONE observation per capture; the kind names what code could not decide.
+      // A committed capture with no open job carries no `jobId` in its context,
+      // which is how the planner reads "a job would be opened too" — never two
+      // texts for one call.
+      //
+      // "One" is enforced by `captureHasObservation` on the dedup path, NOT by
+      // the database: uq_observations_subject_ever is keyed
+      // (tenant_id, kind, subject_ref), so the index itself would permit an
+      // inbound_new_job AND an inbound_commitment row for one capture. That
+      // needs two concurrent deliveries of the same capture whose extractions
+      // disagree about `visitCommitted` — narrow enough to accept, and named
+      // here rather than left to be rediscovered.
+      kind: extracted.visitCommitted === true ? 'inbound_commitment' : 'inbound_new_job',
+      subjectRef: captureId,
+      technicianId: null,
+      context: {
+        captureId,
+        capturedAt,
+        customerId,
+        channel,
+        customerName: customer?.name ?? null,
+        from: fromOf(input.sourceMeta),
+        ...(onJob ? { jobId: onJob.id, jobTitle: onJob.title } : {}),
+        // The extractor's reading, nulls kept — an absent field and a field the
+        // model declined to fill are different things to the planner.
+        // workPerformed IS here (the planner may want the caller's own account
+        // of the problem) but never reaches `correspondence`: the report and the
+        // bill stay technician-only.
+        asked: {
+          jobTitle: extracted.jobTitle ?? null,
+          jobType: extracted.jobType ?? null,
+          address: extracted.address ?? null,
+          city: extracted.city ?? null,
+          workPerformed: extracted.workPerformed ?? null,
+          followUp: extracted.followUp ?? null,
+          attributes: objectOrNull(extracted.attributes),
+        },
+        // Bounded: the gap view shows the words, and the full capture is one
+        // spine_read away.
+        words: rawText.slice(0, 1500),
+      },
+    });
+    return {
+      status: 'matched',
+      captureId,
+      customerId,
+      ...(onJob ? { jobId: onJob.id } : {}),
+      ...(obs ? { observationId: obs.id } : {}),
+    };
+  };
+
   // Resolve the job: a matcher-supplied job, else the most recent non-terminal
-  // job for the customer, else a new one.
+  // job for the customer, else — for a technician channel only — a new one.
   let job: Job | null = match.jobId ? await getJob(match.jobId) : null;
   if (!job) {
     const jobs = await listJobsForCustomer(customerId);
     job = [...jobs].reverse().find((candidate) => !TERMINAL_STATUSES.has(candidate.status)) ?? null;
   }
+  // AMENDED 2026-09-07 (user): inbound with no open job ASKS. It used to mint
+  // one here and the manager never heard of it — "so the manager can know,
+  // instead of being blind to the job being created."
+  if (!isTechnicianChannel && !job) return await observeInbound(null);
   if (!job) {
     job = await createJob({
       tenantId,
@@ -294,8 +378,8 @@ export async function recordFieldNote(
   // it invisible to the planner's evidence read and the watcher's activity
   // probe — which is how a customer's own answer could leave a gap looking
   // unanswered. Only CREATE is technician-gated: an email is not a trip.
-  const isTechnicianChannel =
-    channel === 'technician_voice' || channel === 'technician_photo' || channel === 'technician_note';
+  // (`isTechnicianChannel` is resolved above — the job resolution needs it too.)
+  //
   // The person column is a real foreign key now, not the old free TEXT name:
   // resolve the badge's roster ref, and leave it null when the ref is not on
   // this tenant's roster rather than inventing a link.
@@ -317,6 +401,67 @@ export async function recordFieldNote(
   // WITH its crew (the attach rule needs it), but from here on the writes below
   // return plain rows and nothing in this function asks who was on the trip.
   let visit: Visit | null = resolved.visit;
+
+  // (iii) RUNG 10 — A COMMITMENT WITH NO TRIP ASKS, AND IT ASKS FIRST.
+  //
+  // The firm agreed to come out and nothing on the calendar matches, so a
+  // manager decides whether it reaches the schedule. The DECISION is made here,
+  // after `resolveVisitForNote` (a read) and before any link is written, and
+  // the order is load-bearing: `job_captures` is a "processed" marker that
+  // captureHasLinkedL2 reads, so writing it first would let any failure in
+  // between — a CAS exhaustion appending correspondence, a killed worker —
+  // bury the ask forever. The redelivery would short-circuit as a duplicate and
+  // nobody would ever hear that the firm promised to come out.
+  //
+  // THE TAIL IS ORDERED BY WHAT IT WOULD COST TO LOSE, worst first:
+  //     the ask  →  the correspondence  →  the LINK  →  the status signal.
+  // The ask outranks everything because it is the only one with a cost OUTSIDE
+  // this database: a customer was told someone is coming and nobody at the firm
+  // knows. The other three cost record quality, which is recoverable by hand.
+  //
+  // AND THE ASK IS ITSELF A MARKER — captureHasLinkedL2 reads `observations`
+  // too — so this ordering is a deliberate trade, not a free win: if the
+  // correspondence append then fails (three CAS misses under a concurrent job
+  // write, or a job whose attributes are not an object), the redelivery
+  // short-circuits and this job never gets its own copy of the words or its
+  // evidence link. Nothing is LOST — the capture is in L1 forever, and the
+  // observation's `context.asked` carries the same followUp and attributes for
+  // the planner to read — but that job reads silent to the evidence readers
+  // until somebody links it by hand. Reversing the two would trade a dropped
+  // promise for a tidy record, which is the wrong way round.
+  //
+  // For an UNCOMMITTED capture there is no such trade: no observation is
+  // written, so the correspondence genuinely sits ahead of every marker and a
+  // failed append is simply retried.
+  //
+  // A committed capture that landed on a LIVE visit asks nothing: that is
+  // correspondence about work already booked, and asking would be noise.
+  const asked =
+    !isTechnicianChannel && extracted.visitCommitted === true && !visit
+      ? await observeInbound(job)
+      : null;
+
+  // (C) RUNG 10 — WHAT THE CALLER SAID, KEPT ON THE JOB. The extractor already
+  // read the call into its context; before this, everything it found was thrown
+  // away for inbound, because the only home was the technician's trip report.
+  // `correspondence` is an APPENDED list, one entry per capture, each naming the
+  // capture that evidences it — never a merge over the key, or two emails on one
+  // job would keep only the last. laborHours/workPerformed are deliberately NOT
+  // copied: the report and the bill stay technician-only (rung 9b's line).
+  //
+  // BEFORE THE LINKS, for the ordering rule above: this write can genuinely
+  // fail (three CAS misses under a concurrent job write, or a job whose
+  // attributes are not an object), and behind a "processed" marker that failure
+  // would lose the caller's words permanently — the redelivery would
+  // short-circuit. Ahead of it, the retry re-runs and lands them; the append is
+  // idempotent per capture id, so re-running costs nothing.
+  if (!isTechnicianChannel) {
+    await appendJobCorrespondence(
+      job.id,
+      correspondenceOf(captureId, channel, capturedAt, extracted),
+    );
+  }
+
   if (visit) {
     // The LINK is what every channel gets: it is the evidence citation, and the
     // whole reason attach is channel-blind.
@@ -378,7 +523,23 @@ export async function recordFieldNote(
         );
       }
     }
+  } else if (!isTechnicianChannel) {
+    // (A) RUNG 10 — THE LINK-LESS SHAPE, CLOSED. No trip attaches, so the
+    // capture is pinned to the JOB instead. Before this it was unstamped
+    // (identity resolves after L1, which is immutable) and linked to nothing:
+    // both evidence homes missed it and the job read silent, so a customer
+    // chasing an open job looked like silence. It also makes a redelivery a
+    // real duplicate — captureHasLinkedL2 reads this link — instead of a
+    // repeat extractor call that could re-apply a stale status signal.
+    await insertJobCapture({ tenantId, jobId: job.id, captureId });
   }
+
+
+  // The ask decided above returns HERE, so the words still reach the job on the
+  // way out: the correspondence and the link are written, and only then does
+  // this capture stop. Before the status signal, for the same reason the
+  // new-job arm sits before createJob — a capture that asks creates nothing.
+  if (asked) return asked;
 
   // Status transition only if note-blessed (subset of the hardcoded machine,
   // pinned by test; updateJobStatus re-validates legality at the write). A new
@@ -414,6 +575,57 @@ function buildCaptureMetadata(sourceMeta: Json | undefined, occurredAt: string |
       : {};
   if (occurredAt != null) base.occurredAt = occurredAt;
   return base;
+}
+
+// The sender, as the door recorded it. TWO KEYS, because the two doors spell it
+// differently and neither is going to change: the email webhook writes `from`
+// (src/inbound/webhook.ts) and the phone worker writes `fromNumber`
+// (src/calls/worker.ts). Reading only `from` would leave every CALL — this
+// rung's headline channel — with no sender to show the planner. Absent
+// (technician channels, a webhook carrying neither) is a normal value.
+function fromOf(sourceMeta: Json | undefined): string | null {
+  if (!sourceMeta || typeof sourceMeta !== 'object' || Array.isArray(sourceMeta)) return null;
+  const meta = sourceMeta as Record<string, Json>;
+  for (const key of ['from', 'fromNumber']) {
+    const value = meta[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return null;
+}
+
+// A plain JSON object, or null — the shape both `asked.attributes` and a
+// correspondence entry's `facts` require. An array or scalar is not L3 facts.
+function objectOrNull(value: Json | undefined): Record<string, Json> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, Json>)
+    : null;
+}
+
+// ONE entry for the job's `correspondence` list — what the caller asked for and
+// the long-tail facts they gave, nothing else. EXPORTED because the manager's
+// agent copies the same shape onto a job it opens from an ask (rung 10 amendment
+// C at creation), and one builder is what keeps the two identical.
+//
+// Null when there is nothing to say: an inbound capture yielding neither a
+// follow-up nor a fact adds only noise to L3, and the `job_captures` link
+// already records that it landed.
+export function correspondenceOf(
+  captureId: string,
+  channel: CaptureChannel,
+  at: string,
+  extracted: Pick<ExtractedFields, 'followUp' | 'attributes'>,
+): JobCorrespondenceEntry | null {
+  const followUp = extracted.followUp?.trim() || null;
+  const facts = objectOrNull(extracted.attributes ?? undefined);
+  const hasFacts = !!facts && Object.keys(facts).length > 0;
+  if (!followUp && !hasFacts) return null;
+  return {
+    captureId,
+    channel,
+    at,
+    ...(followUp ? { followUp } : {}),
+    ...(hasFacts ? { facts: facts as Record<string, Json> } : {}),
+  };
 }
 
 function buildVisitAttributes(extracted: ExtractedFields): Json {

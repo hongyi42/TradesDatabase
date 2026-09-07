@@ -24,6 +24,30 @@ describe('the extraction tool schema (rung 10)', () => {
     expect(desc).toMatch(/never true because the customer asked/i);
   });
 
+  // The MIRROR of visitCommitted, and it fails the OTHER way: absent reads as
+  // "ask", so a dropped field degrades to waking the planner for everything
+  // rather than silencing it. It asks about the OPERATIONS LAYER (job, visit,
+  // schedule, parts, money) — a property of the text — never about whether
+  // someone ought to care, which this call has no standing to judge. That is the safe direction, which is exactly why
+  // it needs a pin — the failure is invisible in production, showing up only as
+  // a planner bill nobody can explain.
+  test('touchesOperations is a boolean, and false is the narrow case', () => {
+    expect(props.touchesOperations).toBeDefined();
+    expect(props.touchesOperations.type).toBe('boolean');
+    const desc = props.touchesOperations.description ?? '';
+    // The model must be told that false is the exception, not the default.
+    expect(desc).toMatch(/false only/i);
+    expect(desc).toMatch(/doubt, true/i);
+    // THE RE-FRAME, pinned. The first version asked "does anyone need to act on
+    // this?" — a judgment about people, which this call cannot make: it has no
+    // customer, no history, no schedule. It now names the operations-layer
+    // objects, which the TEXT can answer for. Losing that enumeration would
+    // silently return the question to the one that could not be answered.
+    for (const object of ['job', 'visit', 'schedule', 'money']) {
+      expect(desc.toLowerCase(), `the model is told ${object} counts`).toContain(object);
+    }
+  });
+
   test('the fields inbound depends on are all still declared', () => {
     for (const key of ['jobTitle', 'jobType', 'address', 'followUp', 'attributes']) {
       expect(props[key], `${key} feeds the observation and the correspondence entry`).toBeDefined();

@@ -1340,10 +1340,13 @@ describe('rung 10 — inbound asks before it creates', () => {
   // The first version of this rung asked whenever the customer had no
   // non-terminal job, which woke the planner for a thank-you arriving after the
   // invoice was paid. The extractor already reads every one of these captures on
-  // inference, so the judgment moved there. These pin BOTH directions of that
-  // switch — the skip, and the far more important refusal to skip.
+  // inference, so the judgment moved there — and the question it answers is
+  // whether the message carries anything for the OPERATIONS layer (a job, a
+  // visit, a schedule change, parts, money), not whether someone "should care".
+  // These pin BOTH directions of that switch — the skip, and the far more
+  // important refusal to skip.
 
-  test('(10) needsAttention FALSE with no open job: filed on the last job, nobody asked', async () => {
+  test('(10) touchesOperations FALSE with no open job: filed on the last job, nobody asked', async () => {
     const { customer, phone } = await newCustomer('Grateful Greta');
     // Terminal on purpose: the old gate is exactly what this status triggered.
     const paid = await createJob({
@@ -1355,7 +1358,7 @@ describe('rung 10 — inbound asks before it creates', () => {
 
     const r = await recordFieldNote(
       inbound('email', 'thanks so much, the heat has been perfect all week!'),
-      stub({ phone, needsAttention: false, followUp: 'none — customer is happy' }),
+      stub({ phone, touchesOperations: false, followUp: 'none — customer is happy' }),
     );
 
     expect(r.status).toBe('matched');
@@ -1377,13 +1380,13 @@ describe('rung 10 — inbound asks before it creates', () => {
     expect(r.visitId).toBeUndefined();
   });
 
-  test('(11) needsAttention FALSE with no job at all: L1 keeps it, nothing else is built', async () => {
+  test('(11) touchesOperations FALSE with no job at all: L1 keeps it, nothing else is built', async () => {
     const { customer, phone } = await newCustomer('Wrongnumber Wally');
     const before = await rawCaptureCount();
 
     const r = await recordFieldNote(
       inbound('email', 'sorry, wrong address — ignore my last message'),
-      stub({ phone, needsAttention: false }),
+      stub({ phone, touchesOperations: false }),
     );
 
     expect(r.status).toBe('captured');
@@ -1399,12 +1402,12 @@ describe('rung 10 — inbound asks before it creates', () => {
     // THE SIGN OF THIS COMPARISON IS THE WHOLE SAFETY PROPERTY. A truncated
     // response, an older stub, or a model that ignores the field must behave as
     // the code did before the field existed. Written as three cases because
-    // `!needsAttention` instead of `=== false` passes the first one and silences
+    // `!touchesOperations` instead of `=== false` passes the first one and silences
     // the other two — the exact mistake this test exists to catch.
     for (const [label, fields] of [
       ['absent', {}],
-      ['null', { needsAttention: null }],
-      ['true', { needsAttention: true }],
+      ['null', { touchesOperations: null }],
+      ['true', { touchesOperations: true }],
     ] as const) {
       const { customer, phone } = await newCustomer(`Asks ${label}`);
       const r = await recordFieldNote(
@@ -1425,7 +1428,7 @@ describe('rung 10 — inbound asks before it creates', () => {
       inbound('phone_call', 'great, we will have someone out Thursday morning'),
       // A model that judged this unimportant must not be able to lose the
       // promise: `visitCommitted` is checked alongside, not after.
-      stub({ phone, needsAttention: false, visitCommitted: true, jobTitle: 'no heat' }),
+      stub({ phone, touchesOperations: false, visitCommitted: true, jobTitle: 'no heat' }),
     );
     expect(r.observationId).toBeDefined();
     const obs = await observationsFor(r.captureId);
@@ -1444,7 +1447,7 @@ describe('rung 10 — inbound asks before it creates', () => {
     });
     const r = await recordFieldNote(
       { tenantId, technicianRef: tech.ref, channel: 'technician_note', text: 'swapped the capacitor' },
-      stub({ phone, needsAttention: false, workPerformed: 'swapped capacitor' }),
+      stub({ phone, touchesOperations: false, workPerformed: 'swapped capacitor' }),
     );
     // A technician's own note is the firm acting, not a message to judge.
     expect(r.jobId).toBeDefined();

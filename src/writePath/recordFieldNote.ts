@@ -345,8 +345,8 @@ export async function recordFieldNote(
     };
   };
 
-  // RUNG 10, AMENDED 2026-09-07 (user): an inbound capture the extractor judged
-  // NOT worth the office's attention is still the customer's words, and they
+  // RUNG 10, AMENDED 2026-09-07 (user): an inbound capture the extractor found
+  // NO operations-layer content in is still the customer's words, and they
   // belong on the customer's record — not thrown back to L1, which is the very
   // problem (C) below was written to fix. So it is filed on their most recent
   // job WHATEVER its status, and nothing is asked.
@@ -389,8 +389,10 @@ export async function recordFieldNote(
   if (!isTechnicianChannel && !job) {
     // AMENDED again the same day, after the first version woke the planner for
     // every email from a settled customer: the extractor decides, not the job
-    // lookup. `=== false` and not merely falsy — undefined must keep asking.
-    if (extracted.needsAttention === false && extracted.visitCommitted !== true) {
+    // lookup. The question it answers is "is there anything here for L2?" — a
+    // property of the text, which is all this call can see.
+    // `=== false` and not merely falsy — undefined must keep asking.
+    if (extracted.touchesOperations === false && extracted.visitCommitted !== true) {
       // listJobsForCustomer orders created_at ASCENDING, so the tail is newest.
       return await fileWithoutAsking(priorJobs[priorJobs.length - 1] ?? null);
     }

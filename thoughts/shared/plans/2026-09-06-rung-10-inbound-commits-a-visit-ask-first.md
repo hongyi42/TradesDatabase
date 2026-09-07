@@ -28,7 +28,7 @@ yes; everything created cites the call; what the caller said stays on the job, l
 create something", but the code it describes never consulted the message at all: the ask was
 gated on a database lookup — *has this customer a non-terminal job?* — so a thank-you arriving
 after the invoice was `paid` woke the planner exactly as a new enquiry did. The judgment now sits
-where the user put it, on the extractor (`needsAttention`), which is already an inference read of
+where the user put it, on the extractor (`touchesOperations`), which is already an inference read of
 the same text. Only an explicit `false` skips; absent, null and `true` all still ask, so any
 model failure falls toward a manager hearing about it. A skipped capture is filed as
 correspondence on the customer's most recent job whatever its status — never abandoned in L1,
@@ -37,7 +37,7 @@ which is the problem (C) exists to fix.
 ```
 call / email ─► L1 ─► extractor ─► matched customer? ──no──► unlinked_call / silence  (rung 10b)
                                         │ yes
-                     open job on file? ──no──► needsAttention false, and not committed?
+                     open job on file? ──no──► touchesOperations false, and not committed?
                                         │ yes            │ yes ─► filed on the LAST job (any status), NO ask
                                         │                │ no
                                         │                ▼
@@ -69,17 +69,17 @@ call / email ─► L1 ─► extractor ─► matched customer? ──no──�
   intelligent enough to know when something is important enough for the planner to see."* See the
   next bullet.
 - **The judgment is TWO extractor fields, no extra model calls** *(user)* — `visitCommitted`
-  (did the firm agree to come out?) and, added 2026-09-07, `needsAttention` (does anyone at the
+  (did the firm agree to come out?) and, added 2026-09-07, `touchesOperations` (does anyone at the
   business need to read, decide, or act on this?). Both ride the single forced-tool call the
   extractor already makes on every capture, so the filter is free.
   - **"New job" is no longer code's own fact.** It was: *no non-terminal job on file* — which is
     a lookup, not a reading, and fired on any message from a customer whose jobs were all
     `paid` / `cancelled` / `declined`.
-  - **Only `needsAttention === false` skips**, and only when `visitCommitted` is not true.
+  - **Only `touchesOperations === false` skips**, and only when `visitCommitted` is not true.
     Absent, null and `true` all ask, so a truncated response or a model that ignores the field
     behaves exactly as the code did before it existed — the failure direction is toward a manager
     hearing about it. Pinned three ways in `recordFieldNote.test.ts` (12), because
-    `!needsAttention` in place of `=== false` passes the false case and silently deletes the rail.
+    `!touchesOperations` in place of `=== false` passes the false case and silently deletes the rail.
   - **A skipped capture is still filed**, as correspondence + a `job_captures` link on the
     customer's most recent job whatever its status — inert there by construction
     (`NOTE_SIGNAL_TRANSITIONS` has no entry for a terminal status, `mayCreate` is false for every

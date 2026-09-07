@@ -964,7 +964,7 @@ function historyLine(history: NudgeDecision[], nowMs: number, tz: string): strin
 // A non-null `technician_ref` is NOT the test, and assuming it was is a live
 // trap this guard was written for: the phone worker stamps the sentinel
 // 'phone-line' on a customer's call (calls/worker.ts) and the mail ingest stamps
-// the MAILBOX OWNER's ref on a customer's emailed reply (email/ingest.ts), so
+// the MAILBOX OWNER's ref on a customer's emailed reply (src/inbound/webhook.ts), so
 // both arrive job-linked with a ref and neither is the technician answering.
 // Only the three channels a person's own assistant writes through are.
 //

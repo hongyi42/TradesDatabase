@@ -515,6 +515,13 @@ export async function listL2CitingCapture(captureIds: string[]): Promise<L2Citin
         .from('jobs')
         .select('id, source_capture_id')
         .in('source_capture_id', slice)
+        // A CANCELLED ROW IS NOT AN ANSWER. bookVisit rolls back a shell it
+        // minted when the DB overlap guard fires, by flipping it to
+        // 'cancelled' — the stamp stays. Without this filter the planner would
+        // read "a job was created from this call", close the ask on the
+        // record, and the customer who was told someone is coming would have
+        // nothing on the calendar and nobody left asking.
+        .neq('status', 'cancelled')
         .order('id', { ascending: true }) // deterministic paging tiebreak
         .range(from, from + PAGE - 1);
       if (error) throw new Error(`listL2CitingCapture failed on jobs: ${error.message}`);
@@ -530,6 +537,7 @@ export async function listL2CitingCapture(captureIds: string[]): Promise<L2Citin
         .from('visits')
         .select('id, job_id, source_capture_id')
         .in('source_capture_id', slice)
+        .neq('status', 'cancelled') // same rule as the jobs arm above
         .order('id', { ascending: true })
         .range(from, from + PAGE - 1);
       if (error) throw new Error(`listL2CitingCapture failed on visits: ${error.message}`);

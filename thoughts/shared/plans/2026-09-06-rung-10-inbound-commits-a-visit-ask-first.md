@@ -450,9 +450,29 @@ booking unchanged; (18) `open_job` cites, copies, refuses with open work unless 
 wire s2` (md5 the repo copy first), read rule 7 back, `nemoclaw s2 gateway restart`, then s3 s5 s6 s7 s8.
 
 ### Automated verification
-- [ ] gates green; `doctrine.test.ts` green; (16)–(18) pass;
-      `grep -rn "ingestEmail\|email/ingest\|from 'googleapis'\|\"googleapis\"" src scripts docs package.json`
-      → 0 (`routes.googleapis.com` in `googleRoutes.ts:21` is a URL, not the package — round-3 #22)
+- [x] gates green; `doctrine.test.ts` green; (16)–(18) pass;
+      `grep -rn "ingestEmail\|email/ingest\|from 'googleapis'\|\"googleapis\"" src scripts package.json`
+      → 0 (`routes.googleapis.com` in `googleRoutes.ts:21` is a URL, not the package — round-3 #22).
+      **`docs` is NOT in the gate**: three hits remain there on purpose, and they are the records
+      saying the puller was deleted and why.
+### Landed 2026-09-07. What the review changed that the plan did not say:
+- **The citation is narrowed three ways**, because citing the WRONG call is worse than citing none
+  — a false citation closes a live ask on unrelated work and puts one caller's words permanently
+  onto another's job. An ask is citable only if (1) `asked_at` is set: the office actually texted a
+  manager, so their agent can be answering it; (2) it is recent (`CITE_ASK_WINDOW_MS`, 7 days) —
+  otherwise an ask nobody ever answered is swallowed by the next unrelated booking, forever; and
+  (3) the shape matches — a booking that MINTS a job can only answer an ask that had no job on file.
+- **The entry carries the CALL's channel and time**, read from the observation, not `'phone_call'`
+  and the booking's clock. The brief renders these verbatim, so hardcoding them told every reader
+  that an emailer phoned, at the hour the manager happened to answer.
+- **A cancelled row is not "created from this capture"** (`listL2CitingCapture`). `bookVisit` rolls
+  a minted shell back by flipping it to `cancelled` and the stamp stays — so the overlap race would
+  otherwise close the ask on a booking that never happened.
+- **`open_job`'s mint guard is `book_visit`'s exact test**, not a stricter one: a title that NAMES
+  an open job. Stricter, it would refuse an open that `book_visit` would allow and send the agent
+  round a loop the shared steer cannot resolve (it says "pass the matching jobId", which this tool
+  does not accept — so the steer gained a sentence saying what to do here).
+- Five more stale comments and `.env.example`'s `GMAIL_*` block went with the puller.
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP, `ssh tradesbox`, Render logs for `Calls-worker`, a paired
   manager mailbox, and ONE human action: the owner emails it from a known customer's address with

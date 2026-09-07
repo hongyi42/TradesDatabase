@@ -220,7 +220,7 @@ export async function recordFieldNote(
 
   // (2-3) AI extraction of candidate fields.
   // Pass the cost context: this is the extractor's PRODUCTION billing path.
-  // The inbound-email webhook and the Gmail pull both call recordFieldNote with
+  // The inbound-email webhook and the call worker both call recordFieldNote with
   // no deps.extract, so they fall through to the live model here — instrumenting
   // only the MCP staging call would have missed the highest-volume consumer.
   const extracted = await extract(rawText, { tenantId, technicianRef });

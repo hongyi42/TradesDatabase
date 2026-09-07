@@ -373,7 +373,7 @@ export function buildToolCases(): ToolCase[] {
         args: () => ({}),
         check: (out) => {
           const names = (out.json as string[]) ?? [];
-          if (names.length !== 42) return `manager sees ${names.length} tools, expected 42`;
+          if (names.length !== 43) return `manager sees ${names.length} tools, expected 43`;
           for (const need of ['book_visit', 'cancel_job', 'query_spine', 'add_technician_seat', 'record_money_event', 'set_firm_profile']) {
             if (!names.includes(need)) return `manager surface is missing ${need}`;
           }
@@ -673,6 +673,41 @@ export function buildToolCases(): ToolCase[] {
         ),
       },
     ],
+  });
+
+  // RUNG 10. Until `open_job` existed there was no way to put work on the record
+  // without also putting a visit on the calendar — `book_visit`'s customerId
+  // path minted the job shell as a side effect of booking. A caller asking for
+  // a quote wants the job on file and nobody sent out.
+  one({
+    id: 'W04b',
+    family: 'writes',
+    title: 'open_job puts work on the record with NOTHING on the calendar',
+    tool: 'open_job',
+    tenant: 'main',
+    badge: 'manager-sam',
+    // forceNewJob so the case is deterministic whatever open work the fixture
+    // customer already carries: the mint guard is its own concern.
+    args: (ctx) => ({
+      customerId: customerId(ctx.tenant, 'edge-rich'),
+      title: 'eval: quote for a replacement unit',
+      jobType: 'hvac',
+      forceNewJob: true,
+    }),
+    check: all(
+      ok,
+      dbCheck(
+        'the opened job must exist with zero visits on it',
+        (ctx) => ({
+          text: `select count(*)::int n from jobs j
+                  where j.customer_id = $1
+                    and j.title = 'eval: quote for a replacement unit'
+                    and not exists (select 1 from visits v where v.job_id = j.id)`,
+          params: [customerId(ctx.tenant, 'edge-rich')],
+        }),
+        (rows) => count(rows) === 1,
+      ),
+    ),
   });
 
   add({

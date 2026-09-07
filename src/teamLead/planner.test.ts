@@ -3310,7 +3310,7 @@ describe('the close-derived attribution stamp', () => {
   // speak. Both carry a non-null technician_ref, which is why ref-presence
   // cannot be the test: the phone worker stamps the 'phone-line' sentinel
   // (calls/worker.ts) and mail ingest stamps the MAILBOX OWNER's ref on a
-  // customer's reply (email/ingest.ts).
+  // customer's reply (src/inbound/webhook.ts).
   const foreign = (id: string, channel: string, ref: string, text: string): JobEvidenceRow => ({
     jobId: 'j1',
     via: 'job_stamp',

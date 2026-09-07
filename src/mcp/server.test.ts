@@ -22,6 +22,7 @@ import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
 import { createTenant, setTenantSeats } from '../db/tenants.js';
 import { PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
+import { createObservation } from '../db/observations.js';
 import type { Json } from '../db/database.types.js';
 import { logWebRequests } from '../db/webRequests.js';
 import {
@@ -2115,7 +2116,10 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('inform_team_lead'); // the planner's inbox (build 5.5)
       expect(mgrTools).toContain('ask_team_lead'); // the Q&A desk (build 5.5 Phase 2)
       expect(mgrTools).toContain('inform_teammate'); // seat-to-seat informs (build 5.5 Phase 3)
-      expect(mgrTools).toHaveLength(41);
+      // RUNG 10 added `open_job`: until it existed there was no way to open a
+      // job without also putting a visit on the calendar.
+      expect(mgrTools).toContain('open_job');
+      expect(mgrTools).toHaveLength(42);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -2518,7 +2522,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(41); // base minus get_schedule + 25 admin
+        expect(mgrTools).toHaveLength(42); // base minus get_schedule + 26 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -8129,5 +8133,286 @@ describe('rung 10 — job links and correspondence', () => {
     const raw = await call('get_job', { jobId: job.id });
     const rawEntries = raw.data.attributes.correspondence as Array<{ captureId: string }>;
     expect(rawEntries.map((e) => e.captureId)).toEqual([kept.id]);
+  });
+});
+
+// ---- Rung 10 Phase 3: what the manager's agent creates cites the call -------
+describe('rung 10 — open_job, and the citation on what a yes creates', () => {
+  // The office texted a manager about a call; they said yes; their agent acts.
+  // Nothing in that chat carries the call's id — the manager types "yes" — so
+  // the link is re-derived from the one open ask this customer has waiting.
+  const askFor = async (
+    customerId: string,
+    over: {
+      jobId?: string;
+      followUp?: string;
+      attributes?: Record<string, Json>;
+      channel?: 'phone_call' | 'email';
+      capturedAt?: string;
+      /** null = the office never texted anybody about this call. */
+      askedAt?: string | null;
+    } = {},
+  ) => {
+    const channel = over.channel ?? 'phone_call';
+    const capture = await appendRawCapture({
+      tenantId,
+      channel,
+      technicianRef: channel === 'email' ? 'connector:gmail' : 'phone-line',
+      rawText: 'my heater is dead, can someone come out',
+    });
+    const row = await createObservation({
+      tenantId,
+      kind: 'inbound_new_job',
+      subjectRef: capture.id,
+      technicianId: null,
+      context: {
+        captureId: capture.id,
+        customerId,
+        channel,
+        capturedAt: over.capturedAt ?? '2026-09-07T09:00:00.000Z',
+        ...(over.jobId ? { jobId: over.jobId } : {}),
+        asked: {
+          jobTitle: 'no heat upstairs',
+          // Carried for the PLANNER's eyes and never copied onto the job — the
+          // report and the bill stay technician-only.
+          workPerformed: 'caller says the pilot is out',
+          followUp: over.followUp ?? 'send someone out',
+          attributes: over.attributes ?? { gateCode: '4412' },
+        },
+        words: 'my heater is dead, can someone come out',
+      },
+    });
+    if (!row) throw new Error('fixture observation was deduped');
+    // THE OFFICE ACTUALLY TEXTED SOMEBODY. Only an ask a manager was told about
+    // can be what their agent is answering; `asked_at` is that fact, and
+    // without it nothing here is citable.
+    const askedAt = over.askedAt === undefined ? new Date().toISOString() : over.askedAt;
+    if (askedAt) {
+      await pg.query('update observations set asked_at = $1 where id = $2', [askedAt, row.id]);
+    }
+    return { capture, observation: row };
+  };
+  const sourceOf = async (table: 'jobs' | 'visits', id: string) => {
+    const { rows } = await pg.query<{ source_capture_id: string | null }>(
+      `select source_capture_id from ${table} where id = $1`,
+      [id],
+    );
+    return rows[0].source_capture_id;
+  };
+
+  test('(16) a booking off a call: the job AND the visit cite it, and it carries the words', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Citing Cora', phone: '555-8801' });
+    const { capture, observation } = await askFor(customer.id);
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const booked = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'no heat upstairs',
+      });
+      expect(booked.isError).toBe(false);
+      expect(booked.data.untimed).toBe(true);
+      // BOTH rows cite the call: "why is this on the calendar" has an answer.
+      expect(await sourceOf('jobs', booked.data.jobId)).toBe(capture.id);
+      expect(await sourceOf('visits', booked.data.visitId)).toBe(capture.id);
+      // And the caller's own words land on the job it opened.
+      const { rows } = await pg.query<{ attributes: { correspondence?: Array<Record<string, unknown>> } }>(
+        'select attributes from jobs where id = $1',
+        [booked.data.jobId],
+      );
+      const entries = rows[0].attributes.correspondence ?? [];
+      expect(entries).toHaveLength(1);
+      expect(entries[0].captureId).toBe(capture.id);
+      expect(entries[0].followUp).toBe('send someone out');
+      expect(entries[0].facts).toEqual({ gateCode: '4412' });
+      expect(JSON.stringify(entries[0])).not.toContain('pilot is out'); // never the report
+      // THE OBSERVATION IS UNTOUCHED. Closing it is the planner's, on the
+      // citation this just left behind — the record is planner-kept.
+      const obs = await pg.query<{ status: string }>(
+        'select status from observations where id = $1',
+        [observation.id],
+      );
+      expect(obs.rows[0].status).toBe('open');
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('(17) zero or TWO open asks ⇒ no citation, and the booking is otherwise unchanged', async () => {
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // ZERO — the ordinary booking nobody phoned in about.
+      const quiet = await createCustomer({ tenantId, name: 'Quiet Quinn', phone: '555-8802' });
+      const plain = await callWith('book_visit', { customerId: quiet.id, title: 'annual service' });
+      expect(plain.isError).toBe(false);
+      expect(await sourceOf('jobs', plain.data.jobId)).toBeNull();
+      expect(await sourceOf('visits', plain.data.visitId)).toBeNull();
+
+      // TWO — the agent could be answering either, and a wrong citation would
+      // let the planner close the OTHER call on a job unrelated to it.
+      const busy = await createCustomer({ tenantId, name: 'Busy Bev', phone: '555-8803' });
+      await askFor(busy.id);
+      await askFor(busy.id);
+      const ambiguous = await callWith('book_visit', { customerId: busy.id, title: 'one of them' });
+      expect(ambiguous.isError).toBe(false); // the booking still happens
+      expect(await sourceOf('jobs', ambiguous.data.jobId)).toBeNull();
+      expect(await sourceOf('visits', ambiguous.data.visitId)).toBeNull();
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('(16b) the entry carries the CALL\'s own channel and time, not the booking\'s', async () => {
+    // The brief renders these verbatim under "what the customer said on their
+    // calls and emails". A hardcoded channel and this moment's clock would tell
+    // every later reader that an EMAILER phoned, at the hour the manager
+    // happened to answer — and the write path's own copy of the same fact
+    // carries the real values, so the two homes would disagree.
+    const customer = await createCustomer({ tenantId, name: 'Emailing Elena', phone: '555-8805' });
+    const { capture } = await askFor(customer.id, {
+      channel: 'email',
+      capturedAt: '2026-09-06T08:15:00.000Z',
+    });
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const booked = await callWith('book_visit', { customerId: customer.id, title: 'emailed ask' });
+      const { rows } = await pg.query<{ attributes: { correspondence?: Array<Record<string, unknown>> } }>(
+        'select attributes from jobs where id = $1',
+        [booked.data.jobId],
+      );
+      const entry = (rows[0].attributes.correspondence ?? [])[0];
+      expect(entry.captureId).toBe(capture.id);
+      expect(entry.channel).toBe('email');
+      expect(entry.at).toBe('2026-09-06T08:15:00.000Z');
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('(17b) an ask nobody was TEXTED about is never cited — the agent is not answering it', async () => {
+    // The citation story is "the office asked, the manager said yes". If
+    // nobody was ever told, this booking is something else for the same
+    // customer, and stamping it would let the planner close a live ask on it.
+    const customer = await createCustomer({ tenantId, name: 'Untold Uma', phone: '555-8806' });
+    await askFor(customer.id, { askedAt: null });
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const booked = await callWith('book_visit', { customerId: customer.id, title: 'unrelated work' });
+      expect(await sourceOf('jobs', booked.data.jobId)).toBeNull();
+      expect(await sourceOf('visits', booked.data.visitId)).toBeNull();
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('(17c) a STALE ask is not consumed by a later unrelated booking', async () => {
+    // A manager may answer the next morning; they do not answer a fortnight
+    // later. Unbounded, an ask nobody ever answered would be swallowed by the
+    // next booking for that customer — putting one caller's words permanently
+    // onto another's job, and closing the live ask on work unrelated to it.
+    const customer = await createCustomer({ tenantId, name: 'Stale Sasha', phone: '555-8807' });
+    await askFor(customer.id, {
+      askedAt: new Date(Date.now() - 30 * 24 * 3_600_000).toISOString(),
+    });
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const booked = await callWith('book_visit', { customerId: customer.id, title: 'annual service' });
+      expect(await sourceOf('jobs', booked.data.jobId)).toBeNull();
+      const { rows } = await pg.query<{ attributes: { correspondence?: unknown[] } }>(
+        'select attributes from jobs where id = $1',
+        [booked.data.jobId],
+      );
+      expect(rows[0].attributes.correspondence).toBeUndefined();
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('(17d) a booking that MINTS a job never answers an ask that already named one', async () => {
+    // The shapes have to match: an ask carrying a jobId was about existing
+    // work, so a call that mints a brand-new job is answering something else.
+    const customer = await createCustomer({ tenantId, name: 'Shaped Shona', phone: '555-8808' });
+    const existing = await createJob({ tenantId, customerId: customer.id, title: 'the old job' });
+    await askFor(customer.id, { jobId: existing.id });
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const booked = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'brand new work',
+        forceNewJob: true,
+      });
+      expect(booked.data.jobId).not.toBe(existing.id);
+      expect(await sourceOf('jobs', booked.data.jobId)).toBeNull();
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('(18) open_job opens work with NOTHING on the calendar, cites the call, and guards duplicates', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Quote Quentin', phone: '555-8804' });
+    const { capture } = await askFor(customer.id);
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const opened = await callWith('open_job', {
+        customerId: customer.id,
+        title: 'replace the water heater',
+        jobType: 'plumbing',
+      });
+      expect(opened.isError).toBe(false);
+      expect(opened.data.status).toBe('opened');
+      expect(opened.data.jobTitle).toBe('replace the water heater');
+      expect(await sourceOf('jobs', opened.data.jobId)).toBe(capture.id);
+      // NOTHING on the calendar — the whole reason this verb exists.
+      const visits = await pg.query<{ n: string }>(
+        'select count(*)::int as n from visits where job_id = $1',
+        [opened.data.jobId],
+      );
+      expect(Number(visits.rows[0].n)).toBe(0);
+      const { rows } = await pg.query<{ attributes: { correspondence?: unknown[] } }>(
+        'select attributes from jobs where id = $1',
+        [opened.data.jobId],
+      );
+      expect(rows[0].attributes.correspondence).toHaveLength(1);
+
+      // THE MINT GUARD, and it is book_visit's EXACT test, not a stricter one:
+      // it fires on a title that NAMES a job already on file — the agent
+      // parroting the manager's words for work that exists. A stricter rule
+      // here would refuse an open that book_visit would have allowed, and the
+      // shared steer's advice ("pass the matching jobId") is not something this
+      // tool can even accept.
+      const dup = await callWith('open_job', {
+        customerId: customer.id,
+        title: 'Replace the Water Heater', // same words, different case
+      });
+      expect(dup.isError).toBe(true);
+      expect(dup.text).toContain('NOT opened');
+      expect(dup.text).toContain('replace the water heater');
+      expect(dup.text).toContain('forceNewJob:true');
+      // The steer is shared, so it has to say what to do with THIS tool.
+      expect(dup.text).toContain('only opens NEW work');
+
+      // A DISTINCT title is itself the declaration of new work and mints
+      // without ceremony — the guard adds no friction there.
+      const distinct = await callWith('open_job', {
+        customerId: customer.id,
+        title: 'a different leak entirely',
+      });
+      expect(distinct.isError).toBe(false);
+      // …and forceNewJob still overrides a genuine collision.
+      const forced = await callWith('open_job', {
+        customerId: customer.id,
+        title: 'replace the water heater',
+        forceNewJob: true,
+      });
+      expect(forced.isError).toBe(false);
+    } finally {
+      await client.close();
+    }
+
+    // A TECHNICIAN cannot open work. The gate is ADMIN_TOOL_NAMES in the
+    // dispatch, not the tools/list filter — a technician who somehow named the
+    // tool is refused at the door.
+    const refused = await call('open_job', { customerId: customer.id, title: 'nope' });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toMatch(/manager/i);
   });
 });

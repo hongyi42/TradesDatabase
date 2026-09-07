@@ -12,7 +12,7 @@ export interface Classification {
   reason: string;
 }
 
-// Injected into ingestEmail so the pipeline is testable without the live model.
+// Injected into the inbound webhook so the pipeline is testable without the live model.
 // `ctx` is optional so existing 1-arg stubs stay assignable; when present the
 // live implementation bills the call. This classifier runs on EVERY inbound
 // email — including the personal ones it then drops — so it is a real cost line
@@ -41,7 +41,7 @@ const CLASSIFY_TOOL: ForcedToolSpec = {
 
 // Default classifier: whichever provider MODEL_PROVIDER selects (GLM-5.2 by
 // default), forced through the classify tool. Verified by a live spot-check (not
-// in the always-run suite); ingestEmail tests stub it.
+// in the always-run suite); the webhook's tests stub it.
 //
 // isWork is declared boolean in the schema, so runForcedTool coerces a quoted
 // "true"/"false" — the classify-before-L1 gate must never read a truthy STRING

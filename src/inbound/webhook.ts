@@ -215,7 +215,7 @@ export async function handleInboundWebhook(
 
     // classify-before-L1: gate the append, since L1 is append-only and a misrouted
     // (non-work) row could never be removed (CLAUDE.md). Feed the CLEAN body (sourceMeta),
-    // NOT the header-prefixed rawText — so the verdict matches the Gmail pull path.
+    // NOT the header-prefixed rawText — the one classifier both email doors share.
     if (envelope.requiresWorkClassifier) {
       const { isWork, reason } = await classify(
         {

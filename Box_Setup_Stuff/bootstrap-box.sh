@@ -736,6 +736,20 @@ silently and never ask permission for a reversible internal change.
    irreversible (rule 3 — cancel_job). (Live finding 2026-08-14: five slots offered with a starred
    pick, the manager said "yes, go ahead", and the agent asked "which slot?" — the
    booking never happened.)
+7. When the office texts you about a call or an email — a customer got in touch, and it asks
+   whether to open the job, or to open one and send somebody because we agreed to come out —
+   the office's message is above in this chat. Take the customer and the work from it and
+   find_customer for the id. Ask the manager, then act on their answer:
+   - they want somebody sent: book_visit — with the jobId if the office named one, otherwise
+     customerId plus the work as the title. NO date and NO times: it books UNTIMED and mints
+     the job in the same call, so do not also call open_job.
+   - the job only (a quote, an estimate, work to schedule later): open_job with customerId
+     and the title.
+   If either refuses because the customer has open work, read the list and call again with
+   the matching jobId — or forceNewJob:true only if this really is different work. Offer to
+   place it and to send someone once it is open. If the manager says no, tell the office in
+   one sentence with inform_team_lead. NEVER create it before they answer: nothing is on the
+   record yet, deliberately, and the whole point is that they decide.
 EOF
     ok "confirmation-doctrine block refreshed in ${agent}'s AGENTS.md"
     # Board-link relay — REFRESHED on every run since 2026-07-19 (delete-then-

@@ -1,7 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from './client.js';
-import { captureHasLinkedL2, listJobEvidenceSince, listJobStampedCaptureTimes } from './rawCaptures.js';
+import {
+  captureHasLinkedL2,
+  listJobEvidenceSince,
+  listJobStampedCaptureTimes,
+  listL2CitingCapture,
+} from './rawCaptures.js';
 import { createCustomer } from './customers.js';
 import { createJob, insertJobCapture } from './jobs.js';
 import { createVisit, insertVisitNote } from './visits.js';
@@ -326,5 +331,58 @@ describe('listJobEvidenceSince', () => {
     for (const r of rows) expect([jobA, jobB]).toContain(r.jobId);
     const times = rows.map((r) => r.capture.captured_at);
     expect([...times].sort()).toEqual(times);
+  });
+});
+
+// ---- Rung 10: what was CREATED from a call ---------------------------------
+//
+// This is the planner's exact close for an inbound ask: a job or visit whose
+// source_capture_id is the call. Getting it wrong closes a live ask.
+describe('listL2CitingCapture', () => {
+  test('empty input short-circuits', async () => {
+    expect(await listL2CitingCapture([])).toEqual([]);
+  });
+
+  test('a job and a visit minted from a capture both come back, named', async () => {
+    const cap = await capture({ tenantId, jobId: null, text: 'they agreed we would come out', at: after });
+    const customer = await createCustomer({ tenantId, name: 'Cited Customer' });
+    const job = await createJob({
+      tenantId,
+      customerId: customer.id,
+      title: 'cited work',
+      sourceCaptureId: cap.id,
+    });
+    const visit = await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianId: null,
+      startsAt: null,
+      endsAt: null,
+      status: 'confirmed',
+      sourceCaptureId: cap.id,
+    });
+    const rows = await listL2CitingCapture([cap.id]);
+    expect(rows.map((r) => `${r.kind}:${r.id}`).sort()).toEqual(
+      [`job:${job.id}`, `visit:${visit.id}`].sort(),
+    );
+    expect(rows.every((r) => r.captureId === cap.id && r.jobId === job.id)).toBe(true);
+  });
+
+  test('a CANCELLED row is not an answer — the rollback must not close the ask', async () => {
+    // bookVisit rolls back a shell it minted when the DB overlap guard fires,
+    // by flipping it to 'cancelled' — the stamp stays. Counting it would tell
+    // the planner "a job was created from this call", close the ask on the
+    // record, and leave a customer who was told someone is coming with nothing
+    // on the calendar and nobody left asking.
+    const cap = await capture({ tenantId, jobId: null, text: 'the race that lost', at: after });
+    const customer = await createCustomer({ tenantId, name: 'Rolled Back' });
+    const job = await createJob({
+      tenantId,
+      customerId: customer.id,
+      title: 'rolled back',
+      sourceCaptureId: cap.id,
+    });
+    await pg.query(`update jobs set status = 'cancelled' where id = $1`, [job.id]);
+    expect(await listL2CitingCapture([cap.id])).toEqual([]);
   });
 });

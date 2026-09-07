@@ -1,8 +1,9 @@
-// Single source of truth for the email → L1 raw_text representation. Both inbound
-// email paths (the Gmail pull in ingest.ts and the Composio webhook normalizer in
-// inbound/gmail.ts) store this exact shape, so the same message lands as identical
-// L1 evidence regardless of which path ingested it. Keep the CLEAN body separate
-// (for the work/personal classifier) — only the STORAGE form prepends the headers.
+// Single source of truth for the email → L1 raw_text representation. The Composio
+// webhook normalizer (inbound/gmail.ts) is the only path that reaches it today —
+// the direct Gmail puller that shared it was deleted in rung 10 — and it stays a
+// shared helper because the shape is what every reader of an email capture
+// depends on, whatever writes it next. Keep the CLEAN body separate (for the
+// work/personal classifier): only the STORAGE form prepends the headers.
 export interface EmailParts {
   from: string;
   subject: string;

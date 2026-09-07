@@ -82,6 +82,10 @@ import {
   listVisitNotesForCapture,
   listJobCapturesForCapture,
   insertJobCapture,
+  createJob,
+  appendJobCorrespondence,
+  listObservationsByStatus,
+  PINGED_KINDS,
   CORRESPONDENCE_KEY,
   correspondenceEntries,
   foldRetractedCorrespondence,
@@ -117,7 +121,11 @@ import {
   type TenantProfilePatch,
   type LicenseNumber,
 } from '../db/index.js';
-import { recordFieldNote, type ResolvedIdentity } from '../writePath/recordFieldNote.js';
+import {
+  correspondenceOf,
+  recordFieldNote,
+  type ResolvedIdentity,
+} from '../writePath/recordFieldNote.js';
 import { matchIdentity, type MatchResult } from '../writePath/identityMatch.js';
 import { defaultExtractor, type ExtractedFields } from '../writePath/extract.js';
 import {
@@ -341,6 +349,8 @@ const TOOLS = [
       'openWorkNote, the customer has work with NO visit booked: "next opening / availability / ' +
       'earliest you could come" questions are about THAT work — answer them with ' +
       'find_slots(jobId), never from upcomingVisits. moneyByJob is the money position per job; ' +
+      'A job\'s attributes.correspondence is WHAT THE CUSTOMER SAID about it on their own calls ' +
+      'and emails, each entry naming the capture it came from — their words, not the firm\'s. ' +
       'within it, materialCostCents is what that job COST the firm in parts/materials — never ' +
       'add it to invoiced/paid/balance due, and never call revenue minus it "margin" or ' +
       '"profit" (it carries no labour).',
@@ -355,7 +365,10 @@ const TOOLS = [
     description:
       'Fetch one job by id. If a money summary comes back, materialCostCents is what the job ' +
       'COST the firm in parts/materials — never add it to invoiced/paid/balance due, and never ' +
-      'call revenue minus it "margin" or "profit" (there is no labour rate in it).',
+      'call revenue minus it "margin" or "profit" (there is no labour rate in it). ' +
+      'attributes.correspondence is WHAT THE CUSTOMER SAID about this job on their own calls and ' +
+      'emails, newest last, each entry naming the capture it came from — their words and their ' +
+      'requests, not the firm\'s notes or anything a technician did.',
     inputSchema: {
       type: 'object',
       properties: { jobId: { type: 'string' } },
@@ -877,6 +890,50 @@ const SPINE_QUERY_LIMITS =
 // re-gated at dispatch (requireManager), so a technician badge structurally has
 // no admin surface even if it guesses the tool names.
 const ADMIN_TOOLS = [
+  {
+    // RUNG 10. Until this existed there was NO way to open a job without also
+    // putting a visit on the calendar: `book_visit`'s customerId path minted a
+    // shell as a side effect of booking. A customer who rings for a quote wants
+    // the job on file and nobody sent out yet, and the office now asks a
+    // manager exactly that question — so the answer needs a verb.
+    name: 'open_job',
+    description:
+      'Open a job for a customer WITHOUT putting anything on the calendar (manager only) — ' +
+      'one step, no confirmation: a job is cancellable, and the manager just asked for it. ' +
+      'Use it when the office tells you a customer got in touch and asks whether to open the ' +
+      'job, and the manager says yes but nobody is being sent out yet (a quote, an estimate, ' +
+      'work to schedule later). If they ALSO want someone sent, use book_visit instead — with ' +
+      'no date and no times it books an untimed visit AND mints the job in the same call, so ' +
+      'do not call both. REFUSED when the customer already has open work, with the list: pass ' +
+      'the matching job to whatever you do next, or forceNewJob:true only if this is genuinely ' +
+      'different new work. Returns the job with its id and title — tell the manager the title, ' +
+      'in the same breath, because it is your words that reached the permanent record.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        customerId: { type: 'string', description: 'The customer this job is for (find_customer).' },
+        title: {
+          type: 'string',
+          description:
+            "Short title for the work, in the manager's or the caller's words — e.g. " +
+            '"no heat upstairs". Say it back to the manager: it goes on the record.',
+        },
+        jobType: { type: 'string', description: 'Trade/category, e.g. "hvac", "plumbing".' },
+        priority: {
+          type: 'string',
+          enum: JOB_PRIORITIES,
+          description: 'Triage tier. Defaults to routine.',
+        },
+        forceNewJob: {
+          type: 'boolean',
+          description:
+            'ONLY when the customer has open work already AND this is genuinely different ' +
+            'new work. Read the refusal list first.',
+        },
+      },
+      required: ['customerId', 'title'],
+    },
+  },
   {
     name: 'add_technician_seat',
     description:
@@ -2352,6 +2409,100 @@ async function retractedResult(
         }
       : {}),
     restoreHint: restoreHintFor(impact),
+  };
+}
+
+// RUNG 10 — WHICH CALL IS THIS CREATION ANSWERING?
+//
+// The office texted a manager about an inbound call; the manager said yes; their
+// agent now opens a job or books a visit. Nothing in that chat carries the call's
+// id — the manager types "yes, open it" — so the link has to be re-derived here,
+// from the one open observation this customer (or this job) has waiting.
+//
+// THREE NARROWINGS, and each one exists because citing the WRONG call is worse
+// than citing none — a false citation lets the planner close a real ask on work
+// that has nothing to do with it, and puts one caller's words permanently onto
+// another's job.
+//
+//  1. IT MUST HAVE BEEN ASKED. `asked_at` set means the office actually texted
+//     a manager about this call. If nobody was ever told, the manager's agent
+//     is not answering it — it is doing something else for the same customer.
+//  2. RECENTLY. A manager may answer the next morning; they do not answer a
+//     fortnight later. Without a bound, an ask nobody ever answered would be
+//     consumed by the next unrelated booking for that customer, forever.
+//  3. THE SHAPE MUST MATCH. A booking that MINTS a job can only be answering an
+//     ask that had no job on file; one onto an existing job must name that job.
+//
+// And then EXACTLY ONE, or nothing: two candidates means the agent could be
+// answering either. Zero is the ordinary case — most bookings answer no call.
+//
+// This never TOUCHES the observation. Closing it is the planner's, on the
+// citation this leaves behind (the record is planner-kept).
+const CITE_ASK_WINDOW_MS = 7 * 24 * 3_600_000;
+
+async function inboundAskFor(
+  tenantId: string,
+  target: { customerId?: string; jobId?: string },
+): Promise<{
+  captureId: string;
+  channel: CaptureChannel;
+  capturedAt: string;
+  followUp?: string;
+  attributes?: Json;
+} | null> {
+  if (!target.customerId && !target.jobId) return null;
+  let open: Awaited<ReturnType<typeof listObservationsByStatus>>;
+  try {
+    open = await listObservationsByStatus(tenantId, ['open']);
+  } catch (err) {
+    // ADVISORY. A booking that lands without its citation is a booking; a
+    // booking refused because a read failed is a manager blocked.
+    console.error('inboundAskFor: the observation read failed — booking without a citation', err);
+    return null;
+  }
+  const floor = Date.now() - CITE_ASK_WINDOW_MS;
+  const matches = open.filter((o) => {
+    if (!(PINGED_KINDS as string[]).includes(o.kind)) return false;
+    // (1) and (2): somebody was actually told, and recently enough that this
+    // creation could plausibly be their answer.
+    if (!o.asked_at || Date.parse(o.asked_at) < floor) return false;
+    const c = (o.context ?? {}) as Record<string, unknown>;
+    // (3) MATCH ON WHAT THE CALLER NAMED, never on the other field: a booking
+    // onto an existing job must name that job, and a booking that mints one can
+    // only answer an ask that had no job on file.
+    return target.jobId
+      ? c.jobId === target.jobId
+      : c.customerId === target.customerId && !c.jobId;
+  });
+  if (matches.length !== 1) {
+    if (matches.length > 1) {
+      console.warn(
+        `inboundAskFor: ${matches.length} open inbound asks for ` +
+          `${target.jobId ? `job ${target.jobId}` : `customer ${target.customerId}`} — ` +
+          'citing none, because citing the wrong one would let the planner close the other',
+      );
+    }
+    return null;
+  }
+  const c = (matches[0].context ?? {}) as Record<string, unknown>;
+  const asked = (c.asked ?? {}) as Record<string, unknown>;
+  return {
+    captureId: typeof c.captureId === 'string' ? c.captureId : matches[0].subject_ref,
+    // THE CALL'S OWN CHANNEL AND TIME, not this moment's. A correspondence
+    // entry says what the customer said and when they said it; stamping the
+    // booking's clock and a hardcoded 'phone_call' would tell every later
+    // reader — the brief renders these verbatim — that an emailer phoned, at
+    // the hour the manager happened to answer. The write path's own copy
+    // carries the real values; these two homes must not disagree.
+    channel: (typeof c.channel === 'string' ? c.channel : 'phone_call') as CaptureChannel,
+    capturedAt: typeof c.capturedAt === 'string' ? c.capturedAt : matches[0].noticed_at,
+    // ONLY the two fields a correspondence entry may carry. `workPerformed`
+    // rides in the observation for the planner's eyes and stops there — the
+    // report and the bill stay technician-only (rung 9b's line).
+    ...(typeof asked.followUp === 'string' ? { followUp: asked.followUp } : {}),
+    ...(asked.attributes && typeof asked.attributes === 'object' && !Array.isArray(asked.attributes)
+      ? { attributes: asked.attributes as Json }
+      : {}),
   };
 }
 
@@ -4440,6 +4591,80 @@ async function dispatch(
         untimed,
       };
     }
+    case 'open_job': {
+      const customerId = str('customerId');
+      const title = str('title')?.trim();
+      if (!customerId) throw new Error('customerId is required');
+      if (!title) throw new Error('title is required — it goes on the permanent record');
+      // Tenant guard on the parent, the get_job precedent: a cross-tenant id
+      // reads as not found rather than as a foreign customer.
+      const customer = await getCustomer(customerId);
+      if (!customer || customer.tenant_id !== tenantId) throw new Error('customer not found');
+      const priorityArg = str('priority');
+      if (priorityArg && !JOB_PRIORITIES.includes(priorityArg as JobPriority)) {
+        throw new Error(`invalid priority: ${priorityArg}`);
+      }
+      // THE SAME MINT GUARD book_visit's customerId path has, and it has to be
+      // the same TEST as well as the same words, or the two surfaces disagree
+      // about what a duplicate is: `resolveBooking` fires on a title that NAMES
+      // an open job (the agent parroting the manager's words for work that
+      // exists), and a genuinely distinct title mints without ceremony. A
+      // stricter rule here would refuse an open that book_visit would have
+      // allowed, and send the agent round a loop the steer cannot resolve.
+      if (args.forceNewJob !== true) {
+        const openWork = await listOpenJobsForCustomer(customer.id);
+        const stated = title.toLowerCase();
+        if (openWork.some((j) => (j.title ?? '').trim().toLowerCase() === stated)) {
+          throw new Error(
+            openWorkSteer('opened', openWork) +
+              ' (This tool only opens NEW work — to act on the job already on file, use it ' +
+              'directly: book_visit with its jobId, or update_job.)',
+          );
+        }
+      }
+      // The call this answers, if there is exactly one waiting (rung 10).
+      const ask = await inboundAskFor(tenantId, { customerId: customer.id });
+      const job = await createJob({
+        tenantId,
+        customerId: customer.id,
+        title,
+        jobType: str('jobType') ?? null,
+        ...(priorityArg ? { priority: priorityArg as JobPriority } : {}),
+        ...(ask ? { sourceCaptureId: ask.captureId } : {}),
+      });
+      if (ask) {
+        // Advisory, like book_visit's: the job is open either way, and the
+        // words are still in L1 and in the observation.
+        try {
+          await appendJobCorrespondence(
+            job.id,
+            correspondenceOf(ask.captureId, ask.channel, ask.capturedAt, {
+              followUp: ask.followUp ?? null,
+              attributes: ask.attributes ?? null,
+            }),
+          );
+        } catch (err) {
+          console.error(
+            `open_job: job ${job.id} was opened, but the caller's words were not copied onto it`,
+            err,
+          );
+        }
+      }
+      return {
+        status: 'opened',
+        jobId: job.id,
+        jobTitle: job.title,
+        customer: customer.name,
+        jobType: job.job_type,
+        jobPriority: job.priority,
+        // The observation is NOT touched here: closing it is the planner's, on
+        // the citation this just left behind (the record is planner-kept).
+        note:
+          'The job is open and NOTHING is on the calendar. Tell the manager the title above — ' +
+          'your words reached the record. If they want someone sent out, book_visit with the ' +
+          'jobId (no date/times = untimed, in the unscheduled queue).',
+      };
+    }
     case 'book_visit': {
       const subjectRef = identity.technicianRef;
         // resolveBooking runs every dry check (tenant guards, technician
@@ -4507,10 +4732,18 @@ async function dispatch(
             'priority applies when a new job is created (customerId path) — this booking uses an existing job, which keeps its recorded priority',
           );
         }
+        // RUNG 10 — CITE THE CALL THIS BOOKING ANSWERS. Resolved BEFORE the
+        // write so the stamp lands on the rows themselves rather than needing
+        // a second update; null on the ordinary booking nobody phoned in about.
+        const ask = await inboundAskFor(tenantId, {
+          ...(jobId ? { jobId } : {}),
+          ...(customerId && !jobId ? { customerId } : {}),
+        });
         // ONE input literal for both paths — a field added here reaches the
         // one-shot commit and the staged preview identically.
         const bookInput = {
           tenantId,
+          ...(ask ? { sourceCaptureId: ask.captureId } : {}),
           ...(technicianRef ? { technicianRef } : {}),
           ...(technicianRefs ? { technicianRefs } : {}),
           ...(customerId ? { customerId } : {}),
@@ -4528,6 +4761,28 @@ async function dispatch(
         // verdict is input-derived, so no preview round is needed — bookVisit
         // runs every guard itself (one resolution instead of two).
           const booked = await bookVisit(bookInput);
+          // WHAT THE CALLER SAID, ONTO THE JOB THIS CALL OPENED. Only when the
+          // booking MINTED the job: on the jobId path the job already exists and
+          // the write path put the caller's words on it when the capture landed.
+          // Advisory — a booking that happened is a booking, and the words are
+          // still in L1 and in the observation either way.
+          if (ask && !jobId) {
+            try {
+              await appendJobCorrespondence(
+                booked.job.id,
+                correspondenceOf(ask.captureId, ask.channel, ask.capturedAt, {
+                  followUp: ask.followUp ?? null,
+                  attributes: ask.attributes ?? null,
+                }),
+              );
+            } catch (err) {
+              console.error(
+                `book_visit: job ${booked.job.id} was booked, but the caller's words were not ` +
+                  'copied onto it',
+                err,
+              );
+            }
+          }
           return {
             status: 'booked',
             visitId: booked.assignment.id,

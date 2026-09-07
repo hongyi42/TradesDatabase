@@ -265,7 +265,9 @@ webhook-only truth. **Delete `src/email/ingest.ts`, `ingest.test.ts`; `npm unins
 **Docs** — `engineering-memory.md`: ladder row `:3573` → `10 inbound commits a visit — ASK FIRST:
 extractor → observation → focused planner pass → manager's agent books [BUILT …; §10]`; rewrite
 `:5064-5077` (dated 2026-09-06); `:4558`, `onboarding.md:307`, `nemoclaw-tech-agent.md:277` →
-"rung 11"; a `### ✅ BUILT — rung 10` record in `- **Title**` bullets (new-caller path = rung 10b;
+"rung 11"; `rawCaptures.ts:177-182` ("Rung 10 closes that by letting inbound create a COMMITTED
+visit") → the observation is a THIRD home for a committed capture; the link-less shape STAYS for an
+uncommitted matched inbound with no live visit (10b/later). A `### ✅ BUILT — rung 10` record in `- **Title**` bullets (new-caller path = rung 10b;
 uncommitted-redelivery gap; the silent `assistant` leg; the two markers). Overview §4
 (`:121-157`): one sentence. `npm run decisions:index`.
 

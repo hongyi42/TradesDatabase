@@ -27,10 +27,21 @@ silent cross-tenant leak. The anon/public key can also read business tables dire
 
 Fix in three layers — do all three (they cover different failure paths).
 
-### B1 · Layer 1 — Deny-all RLS (closes the anon/public-key hole) — *cutover-blocking*
-- [ ] Write migration `supabase/migrations/<ts>_rls_denyall_business_tables.sql` (loop over every
+### B1 · Layer 1 — Deny-all RLS (closes the anon/public-key hole) — *DONE locally, pilot unverified*
+
+> **Status corrected 2026-09-07.** The prose above ("RLS is off") described the pre-2026-08-24
+> state and was stale for two weeks. `20260824120000_rls_denyall_business_tables.sql` did the
+> sweep; `20260907110000_rls_denyall_backstop.sql` closed the one table created afterwards
+> (`visit_notes`, which got its `revoke` but not its `enable row level security`) and now
+> RE-ASSERTS the invariant on every run, failing the migration if any public table is left
+> without RLS or still readable by anon/authenticated. Local stack verified: **41 tables, 0
+> without RLS, 0 anon-readable.** The pilot has NOT been checked — see the verification query
+> below.
+
+- [x] Write migration `supabase/migrations/<ts>_rls_denyall_business_tables.sql` (loop over every
       public table; enable RLS with **no policy** + `REVOKE ALL … FROM anon, authenticated`).
-- [ ] Test on the **local Docker stack** first — `npm test` stays green (local uses
+      — `20260824120000`, plus the self-asserting backstop `20260907110000`.
+- [x] Test on the **local Docker stack** first — `npm test` stays green (local uses
       superuser/service_role → bypasses RLS → nothing breaks).
 - [ ] Apply to the current hosted DB via Supabase MCP `apply_migration` (**not** `db push`).
 - [ ] Verify: `get_advisors` — the "RLS disabled" advisory clears.
@@ -52,6 +63,28 @@ BEGIN
 END $$;
 ```
 
+**Pilot verification query** (read-only; run in the Supabase SQL editor against the pilot).
+Both counts must be 0:
+
+```sql
+select count(*) filter (where not c.relrowsecurity)                    as tables_without_rls,
+       count(*) filter (where has_table_privilege('anon', c.oid, 'SELECT')
+                          or has_table_privilege('authenticated', c.oid, 'SELECT'))
+                                                                        as tables_anon_can_read,
+       count(*)                                                         as total_tables
+from pg_class c join pg_namespace n on n.oid = c.relnamespace
+where n.nspname = 'public' and c.relkind = 'r';
+```
+
+If either is non-zero, apply `20260907110000_rls_denyall_backstop.sql` to the pilot by hand via
+the SQL editor (it is idempotent and asserts its own post-conditions), then record it in
+`schema_migrations`.
+
+**Related, still open:** `supabase/config.toml` sets `auto_expose_new_tables = true`, so a new
+table is exposed to the Data API by default and a forgotten `revoke` is a leak — which is exactly
+how `visit_notes` slipped. Supabase deprecates this field on 2026-10-30 in favour of
+revoke-by-default. Flipping it to `false` would make new tables secure by construction rather
+than by remembering; the backstop migration is the interim guard.
 ### B1 · Layer 2 — App-code isolation (Option B) — *cutover-blocking*
 Covers the paths RLS **cannot** see: `service_role` runs the cron + `/admin`, where RLS is bypassed
 and the app filter is the only guard.

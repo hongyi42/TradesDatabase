@@ -1,0 +1,38 @@
+# /etc/systemd/system/sandbox-token-medic.timer
+#
+# WHY THIS EXISTS. The medic was WantedBy=multi-user.target only — it ran at
+# boot and never again. Sandbox tokens carry a 30-day ttl, so between reboots
+# they expire silently: a RUNNING gateway keeps accepting an expired token from
+# its own in-memory state, and nothing anywhere reports a problem.
+#
+# Measured on trades-box-1, 2026-09-05, at the moment the gateway was first
+# restarted in 59 days:
+#
+#     s6  token expired 2026-08-18   18 days earlier
+#     s7  token expired 2026-08-19   17 days earlier
+#     s8  token expired 2026-08-23   13 days earlier
+#
+# All three crash-looped on `invalid token: ExpiredSignature` the moment the
+# gateway came back, and `static token sources cannot rebootstrap
+# automatically` — so they could not fix themselves. Three of seven seats were
+# one gateway crash away from a dead box, and had been for weeks. That is the
+# failure this timer exists to make impossible.
+#
+# DAILY, not weekly. Renewal RESTARTS the container it renews, so the cadence
+# also decides when that restart lands. Daily at 03:20 UTC puts it in the same
+# quiet window as the backups (n8n 04:00, DB 04:30) and ahead of both, rather
+# than at whatever hour a token happens to lapse.
+#
+# Persistent=true so a box that was off at 03:20 catches up on next boot
+# instead of skipping a day.
+[Unit]
+Description=Re-mint OpenShell sandbox tokens before they expire
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+Persistent=true
+# A fleet of boxes must not all re-mint at the same instant.
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

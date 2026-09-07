@@ -1464,8 +1464,33 @@ EOF
   install_unless_same 755 "$SCRIPT_DIR/sandbox-token-medic.mjs" /usr/local/sbin/sandbox-token-medic.mjs
   install_unless_same 644 "$SCRIPT_DIR/sandbox-token-medic.service" /etc/systemd/system/sandbox-token-medic.service
   systemctl daemon-reload
+  install_unless_same 644 "$SCRIPT_DIR/sandbox-token-medic.timer" /etc/systemd/system/sandbox-token-medic.timer
+  mkdir -p /etc/systemd/system/sandbox-token-medic.service.d
+  install_unless_same 644 "$SCRIPT_DIR/sandbox-token-medic.service.d/renew-ahead.conf" /etc/systemd/system/sandbox-token-medic.service.d/renew-ahead.conf
+  systemctl daemon-reload
   systemctl enable sandbox-token-medic.service
-  ok "sandbox-token-medic.service enabled (heals expired sandbox tokens before revive)"
+  # The TIMER is the fix for what the service alone cannot catch: it was
+  # boot-only, so a 30-day token expired silently between reboots while the
+  # running gateway kept accepting it from memory. On trades-box-1, 2026-09-05,
+  # three of six sandboxes held tokens that had expired 13-18 days earlier, and
+  # all three crash-looped the instant the gateway restarted.
+  systemctl enable sandbox-token-medic.timer
+  ok "sandbox-token-medic enabled (boot + daily, renewing 3 days ahead of expiry)"
+
+  log "openshell-gateway supervision (2026-09-05: unsupervised, and a restart drops every seat)"
+  install_unless_same 644 "$SCRIPT_DIR/openshell-gateway.service" /etc/systemd/system/openshell-gateway.service
+  install_unless_same 755 "$SCRIPT_DIR/gateway-heal.sh" /usr/local/sbin/gateway-heal.sh
+  install_unless_same 644 "$SCRIPT_DIR/openshell-gateway-heal.service" /etc/systemd/system/openshell-gateway-heal.service
+  systemctl daemon-reload
+  # openshell-gateway.service is deliberately NOT enabled here. It needs
+  # /etc/nemoclaw/openshell-gateway.env, which capture-gateway-env.sh reads off
+  # the RUNNING gateway: its 12 OPENSHELL_* variables point into a per-install
+  # state directory and cannot be guessed. A gateway started without them has no
+  # compute driver and no TLS material, and would cut off every sandbox at once.
+  # Run capture-gateway-env.sh once the gateway is up, confirm with
+  # verify-gateway-env.sh, then enable it.
+  systemctl enable openshell-gateway-heal.service
+  ok "gateway unit + heal installed (run capture-gateway-env.sh, then enable openshell-gateway.service)"
 
   log "agent-revive service (2026-07-04: agent supervisor does NOT survive container restarts)"
   install_unless_same 755 "$SCRIPT_DIR/nemoclaw-agent-revive.sh" /usr/local/sbin/nemoclaw-agent-revive.sh

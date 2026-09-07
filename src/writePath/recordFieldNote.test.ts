@@ -1334,4 +1334,122 @@ describe('rung 10 — inbound asks before it creates', () => {
     expect(((await jobAttributes(job.id)).correspondence as unknown[]).length).toBe(2);
     expect(await jobCaptureLinks(job.id)).toBe(3);
   });
+
+  // ---- THE EXTRACTOR DECIDES (amended 2026-09-07, user) -------------------
+  //
+  // The first version of this rung asked whenever the customer had no
+  // non-terminal job, which woke the planner for a thank-you arriving after the
+  // invoice was paid. The extractor already reads every one of these captures on
+  // inference, so the judgment moved there. These pin BOTH directions of that
+  // switch — the skip, and the far more important refusal to skip.
+
+  test('(10) needsAttention FALSE with no open job: filed on the last job, nobody asked', async () => {
+    const { customer, phone } = await newCustomer('Grateful Greta');
+    // Terminal on purpose: the old gate is exactly what this status triggered.
+    const paid = await createJob({
+      tenantId,
+      customerId: customer.id,
+      title: 'furnace service',
+      status: 'paid',
+    });
+
+    const r = await recordFieldNote(
+      inbound('email', 'thanks so much, the heat has been perfect all week!'),
+      stub({ phone, needsAttention: false, followUp: 'none — customer is happy' }),
+    );
+
+    expect(r.status).toBe('matched');
+    expect(r.jobId).toBe(paid.id); // filed on the paid job, not a new one
+    expect(r.observationId).toBeUndefined();
+    expect(await observationsFor(r.captureId)).toHaveLength(0);
+
+    // The words still land on the record: this is the whole reason a filtered
+    // capture is not simply abandoned in L1.
+    const entries = (await jobAttributes(paid.id)).correspondence as Array<Record<string, unknown>>;
+    expect(entries).toHaveLength(1);
+    expect(entries[0].captureId).toBe(r.captureId);
+    expect(await jobCaptureLinks(paid.id)).toBe(1);
+
+    // And NOTHING moved: no second job, no trip, and the paid job is still paid
+    // (NOTE_SIGNAL_TRANSITIONS has no entry for it).
+    expect((await listJobsForCustomer(customer.id)).length).toBe(1);
+    expect((await listJobsForCustomer(customer.id))[0].status).toBe('paid');
+    expect(r.visitId).toBeUndefined();
+  });
+
+  test('(11) needsAttention FALSE with no job at all: L1 keeps it, nothing else is built', async () => {
+    const { customer, phone } = await newCustomer('Wrongnumber Wally');
+    const before = await rawCaptureCount();
+
+    const r = await recordFieldNote(
+      inbound('email', 'sorry, wrong address — ignore my last message'),
+      stub({ phone, needsAttention: false }),
+    );
+
+    expect(r.status).toBe('captured');
+    expect(r.captureId).toBeDefined();
+    expect(r.jobId).toBeUndefined();
+    expect(r.observationId).toBeUndefined();
+    expect(await rawCaptureCount()).toBe(before + 1); // the verbatim capture is kept
+    expect(await observationsFor(r.captureId)).toHaveLength(0);
+    expect((await listJobsForCustomer(customer.id)).length).toBe(0);
+  });
+
+  test('(12) ONLY an explicit false skips — absent, null and true all still ask', async () => {
+    // THE SIGN OF THIS COMPARISON IS THE WHOLE SAFETY PROPERTY. A truncated
+    // response, an older stub, or a model that ignores the field must behave as
+    // the code did before the field existed. Written as three cases because
+    // `!needsAttention` instead of `=== false` passes the first one and silences
+    // the other two — the exact mistake this test exists to catch.
+    for (const [label, fields] of [
+      ['absent', {}],
+      ['null', { needsAttention: null }],
+      ['true', { needsAttention: true }],
+    ] as const) {
+      const { customer, phone } = await newCustomer(`Asks ${label}`);
+      const r = await recordFieldNote(
+        inbound('email', 'my water heater is leaking, can someone come out?'),
+        stub({ phone, jobTitle: 'water heater leak', ...fields }),
+      );
+      expect(r.observationId, `${label} must still ask`).toBeDefined();
+      const obs = await observationsFor(r.captureId);
+      expect(obs, `${label} must still ask`).toHaveLength(1);
+      expect(obs[0].kind).toBe('inbound_new_job');
+      expect((await listJobsForCustomer(customer.id)).length).toBe(0);
+    }
+  });
+
+  test('(13) a COMMITMENT outranks the filter — the firm agreeing to come out IS attention', async () => {
+    const { customer, phone } = await newCustomer('Committed Callum');
+    const r = await recordFieldNote(
+      inbound('phone_call', 'great, we will have someone out Thursday morning'),
+      // A model that judged this unimportant must not be able to lose the
+      // promise: `visitCommitted` is checked alongside, not after.
+      stub({ phone, needsAttention: false, visitCommitted: true, jobTitle: 'no heat' }),
+    );
+    expect(r.observationId).toBeDefined();
+    const obs = await observationsFor(r.captureId);
+    expect(obs).toHaveLength(1);
+    expect(obs[0].kind).toBe('inbound_commitment');
+    expect((await listJobsForCustomer(customer.id)).length).toBe(0);
+  });
+
+  test('(14) the filter is INBOUND-ONLY — a technician note still mints work', async () => {
+    const { customer, phone } = await newCustomer('Fieldnote Fran');
+    const tech = await insertTechnician({
+      tenantId,
+      ref: 'rung10-tech-2',
+      displayName: 'Filter Free Tech',
+      seatExempt: true,
+    });
+    const r = await recordFieldNote(
+      { tenantId, technicianRef: tech.ref, channel: 'technician_note', text: 'swapped the capacitor' },
+      stub({ phone, needsAttention: false, workPerformed: 'swapped capacitor' }),
+    );
+    // A technician's own note is the firm acting, not a message to judge.
+    expect(r.jobId).toBeDefined();
+    expect(r.visitId).toBeDefined();
+    expect(r.observationId).toBeUndefined();
+    expect((await listJobsForCustomer(customer.id)).length).toBe(1);
+  });
 });

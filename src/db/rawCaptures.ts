@@ -484,3 +484,67 @@ export async function listRawCapturesForCustomer(customerId: string): Promise<Ra
   if (error) throw new Error(`listRawCapturesForCustomer failed: ${error.message}`);
   return data ?? [];
 }
+
+// WHAT WAS CREATED FROM THESE CAPTURES (rung 10, the planner's exact close).
+// A job or a visit whose `source_capture_id` is one of them — proof that the
+// manager's agent acted on that call, and the only close the planner may make
+// on THE RECORD for an inbound observation. Batched over the tick's captures,
+// because the alternative is one round trip per gap inside a sync closure.
+//
+// Fleet-wide by capture id, like every other reader keyed on one: the caller
+// holds the ids, and the rows it gets back name the L2 they belong to.
+export interface L2CitingCapture {
+  kind: 'job' | 'visit';
+  id: string;
+  captureId: string;
+  jobId: string | null;
+}
+
+export async function listL2CitingCapture(captureIds: string[]): Promise<L2CitingCapture[]> {
+  if (captureIds.length === 0) return []; // PostgREST `in.()` with zero values errors
+  const CHUNK = 200;
+  const PAGE = 1000;
+  const out: L2CitingCapture[] = [];
+  for (let i = 0; i < captureIds.length; i += CHUNK) {
+    const slice = captureIds.slice(i, i + CHUNK);
+    // TWO EXPLICIT QUERIES rather than one loop over a computed select: the
+    // PostgREST client types the column list at compile time, and a select
+    // string chosen at runtime resolves to a ParserError instead of a row type.
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('jobs')
+        .select('id, source_capture_id')
+        .in('source_capture_id', slice)
+        .order('id', { ascending: true }) // deterministic paging tiebreak
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listL2CitingCapture failed on jobs: ${error.message}`);
+      for (const row of data ?? []) {
+        if (row.source_capture_id) {
+          out.push({ kind: 'job', id: row.id, captureId: row.source_capture_id, jobId: row.id });
+        }
+      }
+      if (!data || data.length < PAGE) break;
+    }
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('visits')
+        .select('id, job_id, source_capture_id')
+        .in('source_capture_id', slice)
+        .order('id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listL2CitingCapture failed on visits: ${error.message}`);
+      for (const row of data ?? []) {
+        if (row.source_capture_id) {
+          out.push({
+            kind: 'visit',
+            id: row.id,
+            captureId: row.source_capture_id,
+            jobId: row.job_id,
+          });
+        }
+      }
+      if (!data || data.length < PAGE) break;
+    }
+  }
+  return out;
+}

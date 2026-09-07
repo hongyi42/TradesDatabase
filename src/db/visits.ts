@@ -653,6 +653,58 @@ export async function getVisitForTenant(
   return data;
 }
 
+// THE INFERRED CLOSE (rung 10). A visit booked for this customer AFTER the
+// observation was noticed, but citing no capture — the shape a manager makes by
+// hand on the board, where nothing carries the call's id. Stated to the planner
+// as a weaker fact than the exact citation, and never as proof.
+//
+// `created_at`, not `starts_at`: the question is when somebody BOOKED it, and an
+// untimed visit has no start at all.
+export interface VisitCreatedSince {
+  id: string;
+  jobId: string;
+  customerId: string;
+  createdAt: string;
+}
+
+export async function listVisitsCreatedSince(
+  tenantId: string,
+  sinceIso: string,
+): Promise<VisitCreatedSince[]> {
+  const PAGE = 1000;
+  const out: VisitCreatedSince[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await getClient()
+      .from('visits')
+      // !inner so filtering on the embedded job actually filters the visits,
+      // and the job is where the customer lives.
+      .select('id, job_id, created_at, jobs!inner(customer_id, tenant_id)')
+      .eq('tenant_id', tenantId)
+      .in('status', ['confirmed', 'completed'])
+      .gte('created_at', sinceIso)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true }) // total order, or a page can repeat a row
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`listVisitsCreatedSince failed: ${error.message}`);
+    for (const row of (data ?? []) as unknown as {
+      id: string;
+      job_id: string;
+      created_at: string;
+      jobs: { customer_id: string; tenant_id: string } | null;
+    }[]) {
+      // id-only-FK belt-and-suspenders (the boardRead pattern).
+      if (!row.jobs || row.jobs.tenant_id !== tenantId) continue;
+      out.push({
+        id: row.id,
+        jobId: row.job_id,
+        customerId: row.jobs.customer_id,
+        createdAt: row.created_at,
+      });
+    }
+    if (!data || data.length < PAGE) return out;
+  }
+}
+
 // Batch point-read, tenant-guarded, ANY status — undo planning reads live
 // rows AND their cancelled predecessors in one query instead of N serial
 // getVisitForTenant round-trips (the listCustomersByIds precedent).

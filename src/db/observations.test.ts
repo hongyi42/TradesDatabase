@@ -423,6 +423,9 @@ describe('the ping markers (rung 10)', () => {
     return row;
   };
   const mine = (rows: { id: string }[], ids: string[]) => rows.filter((r) => ids.includes(r.id));
+  // The re-ask threshold every call below passes: "was it asked in the last
+  // day?" A stamp older than this makes the row askable again.
+  const dayAgo = () => new Date(Date.now() - 24 * 3_600_000).toISOString();
 
   test('PINGED_KINDS names the kinds the loop watches — kind-blind helpers, one list', () => {
     expect(PINGED_KINDS).toEqual(['inbound_new_job', 'inbound_commitment']);
@@ -458,21 +461,32 @@ describe('the ping markers (rung 10)', () => {
     expect(rows.map((r) => r.id)).not.toContain(row.id);
   });
 
-  test('the ask is once: a stamp the first time, null after, and not_before is set', async () => {
+  test('the ask is once a day: a stamp, then null, and NO hold is written', async () => {
     const row = await mkInbound();
-    const notBefore = new Date(Date.now() + 86_400_000).toISOString();
-    const stamp = await markObservationAsked(row.id, notBefore);
+    const stamp = await markObservationAsked(row.id, dayAgo());
     expect(stamp).not.toBeNull();
-    expect(await markObservationAsked(row.id, notBefore)).toBeNull(); // never twice
+    expect(await markObservationAsked(row.id, dayAgo())).toBeNull(); // not twice today
     // `new Date(...)`, not Date.parse: node-postgres hands back a Date object
     // for timestamptz, and Date.parse would stringify it and lose the
     // milliseconds — the two sides would differ by up to 999ms at random.
-    const { rows } = await pg.query<{ asked_at: Date; not_before: Date }>(
+    const { rows } = await pg.query<{ asked_at: Date; not_before: Date | null }>(
       'select asked_at, not_before from observations where id = $1',
       [row.id],
     );
     expect(new Date(rows[0].asked_at).getTime()).toBe(Date.parse(stamp as string));
-    expect(new Date(rows[0].not_before).getTime()).toBe(Date.parse(notBefore));
+    // NO `not_before`. The window above already holds the row, and a stored
+    // hold would print a raw ISO date into the gap block — a date the planner
+    // may not use, so the day-later re-ask would have its whole message
+    // dropped by the date rail. `not_before` belongs to `hold` alone.
+    expect(rows[0].not_before).toBeNull();
+    // A WINDOW, NOT A ONE-TIME CAP. What must be impossible is two passes
+    // minutes apart both texting a manager about one call; whether an
+    // unanswered call is worth raising TOMORROW is the planner's judgment, not
+    // a number in the database (the standing ruling behind the deleted nudge
+    // cap). A threshold in the future is "anything older than now" — the same
+    // shape a day-later tick presents.
+    const tomorrow = new Date(Date.now() + 60_000).toISOString();
+    expect(await markObservationAsked(row.id, tomorrow)).not.toBeNull();
     // An asked row is out of the loop's read as surely as a pinged one.
     expect(mine(await listUnpingedObservations(PINGED_KINDS, 1000), [row.id])).toHaveLength(0);
   });
@@ -480,12 +494,12 @@ describe('the ping markers (rung 10)', () => {
   test('a dismissed row cannot be asked about — the guard names the status too', async () => {
     const row = await mkInbound();
     await setObservationStatus(row.id, tenantId, { status: 'dismissed' }, ['open']);
-    expect(await markObservationAsked(row.id, new Date().toISOString())).toBeNull();
+    expect(await markObservationAsked(row.id, dayAgo())).toBeNull();
   });
 
   test('the compensation clears ONLY its own stamp — a failed send must not eat a later ask', async () => {
     const row = await mkInbound();
-    const stamp = (await markObservationAsked(row.id, new Date().toISOString())) as string;
+    const stamp = (await markObservationAsked(row.id, dayAgo())) as string;
     // Somebody else's stamp: refused silently, the ask stands.
     await clearObservationAsked(row.id, new Date(Date.parse(stamp) - 5000).toISOString());
     const still = await pg.query('select asked_at from observations where id = $1', [row.id]);
@@ -494,7 +508,7 @@ describe('the ping markers (rung 10)', () => {
     await clearObservationAsked(row.id, stamp);
     const cleared = await pg.query('select asked_at from observations where id = $1', [row.id]);
     expect(cleared.rows[0].asked_at).toBeNull();
-    expect(await markObservationAsked(row.id, new Date().toISOString())).not.toBeNull();
+    expect(await markObservationAsked(row.id, dayAgo())).not.toBeNull();
   });
 
   test('the heartbeat’s best-effort stamp never overwrites a real claim', async () => {

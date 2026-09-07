@@ -79,9 +79,20 @@ call / email ─► L1 ─► extractor ─► matched customer? ──no──�
   Render trigger-run API (a broad key on an internet-facing service).
 - **Two markers on the observation, `pinged_at` and `asked_at`** — `pinged_at` = the planner was
   CALLED about it (the worker's guarded claim; the heartbeat also stamps what it showed);
-  `asked_at` = a text went out, set by the `send` itself under a guard (`asked_at is null`), so
+  `asked_at` = a text went out, set by the `send` itself under a guard, so
   the focused pass and the heartbeat can never both text the manager, and the planner's own
   `hold` never blocks its later `send` (round-2 #1).
+  **AMENDED at implementation (2026-09-07): the ask guard is a 24-HOUR WINDOW, not `asked_at is
+  null`.** As drafted the two halves of this plan contradicted each other — the Decisions bullet
+  above says "the planner re-asks by its own doctrine", and an absolute `is null` guard makes that
+  impossible: a manager who ignores the one text means the job is never opened, ever. The hazard
+  the guard actually exists for is a focused pass racing the heartbeat *≤30 minutes later*; a day
+  is deliberately wider than that, because the question is not only "can two passes collide" but
+  "how often may one call reach a manager", and more than once a day is spam. Wider still would
+  reinstate the code-side pacing cap the nudge-cap ruling deleted. `markObservationAsked` therefore
+  takes the re-ask threshold as an argument (`INBOUND_REASK_MS`) and writes NO `not_before`: the
+  window is the hold, and a stored hold would print a raw ISO date into the gap block that the date
+  rail then refuses to let the planner use — killing the very re-ask the window exists to allow.
 - **No template** *(user)* — the gap view shows the caller's words (bounded) with a pointer to
   the full capture, the customer, the open job, the extractor's fields; the doctrine says what
   the situation is and what the manager's agent can do, and that the usual move is to ask
@@ -315,12 +326,15 @@ two independent loops, each with its own backoff (round-2 #4).
   file: open job … (job id …) | no open job — a job would be opened`, `  the firm agreed to come
   out: yes | not said`, `  capture id: … (spine_read v_captures for the full words)`, and when
   `asked_at`: `  you texted a manager about this ${ago}`. No clock label; `dateLabels` unchanged.
-- `apply` `case 'send'` (`:3017`): for these kinds, FIRST `markObservationAsked(id, now + 24h)`
-  (returns the stamp); null ⇒ `{ outcome: 'refused', detail: 'already asked' }`; then the office
+- `apply` `case 'send'` (`:3017`): for these kinds, FIRST `markObservationAsked(id, now − 24h)`
+  (returns the stamp); null ⇒ refused, "texted within the last day"; then the office
   row `via: 'chat'`. If `createOffice` THROWS, `clearObservationAsked(id, stamp)` (guarded on the
   same stamp) before rethrowing — otherwise a transient write failure leaves the row stamped with
-  nothing delivered and un-askable forever (round-3 #14). Validate: `as` must be `'chat'`, `to`
-  present, `countsAsTheAsk` absent.
+  nothing delivered and un-askable (round-3 #14). `as` must be `'chat'` — refused AT VALIDATE, so
+  the model can rewrite on the same tick; `to` present and `countsAsTheAsk` absent are the
+  pre-existing rails. In a FOCUSED pass the first gap-less `send` is bound to the focus
+  observation, so a message that names no item still marks the ask (only the first: gap-less sends
+  are not deduped, so binding all of them would refuse every manager after the first).
 - `mootFactFor` (`:3819-3830`) stays a SYNC closure over pre-batched maps (round-3 #13): before the
   per-gap loop, batch `listL2CitingCapture(captureIds)` (new in `src/db/rawCaptures.ts`: jobs +
   visits with `source_capture_id in (…)`) and `listVisitsCreatedSince(tenantId, minNoticedAt)` (new
@@ -357,7 +371,25 @@ refused; (15) the heading. `lifecycle.test.ts`: `listFreshPings: async () => []`
 throwing pass keeps the claim.
 
 ### Automated verification
-- [ ] gates green; (10)–(15) + worker tests pass; falsify (14) by removing the guard → double send
+- [x] gates green; (10)–(15) + worker tests pass; falsify (14) by removing the guard → double send
+### Landed 2026-09-07. What two review rounds changed that the plan did not say:
+- **`focusedPassBlockedBy()` gates BEFORE the claim.** Nothing releases a `pinged_at`, so a worker
+  deployed before its env landed would have drained the queue marking calls "the planner was called
+  about this" while calling nobody — permanently, since both fast-path readers require
+  `pinged_at is null`. The gate also carries the spine-model rail the heartbeat has.
+- **A focused pass's first gap-less `send` is bound to its item** (see above), and the heartbeat's
+  is NOT — a tick shows many items, so there is no one item a bare send is about. Accepted: the
+  doctrine asks the planner to name the item, and the cost of forgetting there is a second text at
+  the next tick, not a lost call.
+- **The focused pass is scoped against MUTATION too** — `listDismissedIds`/`listDismissedNudges`
+  are stubbed empty, or `recover` (validated against those sets, not against the gaps on screen)
+  could un-dismiss any gap in the firm from a pass about one call. Tenant eligibility filters the
+  real Telegram-binding read, so a firm the planner does not serve cannot get undeliverable rows.
+- **The inferred-booking floor is clamped to `EVIDENCE_FLOOR_MAX_DAYS`** — one unanswered
+  observation would otherwise page the firm's whole visit history on every heartbeat, forever.
+- **The ask-marker line carries no elapsed phrase.** "2 hours ago" is a temporal phrase the date
+  rail matches and `dateLabels` does not contain for these kinds, so a planner echoing it would
+  have its whole message dropped.
 ### Live verification — none until Phase 3. ### Manual verification — none. *Continue.*
 
 ## Phase 3: The hands, the citation, the record, and the deploy

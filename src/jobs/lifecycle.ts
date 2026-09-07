@@ -20,8 +20,8 @@ import {
   type PlannerMode,
   type PlannerSummary,
 } from '../teamLead/planner.js';
-import { TEAM_LEAD_REF } from '../teamLead/identity.js';
-import { dispatchForIdentity, TEAM_LEAD_TOOL_SCHEMAS } from '../mcp/server.js';
+import { runPlannerPass } from './plannerPass.js';
+import { PINGED_KINDS, hasFreshUnpingedObservation } from '../db/observations.js';
 import { hasModelCredentials, assertSpineModelAllowed } from '../model/forcedTool.js';
 
 // The lifecycle heartbeat — the ONE scheduled entrypoint (Render Cron Job,
@@ -66,6 +66,33 @@ import { hasModelCredentials, assertSpineModelAllowed } from '../model/forcedToo
 // Each step is isolated: one failing step is REPORTED (ok:false → exit 1 →
 // Render marks the run failed) but never blocks the others.
 
+// THE PING LOOP'S FALLBACK (rung 10). The heartbeat runs every 15 minutes but
+// the planner is only DUE at :00 and :30, so an off-cadence firing normally
+// skips it outright. If an inbound observation is sitting unclaimed — the
+// Calls-worker down, restarting, or dead on that row — the planner runs anyway:
+// a customer told "someone will come out" must not wait for the next half hour.
+//
+// The window is 35 minutes, comfortably more than one heartbeat interval and
+// less than the half-hourly cadence, so a row is caught by the tick after it
+// lands and does not force a run forever if nothing can ever ping it.
+// try/caught to FALSE: a failed read must not start planning every firm.
+const PING_FALLBACK_WINDOW_MS = 35 * 60_000;
+
+async function freshUnclaimedObservation(
+  nowIso: string,
+  deps: { listFreshPings?: typeof hasFreshUnpingedObservation },
+): Promise<boolean> {
+  try {
+    return await (deps.listFreshPings ?? hasFreshUnpingedObservation)(
+      PINGED_KINDS,
+      new Date(Date.parse(nowIso) - PING_FALLBACK_WINDOW_MS).toISOString(),
+    );
+  } catch (err) {
+    console.error('[lifecycle] the unclaimed-observation probe failed — treating as none', err);
+    return false;
+  }
+}
+
 export interface LifecycleDeps {
   listInStates?: typeof listTechniciansInStates;
   checkPairing?: typeof checkPairing;
@@ -77,6 +104,11 @@ export interface LifecycleDeps {
   rollup?: typeof rollupCosts;
   runWatchers?: typeof runWatchers;
   runPlanner?: typeof runPlanner;
+  // RUNG 10 — "is an inbound observation sitting unclaimed?" The Calls-worker's
+  // ping loop normally answers a committed call within ~10s; this is what makes
+  // the heartbeat its fallback when that process is down. Injected like every
+  // other reader so a unit test never touches the database.
+  listFreshPings?: typeof hasFreshUnpingedObservation;
   prune?: typeof pruneLifecycleRuns;
   // Seam so the skip branch is testable without setting a real key.
   hasModelKey?: () => boolean;
@@ -478,19 +510,22 @@ export async function runLifecycle(
     ok = false;
   } else if (plannerMode === 'off') {
     teamLeadPlanner = { skipped: "PLANNER_MODE 'off'" };
-  } else if (!plannerTick) {
-    teamLeadPlanner = { skipped: 'off-cadence tick (no firm can be due this minute)' };
+  } else if (!plannerTick && !(await freshUnclaimedObservation(nowIso, deps))) {
+    teamLeadPlanner = { skipped: 'off-cadence tick (no firm due, no unclaimed observation)' };
   } else if (!(deps.hasModelKey ?? hasModelCredentials)()) {
     teamLeadPlanner = { skipped: 'no inference credentials' };
   } else {
     try {
-      const summary = await (deps.runPlanner ?? runPlanner)(nowIso, plannerMode, {
-        tools: [...TEAM_LEAD_TOOL_SCHEMAS],
-        // The identity is minted PER TENANT, from the tenant the planner is
-        // currently walking — never bound once for the process.
-        execute: (tenantId, name, args) =>
-          dispatchForIdentity(name, args, { tenantId, technicianRef: TEAM_LEAD_REF }),
-      });
+      // Through runPlannerPass since rung 10, so the tool schemas and the
+      // per-tenant executor have ONE definition shared with the Calls-worker's
+      // focused pass. `deps.runPlanner` still rides through as the impl, which
+      // is the seam this file's unit tests stub.
+      const summary = await runPlannerPass(
+        nowIso,
+        plannerMode,
+        {},
+        deps.runPlanner ?? runPlanner,
+      );
       teamLeadPlanner = summary;
       // THE PLANNER'S OWN SYSTEMIC DETECTOR (build 1b). Until this existed, the
       // step above was the only one without one: runPlanner catches per tenant,

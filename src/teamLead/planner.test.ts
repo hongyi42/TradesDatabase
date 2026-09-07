@@ -192,6 +192,14 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     // is cancelled") for the standing 't1' reason; moot tests override.
     listAssignments: async () => [],
     listJobs: async () => [],
+    // RUNG 10's two record reads, stubbed for the SAME standing reason: this
+    // fixture's tenant is the literal 't1', so the real readers throw
+    // "invalid input syntax for type uuid" — and because they are awaited
+    // together, one unstubbed reader degrades BOTH to empty and the inbound
+    // THE RECORD line silently disappears. Empty = "nothing was created from
+    // this call", which is what every test that does not care already assumes.
+    listCiting: async () => [],
+    listVisitsSince: async () => [],
     // Phase 3 (2026-08-29): the same reason as listMoneySince above, and the same
     // trap watchers.test.ts hit — this fixture's tenant id is the literal 't1',
     // so the real settings reader returns 22P02, the per-tenant catch swallows
@@ -6272,5 +6280,585 @@ describe('the seats become an eye (build 7 Phase 3)', () => {
     // The planner's OWN noticing says nothing about anybody.
     const own = buildGapView(row({ note: 'three no-shows this month' }), Date.parse(NOW), [], false, new Set()).block;
     expect(own).not.toContain('from: something');
+  });
+});
+
+// ---- Rung 10: the focused pass, and what a call looks like to the planner ---
+describe('rung 10 — inbound requests reach the planner', () => {
+  // REAL UUIDS. The batched record reads drop non-uuid ids from their
+  // PostgREST filter (one malformed element rejects the whole `in()`), so a
+  // 'cap-1' fixture would silently exercise the empty path and pin nothing.
+  const CAP = '11111111-1111-4111-8111-111111111111';
+  const CUST = '22222222-2222-4222-8222-222222222222';
+  const JOB = '33333333-3333-4333-8333-333333333333';
+  const inboundObs = (over: Partial<Observation> = {}): Observation =>
+    ({
+      id: 'obs-1',
+      tenant_id: 't1',
+      kind: 'inbound_commitment',
+      subject_ref: CAP,
+      technician_id: null,
+      author: 'detector',
+      context: {
+        captureId: CAP,
+        capturedAt: '2026-08-16T11:50:00.000Z',
+        customerId: CUST,
+        channel: 'phone_call',
+        customerName: 'Nora Okafor',
+        from: '+15551234567',
+        asked: {
+          jobTitle: 'no heat upstairs',
+          jobType: 'hvac',
+          address: null,
+          city: null,
+          workPerformed: null,
+          followUp: 'send someone out',
+          attributes: { gateCode: '4412' },
+        },
+        words: 'my heater is dead — ok, see you then',
+      },
+      status: 'open',
+      dismiss_reason: null,
+      dismissed_at: null,
+      not_before: null,
+      pinged_at: null,
+      asked_at: null,
+      noticed_at: '2026-08-16T11:55:00.000Z',
+      updated_at: '2026-08-16T11:55:00.000Z',
+      ...over,
+    }) as unknown as Observation;
+
+  // A loop stub that reports the REQUEST, so the focus budget and the prompt
+  // can both be asserted from one place.
+  const capturingLoop = (seen: { user?: string; budgetMs?: number }) =>
+    (async (req: { user: string; budgetMs?: number }): Promise<ToolLoopResult> => {
+      seen.user = req.user;
+      seen.budgetMs = req.budgetMs;
+      return { text: '', turns: 1, calls: [] };
+    }) as unknown as NonNullable<PlannerDeps['runLoop']>;
+
+  test('(10) a focused pass shows ONE item, writes no run marker, and carries its own budget', async () => {
+    const seen: { user?: string; budgetMs?: number } = {};
+    let markerWrites = 0;
+    const obs = inboundObs();
+    const summary = await runPlanner(
+      NOW,
+      'shadow',
+      baseDeps({
+        focus: { observationId: obs.id, budgetMs: 180_000 },
+        listObservations: async () => [obs],
+        listNudges: async () => [],
+        plannerRun: async () => {
+          markerWrites += 1;
+        },
+        runLoop: capturingLoop(seen),
+      }),
+    );
+    expect(summary.focused).toBe(true);
+    expect(summary.focusObservationId).toBe('obs-1');
+    expect(summary.planned).toBe(1);
+    // A FOCUSED PASS IS NOT THE TICK: stamping planner_runs would move the next
+    // half-hourly pass's evidence floor on the strength of a one-item look.
+    expect(markerWrites).toBe(0);
+    expect(seen.budgetMs).toBe(180_000);
+    // The model is TOLD the firm's other work is missing — "this firm has 1
+    // open gap" would be a lie it might close or dismiss on.
+    expect(seen.user).toContain('This pass shows 1 item');
+    expect(seen.user).toContain('is not yours now');
+    expect(seen.user).not.toContain('open gap(s)');
+  });
+
+  test('(10b) an ordinary tick still says how many gaps the firm has', async () => {
+    const seen: { user?: string; budgetMs?: number } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({ runLoop: capturingLoop(seen) }));
+    expect(seen.user).toContain('This firm has 1 open gap(s).');
+    expect(seen.user).not.toContain('This pass shows 1 item');
+    expect(seen.budgetMs).toBeUndefined(); // the loop keeps its own default
+  });
+
+  // 09:45 is deliberately OFF the cadence grid (585 minutes since midnight,
+  // 585 % 30 = 15), so nothing but an unclaimed observation can make it run.
+  const OFF_CADENCE = '2026-08-16T09:45:00.000Z';
+
+  test('(11) an unclaimed inbound observation makes an off-cadence firm due', async () => {
+    const stamped: string[][] = [];
+    const summary = await runPlanner(
+      OFF_CADENCE,
+      'shadow',
+      baseDeps({
+        listNudges: async () => [],
+        listObservations: async () => [inboundObs()],
+        lastRunAt: async () => '2026-08-16T09:00:00.000Z', // BEFORE it was noticed
+        stampPinged: async (ids) => {
+          stamped.push(ids);
+        },
+      }),
+    );
+    expect(summary.planned).toBe(1);
+    expect(summary.skippedCadence).toBe(0);
+    expect(summary.pingedByObservation).toBe(1);
+    // A SUCCESSFUL pass claims what it showed, or the Calls-worker's ping loop
+    // would call the planner about the same row a second time.
+    expect(stamped).toEqual([['obs-1']]);
+  });
+
+  test('(11b) already pinged, already asked, or older than the last run ⇒ still off-cadence', async () => {
+    const cases: Array<[string, Partial<Observation>, string | null]> = [
+      ['the ping loop already claimed it', { pinged_at: '2026-08-16T09:41:00.000Z' }, '2026-08-16T09:00:00.000Z'],
+      ['a manager was already texted', { asked_at: '2026-08-16T09:41:00.000Z' }, '2026-08-16T09:00:00.000Z'],
+      ['it predates the last successful run', {}, '2026-08-16T11:59:00.000Z'],
+    ];
+    for (const [why, over, lastRun] of cases) {
+      const summary = await runPlanner(
+        OFF_CADENCE,
+        'shadow',
+        baseDeps({
+          listNudges: async () => [],
+          listObservations: async () => [inboundObs(over)],
+          lastRunAt: async () => lastRun,
+        }),
+      );
+      expect(summary.skippedCadence, why).toBe(1);
+      expect(summary.planned, why).toBe(0);
+      expect(summary.pingedByObservation, why).toBeUndefined();
+    }
+  });
+
+  test('(11c) a FAILED last-run read is "not pinged" — a database error must not start planning', async () => {
+    const summary = await runPlanner(
+      OFF_CADENCE,
+      'shadow',
+      baseDeps({
+        listNudges: async () => [],
+        listObservations: async () => [inboundObs()],
+        lastRunAt: async () => {
+          throw new Error('database down');
+        },
+      }),
+    );
+    expect(summary.skippedCadence).toBe(1);
+    expect(summary.tenantErrors).toBe(0); // degraded, not failed
+  });
+
+  test('(12) the gap block says who called, what they said, and what is on file — with NO date', () => {
+    const view = buildGapView(
+      observationAsGapRow(inboundObs()),
+      Date.parse(NOW),
+      [],
+      false,
+      new Set(),
+      [],
+      [],
+      'America/Los_Angeles',
+      null,
+      null,
+      null,
+      new Map(),
+      { askedAt: null },
+    );
+    expect(view.block).toContain("the caller's words (phone_call, from +15551234567");
+    expect(view.block).toContain('my heater is dead');
+    expect(view.block).toContain(`customer: Nora Okafor (id ${CUST})`);
+    expect(view.block).toContain('they asked for:');
+    expect(view.block).toContain('jobTitle no heat upstairs');
+    expect(view.block).toContain('followUp send someone out');
+    expect(view.block).toContain('attributes {"gateCode":"4412"}');
+    expect(view.block).toContain('on file: no open job for this customer');
+    expect(view.block).toContain('the firm agreed to come out: yes');
+    expect(view.block).toContain(`capture id: ${CAP}`);
+    // NEVER A WEEKDAY, AND NEVER A CLOCK LABEL. The elapsed label ("noticed 2
+    // hours ago") is legitimate and stays — it is what lets the planner say how
+    // old something is. What must never appear is a DAY: the caller's own day
+    // lives in the capture, and a date the model composes is the one thing here
+    // that reaches a customer wrong.
+    for (const day of ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']) {
+      expect(view.block, day).not.toContain(day);
+    }
+    expect(view.block).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    expect(view.block).not.toContain('the ask went out:');
+    expect(view.block).not.toContain('the visit was due:');
+  });
+
+  test('(12b) the new-job kind says a job would have to be opened, and the ask marker shows', () => {
+    const view = buildGapView(
+      observationAsGapRow(
+        inboundObs({
+          kind: 'inbound_new_job',
+          context: {
+            ...(inboundObs().context as Record<string, unknown>),
+            jobId: JOB,
+            jobTitle: 'leaking tap',
+          } as never,
+        }),
+      ),
+      Date.parse(NOW),
+      [],
+      false,
+      new Set(),
+      [],
+      [],
+      'UTC',
+      null,
+      null,
+      null,
+      new Map(),
+      { askedAt: '2026-08-16T10:00:00.000Z' },
+    );
+    expect(view.block).toContain('the firm agreed to come out: not said');
+    expect(view.block).toContain(`on file: open job leaking tap (job id ${JOB})`);
+    expect(view.block).toContain('you have already texted a manager about this one');
+    // The marker rides OUT OF BAND, so it never becomes a copyable date label:
+    // `asked_at` on the gap row would have fed clockLabel into `dateLabels`.
+    expect(view.block).not.toContain('the ask went out:');
+    expect(view.block).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+  });
+
+  test('(13) THE RECORD for a call: the exact citation, the inferred booking, or nothing', async () => {
+    const blockFor = async (over: Partial<PlannerDeps>): Promise<string> => {
+      const seen: { user?: string } = {};
+      await runPlanner(
+        NOW,
+        'shadow',
+        baseDeps({
+          listNudges: async () => [],
+          listObservations: async () => [inboundObs()],
+          runLoop: capturingLoop(seen),
+          ...over,
+        }),
+      );
+      return seen.user ?? '';
+    };
+
+    // EXACT — a job the manager's agent opened, citing this call.
+    expect(
+      await blockFor({
+        listCiting: async () => [{ kind: 'job', id: JOB, captureId: CAP, jobId: JOB }],
+      }),
+    ).toContain('a job was created from this capture — it cites this call');
+
+    // INFERRED — a visit booked by hand on the board after this was noticed.
+    expect(
+      await blockFor({
+        listCiting: async () => [],
+        listVisitsSince: async () => [
+          {
+            id: 'v-3',
+            jobId: 'j-3',
+            customerId: CUST,
+            createdAt: '2026-08-16T11:58:00.000Z',
+          },
+        ],
+      }),
+    ).toContain('citing no capture (not cited)');
+
+    // NOTHING — a booking for somebody else, or one that predates the notice.
+    const none = await blockFor({
+      listCiting: async () => [],
+      listVisitsSince: async () => [
+        { id: 'v-4', jobId: 'j-4', customerId: 'someone-else', createdAt: '2026-08-16T11:58:00.000Z' },
+        { id: 'v-5', jobId: 'j-5', customerId: CUST, createdAt: '2026-08-16T11:00:00.000Z' },
+      ],
+    });
+    expect(none).not.toContain('THE RECORD');
+
+    // A FAILED read degrades to no fact rather than costing the firm its tick.
+    const broken = await blockFor({
+      listCiting: async () => {
+        throw new Error('database down');
+      },
+    });
+    expect(broken).not.toContain('THE RECORD');
+    expect(broken).toContain("the caller's words");
+  });
+
+  const MANAGER = {
+    id: 'mgr-1',
+    tenant_id: 't1',
+    ref: 'sam-ortiz',
+    display_name: 'Sam',
+    tier: 'manager',
+    state: 'active',
+    seat_exempt: false,
+    host_id: 'h1',
+    sandbox_ref: 'sb-1',
+    telegram_user_id: '5501',
+    skills: [],
+    service_cities: [],
+    created_at: NOW,
+    updated_at: NOW,
+  } as unknown as Technician;
+
+  // One live tick with a manager on the roster and one inbound observation.
+  const liveSend = async (
+    decisions: unknown[],
+    over: Partial<PlannerDeps> = {},
+  ): Promise<{ summary: PlannerSummary; recorded: NudgeDecisionInput[] }> => {
+    const recorded: NudgeDecisionInput[] = [];
+    const summary = await runPlanner(
+      NOW,
+      'live',
+      baseDeps({
+        listTeam: async () => [MANAGER],
+        listNudges: async () => [],
+        listObservations: async () => [inboundObs()],
+        recordDecisions: (async (rows: NudgeDecisionInput[]) => {
+          recorded.push(...rows);
+          return rows.length;
+        }) as unknown as NonNullable<PlannerDeps['recordDecisions']>,
+        runLoop: loopReturning(decisions),
+        ...over,
+      }),
+    );
+    return { summary, recorded };
+  };
+
+  const sendTo = (over: Record<string, unknown> = {}) => ({
+    nudgeId: 'obs-1',
+    action: 'send',
+    as: 'chat',
+    to: 'sam-ortiz',
+    message: 'Nora Okafor rang about no heat upstairs and we said we would come out. Open the job?',
+    confidence: 'high',
+    reason: 'a customer asked and we agreed',
+    ...over,
+  });
+
+  test('(14) the send stamps the ask, and the marker is what makes it once', async () => {
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    const asks: Array<[string, string]> = [];
+    const { summary } = await liveSend([sendTo()], {
+      createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+      markAsked: (async (id: string, reaskAfter: string) => {
+        asks.push([id, reaskAfter]);
+        return NOW;
+      }) as unknown as NonNullable<PlannerDeps['markAsked']>,
+    });
+    expect(summary.applied).toBe(1);
+    expect(asks).toHaveLength(1);
+    expect(asks[0][0]).toBe('obs-1');
+    // THE SIGN AND THE SIZE OF THE WINDOW, both pinned. The argument is the
+    // threshold a previous stamp must be OLDER than, so it must be in the
+    // PAST: passing `nowIso` would make every row instantly askable again and
+    // delete the anti-double-text rail outright — the focused pass would text
+    // a manager at 10:00 and the 10:30 heartbeat would text them again, every
+    // half hour, forever. That change passes every other test in this file.
+    expect(Date.parse(asks[0][1]) - Date.parse(NOW)).toBe(-24 * 3_600_000);
+    expect(Date.parse(asks[0][1])).toBeLessThan(Date.parse(NOW));
+    expect(createOffice).toHaveBeenCalledWith(
+      expect.objectContaining({ via: 'chat', toRef: 'sam-ortiz', technicianId: 'mgr-1' }),
+    );
+  });
+
+  test('(14b) a SECOND send about the same call is refused, and nothing is delivered', async () => {
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    const { summary, recorded } = await liveSend([sendTo()], {
+      createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+      // null = the guarded update matched no row: somebody already asked.
+      markAsked: (async () => null) as unknown as NonNullable<PlannerDeps['markAsked']>,
+    });
+    expect(summary.applied).toBe(0);
+    expect(summary.refusedAtApply).toBe(1);
+    expect(createOffice).not.toHaveBeenCalled();
+    expect(recorded[0].outcomeDetail).toContain('within the last day');
+  });
+
+  test('(14c) a FAILED delivery clears its own stamp — or the call is un-askable forever', async () => {
+    const cleared: Array<[string, string]> = [];
+    const { summary } = await liveSend([sendTo()], {
+      markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
+      clearAsked: (async (id: string, stamp: string) => {
+        cleared.push([id, stamp]);
+      }) as unknown as NonNullable<PlannerDeps['clearAsked']>,
+      createOffice: (async () => {
+        throw new Error('office write failed');
+      }) as unknown as NonNullable<PlannerDeps['createOffice']>,
+    });
+    expect(summary.applied).toBe(0);
+    // Guarded on the stamp THIS send wrote, so it can never clear a later one.
+    expect(cleared).toEqual([['obs-1', NOW]]);
+  });
+
+  test('(14d) the assistant leg is refused AT VALIDATE, so the model can fix it the same tick', async () => {
+    // At apply time the refusal is a dead end: no message, no marker, no
+    // feedback, and the manager first hears about the call half an hour later.
+    // Refused here, it goes back through submit_plan and the model rewrites it.
+    const seen: { errors?: string[] } = {};
+    const { summary } = await liveSend([sendTo({ as: 'assistant' })], {
+      runLoop: loopReturning([sendTo({ as: 'assistant' })], seen),
+    });
+    expect(summary.applied).toBe(0);
+    expect(summary.dropped).toBe(1);
+    expect(seen.errors?.join(' ')).toContain('needs a person to READ it');
+  });
+
+  test('(14e) countsAsTheAsk cannot be the ask for a call — the customer is not on the roster', async () => {
+    // Refused by the ambiguity rail, not by the apply-time guard: an inbound
+    // observation names no technician, so the message can never BE the question
+    // this gap waits on. The apply-time arm is a belt for a hand-built decision.
+    const seen: { errors?: string[] } = {};
+    const { summary } = await liveSend([sendTo({ countsAsTheAsk: true })], {
+      runLoop: loopReturning([sendTo({ countsAsTheAsk: true })], seen),
+    });
+    expect(summary.applied).toBe(0);
+    expect(summary.dropped).toBe(1);
+    expect(seen.errors?.join(' ')).toContain('cannot be the question');
+  });
+
+  test('(14f) a focused pass\'s gap-less send is bound to its one item, so the ask is marked', async () => {
+    // `send` may name no gap, and such a message never reaches the ask marker:
+    // the manager is texted, the observation stays unasked, and the next
+    // heartbeat texts them about the same call again. In a focused pass there
+    // IS exactly one item it could be about.
+    const asks: string[] = [];
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    const summary = await runPlanner(
+      NOW,
+      'live',
+      baseDeps({
+        focus: { observationId: 'obs-1', budgetMs: 180_000 },
+        listTeam: async () => [MANAGER],
+        listNudges: async () => [],
+        listObservations: async () => [inboundObs()],
+        createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+        markAsked: (async (id: string) => {
+          asks.push(id);
+          return NOW;
+        }) as unknown as NonNullable<PlannerDeps['markAsked']>,
+        runLoop: loopReturning([
+          {
+            action: 'send',
+            as: 'chat',
+            to: 'sam-ortiz',
+            message: 'Nora Okafor rang about no heat upstairs. Open the job?',
+            confidence: 'high',
+            reason: 'r',
+          },
+        ]),
+      }),
+    );
+    expect(summary.applied).toBe(1);
+    expect(asks).toEqual(['obs-1']);
+    expect(createOffice).toHaveBeenCalledWith(expect.objectContaining({ nudgeId: 'obs-1' }));
+  });
+
+  test('(14h) telling THREE managers still reaches all three — only the first marks the ask', async () => {
+    // Gap-less sends are deliberately not deduped (user, 2026-09-02) so the
+    // planner can tell several people one thing. Binding EVERY gap-less send to
+    // the focus observation would stamp the ask on the first and refuse the
+    // rest as "already texted" — managers two and three would never hear about
+    // the call at all.
+    const second = { ...MANAGER, id: 'mgr-2', ref: 'jo-lee', display_name: 'Jo' } as unknown as Technician;
+    const third = { ...MANAGER, id: 'mgr-3', ref: 'ali-khan', display_name: 'Ali' } as unknown as Technician;
+    const asks: string[] = [];
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    const summary = await runPlanner(
+      NOW,
+      'live',
+      baseDeps({
+        focus: { observationId: 'obs-1', budgetMs: 180_000 },
+        listTeam: async () => [MANAGER, second, third],
+        listNudges: async () => [],
+        listObservations: async () => [inboundObs()],
+        createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+        markAsked: (async (id: string) => {
+          asks.push(id);
+          return NOW;
+        }) as unknown as NonNullable<PlannerDeps['markAsked']>,
+        runLoop: loopReturning(
+          ['sam-ortiz', 'jo-lee', 'ali-khan'].map((to) => ({
+            action: 'send',
+            as: 'chat',
+            to,
+            message: 'Nora Okafor rang about no heat upstairs. Open the job?',
+            confidence: 'high',
+            reason: 'r',
+          })),
+        ),
+      }),
+    );
+    expect(summary.applied).toBe(3);
+    expect(summary.refusedAtApply).toBe(0);
+    expect(createOffice).toHaveBeenCalledTimes(3);
+    // Exactly ONE of them is the ask of record.
+    expect(asks).toEqual(['obs-1']);
+    const bound = createOffice.mock.calls.filter(
+      (c) => (c[0] as { nudgeId: string | null }).nudgeId === 'obs-1',
+    );
+    expect(bound).toHaveLength(1);
+  });
+
+  test('(14i) the inferred-booking floor is CLAMPED — one old row must not scan a firm\'s history', async () => {
+    // An observation nobody answers stays open. Unclamped, its `noticed_at`
+    // would be the floor for every heartbeat thereafter, paging the firm's
+    // whole visit history forever.
+    const floors: string[] = [];
+    await runPlanner(
+      NOW,
+      'shadow',
+      baseDeps({
+        listNudges: async () => [],
+        listObservations: async () => [
+          inboundObs({ noticed_at: '2021-01-01T00:00:00.000Z' } as never),
+        ],
+        listVisitsSince: (async (_t: string, since: string) => {
+          floors.push(since);
+          return [];
+        }) as unknown as NonNullable<PlannerDeps['listVisitsSince']>,
+      }),
+    );
+    expect(floors).toHaveLength(1);
+    const days = (Date.parse(NOW) - Date.parse(floors[0])) / 86_400_000;
+    expect(days).toBeLessThanOrEqual(365);
+    expect(days).toBeGreaterThan(364);
+  });
+
+  test('(14j) a nudge-shadowed observation is not stamped as shown — it never was', async () => {
+    // One gap, one id, two stages: when an observation's own live ask exists,
+    // the NUDGE row wins and the observation is not rendered. Stamping it
+    // pinged would tell the ping loop the planner had been called about
+    // something it never saw.
+    const stamped: string[][] = [];
+    await runPlanner(
+      NOW,
+      'shadow',
+      baseDeps({
+        listNudges: async () => [nudge({ id: 'obs-1', kind: 'inbound_commitment' } as never)],
+        listObservations: async () => [inboundObs(), inboundObs({ id: 'obs-2' })],
+        stampPinged: async (ids) => {
+          stamped.push(ids);
+        },
+      }),
+    );
+    expect(stamped).toEqual([['obs-2']]);
+  });
+
+  test('(14g) `hold` does NOT consume the ask — a planner that waits can still send', async () => {
+    let asked = 0;
+    const held = await liveSend([
+      { nudgeId: 'obs-1', action: 'hold', notBefore: '2026-08-16T18:00:00.000Z', confidence: 'high', reason: 'out of hours' },
+    ], {
+      // baseDeps stubs this to null ("the row moved"), which would read as a
+      // refusal; the point of this test is an APPLIED hold.
+      setObservation: (async () =>
+        inboundObs({ not_before: '2026-08-16T18:00:00.000Z' })) as unknown as NonNullable<
+        PlannerDeps['setObservation']
+      >,
+      markAsked: (async () => {
+        asked += 1;
+        return NOW;
+      }) as unknown as NonNullable<PlannerDeps['markAsked']>,
+    });
+    expect(held.summary.applied).toBe(1);
+    expect(asked).toBe(0); // holding is not asking
+  });
+
+  test('(15) the doctrine tells the planner what a call is and what it may do about it', () => {
+    expect(PLANNER_SYSTEM).toContain('REQUESTS FROM CALLS AND EMAIL');
+    expect(PLANNER_SYSTEM).toContain('NOTHING HAS BEEN CREATED');
+    expect(PLANNER_SYSTEM).toContain('as` set to "chat"');
+    expect(PLANNER_SYSTEM).toContain('never');
+    expect(PLANNER_SYSTEM).toContain('countsAsTheAsk');
+    // The date rail, stated where the planner reads it.
+    expect(PLANNER_SYSTEM).toContain("Never name the caller's day or time");
   });
 });

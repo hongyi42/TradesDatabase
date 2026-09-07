@@ -345,17 +345,57 @@ export async function recordFieldNote(
     };
   };
 
+  // RUNG 10, AMENDED 2026-09-07 (user): an inbound capture the extractor judged
+  // NOT worth the office's attention is still the customer's words, and they
+  // belong on the customer's record — not thrown back to L1, which is the very
+  // problem (C) below was written to fix. So it is filed on their most recent
+  // job WHATEVER its status, and nothing is asked.
+  //
+  // Filing on a terminal job is inert by construction, not by luck:
+  //   - the status signal cannot move it (NOTE_SIGNAL_TRANSITIONS has no entry
+  //     for invoiced/paid/cancelled/declined),
+  //   - no visit can be minted (`mayCreate` is false for every inbound channel),
+  //   - `correspondence` is an append keyed by capture id, so it is idempotent.
+  // The link is also what makes a webhook redelivery a real duplicate
+  // (captureHasLinkedL2 reads job_captures) instead of a second extractor call.
+  const fileWithoutAsking = async (onJob: Job | null): Promise<RecordFieldNoteResult> => {
+    // No job at all — a first-time sender whose message closes itself. L1 holds
+    // the verbatim capture and there is nothing to attach it to. Such a capture
+    // has no L2 link, so a redelivery re-extracts; that costs one model call and
+    // writes nothing, which is the cheaper side of the trade against inventing a
+    // job to hang it on.
+    if (!onJob) return { status: 'captured', captureId, customerId };
+    await appendJobCorrespondence(
+      onJob.id,
+      correspondenceOf(captureId, channel, capturedAt, extracted),
+    );
+    await insertJobCapture({ tenantId, jobId: onJob.id, captureId });
+    return { status: 'matched', captureId, customerId, jobId: onJob.id };
+  };
+
   // Resolve the job: a matcher-supplied job, else the most recent non-terminal
   // job for the customer, else — for a technician channel only — a new one.
   let job: Job | null = match.jobId ? await getJob(match.jobId) : null;
+  // Held past the resolution: the filter above files on the most recent job of
+  // ANY status, which the non-terminal search has by then discarded.
+  let priorJobs: Job[] = [];
   if (!job) {
-    const jobs = await listJobsForCustomer(customerId);
-    job = [...jobs].reverse().find((candidate) => !TERMINAL_STATUSES.has(candidate.status)) ?? null;
+    priorJobs = await listJobsForCustomer(customerId);
+    job = [...priorJobs].reverse().find((candidate) => !TERMINAL_STATUSES.has(candidate.status)) ?? null;
   }
   // AMENDED 2026-09-07 (user): inbound with no open job ASKS. It used to mint
   // one here and the manager never heard of it — "so the manager can know,
   // instead of being blind to the job being created."
-  if (!isTechnicianChannel && !job) return await observeInbound(null);
+  if (!isTechnicianChannel && !job) {
+    // AMENDED again the same day, after the first version woke the planner for
+    // every email from a settled customer: the extractor decides, not the job
+    // lookup. `=== false` and not merely falsy — undefined must keep asking.
+    if (extracted.needsAttention === false && extracted.visitCommitted !== true) {
+      // listJobsForCustomer orders created_at ASCENDING, so the tail is newest.
+      return await fileWithoutAsking(priorJobs[priorJobs.length - 1] ?? null);
+    }
+    return await observeInbound(null);
+  }
   if (!job) {
     job = await createJob({
       tenantId,

@@ -24,6 +24,20 @@ describe('the extraction tool schema (rung 10)', () => {
     expect(desc).toMatch(/never true because the customer asked/i);
   });
 
+  // The MIRROR of visitCommitted, and it fails the OTHER way: absent reads as
+  // "ask", so a dropped field degrades to waking the planner for everything
+  // rather than silencing it. That is the safe direction, which is exactly why
+  // it needs a pin — the failure is invisible in production, showing up only as
+  // a planner bill nobody can explain.
+  test('needsAttention is a boolean, and false is the narrow case', () => {
+    expect(props.needsAttention).toBeDefined();
+    expect(props.needsAttention.type).toBe('boolean');
+    const desc = props.needsAttention.description ?? '';
+    // The model must be told that false is the exception, not the default.
+    expect(desc).toMatch(/false only/i);
+    expect(desc).toMatch(/doubt, true/i);
+  });
+
   test('the fields inbound depends on are all still declared', () => {
     for (const key of ['jobTitle', 'jobType', 'address', 'followUp', 'attributes']) {
       expect(props[key], `${key} feeds the observation and the correspondence entry`).toBeDefined();

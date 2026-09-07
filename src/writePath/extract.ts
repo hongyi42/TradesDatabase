@@ -24,6 +24,18 @@ export interface ExtractedFields {
   // so a caller merely ASKING must never set it — that is the difference
   // between "they want us" and "we said yes".
   visitCommitted?: boolean | null;
+  // RUNG 10, AMENDED 2026-09-07 (user): does the OFFICE need to see this at all?
+  // The gate used to be a database lookup — "has this customer a non-terminal
+  // job?" — which woke the planner for a thank-you arriving after the invoice
+  // was paid. This call is already an inference read of the same text, so it is
+  // the better judge of whether a manager's attention is worth spending.
+  //
+  // FALSE IS THE ONLY VALUE THAT SKIPS. Absent, null and true all raise the ask,
+  // so a truncated response, an older stub, or a model that ignores the field
+  // behaves exactly as the code did before it existed — the failure direction is
+  // toward a manager hearing about it, never away. (`visitCommitted` outranks
+  // this: the firm agreeing to come out IS attention, whatever this says.)
+  needsAttention?: boolean | null;
   // L3 long-tail facts that don't deserve a column: gate codes, pets, access
   // notes, spotted replacement opportunities, etc.
   attributes?: Json;
@@ -44,7 +56,10 @@ const EXTRACTION_SYSTEM =
   'replacement opportunities) in `attributes`. Set `statusSignal` only if the text ' +
   'clearly indicates the job is finished (completed) or actively underway (in_progress). ' +
   'Set `visitCommitted` true ONLY when the BUSINESS agreed to send someone out — ' +
-  'never because the caller asked, requested a quote, or it is undecided.';
+  'never because the caller asked, requested a quote, or it is undecided. ' +
+  'Set `needsAttention` false ONLY when nobody at the business needs to read, decide, or act ' +
+  'on the message — a thank-you, an acknowledgement, an auto-reply, a wrong number. ' +
+  'When in any doubt, leave it true.';
 
 // Single forced tool — the model's only move is to return this structured object.
 // EXPORTED so a test pins the schema: `visitCommitted` is what decides whether a
@@ -77,6 +92,13 @@ export const EXTRACTION_TOOL: ForcedToolSpec = {
         description:
           'True ONLY if the business agreed to send someone out. Never true because the ' +
           'customer asked for a visit, requested a quote, or it is still undecided.',
+      },
+      needsAttention: {
+        type: 'boolean',
+        description:
+          'Does anyone at the business need to read, decide, or act on this? False ONLY for a ' +
+          'message that closes itself — a thank-you, an acknowledgement of something already ' +
+          'agreed, an auto-reply, a wrong number. If there is ANY doubt, true.',
       },
       attributes: {
         type: 'object',

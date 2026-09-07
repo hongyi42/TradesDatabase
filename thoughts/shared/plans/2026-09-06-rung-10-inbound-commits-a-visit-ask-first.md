@@ -20,15 +20,29 @@ mints a job whenever the customer has no open one (`recordFieldNote.ts:275-283`)
 never hears of it. The extracted facts are then dropped (the only home is the technician's trip
 report), and on an open job with no trip the capture links to nothing (`rawCaptures.ts:177-182`).
 Nothing lets inbound create a *visit*. The user's direction: the extractor is the **planner's
-eye**; the moment it sees a request to create something — a new job, or a visit the firm agreed
+eye**; when it sees something the office needs to decide — a new job, or a visit the firm agreed
 to — the planner is called for that one item and decides; the manager's agent creates it on a
 yes; everything created cites the call; what the caller said stays on the job, labelled.
+
+**CORRECTED 2026-09-07 *(user)*.** The first build of this read "the moment it sees a request to
+create something", but the code it describes never consulted the message at all: the ask was
+gated on a database lookup — *has this customer a non-terminal job?* — so a thank-you arriving
+after the invoice was `paid` woke the planner exactly as a new enquiry did. The judgment now sits
+where the user put it, on the extractor (`needsAttention`), which is already an inference read of
+the same text. Only an explicit `false` skips; absent, null and `true` all still ask, so any
+model failure falls toward a manager hearing about it. A skipped capture is filed as
+correspondence on the customer's most recent job whatever its status — never abandoned in L1,
+which is the problem (C) exists to fix.
 
 ```
 call / email ─► L1 ─► extractor ─► matched customer? ──no──► unlinked_call / silence  (rung 10b)
                                         │ yes
-                     open job on file? ──no──► OBSERVATION inbound_new_job ──────────────────┐
-                                        │ yes           (visitCommitted ⇒ kind inbound_commitment) │
+                     open job on file? ──no──► needsAttention false, and not committed?
+                                        │ yes            │ yes ─► filed on the LAST job (any status), NO ask
+                                        │                │ no
+                                        │                ▼
+                                        │       OBSERVATION inbound_new_job ────────────────────┐
+                                        │       (visitCommitted ⇒ kind inbound_commitment)      │
                      attaches to a LIVE visit? ─yes─► visit_notes link ─┐                       │
                                         │ no                            ├─► correspondence on   │
                      job_captures link (A) ─────────────────────────────┘   the job (C)         │
@@ -48,10 +62,29 @@ call / email ─► L1 ─► extractor ─► matched customer? ──no──�
   a job or reaches the schedule without a manager's yes. **Widened 2026-09-07 *(user)*: a NEW job
   asks too** — "so the manager can know, instead of being blind to the job being created."
   Accepted consequences: an unanswered ask means no job until answered (the observation stays open;
-  the planner re-asks by its own doctrine); a work email that is not a request, on a customer with
-  no open job, raises one too and costs one focused pass — the planner dismisses it.
-- **The commitment judgment is one extractor field** *(user)* — `visitCommitted`. "New job" is
-  code's own fact (no non-terminal job on file). Zero extra model calls.
+  the planner re-asks by its own doctrine). **AMENDED 2026-09-07 *(user)*:** this originally
+  accepted that "a work email that is not a request, on a customer with no open job, raises one
+  too and costs one focused pass — the planner dismisses it". The user rejected paying upper
+  management to read a thank-you: *"the extractor also runs on inference. I think it is
+  intelligent enough to know when something is important enough for the planner to see."* See the
+  next bullet.
+- **The judgment is TWO extractor fields, no extra model calls** *(user)* — `visitCommitted`
+  (did the firm agree to come out?) and, added 2026-09-07, `needsAttention` (does anyone at the
+  business need to read, decide, or act on this?). Both ride the single forced-tool call the
+  extractor already makes on every capture, so the filter is free.
+  - **"New job" is no longer code's own fact.** It was: *no non-terminal job on file* — which is
+    a lookup, not a reading, and fired on any message from a customer whose jobs were all
+    `paid` / `cancelled` / `declined`.
+  - **Only `needsAttention === false` skips**, and only when `visitCommitted` is not true.
+    Absent, null and `true` all ask, so a truncated response or a model that ignores the field
+    behaves exactly as the code did before it existed — the failure direction is toward a manager
+    hearing about it. Pinned three ways in `recordFieldNote.test.ts` (12), because
+    `!needsAttention` in place of `=== false` passes the false case and silently deletes the rail.
+  - **A skipped capture is still filed**, as correspondence + a `job_captures` link on the
+    customer's most recent job whatever its status — inert there by construction
+    (`NOTE_SIGNAL_TRANSITIONS` has no entry for a terminal status, `mayCreate` is false for every
+    inbound channel, the append is idempotent per capture id). Only a sender with no jobs at all
+    stops at L1.
 - **One observation per capture; the kind names what code could not decide** —
   `inbound_new_job` (no open job) or `inbound_commitment` (the firm agreed to come out; `jobId`
   absent means a job would be opened too). A committed capture stops after identity **and after

@@ -13,7 +13,7 @@ interface GmailMessagePayload {
 }
 
 // Maps a Gmail "new message" trigger payload to the connector-agnostic envelope.
-// Same rawText shape as the existing Gmail pull (ingest.ts:89). Throws if the
+// Same rawText shape the webhook normalizer builds (src/email/format.ts). Throws if the
 // message id is absent — without it there is no dedup key, so the capture is unsafe.
 export const gmailNewMessageNormalizer: Normalizer = (payload: unknown): InboundEnvelope => {
   const data = (payload ?? {}) as GmailMessagePayload;
@@ -29,9 +29,9 @@ export const gmailNewMessageNormalizer: Normalizer = (payload: unknown): Inbound
     rawText: formatEmailRawText({ from, subject, body }), // L1 storage form (headers + body)
     externalId: messageId,
     occurredAt: data.message_timestamp,
-    // Keep the CLEAN body here too — the webhook feeds {from,subject,body} to the
-    // classifier, which must match the Gmail pull path's input (NOT the prefixed
-    // rawText), so the same email is judged identically regardless of route.
+    // Keep the CLEAN body here too — the classifier is fed {from,subject,body},
+    // NEVER the prefixed rawText: the storage form's header lines would be
+    // judged as part of the message.
     sourceMeta: { from, subject, body },
     requiresWorkClassifier: true,
   };

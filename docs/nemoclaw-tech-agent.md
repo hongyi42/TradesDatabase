@@ -203,6 +203,17 @@ the test is now PLACEMENT:
 - `cancel_job` never one-shots — terminal, always stage→confirm.
 - `add_technician_seat` is two-step (permanent ref + a seat — still two-step with
   `seatExempt:true`, where no seat burns but the ref mint stays permanent).
+- **Answering the office about a call or an email (rung 10, AGENTS.md rule 7).** When the office
+  texts that a customer got in touch and asks whether to open the job — or to open one and send
+  somebody because the firm agreed to come out — the agent takes the customer and the work from
+  that message, `find_customer`s the id, and asks the manager. On a yes: `book_visit` when
+  somebody is being sent (jobId if the office named one, else customerId + the work as the title,
+  and NO date or times — it books untimed AND mints the job in one call), or the new `open_job`
+  when only the job is wanted (a quote, an estimate, work to schedule later). Both refuse when the
+  customer already has THAT work on file (a title naming an open job), with the list — for a
+  visit, re-call `book_visit` with the matching jobId; `open_job` takes no jobId, so act on the
+  existing work directly. `forceNewJob:true` only for genuinely different work. On a no: `inform_team_lead` in one
+  sentence. **Never create it before they answer** — nothing is on the record yet, deliberately.
 
 `book_visit` has NO default times (2026-07-18, user decision — the 2h job-length default was
 removed after it overrode a stated "12–1pm" in the pilot): `date`, `startTime` and `endTime`
@@ -255,7 +266,8 @@ date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). Array
   `agent_action`) are manager-only, even for their author. Facts a note already wrote onto the
   job/customer record (e.g. a status change) are not auto-reverted by a retraction.
 - **Retraction blast radius (2026-07-14):** the retraction stage response carries
-  `willAlsoRemove` — the server-computed list of standing facts and visits that fold with the
+  `willAlsoRemove` — the server-computed list of standing facts, visits AND caller correspondence
+  (what a customer said on a call or email, kept on the job — rung 10) that fold with the
   capture. The agent must show that list as part of the confirmation. The confirm response
   echoes the final list as `alsoRemoved` plus a `restoreHint` when facts folded; the agent then
   offers to restore still-true facts by **staging** `record_standing_fact` (the preview is the
@@ -274,7 +286,7 @@ date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). Array
   visits), `undo_run` (restore the latest run from its ledger trail) and `set_visit_locks`
   (pin a visit against them) are DELETED, along with the board's proposal view, the
   `?startapp=freeze` deep link and the §0h AGENTS.md block. The manager makes the schedule;
-  route optimization returns in rung 10 as an ADVISORY tool the manager's agent may choose
+  route optimization returns in rung 11 as an ADVISORY tool the manager's agent may choose
   to call. Reasoning and the full deletion footprint: `docs/engineering-memory.md` §6a/§8.
 - **The promise ladder and the stored window — RETIRED 2026-09-05 (rung 9a).** `set_promise`
   is DELETED, along with the `promise_level` / `promised_day` columns, `book_visit`'s
@@ -294,23 +306,24 @@ date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). Array
   - Reasoning and the full footprint: `docs/engineering-memory.md` §6a, and
     `thoughts/shared/plans/2026-09-05-the-rails-come-out.md`.
 
-## 6. Email ingestion (Phase 4 — separate from the chat channel)
-A second input channel pulls the technician's email and feeds **only work-related** mail through the
-same write-path (`channel: 'email'`). This does **not** require NemoClaw — `ingestEmail`
-([src/email/ingest.ts](../src/email/ingest.ts)) calls Gmail directly via `googleapis`:
+## 6. Email ingestion — a WEBHOOK, not a pull (rewritten 2026-09-07, rung 10)
+A second input channel feeds **only work-related** mail through the same write-path
+(`channel: 'email'`). It arrives as a **Composio Gmail trigger**, delivered to
+[src/inbound/webhook.ts](../src/inbound/webhook.ts) — push, not poll, and the only email path
+that has ever run in the pilot.
 
-> **Note — under Option B (§7) this fetcher is superseded by Composio's Gmail trigger.** The per-tenant
-> `googleapis` creds below are replaced by Composio-managed OAuth; the **classifier + write-path are
-> unchanged**. Keep the direct creds only for the single-mailbox dev/test path.
-- Provide Gmail OAuth2 creds in env: `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`
-  (or swap in a Workspace service account with domain-wide delegation).
+The direct-`googleapis` puller (`src/email/ingest.ts`) was **deleted in rung 10**. It had no
+production caller: nothing scheduled it, nothing imported it outside its own test, and its
+overlapping `newer_than:7d` window had no idempotency at all. Its env (`GMAIL_CLIENT_ID`,
+`GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`) and the `googleapis` dependency went with it.
 - A classifier ([src/email/classify.ts](../src/email/classify.ts)) — GLM-5.2 by default,
-  `MODEL_PROVIDER`-switchable — drops personal/marketing mail before anything is written; only work
-  mail reaches L1/L2.
-- Run it on a schedule (cron/worker), or expose it as another connector on the agent.
-- **Before enabling the cron, add idempotency:** `ingestEmail` does not dedup by message id and the
-  default fetcher uses an overlapping `newer_than:7d` window, so repeated runs would create duplicate
-  L1/L2 rows. Advance a watermark or skip already-seen message ids first.
+  `MODEL_PROVIDER`-switchable — drops personal/marketing mail **before the L1 insert**, never
+  after: L1 is append-only, so a misrouted row is retained permanently (CLAUDE.md's standing rule).
+- The webhook dedups on the provider's message id (`external_id`), so a redelivery heals a
+  partial write rather than duplicating one.
+- What happens after L1 is rung 10's business: a matched customer's mail is pinned to their open
+  job and kept on it, or it raises an observation and a manager is asked. It never creates a job
+  by itself.
 
 ## 6b. Inbound phone calls (intent router — separate from the chat channel)
 A third input channel captures inbound phone calls. The line forwards to a **receptionist** (a human,
@@ -319,8 +332,16 @@ via `call_numbers.forward_to`) who has **no scheduling tools**, so the async cal
 channel: recording → STT → redact → **GLM-5.2 intent router** ([src/calls/classifyCall.ts](../src/calls/classifyCall.ts)).
 The router is **multi-label** — one call can be `[new_job, cancel]` and each is handled:
 
-- **`new_job`** → structures L2 (a job that surfaces in the board's unscheduled bucket); a new/unknown
-  caller still opens the `unlinked_call` review to link/create.
+- **`new_job`** → runs the extractor. ⚠ **What that means changed in rung 10 (2026-09-07):** it no
+  longer mints a job. For a caller we know, the words are pinned to their open job and kept on it;
+  with no open job — or when the firm agreed to come out and no trip carries it — an OBSERVATION is
+  raised and a manager is asked. **Nothing reaches the board's unscheduled bucket until somebody
+  says yes.** A new/unknown caller still opens the `unlinked_call` review to link/create (rung 10b).
+  - **KNOWN GAP:** only `new_job` runs the extractor at all, so a committed call about work already
+    on file ("we'll come out Tuesday to finish it") is classified `reschedule`/`other`, stops at L1,
+    and raises no `inbound_commitment`. Widening which intents structure was deliberately NOT part
+    of rung 10 — the 2026-08-06 router plan keeps the extractor off cancel/complaint calls. Email
+    has no such gate: every work email runs it.
 - **`reschedule` / `cancel` / `question` / `complaint`** → **L1 only** (the transcript is always kept as
   the call log), plus a `call_action` review that is **pushed to the tenant's managers** — these are
   **NEVER auto-executed** (a receptionist can't act, the worker's read is unverified, and move/cancel are

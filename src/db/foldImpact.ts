@@ -1,6 +1,7 @@
 import { getClient } from './client.js';
 import { participantIdsOf } from './visits.js';
 import { factEntriesCiting } from './standingFacts.js';
+import { correspondenceEntriesCiting } from './jobs.js';
 
 // What disappears from default views if a given capture is retracted: standing
 // facts (customer/job attributes bundle-citing it as evidence) and visits whose
@@ -35,12 +36,29 @@ export interface FoldedVisit {
   technicianIds: string[];
 }
 
+// RUNG 10 ADDED A THIRD THING THAT DISAPPEARS. `attributes.correspondence` on a
+// job is what a caller said, one entry per inbound capture, and src/db/context.ts
+// drops the entries whose capture is retracted — exactly as it drops a standing
+// fact. A preview that did not name them would tell the manager "nothing else
+// goes" and then silently remove the customer's own words from the job, which is
+// the failure this whole module exists to prevent.
+export interface FoldedCorrespondence {
+  jobId: string;
+  jobLabel: string;
+  channel: string;
+  at: string;
+  /** What the caller asked us to do next, when the extractor found one. */
+  followUp: string | null;
+}
+
 export interface FoldImpact {
   facts: FoldedFact[];
   /** Trips that DISAPPEAR with the capture — it is their `source_capture_id`. */
   visits: FoldedVisit[];
   /** Trips that SURVIVE the retraction and merely lose this note as evidence. */
   visitsLosingEvidence: FoldedVisit[];
+  /** What this caller said, kept on a job, that stops being shown (rung 10). */
+  correspondence: FoldedCorrespondence[];
 }
 
 // PostgREST caps every response at db-max-rows (1000 in supabase/config.toml
@@ -73,7 +91,7 @@ async function fetchAll<T>(
 // revisit with a JSONB path index + RPC if tenants outgrow it.
 export async function findFoldImpact(tenantId: string, captureId: string): Promise<FoldImpact> {
   const client = getClient();
-  const [customers, jobs, visits] = await Promise.all([
+  const [customers, jobs, visits, citingVisits] = await Promise.all([
     fetchAll('customers', (from, to) =>
       client.from('customers').select('id, name, attributes').eq('tenant_id', tenantId).range(from, to),
     ),
@@ -93,10 +111,29 @@ export async function findFoldImpact(tenantId: string, captureId: string): Promi
       client
         .from('visit_notes')
         .select(
-          'visit_id, visits!inner(id,tenant_id,job_id,starts_at,source_capture_id,visit_participants(technician_id,created_at,tenant_id))',
+          'visit_id, visits!inner(id,tenant_id,job_id,starts_at,status,source_capture_id,visit_participants(technician_id,created_at,tenant_id))',
         )
         .eq('tenant_id', tenantId)
         .eq('capture_id', captureId)
+        .range(from, to),
+    ),
+    // THE SECOND SOURCE, added in rung 10 because the first stopped being a
+    // superset. Until `book_visit` could cite a call, the ONLY writer of
+    // `visits.source_capture_id` was attachNote's step 3, which links the same
+    // visit through visit_notes in the same call — so walking the links found
+    // everything the fold removes. `book_visit` now stamps a visit it MINTS
+    // from a manager's yes, and that visit has no visit_notes row at all: the
+    // preview would have said "nothing else goes" and the fold would then have
+    // dropped a real appointment out of every briefing. Reading the column
+    // directly restores the superset whatever writes it next.
+    fetchAll('visits', (from, to) =>
+      client
+        .from('visits')
+        .select(
+          'id,tenant_id,job_id,starts_at,status,source_capture_id,visit_participants(technician_id,created_at,tenant_id)',
+        )
+        .eq('tenant_id', tenantId)
+        .eq('source_capture_id', captureId)
         .range(from, to),
     ),
   ]);
@@ -123,30 +160,55 @@ export async function findFoldImpact(tenantId: string, captureId: string): Promi
       })),
     ),
   ];
-  const linked = visits
-    // !inner guarantees the embed, but the FK is ID-ONLY: re-check the tenant
-    // before surfacing anything about the trip (the DETAIL_SELECT doctrine).
-    .filter((n) => n.visits && n.visits.tenant_id === tenantId)
-    .map((n) => ({
-      folded: {
-        visitId: n.visits.id,
-        jobId: n.visits.job_id,
-        // The trip's own time, which is what "scheduled" meant all along — the
-        // old column of that name was never written by anything.
-        scheduledAt: n.visits.starts_at,
-        // EVERY person on the trip (rung 9c) — the preview names who loses
-        // evidence, and a crew loses it together.
-        technicianIds: participantIdsOf(n.visits, tenantId),
-      },
-      // Mirrors src/db/context.ts's fold predicate exactly. Only attachNote's
-      // step 3 sets this (book_visit never does), and every visit it creates is
-      // linked in the same call — so walking visit_notes is a SUPERSET of the
-      // rows the fold removes, never a subset.
-      disappears: n.visits.source_capture_id === captureId,
-    }));
+  // The two sources, deduped by visit id: a trip reached through its note, and a
+  // trip that cites the capture directly. A visit in BOTH is one visit.
+  const byId = new Map<string, (typeof visits)[number]['visits']>();
+  // !inner guarantees the embed, but the FK is ID-ONLY: re-check the tenant
+  // before surfacing anything about the trip (the DETAIL_SELECT doctrine).
+  for (const n of visits) if (n.visits && n.visits.tenant_id === tenantId) byId.set(n.visits.id, n.visits);
+  for (const v of citingVisits) if (v.tenant_id === tenantId) byId.set(v.id, v);
+  const linked = [...byId.values()].map((v) => ({
+    folded: {
+      visitId: v.id,
+      jobId: v.job_id,
+      // The trip's own time, which is what "scheduled" meant all along — the
+      // old column of that name was never written by anything.
+      scheduledAt: v.starts_at,
+      // EVERY person on the trip (rung 9c) — the preview names who loses
+      // evidence, and a crew loses it together.
+      technicianIds: participantIdsOf(v, tenantId),
+    },
+    // WHAT "DISAPPEARS" HAS TO MEAN: the reader actually stops showing it.
+    // `src/db/context.ts` folds `recentVisits` — past work evidence — and does
+    // NOT fold `upcomingVisits`, so a CONFIRMED trip keeps its place on the
+    // schedule whatever is retracted. That is the rung-9b rule stated out loud:
+    // never tell anyone a booked visit is going away.
+    //
+    // The status test costs nothing on the old path and is what makes the new
+    // one truthful: attachNote's step 3 mints its visit `completed` (and the
+    // happened-flip completes any trip a note owns), so a note's own trip is
+    // never `confirmed` — while a visit `book_visit` minted from a manager's
+    // yes always is. Naming that one under `visits` would promise a
+    // disappearance that does not happen; it loses this note as evidence.
+    disappears: v.source_capture_id === captureId && v.status !== 'confirmed',
+  }));
+  // Off the SAME jobs scan the facts arm uses — no extra round trip, and the
+  // two can never disagree about which jobs were looked at.
+  const correspondence: FoldedCorrespondence[] = jobs.flatMap((j) =>
+    correspondenceEntriesCiting(j.attributes, captureId).map((e) => ({
+      jobId: j.id,
+      // Same `||` fallback as the facts arm: a blank title must not attribute
+      // the entry to a nameless row.
+      jobLabel: j.title?.trim() || j.job_type?.trim() || 'job',
+      channel: e.channel,
+      at: e.at,
+      followUp: e.followUp ?? null,
+    })),
+  );
   return {
     facts,
     visits: linked.filter((v) => v.disappears).map((v) => v.folded),
     visitsLosingEvidence: linked.filter((v) => !v.disappears).map((v) => v.folded),
+    correspondence,
   };
 }

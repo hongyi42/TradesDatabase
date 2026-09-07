@@ -5,7 +5,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { getClient } from '../db/client.js';
 import { appendRawCapture } from '../db/rawCaptures.js';
 import { createCustomer } from '../db/customers.js';
-import { createJob } from '../db/jobs.js';
+import { appendJobCorrespondence, createJob, insertJobCapture } from '../db/jobs.js';
 import { createVisit, insertVisitNote, updateVisitStatus } from '../db/visits.js';
 import { upsertJobTypeDuration } from '../db/jobTypeDurations.js';
 import {
@@ -22,6 +22,8 @@ import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
 import { createTenant, setTenantSeats } from '../db/tenants.js';
 import { PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
+import { createObservation } from '../db/observations.js';
+import type { Json } from '../db/database.types.js';
 import { logWebRequests } from '../db/webRequests.js';
 import {
   attributeAnswerToGap,
@@ -1656,10 +1658,10 @@ describe('retract_capture + retraction folding', () => {
       rawText: 'uncited note',
     });
     const staged = await call('retract_capture', { captureId: cap.id, reason: 'noise' });
-    expect(staged.data.willAlsoRemove).toEqual({ facts: [], visits: [] });
+    expect(staged.data.willAlsoRemove).toEqual({ facts: [], visits: [], correspondence: [] });
     const done = await call('retract_capture', { confirmId: staged.data.confirmId });
     expect(done.data.status).toBe('retracted');
-    expect(done.data.alsoRemoved).toEqual({ facts: [], visits: [] });
+    expect(done.data.alsoRemoved).toEqual({ facts: [], visits: [], correspondence: [] });
     expect(done.data.restoreHint).toBeUndefined();
   });
 
@@ -2114,7 +2116,10 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('inform_team_lead'); // the planner's inbox (build 5.5)
       expect(mgrTools).toContain('ask_team_lead'); // the Q&A desk (build 5.5 Phase 2)
       expect(mgrTools).toContain('inform_teammate'); // seat-to-seat informs (build 5.5 Phase 3)
-      expect(mgrTools).toHaveLength(41);
+      // RUNG 10 added `open_job`: until it existed there was no way to open a
+      // job without also putting a visit on the calendar.
+      expect(mgrTools).toContain('open_job');
+      expect(mgrTools).toHaveLength(42);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -2517,7 +2522,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(41); // base minus get_schedule + 25 admin
+        expect(mgrTools).toHaveLength(42); // base minus get_schedule + 26 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -7902,5 +7907,588 @@ describe('record_field_note — an answer remembers its question', () => {
         properties?: { confirmed?: { description?: string } };
       })?.properties?.confirmed?.description ?? '';
     expect(confirmedDesc).toMatch(/ALONE \(no confirmId\)/);
+  });
+});
+
+// ---- Rung 10: the job link, and the reserved key ---------------------------
+describe('rung 10 — job links and correspondence', () => {
+  test('a retraction FOLLOWS its target onto the JOB, not only onto the trip', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Job Link Cust', phone: '555-7788' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'leaking tap' });
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp', // the calling identity — retraction is the author's
+      rawText: 'linked straight to the job',
+    });
+    await insertJobCapture({ tenantId, jobId: job.id, captureId: cap.id });
+
+    const staged = await call('retract_capture', { captureId: cap.id, reason: 'wrong job' });
+    expect(staged.isError).toBe(false);
+    const done = await call('retract_capture', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('retracted');
+
+    // Both rows on the job: the target and the retraction that neutralizes it.
+    // Without this the retraction sits on the record with no connection to the
+    // thing it cancels — invisible to every reader that walks the link.
+    const links = await pg.query<{ capture_id: string }>(
+      'select capture_id from job_captures where job_id = $1',
+      [job.id],
+    );
+    expect(links.rows.map((r) => r.capture_id).sort()).toEqual(
+      [cap.id, done.data.retractionId as string].sort(),
+    );
+  });
+
+  test('`correspondence` is RESERVED — record_standing_fact refuses the key', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Reserved Cust', phone: '555-7799' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'reserved key job' });
+    const refused = await call('record_standing_fact', {
+      jobId: job.id,
+      key: 'Correspondence', // normalizes to the reserved key — the guard runs after
+      value: 'nope',
+    });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('reserved');
+    // A neighbouring key is untouched — the refusal is the key, not the tool.
+    const ok = await call('record_standing_fact', { jobId: job.id, key: 'symptom', value: 'drips' });
+    expect(ok.isError).toBe(false);
+  });
+
+  test('the retraction PREVIEW names the correspondence it will silence', async () => {
+    // The preview and the fold must never drift: src/db/context.ts drops a
+    // retracted entry from every typed read, so a willAlsoRemove that did not
+    // list it would tell the manager "nothing else goes" and then silently
+    // remove the customer's own words. That drift is the exact failure
+    // foldImpact.ts was written for (a live retraction, 2026-07-14).
+    const customer = await createCustomer({ tenantId, name: 'Preview Cust', phone: '555-7811' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'preview job' });
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note', // authored by the caller, so it can self-retract
+      technicianRef: 'tech-mcp',
+      rawText: 'the tap still drips',
+    });
+    await appendJobCorrespondence(job.id, {
+      captureId: cap.id,
+      channel: 'email',
+      at: '2026-09-07T10:00:00.000Z',
+      followUp: 'bring a washer',
+    });
+
+    const staged = await call('retract_capture', { captureId: cap.id, reason: 'wrong job' });
+    expect(staged.isError).toBe(false);
+    expect(staged.data.willAlsoRemove.correspondence).toEqual([
+      {
+        jobId: job.id,
+        jobLabel: 'preview job',
+        channel: 'email',
+        at: '2026-09-07T10:00:00.000Z',
+        followUp: 'bring a washer',
+      },
+    ]);
+    expect(staged.data.note).toContain('willAlsoRemove.correspondence');
+
+    // PARITY: what the preview promised is what the fold actually does.
+    const done = await call('retract_capture', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('retracted');
+    const ctx = await call('get_customer_context', { customerId: customer.id });
+    const folded = ctx.data.jobs.find((j: { id: string }) => j.id === job.id);
+    expect(folded.attributes.correspondence).toBeUndefined();
+  });
+
+  test('a token staged BEFORE this deploy cannot land on the reserved key either', async () => {
+    // Confirm re-reads `detail.facts` off the staged item and re-validates
+    // nothing, so the stage-side refusal alone leaves one destructive path open
+    // across the deploy boundary: a scalar fact bundle replacing the whole
+    // correspondence array, with no undo.
+    const customer = await createCustomer({ tenantId, name: 'Legacy Token', phone: '555-7822' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'legacy token job' });
+    await appendJobCorrespondence(job.id, {
+      captureId: (
+        await appendRawCapture({
+          tenantId,
+          channel: 'email',
+          technicianRef: 'connector:gmail',
+          rawText: 'keep me',
+        })
+      ).id,
+      channel: 'email',
+      at: '2026-09-07T11:00:00.000Z',
+    });
+    // The token carries the CURRENT value as `previousValue`, exactly as a real
+    // stage would — otherwise the pre-flight conflict scan refuses it first and
+    // the guard under test is never reached.
+    const { rows: before } = await pg.query<{ attributes: { correspondence: Json[] } }>(
+      'select attributes from jobs where id = $1',
+      [job.id],
+    );
+    const detail = {
+      target: 'job',
+      targetId: job.id,
+      customerId: customer.id,
+      targetName: 'legacy token job',
+      facts: [
+        {
+          key: 'correspondence',
+          value: 'clobber',
+          previousValue: before[0].attributes.correspondence,
+        },
+      ],
+      stagedAt: new Date().toISOString(),
+    };
+    const token = await upsertOpenReviewItem({
+      tenantId,
+      kind: 'pending_standing_fact',
+      subjectRef: 'tech-mcp', // the calling identity — the token lookup is guarded on it
+      detail,
+    });
+    // upsertOpenReviewItem is an UPSERT on (tenant, kind, subjectRef): another
+    // test in this file may already hold an open token for this person, in
+    // which case the row that comes back is THEIRS. Write the payload straight
+    // in so this test stages what it means to stage, whatever ran before it.
+    await pg.query('update review_items set detail = $1::jsonb where id = $2', [
+      JSON.stringify(detail),
+      token.id,
+    ]);
+    const refused = await call('record_standing_fact', { confirmId: token.id });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('reserved');
+    // The array is untouched — nothing was overwritten.
+    const { rows } = await pg.query<{ attributes: { correspondence?: unknown[] } }>(
+      'select attributes from jobs where id = $1',
+      [job.id],
+    );
+    expect(rows[0].attributes.correspondence).toHaveLength(1);
+    // AND NOTHING LANDED. The refusal has to come before the L1 evidence
+    // append: a throw after it would strand a permanent orphan capture (L1 has
+    // no delete path) and leave the token open, telling the agent to retry with
+    // the same confirmId to converge — which a reserved key never can.
+    const { rows: orphan } = await pg.query<{ n: string }>(
+      'select count(*)::int as n from raw_captures where external_id = $1',
+      [`fact:${token.id}`],
+    );
+    expect(Number(orphan[0].n)).toBe(0);
+    const { rows: tok } = await pg.query<{ status: string }>(
+      'select status from review_items where id = $1',
+      [token.id],
+    );
+    expect(tok[0].status).toBe('dismissed'); // the token dies rather than looping
+  });
+
+  test('a RETRACTED correspondence entry disappears from the customer’s context', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Folded Corr', phone: '555-7801' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'folded correspondence' });
+    const kept = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      technicianRef: 'connector:gmail',
+      rawText: 'the tap still drips',
+    });
+    const gone = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      technicianRef: 'connector:gmail',
+      rawText: 'ignore my last message',
+    });
+    await appendJobCorrespondence(job.id, {
+      captureId: kept.id,
+      channel: 'email',
+      at: new Date().toISOString(),
+      followUp: 'bring a washer',
+    });
+    await appendJobCorrespondence(job.id, {
+      captureId: gone.id,
+      channel: 'email',
+      at: new Date().toISOString(),
+      followUp: 'cancel the washer',
+    });
+
+    // A connector capture has no technician author, so a MANAGER retracts it.
+    const { client: mgrClient, callWith: callMgr } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const staged = await callMgr('retract_capture', { captureId: gone.id, reason: 'sent in error' });
+      expect(staged.isError).toBe(false);
+      const done = await callMgr('retract_capture', { confirmId: staged.data.confirmId });
+      expect(done.data.status).toBe('retracted');
+    } finally {
+      await mgrClient.close();
+    }
+
+    const ctx = await call('get_customer_context', { customerId: customer.id });
+    const folded = ctx.data.jobs.find((j: { id: string }) => j.id === job.id);
+    const entries = folded.attributes.correspondence as Array<{ captureId: string }>;
+    // The retracted email stops speaking; the other one still does. An inbound
+    // capture is never stamped with a customer_id (identity resolves after L1),
+    // so this only works because the fold looks the entries' own evidence up.
+    expect(entries.map((e) => e.captureId)).toEqual([kept.id]);
+
+    // AND get_job MUST AGREE. The raw-row tool folds independently, and a
+    // reader that still showed the retracted entry would let the agent quote
+    // words a manager has withdrawn — the drift the fold exists to prevent, and
+    // the one the retraction preview now promises does not happen.
+    const raw = await call('get_job', { jobId: job.id });
+    const rawEntries = raw.data.attributes.correspondence as Array<{ captureId: string }>;
+    expect(rawEntries.map((e) => e.captureId)).toEqual([kept.id]);
+  });
+});
+
+// ---- Rung 10 Phase 3: what the manager's agent creates cites the call -------
+describe('rung 10 — open_job, and the citation on what a yes creates', () => {
+  // The office texted a manager about a call; they said yes; their agent acts.
+  // Nothing in that chat carries the call's id — the manager types "yes" — so
+  // the link is re-derived from the one open ask this customer has waiting.
+  const askFor = async (
+    customerId: string,
+    over: {
+      jobId?: string;
+      followUp?: string;
+      attributes?: Record<string, Json>;
+      channel?: 'phone_call' | 'email';
+      capturedAt?: string;
+      /** null = the office never texted anybody about this call. */
+      askedAt?: string | null;
+    } = {},
+  ) => {
+    const channel = over.channel ?? 'phone_call';
+    const capture = await appendRawCapture({
+      tenantId,
+      channel,
+      technicianRef: channel === 'email' ? 'connector:gmail' : 'phone-line',
+      rawText: 'my heater is dead, can someone come out',
+    });
+    const row = await createObservation({
+      tenantId,
+      kind: 'inbound_new_job',
+      subjectRef: capture.id,
+      technicianId: null,
+      context: {
+        captureId: capture.id,
+        customerId,
+        channel,
+        capturedAt: over.capturedAt ?? '2026-09-07T09:00:00.000Z',
+        ...(over.jobId ? { jobId: over.jobId } : {}),
+        asked: {
+          jobTitle: 'no heat upstairs',
+          // Carried for the PLANNER's eyes and never copied onto the job — the
+          // report and the bill stay technician-only.
+          workPerformed: 'caller says the pilot is out',
+          followUp: over.followUp ?? 'send someone out',
+          attributes: over.attributes ?? { gateCode: '4412' },
+        },
+        words: 'my heater is dead, can someone come out',
+      },
+    });
+    if (!row) throw new Error('fixture observation was deduped');
+    // THE OFFICE ACTUALLY TEXTED SOMEBODY. Only an ask a manager was told about
+    // can be what their agent is answering; `asked_at` is that fact, and
+    // without it nothing here is citable.
+    const askedAt = over.askedAt === undefined ? new Date().toISOString() : over.askedAt;
+    if (askedAt) {
+      await pg.query('update observations set asked_at = $1 where id = $2', [askedAt, row.id]);
+    }
+    return { capture, observation: row };
+  };
+  const sourceOf = async (table: 'jobs' | 'visits', id: string) => {
+    const { rows } = await pg.query<{ source_capture_id: string | null }>(
+      `select source_capture_id from ${table} where id = $1`,
+      [id],
+    );
+    return rows[0].source_capture_id;
+  };
+
+  test('(16) a booking off a call: the job AND the visit cite it, and it carries the words', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Citing Cora', phone: '555-8801' });
+    const { capture, observation } = await askFor(customer.id);
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const booked = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'no heat upstairs',
+      });
+      expect(booked.isError).toBe(false);
+      expect(booked.data.untimed).toBe(true);
+      // BOTH rows cite the call: "why is this on the calendar" has an answer.
+      expect(await sourceOf('jobs', booked.data.jobId)).toBe(capture.id);
+      expect(await sourceOf('visits', booked.data.visitId)).toBe(capture.id);
+      // And the caller's own words land on the job it opened.
+      const { rows } = await pg.query<{ attributes: { correspondence?: Array<Record<string, unknown>> } }>(
+        'select attributes from jobs where id = $1',
+        [booked.data.jobId],
+      );
+      const entries = rows[0].attributes.correspondence ?? [];
+      expect(entries).toHaveLength(1);
+      expect(entries[0].captureId).toBe(capture.id);
+      expect(entries[0].followUp).toBe('send someone out');
+      expect(entries[0].facts).toEqual({ gateCode: '4412' });
+      expect(JSON.stringify(entries[0])).not.toContain('pilot is out'); // never the report
+      // THE OBSERVATION IS UNTOUCHED. Closing it is the planner's, on the
+      // citation this just left behind — the record is planner-kept.
+      const obs = await pg.query<{ status: string }>(
+        'select status from observations where id = $1',
+        [observation.id],
+      );
+      expect(obs.rows[0].status).toBe('open');
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('(17) zero or TWO open asks ⇒ no citation, and the booking is otherwise unchanged', async () => {
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // ZERO — the ordinary booking nobody phoned in about.
+      const quiet = await createCustomer({ tenantId, name: 'Quiet Quinn', phone: '555-8802' });
+      const plain = await callWith('book_visit', { customerId: quiet.id, title: 'annual service' });
+      expect(plain.isError).toBe(false);
+      expect(await sourceOf('jobs', plain.data.jobId)).toBeNull();
+      expect(await sourceOf('visits', plain.data.visitId)).toBeNull();
+
+      // TWO — the agent could be answering either, and a wrong citation would
+      // let the planner close the OTHER call on a job unrelated to it.
+      const busy = await createCustomer({ tenantId, name: 'Busy Bev', phone: '555-8803' });
+      await askFor(busy.id);
+      await askFor(busy.id);
+      const ambiguous = await callWith('book_visit', { customerId: busy.id, title: 'one of them' });
+      expect(ambiguous.isError).toBe(false); // the booking still happens
+      expect(await sourceOf('jobs', ambiguous.data.jobId)).toBeNull();
+      expect(await sourceOf('visits', ambiguous.data.visitId)).toBeNull();
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('(16b) the entry carries the CALL\'s own channel and time, not the booking\'s', async () => {
+    // The brief renders these verbatim under "what the customer said on their
+    // calls and emails". A hardcoded channel and this moment's clock would tell
+    // every later reader that an EMAILER phoned, at the hour the manager
+    // happened to answer — and the write path's own copy of the same fact
+    // carries the real values, so the two homes would disagree.
+    const customer = await createCustomer({ tenantId, name: 'Emailing Elena', phone: '555-8805' });
+    const { capture } = await askFor(customer.id, {
+      channel: 'email',
+      capturedAt: '2026-09-06T08:15:00.000Z',
+    });
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const booked = await callWith('book_visit', { customerId: customer.id, title: 'emailed ask' });
+      const { rows } = await pg.query<{ attributes: { correspondence?: Array<Record<string, unknown>> } }>(
+        'select attributes from jobs where id = $1',
+        [booked.data.jobId],
+      );
+      const entry = (rows[0].attributes.correspondence ?? [])[0];
+      expect(entry.captureId).toBe(capture.id);
+      expect(entry.channel).toBe('email');
+      expect(entry.at).toBe('2026-09-06T08:15:00.000Z');
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('(17b) an ask nobody was TEXTED about is never cited — the agent is not answering it', async () => {
+    // The citation story is "the office asked, the manager said yes". If
+    // nobody was ever told, this booking is something else for the same
+    // customer, and stamping it would let the planner close a live ask on it.
+    const customer = await createCustomer({ tenantId, name: 'Untold Uma', phone: '555-8806' });
+    await askFor(customer.id, { askedAt: null });
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const booked = await callWith('book_visit', { customerId: customer.id, title: 'unrelated work' });
+      expect(await sourceOf('jobs', booked.data.jobId)).toBeNull();
+      expect(await sourceOf('visits', booked.data.visitId)).toBeNull();
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('(17c) a STALE ask is not consumed by a later unrelated booking', async () => {
+    // A manager may answer the next morning; they do not answer a fortnight
+    // later. Unbounded, an ask nobody ever answered would be swallowed by the
+    // next booking for that customer — putting one caller's words permanently
+    // onto another's job, and closing the live ask on work unrelated to it.
+    const customer = await createCustomer({ tenantId, name: 'Stale Sasha', phone: '555-8807' });
+    await askFor(customer.id, {
+      askedAt: new Date(Date.now() - 30 * 24 * 3_600_000).toISOString(),
+    });
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const booked = await callWith('book_visit', { customerId: customer.id, title: 'annual service' });
+      expect(await sourceOf('jobs', booked.data.jobId)).toBeNull();
+      const { rows } = await pg.query<{ attributes: { correspondence?: unknown[] } }>(
+        'select attributes from jobs where id = $1',
+        [booked.data.jobId],
+      );
+      expect(rows[0].attributes.correspondence).toBeUndefined();
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('(17d) a booking that MINTS a job never answers an ask that already named one', async () => {
+    // The shapes have to match: an ask carrying a jobId was about existing
+    // work, so a call that mints a brand-new job is answering something else.
+    const customer = await createCustomer({ tenantId, name: 'Shaped Shona', phone: '555-8808' });
+    const existing = await createJob({ tenantId, customerId: customer.id, title: 'the old job' });
+    await askFor(customer.id, { jobId: existing.id });
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const booked = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'brand new work',
+        forceNewJob: true,
+      });
+      expect(booked.data.jobId).not.toBe(existing.id);
+      expect(await sourceOf('jobs', booked.data.jobId)).toBeNull();
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('(19) the preview NAMES a booked visit that cites the call — and says it STAYS', async () => {
+    // `findFoldImpact` walked visit_notes because attachNote's step 3 was the
+    // ONLY writer of visits.source_capture_id, and it links the same visit in
+    // the same call. `book_visit` cites a call now and mints a visit with NO
+    // note link — so the preview would say "nothing else goes" and the fold
+    // would then drop a real appointment out of every briefing while it stayed
+    // on the board. That is the exact failure foldImpact.ts exists to prevent.
+    const customer = await createCustomer({ tenantId, name: 'Booked Off A Call', phone: '555-8809' });
+    const { capture } = await askFor(customer.id);
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    let booked: { jobId: string; visitId: string };
+    try {
+      const r = await callWith('book_visit', { customerId: customer.id, title: 'agreed to come out' });
+      booked = { jobId: r.data.jobId, visitId: r.data.visitId };
+      expect(await sourceOf('visits', booked.visitId)).toBe(capture.id);
+      // There is no note link at all — this is not a reported trip.
+      const links = await pg.query<{ n: string }>(
+        'select count(*)::int as n from visit_notes where visit_id = $1',
+        [booked.visitId],
+      );
+      expect(Number(links.rows[0].n)).toBe(0);
+    } finally {
+      await client.close();
+    }
+
+    const { client: mgr, callWith: callMgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const staged = await callMgr('retract_capture', { captureId: capture.id, reason: 'wrong customer' });
+      expect(staged.isError).toBe(false);
+      // NAMED — the preview knows about it at all, which is the regression.
+      // And named under the RIGHT heading: a confirmed trip keeps its place on
+      // the schedule, so it LOSES this note as evidence rather than vanishing.
+      // Telling a manager a booked visit is going away when it is not is the
+      // failure the rung-9b split exists to prevent.
+      const willGo = staged.data.willAlsoRemove.visits as Array<{ visitId: string }>;
+      expect(willGo.map((v) => v.visitId)).not.toContain(booked.visitId);
+      const losing = staged.data.alsoLosesEvidence.visits as Array<{ visitId: string }>;
+      expect(losing.map((v) => v.visitId)).toContain(booked.visitId);
+
+      const done = await callMgr('retract_capture', { confirmId: staged.data.confirmId });
+      expect(done.data.status).toBe('retracted');
+      // PARITY: what the preview promised is what happens — the appointment is
+      // still there, and the customer is still expecting it.
+      const ctx = await callMgr('get_customer_context', { customerId: customer.id });
+      const upcoming = ctx.data.upcomingVisits as Array<{ visitId: string }>;
+      expect(upcoming.map((v) => v.visitId)).toContain(booked.visitId);
+    } finally {
+      await mgr.close();
+    }
+  });
+
+  test('(20) retracting the capture DISMISSES the ask — the planner stops being shown it', async () => {
+    // An observation keeps its own verbatim copy of the caller's words in
+    // `context.words`, and no fold reaches inside one. Without this the planner
+    // would keep being shown a capture a manager has formally marked
+    // recorded-in-error, and could still text somebody about it.
+    const customer = await createCustomer({ tenantId, name: 'Retracted Rita', phone: '555-8810' });
+    const { capture, observation } = await askFor(customer.id);
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const staged = await callWith('retract_capture', { captureId: capture.id, reason: 'personal mail' });
+      const done = await callWith('retract_capture', { confirmId: staged.data.confirmId });
+      expect(done.data.status).toBe('retracted');
+    } finally {
+      await client.close();
+    }
+    const { rows } = await pg.query<{ status: string; dismiss_reason: string | null }>(
+      'select status, dismiss_reason from observations where id = $1',
+      [observation.id],
+    );
+    expect(rows[0].status).toBe('dismissed');
+    expect(rows[0].dismiss_reason).toContain('retracted');
+    // `recover` is still there if the manager changes their mind — dismissal is
+    // revisable, which is why this is the right verb for code to use.
+  });
+
+  test('(18) open_job opens work with NOTHING on the calendar, cites the call, and guards duplicates', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Quote Quentin', phone: '555-8804' });
+    const { capture } = await askFor(customer.id);
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const opened = await callWith('open_job', {
+        customerId: customer.id,
+        title: 'replace the water heater',
+        jobType: 'plumbing',
+      });
+      expect(opened.isError).toBe(false);
+      expect(opened.data.status).toBe('opened');
+      expect(opened.data.jobTitle).toBe('replace the water heater');
+      expect(await sourceOf('jobs', opened.data.jobId)).toBe(capture.id);
+      // NOTHING on the calendar — the whole reason this verb exists.
+      const visits = await pg.query<{ n: string }>(
+        'select count(*)::int as n from visits where job_id = $1',
+        [opened.data.jobId],
+      );
+      expect(Number(visits.rows[0].n)).toBe(0);
+      const { rows } = await pg.query<{ attributes: { correspondence?: unknown[] } }>(
+        'select attributes from jobs where id = $1',
+        [opened.data.jobId],
+      );
+      expect(rows[0].attributes.correspondence).toHaveLength(1);
+
+      // THE MINT GUARD, and it is book_visit's EXACT test, not a stricter one:
+      // it fires on a title that NAMES a job already on file — the agent
+      // parroting the manager's words for work that exists. A stricter rule
+      // here would refuse an open that book_visit would have allowed, and the
+      // shared steer's advice ("pass the matching jobId") is not something this
+      // tool can even accept.
+      const dup = await callWith('open_job', {
+        customerId: customer.id,
+        title: 'Replace the Water Heater', // same words, different case
+      });
+      expect(dup.isError).toBe(true);
+      expect(dup.text).toContain('NOT opened');
+      expect(dup.text).toContain('replace the water heater');
+      expect(dup.text).toContain('forceNewJob:true');
+      // The steer is shared, so it has to say what to do with THIS tool.
+      expect(dup.text).toContain('only opens NEW work');
+
+      // A DISTINCT title is itself the declaration of new work and mints
+      // without ceremony — the guard adds no friction there.
+      const distinct = await callWith('open_job', {
+        customerId: customer.id,
+        title: 'a different leak entirely',
+      });
+      expect(distinct.isError).toBe(false);
+      // …and forceNewJob still overrides a genuine collision.
+      const forced = await callWith('open_job', {
+        customerId: customer.id,
+        title: 'replace the water heater',
+        forceNewJob: true,
+      });
+      expect(forced.isError).toBe(false);
+    } finally {
+      await client.close();
+    }
+
+    // A TECHNICIAN cannot open work. The gate is ADMIN_TOOL_NAMES in the
+    // dispatch, not the tools/list filter — a technician who somehow named the
+    // tool is refused at the door.
+    const refused = await call('open_job', { customerId: customer.id, title: 'nope' });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toMatch(/manager/i);
   });
 });

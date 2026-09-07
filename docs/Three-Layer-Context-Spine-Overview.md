@@ -155,6 +155,11 @@ so design the write-path to be channel-agnostic.
 - **Equipment telemetry / IoT** signals, where the trade supports it.
 
 Whatever the channel, the rule holds: **raw in first, structure second, evidence always linked.**
+And since rung 10 (2026-09-07) one more, for the customer-intake channels: **an inbound channel
+never CREATES work by itself.** A call or an email lands in L1, is pinned to the customer's open
+job with what they said, and — when there is no open job, or the firm agreed to come out — asks a
+manager through the assistant instead of quietly minting one. What reaches the record then cites
+the call it came from.
 
 ## 5. Build approach: hardcoded vs. context-engineered
 

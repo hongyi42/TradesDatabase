@@ -1,9 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from './client.js';
-import { listJobEvidenceSince } from './rawCaptures.js';
+import {
+  captureHasLinkedL2,
+  listJobEvidenceSince,
+  listJobStampedCaptureTimes,
+  listL2CitingCapture,
+} from './rawCaptures.js';
 import { createCustomer } from './customers.js';
-import { createJob } from './jobs.js';
+import { createJob, insertJobCapture } from './jobs.js';
 import { createVisit, insertVisitNote } from './visits.js';
 import { createTenant } from './tenants.js';
 
@@ -229,11 +234,155 @@ describe('listJobEvidenceSince', () => {
     expect(rows.map((r) => r.capture.raw_text)).not.toContain("another firm's words entirely");
   });
 
+  // ---- RUNG 10: the third home ---------------------------------------------
+  //
+  // An inbound call or email on an open job with no live trip links to the JOB
+  // (`job_captures`). Before it existed such a capture was unstamped and
+  // attached to nothing, so every evidence reader missed it and the job read
+  // silent — a customer chasing an open job looked like silence.
+  test('a capture LINKED to the job is evidence, via "job"', async () => {
+    const linked = await capture({ tenantId, jobId: null, text: 'any update on the part?', at: after });
+    await insertJobCapture({ tenantId, jobId: jobB, captureId: linked.id });
+    const rows = await listJobEvidenceSince(tenantId, [jobB], FLOOR);
+    const found = rows.find((r) => r.capture.id === linked.id);
+    expect(found).toBeDefined();
+    expect(found?.via).toBe('job');
+    expect(found?.jobId).toBe(jobB);
+  });
+
+  test('the job link respects the floor, and the floor is the CAPTURE’s time', async () => {
+    const early = await capture({ tenantId, jobId: null, text: 'said before the floor', at: before });
+    // The LINK is written now — long after the words. The floor must read the
+    // capture's own time, or a months-old email would re-enter the window the
+    // moment somebody linked it.
+    await insertJobCapture({ tenantId, jobId: jobB, captureId: early.id });
+    const ids = (await listJobEvidenceSince(tenantId, [jobB], FLOOR)).map((r) => r.capture.id);
+    expect(ids).not.toContain(early.id);
+  });
+
+  test('a job-stamped capture keeps job_stamp even when a job link also points at it', async () => {
+    const stamped = await capture({ tenantId, jobId: jobA, text: 'stamped and linked', at: after });
+    await insertJobCapture({ tenantId, jobId: jobA, captureId: stamped.id });
+    const found = (await listJobEvidenceSince(tenantId, [jobA], FLOOR)).filter(
+      (r) => r.capture.id === stamped.id,
+    );
+    expect(found).toHaveLength(1);
+    expect(found[0].via).toBe('job_stamp'); // the direct link is the stronger claim
+  });
+
+  test('a job link cannot smuggle in ANOTHER firm’s words', async () => {
+    // `job_captures.capture_id` is an ID-ONLY foreign key, so the link's own
+    // tenant is no proof the words are ours. Without the re-check on the
+    // embedded capture, this row reaches the planner as citeable evidence.
+    const foreign = await capture({
+      tenantId: otherTenantId,
+      jobId: null,
+      text: "another firm's words, linked to our job",
+      at: after,
+    });
+    const evidenceBefore = (await listJobEvidenceSince(tenantId, [jobB], FLOOR)).length;
+    const timesBefore = (await listJobStampedCaptureTimes(tenantId, [jobB], FLOOR)).length;
+    await pg.query(
+      'insert into job_captures (tenant_id, job_id, capture_id) values ($1, $2, $3)',
+      [tenantId, jobB, foreign.id],
+    );
+    const rows = await listJobEvidenceSince(tenantId, [jobB], FLOOR);
+    expect(rows.map((r) => r.capture.id)).not.toContain(foreign.id);
+    // Both readers: the link adds NOTHING, because the words are not ours.
+    expect(rows).toHaveLength(evidenceBefore);
+    expect(await listJobStampedCaptureTimes(tenantId, [jobB], FLOOR)).toHaveLength(timesBefore);
+  });
+
+  test('a capture with BOTH links keeps the visit provenance — the stronger claim', async () => {
+    // Reachable through the retraction twin-insert, which follows its target
+    // onto every link it has. "It reported this trip" is a more specific claim
+    // than "it landed on this job", so the visit arm must win.
+    const both = await capture({ tenantId, jobId: null, text: 'linked twice', at: after });
+    await reportedVisit({ tenantId, jobId: jobB, captureId: both.id });
+    await insertJobCapture({ tenantId, jobId: jobB, captureId: both.id });
+    const found = (await listJobEvidenceSince(tenantId, [jobB], FLOOR)).filter(
+      (r) => r.capture.id === both.id,
+    );
+    expect(found).toHaveLength(1); // deduped, not returned twice
+    expect(found[0].via).toBe('visit');
+  });
+
+  test('a job link alone marks the capture PROCESSED — the redelivery short-circuit', async () => {
+    const linked = await capture({ tenantId, jobId: null, text: 'processed by its link', at: after });
+    expect(await captureHasLinkedL2(linked.id)).toBe(false);
+    await insertJobCapture({ tenantId, jobId: jobA, captureId: linked.id });
+    expect(await captureHasLinkedL2(linked.id)).toBe(true);
+  });
+
+  test('the watcher’s activity probe sees a job-linked capture too', async () => {
+    const linked = await capture({ tenantId, jobId: null, text: 'they wrote in', at: after });
+    await insertJobCapture({ tenantId, jobId: jobB, captureId: linked.id });
+    const times = await listJobStampedCaptureTimes(tenantId, [jobB], FLOOR);
+    // Date.parse, not a string compare: the DB renders `…T13:00:00+00:00` while
+    // the fixture wrote `…T13:00:00.000Z` — the same instant, different text.
+    expect(
+      times.some((t) => t.job_id === jobB && Date.parse(t.captured_at) === Date.parse(after)),
+    ).toBe(true);
+  });
+
   test('results carry their job and come back oldest-first', async () => {
     const rows = await listJobEvidenceSince(tenantId, [jobA, jobB], FLOOR);
     expect(rows.length).toBeGreaterThan(1);
     for (const r of rows) expect([jobA, jobB]).toContain(r.jobId);
     const times = rows.map((r) => r.capture.captured_at);
     expect([...times].sort()).toEqual(times);
+  });
+});
+
+// ---- Rung 10: what was CREATED from a call ---------------------------------
+//
+// This is the planner's exact close for an inbound ask: a job or visit whose
+// source_capture_id is the call. Getting it wrong closes a live ask.
+describe('listL2CitingCapture', () => {
+  test('empty input short-circuits', async () => {
+    expect(await listL2CitingCapture([])).toEqual([]);
+  });
+
+  test('a job and a visit minted from a capture both come back, named', async () => {
+    const cap = await capture({ tenantId, jobId: null, text: 'they agreed we would come out', at: after });
+    const customer = await createCustomer({ tenantId, name: 'Cited Customer' });
+    const job = await createJob({
+      tenantId,
+      customerId: customer.id,
+      title: 'cited work',
+      sourceCaptureId: cap.id,
+    });
+    const visit = await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianId: null,
+      startsAt: null,
+      endsAt: null,
+      status: 'confirmed',
+      sourceCaptureId: cap.id,
+    });
+    const rows = await listL2CitingCapture([cap.id]);
+    expect(rows.map((r) => `${r.kind}:${r.id}`).sort()).toEqual(
+      [`job:${job.id}`, `visit:${visit.id}`].sort(),
+    );
+    expect(rows.every((r) => r.captureId === cap.id && r.jobId === job.id)).toBe(true);
+  });
+
+  test('a CANCELLED row is not an answer — the rollback must not close the ask', async () => {
+    // bookVisit rolls back a shell it minted when the DB overlap guard fires,
+    // by flipping it to 'cancelled' — the stamp stays. Counting it would tell
+    // the planner "a job was created from this call", close the ask on the
+    // record, and leave a customer who was told someone is coming with nothing
+    // on the calendar and nobody left asking.
+    const cap = await capture({ tenantId, jobId: null, text: 'the race that lost', at: after });
+    const customer = await createCustomer({ tenantId, name: 'Rolled Back' });
+    const job = await createJob({
+      tenantId,
+      customerId: customer.id,
+      title: 'rolled back',
+      sourceCaptureId: cap.id,
+    });
+    await pg.query(`update jobs set status = 'cancelled' where id = $1`, [job.id]);
+    expect(await listL2CitingCapture([cap.id])).toEqual([]);
   });
 });

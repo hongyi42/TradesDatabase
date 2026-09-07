@@ -304,7 +304,7 @@ The scheduling verbs, in rough order of depth:
 Google Route Optimization, `run_resolve` re-optimized already-placed visits, `undo_run` reversed
 either, and `set_visit_locks` pinned a visit against them. The user's ruling is that **the manager
 makes the schedule** — the sophistication was unproven and it was making users fit our model of
-scheduling rather than the reverse. Route optimization returns in rung 10 as an *advisory* tool the
+scheduling rather than the reverse. Route optimization returns in rung 11 as an *advisory* tool the
 manager's agent may choose to call. See `docs/engineering-memory.md` §6a.
 
 A **schedule read renders the booked order; it never re-derives one.** Reads return stops in booked

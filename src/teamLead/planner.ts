@@ -35,6 +35,13 @@ import {
   setNudgeAnsweredBy,
   setNudgeSchedule,
   setObservationStatus,
+  // RUNG 10 — the ping markers and the two moot-fact readers.
+  PINGED_KINDS,
+  markObservationAsked,
+  clearObservationAsked,
+  stampObservationsPinged,
+  listL2CitingCapture,
+  listVisitsCreatedSince,
   // The roster (build 6.5 Phase 1). `isInactiveState` is the ONE definition of
   // "this row no longer participates" — the planner must not grow a second.
   isInactiveState,
@@ -404,6 +411,16 @@ export interface PlannerSummary {
   limitHits: Record<ToolLoopLimit, number>;
   byAction: Record<string, number>;
   plans: PlannerTenantPlan[];
+  // RUNG 10 — this was a FOCUSED pass: one observation, one firm, called
+  // within seconds of the capture landing rather than on the half-hour. Present
+  // only when true, the settingsTableMissing contract: a key that is absent on
+  // every ordinary tick is cheaper to read in a summary than a false.
+  focused?: true;
+  // Which observation it was called about. Present with `focused`.
+  focusObservationId?: string;
+  // Firms the HEARTBEAT ran early for because an unclaimed inbound observation
+  // was waiting — the fallback path, when the ping loop never got to it.
+  pingedByObservation?: number;
   // tenant_settings has not been migrated to this database yet, so every firm ran
   // at the full rate. Present ONLY when true, and it does NOT make the tick
   // unhealthy — the same contract as WatchersSummary.settingsTableMissing, and
@@ -515,6 +532,13 @@ export const EVIDENCE_PER_GAP = 6;
 // basis 'evidence'. At a year, reaching the bound means the unattended alarm
 // has been naming the gap for months.
 export const EVIDENCE_FLOOR_MAX_DAYS = 365;
+
+// HOW LONG ONE TEXT ABOUT ONE CALL STANDS (rung 10). Two passes minutes apart —
+// the Calls-worker's focused pass and the half-hourly heartbeat — must never
+// both reach a manager about the same call. A day later is a different
+// question, and whether to raise it again is the planner's judgment, not a
+// number here: this is the anti-double-text rail, not a pacing cap.
+export const INBOUND_REASK_MS = 24 * 3_600_000;
 // How much of a queued question is echoed back into the gap view. See the call
 // site: it must cover a grouped message plus its anchor, or the planner reads a
 // truncated version of its own ask.
@@ -563,6 +587,26 @@ export interface PlannerDeps {
   // The two pre-ask writers: dismiss/recover/hold live on the observation, and
   // an applied `send` CREATES the ask (same id) then stamps the observation.
   setObservation?: typeof setObservationStatus;
+  // RUNG 10 — THE FOCUSED PASS. Set by the Calls-worker's ping loop: this run
+  // is about ONE observation, claimed seconds after the capture landed, and the
+  // caller has already scoped every reader to it. Its effects here are narrow
+  // and all stated where they happen: the firm is due whatever the cadence
+  // says, no `planner_runs` marker is written (a focused pass is not the tick,
+  // and stamping one would tell the next half-hourly pass it had already run),
+  // the gap count line says so, and the loop gets its own budget.
+  focus?: { observationId: string; budgetMs: number };
+  // The ask marker and its compensation (rung 10). `send` stamps `asked_at`
+  // under a guard so the focused pass and the heartbeat can never both text a
+  // manager about one call; a failed delivery clears its OWN stamp.
+  markAsked?: typeof markObservationAsked;
+  clearAsked?: typeof clearObservationAsked;
+  // Best-effort: a SUCCESSFUL heartbeat pass that showed these rows has called
+  // the planner about them, so the ping loop must not call again.
+  stampPinged?: typeof stampObservationsPinged;
+  // The two moot-fact readers for the inbound kinds (rung 10) — batched once
+  // per tick, because mootFactFor is a sync closure inside the per-gap loop.
+  listCiting?: typeof listL2CitingCapture;
+  listVisitsSince?: typeof listVisitsCreatedSince;
   // Build 7: the writer behind `observe`. Injected like every other one so a
   // unit test never touches the database.
   createObservation?: typeof createObservation;
@@ -920,7 +964,7 @@ function historyLine(history: NudgeDecision[], nowMs: number, tz: string): strin
 // A non-null `technician_ref` is NOT the test, and assuming it was is a live
 // trap this guard was written for: the phone worker stamps the sentinel
 // 'phone-line' on a customer's call (calls/worker.ts) and the mail ingest stamps
-// the MAILBOX OWNER's ref on a customer's emailed reply (email/ingest.ts), so
+// the MAILBOX OWNER's ref on a customer's emailed reply (src/inbound/webhook.ts), so
 // both arrive job-linked with a ref and neither is the technician answering.
 // Only the three channels a person's own assistant writes through are.
 //
@@ -1215,6 +1259,14 @@ export function buildGapView(
   // honest reading is "we were not told" — an empty map falls back to the
   // stamped name exactly as before, so no call site changes meaning.
   roster: Map<string, Addressee> = new Map(),
+  // RUNG 10 — the observation's own markers, passed OUT OF BAND rather than
+  // through observationAsGapRow. `asked_at` on a Nudge feeds `clockLabel` into
+  // `dateLabels` (below), and these kinds forbid a clock label outright: it
+  // would hand the model a weekday to copy into a message about a call whose
+  // day it must never name. It would also trip the asked-nudge block and the
+  // pacing read, both of which are about a QUESTION in flight, which this is
+  // not. So the marks travel beside the gap and only the inbound lines read them.
+  marks: { askedAt: string | null } | null = null,
 ): GapView {
   const jobId = ctxStr(n, 'jobId');
   const askedAtMs = n.asked_at ? Date.parse(n.asked_at) : NaN;
@@ -1345,6 +1397,52 @@ export function buildGapView(
     `  state: ${n.status}`,
     `  noticed: ${hoursBetween(n.created_at, nowMs)}h ago`,
   ];
+  // RUNG 10 — WHAT A CALL OR EMAIL ASKED FOR. These two kinds carry a person's
+  // own words rather than a hole in the record, so the block says who got in
+  // touch, what they said, what the extractor read out of it, and what is on
+  // file. NO DATE ANYWHERE, and that is the point of the whole block: the
+  // caller's day and time live in the capture and the model may never repeat
+  // them (`dateLabels` below is the only temporal vocabulary it may use, and
+  // these kinds add nothing to it).
+  if ((PINGED_KINDS as string[]).includes(n.kind)) {
+    const channel = ctxStr(n, 'channel') ?? 'a message';
+    const from = ctxStr(n, 'from');
+    const ago = elapsedLabel(n.created_at, nowMs);
+    lines.push(
+      `  the caller's words (${channel}${from ? `, from ${from}` : ''}` +
+        `${ago ? `, ${ago}` : ''}): "${flat(ctxStr(n, 'words') ?? '', QUESTION_SHOWN_CHARS)}"`,
+    );
+    const customerId = ctxStr(n, 'customerId');
+    if (customerId) {
+      lines.push(`  customer: ${ctxStr(n, 'customerName') ?? 'unnamed'} (id ${customerId})`);
+    }
+    // WHAT THE EXTRACTOR READ, not what it decided: these are the model's own
+    // fields from the words above, and the planner weighs them against them.
+    const asked = askedFields(n);
+    if (asked.length > 0) lines.push(`  they asked for: ${asked.join('; ')}`);
+    lines.push(
+      jobId
+        ? `  on file: open job ${ctxStr(n, 'jobTitle') ?? '(untitled)'} (job id ${jobId})`
+        : '  on file: no open job for this customer — a job would have to be opened',
+    );
+    lines.push(
+      `  the firm agreed to come out: ${n.kind === 'inbound_commitment' ? 'yes' : 'not said'}`,
+    );
+    lines.push(
+      `  capture id: ${ctxStr(n, 'captureId') ?? n.subject_ref}` +
+        '   (spine_read v_captures for the full words)',
+    );
+    // The ask marker, out of band — see the `marks` parameter for why it does
+    // not ride on the gap row.
+    if (marks?.askedAt) {
+      // NO ELAPSED PHRASE HERE, deliberately. "2 hours ago" is a temporal
+      // phrase the date rail matches (TEMPORAL_RE) and `dateLabels` does not
+      // contain for these kinds — so a planner that echoed it would have its
+      // WHOLE message dropped as "a date it was not given". The fact is what
+      // it needs; the age of the text is not.
+      lines.push('  you have already texted a manager about this one');
+    }
+  }
   if (n.asked_at) {
     // WHETHER ANYTHING CAME BACK (build 6.5 Phase 5). The age alone made
     // "should I ask again" a guess: 31 hours reads the same whether they
@@ -1405,7 +1503,18 @@ export function buildGapView(
     // The moot fact gets a RECORD line for EVERY kind, on the same terms.
     lines.push(`  THE RECORD: ${mootFact}. ${closeOnTheRecord}`);
   }
-  if (n.not_before) lines.push(`  currently held until: ${n.not_before}`);
+  if (n.not_before) {
+    // NO RAW DATE FOR THE INBOUND KINDS. Every other gap may print its hold as
+    // an ISO instant, but these forbid a date the planner did not receive in
+    // `dateLabels` — and the doctrine actively RECOMMENDS `hold` here, so the
+    // hazard is on the recommended path. The fact is what it needs; the exact
+    // instant is not, and printing it would let an echo drop the whole message.
+    lines.push(
+      (PINGED_KINDS as string[]).includes(n.kind)
+        ? '  you are holding this one — it will come back to you'
+        : `  currently held until: ${n.not_before}`,
+    );
+  }
   // WHAT DELIVERY HAS DONE WITH IT (build 6 Phase 5). Until now the planner was
   // asked to judge a stuck question with no way to tell stuck from slow: a row
   // frozen after ten serve attempts and one queued forty seconds ago rendered
@@ -1606,6 +1715,30 @@ export function observationAsGapRow(o: Observation): Nudge {
     created_at: o.noticed_at,
     updated_at: o.updated_at,
   } as Nudge;
+}
+
+// The extractor's reading of an inbound capture, as `key: value` pairs, nulls
+// dropped. `context.asked` is an OBJECT, so ctxStr cannot reach it; and the
+// values are the model's interpretation of the words shown beside them, which
+// is exactly why they are labelled "they asked for" and not "the job is".
+//
+// `attributes` is rendered as JSON — it is free-form L3 (gate codes, pets), and
+// flattening it into prose would invent structure the extractor did not find.
+function askedFields(n: Nudge): string[] {
+  const c = (n.context ?? {}) as Record<string, unknown>;
+  const asked = c.asked;
+  if (!asked || typeof asked !== 'object' || Array.isArray(asked)) return [];
+  const out: string[] = [];
+  for (const [key, value] of Object.entries(asked as Record<string, unknown>)) {
+    if (value === null || value === undefined || value === '') continue;
+    if (typeof value === 'object') {
+      const json = JSON.stringify(value);
+      if (json && json !== '{}') out.push(`${key} ${json}`);
+      continue;
+    }
+    out.push(`${key} ${String(value)}`);
+  }
+  return out;
 }
 
 // Normalised for the citation check ONLY — a model that changes spacing or case
@@ -2343,6 +2476,23 @@ export function validateDecisions(
           continue;
         }
       }
+      // RUNG 10 — A CALL HAS TO BE READ BY A PERSON. Refused HERE and not at
+      // apply time, and that is the whole reason it moved: a refusal at
+      // validate can reach the model through submit_plan, so it can rewrite on
+      // the SAME tick. Refused at apply the message simply never exists, with
+      // no feedback, and the manager first hears about the call half an hour
+      // later. (The executor returns the refusal TEXT only when every decision
+      // in the submission was refused; a mixed plan gets counts. So this buys
+      // the retry in the common single-decision case, not in every case — the
+      // apply-time guard stays as the belt either way.) The 'assistant' leg
+      // injects a silent turn nobody delivers.
+      if (nudgeId && (PINGED_KINDS as string[]).includes(view.nudge.kind) && as !== 'chat') {
+        push(
+          'a call or email needs a person to READ it — send it to a manager with as:"chat". ' +
+            'The assistant leg injects a turn into somebody\'s agent that nobody delivers.',
+        );
+        continue;
+      }
       // IS THIS THE QUESTION OF RECORD? The user's ruling is that the planner
       // says so rather than code deriving it — so the flag is real, and the
       // rail below makes forgetting it loud instead of silent.
@@ -2916,6 +3066,12 @@ export function buildPlannerUserMessage(
   // WHAT YOU SENT (build 6.5 Phase 5), or ''. In the tail with the office
   // messages: both are traffic rather than gaps, and the gaps are the job.
   outboundBlock = '',
+  // RUNG 10 — this pass is about ONE item, called seconds after a call or email
+  // landed. The firm's other open work is deliberately not in this prompt, and
+  // the model has to be told that: "this firm has 1 open gap" would be a lie
+  // about the firm, and a planner that believed it might close or dismiss on
+  // the strength of an emptiness that is an artefact of the scoping.
+  focused = false,
 ): string {
   return [
     // THE INDEX GOES FIRST, and the reason is the cache, not the reading order.
@@ -2944,7 +3100,9 @@ export function buildPlannerUserMessage(
     `In UTC that instant is ${nowIso} — use UTC for any notBefore you write.`,
     '',
     ...(reachableBlock ? [reachableBlock, ''] : []),
-    `This firm has ${views.length} open gap(s).`,
+    focused
+      ? 'This pass shows 1 item; the firm\'s other open work is not shown and is not yours now.'
+      : `This firm has ${views.length} open gap(s).`,
     '',
     views.map((v) => v.block).join('\n\n'),
     ...(officeBlock ? ['', officeBlock] : []),
@@ -2990,6 +3148,11 @@ async function applyDecision(
   // Build 7's writer, injected like every other one. TRAILING and defaulted, so
   // both existing call sites are unchanged by construction.
   createObs: typeof createObservation = createObservation,
+  // RUNG 10's two, same posture: trailing and defaulted, so no existing call
+  // site changes. `markAsked` is what makes "one call, one text" structural;
+  // `clearAsked` is its compensation when the delivery write then fails.
+  markAsked: typeof markObservationAsked = markObservationAsked,
+  clearAsked: typeof clearObservationAsked = clearObservationAsked,
 ): Promise<{
   outcome: 'applied' | 'refused';
   detail?: string;
@@ -3028,6 +3191,34 @@ async function applyDecision(
             'rewrite it using only the dates you were given',
         };
       }
+      // ── RUNG 10: A CALL IS NOT A QUESTION TO THE PERSON WHO CALLED ───────
+      // An inbound observation names a decision only a MANAGER can make, so the
+      // two legs the fork below offers are both wrong for it:
+      //   countsAsTheAsk — would mint a nudge on the gap's own person, and
+      //     these gaps have no person (technician_id is null on every one).
+      //   as:'assistant' — injects a silent turn into somebody's agent that
+      //     nobody delivers. The manager would never see it and the record
+      //     would say they had been told.
+      const inboundGap = d.nudgeId ? getGap(d.nudgeId) : null;
+      const isInboundAsk =
+        !!inboundGap && (PINGED_KINDS as string[]).includes(inboundGap.kind);
+      if (isInboundAsk) {
+        if (d.countsAsTheAsk) {
+          return {
+            outcome: 'refused',
+            detail:
+              'this is a call or email, not a question to a technician — send it to a manager ' +
+              'with as:"chat" and no countsAsTheAsk',
+          };
+        }
+        if ((d.as ?? 'assistant') !== 'chat') {
+          return {
+            outcome: 'refused',
+            detail: 'a manager has to READ this — send it with as:"chat"',
+          };
+        }
+      }
+
       // ── THE FORK (build 6.5 Phase 4) ─────────────────────────────────────
       // `countsAsTheAsk` decides which machinery carries this, and the two are
       // genuinely different acts rather than two spellings of one:
@@ -3059,9 +3250,33 @@ async function applyDecision(
             detail: `send names '${d.toRef}' with no resolved roster row`,
           };
         }
-        await createOffice({
-          tenantId,
-          direction: 'to_agent',
+        // THE ASK MARKER, WRITTEN BEFORE THE MESSAGE (rung 10). Guarded on
+        // `asked_at is null`, so the focused pass and the half-hourly heartbeat
+        // can never both text a manager about one call — a structural rail, not
+        // a doctrine hope. It is NOT the `hold`: a planner that reads this item
+        // and waits has not asked, and its later send still works.
+        let askedStamp: string | null = null;
+        if (isInboundAsk && d.nudgeId) {
+          askedStamp = await markAsked(
+            d.nudgeId,
+            // ASKABLE AGAIN ONCE THE LAST TEXT IS THIS OLD. Note the MINUS: the
+            // argument is the threshold a stamp must be OLDER than, so `nowIso`
+            // here would mean "always askable" and delete the rail outright.
+            new Date(Date.parse(nowIso) - INBOUND_REASK_MS).toISOString(),
+          );
+          if (!askedStamp) {
+            return {
+              outcome: 'refused',
+              detail:
+                'a manager was texted about this call within the last day — leave it with them, ' +
+                'or raise it again tomorrow',
+            };
+          }
+        }
+        try {
+          await createOffice({
+            tenantId,
+            direction: 'to_agent',
           // The two office KINDS were the ask/inform distinction the deleted
           // verbs carried. With one verb there is no such distinction to make
           // — the planner writes prose and the recipient reads it — so every
@@ -3075,10 +3290,29 @@ async function applyDecision(
             : ((n && ctxStr(n, 'technicianRef')) ?? toTechnicianId),
           technicianId: toTechnicianId,
           nudgeId: d.nudgeId ?? null,
-          body: d.message,
-          status: 'queued',
-          via: d.as ?? 'assistant',
-        });
+            body: d.message,
+            status: 'queued',
+            via: d.as ?? 'assistant',
+          });
+        } catch (err) {
+          // COMPENSATE, then rethrow. Without this a transient office-write
+          // failure leaves the row stamped asked with nothing delivered — and
+          // because the stamp is exactly what stops a second text, the call
+          // becomes un-askable forever. Guarded on the stamp this call wrote,
+          // so it can never clear a later, successful ask.
+          if (askedStamp && d.nudgeId) {
+            try {
+              await clearAsked(d.nudgeId, askedStamp);
+            } catch (clearErr) {
+              console.error(
+                `[planner] ${tenantId}: the ask marker on ${d.nudgeId} was not cleared after a ` +
+                  'failed send — it will not be asked about again',
+                clearErr,
+              );
+            }
+          }
+          throw err;
+        }
         return { outcome: 'applied' };
       }
       // The anchor rides along, code-printed: what is stored IS what is sent
@@ -3465,11 +3699,18 @@ export async function runPlanner(
   const readOutbound = deps.listOutbound ?? listRecentOutboundMessages;
   const readAnswered = deps.listAnswered ?? listAnsweredOutboundIds;
   const getSettings = deps.getSettings ?? readSettingsTolerantly;
+  const markAsked = deps.markAsked ?? markObservationAsked;
+  const clearAsked = deps.clearAsked ?? clearObservationAsked;
+  const stampPinged = deps.stampPinged ?? stampObservationsPinged;
+  const listCiting = deps.listCiting ?? listL2CitingCapture;
+  const listVisitsSince = deps.listVisitsSince ?? listVisitsCreatedSince;
+  const focus = deps.focus ?? null;
   const tools = deps.tools ?? [];
   const execute = deps.execute;
 
   const nowMs = Date.parse(nowIso);
   const summary: PlannerSummary = {
+    ...(focus ? { focused: true as const, focusObservationId: focus.observationId } : {}),
     mode,
     tenants: 0,
     planned: 0,
@@ -3506,6 +3747,11 @@ export async function runPlanner(
     ok: boolean,
     opts: { alreadyCounted?: boolean } = {},
   ): Promise<void> => {
+    // A FOCUSED PASS IS NOT THE TICK (rung 10). Stamping `planner_runs` here
+    // would tell the next half-hourly pass the firm had just been planned for —
+    // moving its evidence floor and its "how long since I last ran" line — on
+    // the strength of a run that looked at ONE item and nothing else.
+    if (focus) return;
     try {
       await (deps.plannerRun ?? upsertPlannerRun)(tenantId, nowIso, ok);
     } catch (err) {
@@ -3652,7 +3898,49 @@ export async function runPlanner(
       const everyMinutes = withinApproxHours(nowIso, tz, read.settings)
         ? PLANNER_TICK_MINUTES
         : PLANNER_TICK_MINUTES_OFF_HOURS;
-      if (!plannerCadenceDue(nowIso, everyMinutes)) {
+
+      // WHEN THIS FIRM LAST PLANNED. Read HERE rather than beside the memory
+      // index below (where it used to live) because rung 10 made it part of the
+      // due decision: an inbound observation noticed since that instant, which
+      // nobody has pinged or asked about, makes the firm due whatever the
+      // cadence says. Same degrade rule as before — a failed read says nothing
+      // rather than guessing, which here means "not pinged": running early on a
+      // database error would be the wrong way to be wrong.
+      //
+      // COSTS ONE READ PER FIRM PER TICK MORE THAN IT DID. It used to run only
+      // for a firm that was already due; it now runs for every firm with open
+      // work, because it is part of deciding due-ness. That is a point read on
+      // planner_runs by primary key, against a heartbeat that already does a
+      // gap read, a settings read and a tenant read for the same firms.
+      let lastSuccessAt: string | null = null;
+      let lastRunReadOk = true;
+      try {
+        lastSuccessAt = await (deps.lastRunAt ?? latestSuccessfulPlannerRunAt)(tenantId);
+      } catch (err) {
+        lastRunReadOk = false;
+        console.error(`[planner] tenant ${tenantId}: last-run read failed — saying nothing`, err);
+      }
+      // THE HEARTBEAT'S FALLBACK for the ping loop (rung 10). The Calls-worker
+      // normally claims one of these within ~10s; this is what happens when it
+      // is down, restarting, or lost the row. `!pinged_at && !asked_at` is the
+      // ping loop's own predicate, and `noticed_at > lastMs` keeps it to rows
+      // this firm has not already been planned for.
+      const lastMs = lastSuccessAt ? Date.parse(lastSuccessAt) : NaN;
+      const pinged =
+        !focus &&
+        lastRunReadOk &&
+        openObs.some(
+          (o) =>
+            (PINGED_KINDS as string[]).includes(o.kind) &&
+            !o.pinged_at &&
+            !o.asked_at &&
+            (Number.isNaN(lastMs) || Date.parse(o.noticed_at) > lastMs),
+        );
+      if (pinged) summary.pingedByObservation = (summary.pingedByObservation ?? 0) + 1;
+
+      // A FOCUSED PASS IS ALWAYS DUE: the worker already decided this firm has
+      // something worth a call, seconds ago.
+      if (!focus && !pinged && !plannerCadenceDue(nowIso, everyMinutes)) {
         summary.skippedCadence += 1;
         // `open.length`, not 0: this firm HAS work waiting — it is simply not due
         // this tick, and conflating the two is exactly the distinction this
@@ -3814,9 +4102,92 @@ export async function runPlanner(
           .filter((j) => j.tenant_id === tenantId) // id-only-FK belt-and-suspenders
           .map((j) => [j.id, j.status]),
       );
+      // WHAT THE MANAGER'S AGENT ACTUALLY DID (rung 10), batched once for the
+      // whole tick. Two reads, because there are two ways a call ends up on the
+      // calendar and only one of them leaves a citation:
+      //   EXACT    — a job or visit whose source_capture_id IS this capture.
+      //              That is what `open_job` / `book_visit` write when the
+      //              manager's agent acts on the office's text.
+      //   INFERRED — a visit created for this customer after the observation
+      //              was noticed, citing nothing. That is a booking made by
+      //              hand on the board, which carries no call id at all.
+      // Batched here rather than read per gap because `mootFactFor` below is a
+      // SYNC closure inside the per-gap loop — a read in there would be one
+      // round trip per gap, and would not typecheck.
+      const inboundGaps = open.filter((n) => (PINGED_KINDS as string[]).includes(n.kind));
+      const inboundCaptureIds = [
+        ...new Set(inboundGaps.map((n) => ctxStr(n, 'captureId') ?? n.subject_ref)),
+      ].filter(uuidish);
+      // CLAMPED, like every other floor on this path (EVIDENCE_FLOOR_MAX_DAYS).
+      // An observation nobody ever answers stays open, and an unclamped floor
+      // would make one abandoned row page the firm's whole visit history on
+      // every heartbeat, forever. A booking a year after the call is not the
+      // answer to it anyway.
+      const bookingFloorMs = nowMs - EVIDENCE_FLOOR_MAX_DAYS * 24 * 3_600_000;
+      const earliestNoticed = inboundGaps.reduce<string | null>(
+        (best, n) => (best === null || n.created_at < best ? n.created_at : best),
+        null,
+      );
+      const bookingFloor =
+        earliestNoticed === null
+          ? null
+          : new Date(Math.max(Date.parse(earliestNoticed), bookingFloorMs)).toISOString();
+      // Degraded, not fatal: the moot fact is information the planner weighs,
+      // and losing it costs one unnecessary look rather than the firm's tick.
+      let citing: Awaited<ReturnType<typeof listCiting>> = [];
+      let visitsSince: Awaited<ReturnType<typeof listVisitsSince>> = [];
+      if (inboundGaps.length > 0) {
+        try {
+          [citing, visitsSince] = await Promise.all([
+            inboundCaptureIds.length > 0 ? listCiting(inboundCaptureIds) : Promise.resolve([]),
+            bookingFloor ? listVisitsSince(tenantId, bookingFloor) : Promise.resolve([]),
+          ]);
+        } catch (err) {
+          console.error(
+            `[planner] tenant ${tenantId}: the inbound record reads failed — running without`,
+            err,
+          );
+        }
+      }
+      const citedByCapture = new Map<string, typeof citing>();
+      for (const row of citing) {
+        citedByCapture.set(row.captureId, [...(citedByCapture.get(row.captureId) ?? []), row]);
+      }
+
       // The wording is the old specs' verbatim (nudgeKinds pre-build-5), so the
       // resolution a moot close writes reads the same as the sweep's did.
       const mootFactFor = (n: Nudge): string | null => {
+        // THE INBOUND KINDS ANSWER TO A DIFFERENT RECORD (rung 10): the hole
+        // they name is "nothing has been created", so what closes them is
+        // something HAVING been created.
+        if ((PINGED_KINDS as string[]).includes(n.kind)) {
+          const captureId = ctxStr(n, 'captureId') ?? n.subject_ref;
+          const cited = citedByCapture.get(captureId) ?? [];
+          if (cited.length > 0) {
+            const what = cited.some((c) => c.kind === 'visit')
+              ? cited.some((c) => c.kind === 'job')
+                ? 'a job AND a visit were'
+                : 'a visit was'
+              : 'a job was';
+            return `${what} created from this capture — it cites this call`;
+          }
+          const noticedMs = Date.parse(n.created_at);
+          const gapJobId = ctxStr(n, 'jobId');
+          const gapCustomerId = ctxStr(n, 'customerId');
+          const booked = visitsSince.some(
+            (v) =>
+              Date.parse(v.createdAt) > noticedMs &&
+              ((gapJobId !== null && v.jobId === gapJobId) ||
+                (gapCustomerId !== null && v.customerId === gapCustomerId)),
+          );
+          if (booked) {
+            return (
+              'a visit was booked for this customer after this was noticed, citing no capture ' +
+              '(not cited) — somebody may have put it on the board by hand'
+            );
+          }
+          return null;
+        }
         // The map is keyed by VISIT ID; the subject carries its time too.
         const vs = visitStatusById.get(visitIdOfSubject(n.subject_ref));
         if (vs === 'cancelled' || vs === 'completed') {
@@ -3901,6 +4272,11 @@ export async function runPlanner(
       // forever — and rendering its own untouched 0/0 counters as an ordinary
       // young gap hid exactly the condition this phase exists to surface. The
       // caller knows the lead is gone; buildGapView cannot.
+      // The observations' own markers, keyed by id — passed beside the gap row
+      // rather than through it (see buildGapView's `marks` parameter).
+      const marksById = new Map<string, { askedAt: string | null }>(
+        openObs.map((o) => [o.id, { askedAt: o.asked_at }]),
+      );
       const leadFor = (n: Nudge): Nudge | 'leaderless' | null => {
         if (!n.ask_group_id || n.ask_group_id === n.id) return null; // not a member
         return byId.get(n.ask_group_id) ?? 'leaderless';
@@ -3922,6 +4298,7 @@ export async function runPlanner(
             mootFactFor(n),
             leadFor(n),
             roster,
+            marksById.get(n.id) ?? null,
           ),
         );
       }
@@ -3939,7 +4316,6 @@ export async function runPlanner(
       // awaiting one before the other adds a full round trip per firm per tick
       // to a path that runs every 30 minutes for every tenant.
       const indexRead = (deps.memoryIndex ?? renderMemoryIndex)(tenantId);
-      const lastRunRead = (deps.lastRunAt ?? latestSuccessfulPlannerRunAt)(tenantId);
       let memoryIndex = '';
       try {
         memoryIndex = await indexRead;
@@ -3953,20 +4329,19 @@ export async function runPlanner(
       // a transient database error — and the model would reasonably conclude
       // nothing is queued and nothing has been chased. So a failed read drops
       // BOTH lines rather than substituting the first-run wording for them.
-      let lastRun: {
+      // From the ONE read made at the due check above (rung 10 hoisted it), so
+      // a firm is never asked twice in a tick when it last planned.
+      const lastRun: {
         lastSuccessAt: string | null;
         everyMinutes: number;
         ratesVary: boolean;
-      } | null = null;
-      try {
-        lastRun = {
-          lastSuccessAt: await lastRunRead,
-          everyMinutes,
-          ratesVary: read.settings.approxWorkStartHour !== null,
-        };
-      } catch (err) {
-        console.error(`[planner] tenant ${tenantId}: last-run read failed — saying nothing`, err);
-      }
+      } | null = lastRunReadOk
+        ? {
+            lastSuccessAt,
+            everyMinutes,
+            ratesVary: read.settings.approxWorkStartHour !== null,
+          }
+        : null;
       // THE DESK APPENDIX (Phase 2): what was said in the planner's name since
       // its last successful run. A failure here degrades to no appendix — the
       // transcript is an enhancement, the gaps and informs are the job. The
@@ -4086,6 +4461,7 @@ export async function runPlanner(
           tz,
         ),
         outboundBlock,
+        !!focus,
       );
 
       const started = Date.now();
@@ -4128,6 +4504,11 @@ export async function runPlanner(
           // that is merely slow until the clock throws. That is deliberate; the
           // instrument is the distribution, not the counter.
           maxTurns: null,
+          // A FOCUSED PASS GETS ITS OWN CLOCK (rung 10). It is one item, and it
+          // runs inside the Calls-worker's loop — the process that also drains
+          // the call queue — so it must not hold the default 15 minutes. Absent
+          // on the half-hourly tick, which keeps the loop's own default.
+          ...(focus ? { budgetMs: focus.budgetMs } : {}),
           // Build 6 Phase 4: every tool result, as the MODEL saw it, the moment
           // it saw it. `result.calls` carries the same objects, but arrives one
           // turn too late — submit_plan is validated inside the executor below.
@@ -4194,7 +4575,40 @@ export async function runPlanner(
         { tenantId, technicianRef: TEAM_LEAD_REF, lane: 'planner' },
       );
 
-      const { decisions, dropped } = outcome;
+      // RUNG 10 — A FOCUSED PASS'S FIRST GAP-LESS SEND IS ABOUT ITS ONE ITEM.
+      // `send` is the one verb that may name no gap, and a message with no
+      // `nudgeId` never reaches the ask marker: the manager gets texted, the
+      // observation stays unasked, and the next heartbeat texts them again
+      // about the same call. The doctrine asks the planner to name the item;
+      // this is what makes forgetting harmless, and only in a focused pass,
+      // where there IS exactly one item it could be about.
+      //
+      // THE FIRST ONE ONLY, and that is not a detail. Gap-less sends are
+      // deliberately not deduped (user, 2026-09-02) so the planner can tell
+      // several people one thing — binding all of them would stamp the ask on
+      // the first and refuse every other as "already texted", so managers two
+      // and three would simply never hear about the call. One binding marks the
+      // ask; the rest travel as the ordinary messages they are.
+      //
+      // ON THE HEARTBEAT this rewrite does NOT happen, and that is accepted: a
+      // tick shows many items, so there is no one item a bare send is "about".
+      // The doctrine line is what covers it there, and the cost of the planner
+      // forgetting is a second text at the next tick, not a lost call.
+      const dropped = outcome.dropped;
+      // THE FIRST *CHAT* SEND, not the first send of any leg. An inbound ask can
+      // only be made by a message a person READS, and a bound `assistant`-leg
+      // send is refused at apply — so binding one would consume the binding,
+      // leave the real chat message gap-less and unmarked, and the next
+      // heartbeat would text the manager about the same call again.
+      let boundGapless = false;
+      const decisions = focus
+        ? outcome.decisions.map((d) => {
+            if (d.action !== 'send' || d.nudgeId || boundGapless) return d;
+            if ((d.as ?? 'assistant') !== 'chat') return d;
+            boundGapless = true;
+            return { ...d, nudgeId: focus.observationId };
+          })
+        : outcome.decisions;
       summary.planned += 1;
       summary.decisions += decisions.length;
       summary.dropped += dropped.length;
@@ -4242,6 +4656,7 @@ export async function runPlanner(
               tenantId, d, nowIso, setSchedule, markOutcome, markQueued, markGroupQueued,
               stampAnswer, '', (id) => views.get(id)?.nudge, setObservation,
               createFromObservation, createOffice, dismissGap, recoverGap, createObservationRow,
+              markAsked, clearAsked,
             );
           } catch (err) {
             res = {
@@ -4358,6 +4773,8 @@ export async function runPlanner(
             // BOTH sites, and an asymmetric one is how a later change reaches
             // the real database from a test that thought it was stubbed.
             createObservationRow,
+            markAsked,
+            clearAsked,
           );
         } catch (err) {
           // One failed write must not abandon the rest of the firm's plan, and
@@ -4536,6 +4953,43 @@ export async function runPlanner(
       });
 
       await stampRun(tenantId, true);
+
+      // THE HEARTBEAT CLAIMS WHAT IT SHOWED (rung 10). A half-hourly pass that
+      // rendered these inbound observations HAS called the planner about them,
+      // so the Calls-worker's ping loop must not call again — otherwise every
+      // heartbeat that beat the loop to a row would be followed by a second,
+      // redundant, billed pass about the same call. AFTER success, and
+      // best-effort: a failed stamp costs one duplicate pass, while stamping
+      // before the loop would silence the loop for a tick that then died.
+      // Guarded on `pinged_at is null`, so it never overwrites a real claim.
+      // Skipped in a focused pass — the worker already claimed its own row.
+      if (!focus) {
+        const showed = openObs
+          .filter(
+            (o) =>
+              (PINGED_KINDS as string[]).includes(o.kind) &&
+              !o.pinged_at &&
+              // NOT the nudge-wins collision case: an observation shadowed by
+              // its own live ask never reached `open`, so it was not shown and
+              // must not be stamped as though it had been. Unreachable for
+              // these kinds today (countsAsTheAsk is refused for them, so they
+              // cannot mint a same-id nudge) — stated so it stays that way.
+              !nudgeIds.has(o.id),
+          )
+          .map((o) => o.id)
+          .filter((id) => views.has(id));
+        if (showed.length > 0) {
+          try {
+            await stampPinged(showed);
+          } catch (err) {
+            console.error(
+              `[planner] tenant ${tenantId}: stamping ${showed.length} observation(s) pinged ` +
+                'failed — the ping loop may call about them again',
+              err,
+            );
+          }
+        }
+      }
 
       // MARK-READ AFTER THE TICK SUCCEEDED (plan 2026-08-31): a tick that died
       // anywhere above re-shows these messages next tick — the failure mode is

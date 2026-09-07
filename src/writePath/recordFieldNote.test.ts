@@ -35,7 +35,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await pg.query(
-    'truncate table customers, jobs, visits, raw_captures, technicians, schedule_events cascade',
+    'truncate table customers, jobs, visits, raw_captures, technicians, schedule_events, ' +
+      'observations, job_captures cascade',
   );
   await pg.end();
 });
@@ -50,6 +51,34 @@ async function rawCaptureCount(): Promise<number> {
 async function visitCount(): Promise<number> {
   const { rows } = await pg.query<{ n: string }>('select count(*)::int as n from visits');
   return Number(rows[0].n);
+}
+
+// The rung-10 readers: what LANDED on the job, and what was ASKED about a
+// capture. Read straight from SQL, never through the code under test.
+async function jobCaptureLinks(jobId: string): Promise<number> {
+  const { rows } = await pg.query<{ n: string }>(
+    'select count(*)::int as n from job_captures where job_id = $1',
+    [jobId],
+  );
+  return Number(rows[0].n);
+}
+
+async function observationsFor(captureId: string): Promise<
+  { kind: string; status: string; context: Record<string, unknown> }[]
+> {
+  const { rows } = await pg.query<{ kind: string; status: string; context: Record<string, unknown> }>(
+    'select kind, status, context from observations where subject_ref = $1',
+    [captureId],
+  );
+  return rows;
+}
+
+async function jobAttributes(jobId: string): Promise<Record<string, unknown>> {
+  const { rows } = await pg.query<{ attributes: Record<string, unknown> }>(
+    'select attributes from jobs where id = $1',
+    [jobId],
+  );
+  return rows[0].attributes;
 }
 
 // ---- Rung 9b phase 3: a note ATTACHES to the trip it reports ----------------
@@ -377,14 +406,13 @@ describe('a field note attaches to its trip (rung 9b)', () => {
     expect(await visitCount()).toBe(before);
   });
 
-  test('a LINK-LESS inbound redelivery can still re-apply a stale forward signal — the gap rung 10 closes', async () => {
-    // The edge the plan named, pinned as OPEN rather than left implicit. An
-    // inbound capture on a job with NO live visit links nothing, so
-    // captureHasLinkedL2 cannot short-circuit it: a redelivery re-runs the
-    // extractor, and a `completed` signal that was correctly SKIPPED on pass 1
-    // (the job was still 'open') becomes legal once the job has reached
-    // 'in_progress'. Nothing is duplicated — but a five-week-old email can
-    // close a job late. Rung 10 closes it by giving inbound its own visit.
+  test('RUNG 10 CLOSED IT: an inbound capture on a live job LINKS, so a redelivery cannot re-apply a stale signal', async () => {
+    // Was pinned as an OPEN gap. An inbound capture on a job with no live visit
+    // linked NOTHING, so captureHasLinkedL2 could not short-circuit it: a
+    // redelivery re-ran the extractor, and a `completed` signal correctly
+    // SKIPPED on pass 1 (the job was still 'open') became legal once the job
+    // reached 'in_progress' — a five-week-old email closing a job late.
+    // `job_captures` is the link that closes it.
     const { job, phone } = await jobFor('Stale Stan'); // deliberately NO visit
     const note = {
       ...noteBy('connector:gmail', 'email' as const, 'all finished on our end'),
@@ -392,7 +420,8 @@ describe('a field note attaches to its trip (rung 9b)', () => {
     };
     const ext = { phone, customerName: 'Stale Stan', statusSignal: 'completed' as const };
     const first = await recordFieldNote(note, stub(ext));
-    expect(first.visitId).toBeUndefined(); // link-less, as designed
+    expect(first.visitId).toBeUndefined(); // no trip attaches — still true
+    expect(await jobCaptureLinks(job.id)).toBe(1); // …but the JOB now carries it
     const { rows: after1 } = await pg.query<{ status: string }>(
       'select status from jobs where id = $1',
       [job.id],
@@ -402,13 +431,14 @@ describe('a field note attaches to its trip (rung 9b)', () => {
     // The job moves on, then the same message is delivered again.
     await pg.query("update jobs set status = 'in_progress' where id = $1", [job.id]);
     const second = await recordFieldNote(note, stub(ext));
-    expect(second.captureId).toBe(first.captureId); // same L1 row, re-run
+    expect(second.status).toBe('duplicate'); // the link makes it a real duplicate
+    expect(second.captureId).toBe(first.captureId);
     const { rows: after2 } = await pg.query<{ status: string }>(
       'select status from jobs where id = $1',
       [job.id],
     );
-    // DOCUMENTS the gap: the stale signal lands the second time around.
-    expect(after2[0].status).toBe('completed');
+    // THE FIX: the stale signal never lands.
+    expect(after2[0].status).toBe('in_progress');
   });
 
   test('a redelivered note is a DUPLICATE once its link exists — the hole phase 1 accepted', async () => {
@@ -788,17 +818,14 @@ describe('recordFieldNote', () => {
     expect(await visitCount()).toBe(visitsAfterFirst);
   });
 
-  // REVIEW FINDING, rung 9b. The dedup short-circuit keys on captureHasLinkedL2,
-  // and before the merge an email ALWAYS left a link because it always minted a
-  // visit. It no longer does — a customer's email is not a trip — so when the
-  // note resolves to an EXISTING customer AND an existing open job, nothing new
-  // carries the capture id and the redelivery falls through to the orphan-heal
-  // path: extract runs again (one model call), and the note is re-applied.
-  // That is bounded and SAFE, which is what this pins: no second L1 row, no
-  // second customer, no second job, no visit. The pre-existing case above only
-  // proved it for a customer with no job yet, where the job's own
-  // source_capture_id still marks the capture processed.
-  test('an email redelivered onto an EXISTING customer+job re-runs, but writes nothing twice', async () => {
+  // REVIEW FINDING, rung 9b — RESOLVED BY RUNG 10. The dedup short-circuit keys
+  // on captureHasLinkedL2, and before 9b an email ALWAYS left a link because it
+  // always minted a visit. It stopped doing that (a customer's email is not a
+  // trip), so a note resolving to an EXISTING customer AND an existing open job
+  // carried no link and every redelivery re-ran the extractor. Rung 10 gives it
+  // a `job_captures` link, so the redelivery is a real duplicate: no repeat
+  // model call, no second row of anything.
+  test('an email redelivered onto an EXISTING customer+job is a DUPLICATE — the job link marks it processed', async () => {
     const customer = await createCustomer({ tenantId, name: 'Redeliver Cust', phone: '555-7171' });
     const { createJob } = await import('../db/jobs.js');
     await createJob({ tenantId, customerId: customer.id, title: 'already open work' });
@@ -810,17 +837,25 @@ describe('recordFieldNote', () => {
       text: 'any update on the leak?',
       externalId,
     };
-    const first = await recordFieldNote(note, stub({ phone: '555-7171' }));
+    let extractCalls = 0;
+    const countingStub = {
+      extract: async () => {
+        extractCalls++;
+        return { phone: '555-7171' };
+      },
+    };
+    const first = await recordFieldNote(note, countingStub);
     expect(first.status).toBe('matched');
     expect(first.visitId).toBeUndefined(); // an email is not a trip
+    expect(extractCalls).toBe(1);
     const jobsAfterFirst = (await listJobsForCustomer(customer.id)).length;
     const visitsAfterFirst = await visitCount();
 
-    const second = await recordFieldNote(note, stub({ phone: '555-7171' }));
-    // It RE-RUNS rather than short-circuiting — asserted explicitly, or this
-    // test would pass identically if the dedup had caught it, and would stop
-    // describing the behaviour it exists to document.
-    expect(second.status).toBe('matched'); // not 'duplicate' — the fall-through
+    const second = await recordFieldNote(note, countingStub);
+    // SHORT-CIRCUITS now — asserted explicitly, and the extractor spy is what
+    // proves the model was not called a second time.
+    expect(second.status).toBe('duplicate');
+    expect(extractCalls).toBe(1);
     expect(second.captureId).toBe(first.captureId); // the SAME L1 row is reused
     const l1 = await pg.query<{ n: string }>(
       'select count(*)::int as n from raw_captures where external_id = $1',
@@ -866,21 +901,27 @@ describe('recordFieldNote', () => {
     expect(Number(l1a.rows[0].n)).toBe(1);
     expect((await listJobsForCustomer(customer.id)).length).toBe(0); // orphan: no job yet
 
-    // Redelivery: reuse the orphan L1 (no second row), extract succeeds → L2 built.
+    // Redelivery: reuse the orphan L1 (no second row), extract succeeds →
+    // and, since rung 10, an inbound capture on a customer with NO open job
+    // ASKS instead of minting one. The heal is the OBSERVATION.
     const healed = await recordFieldNote(note, { extract: flaky });
     expect(healed.status).toBe('matched');
     expect(healed.customerId).toBe(customer.id);
+    expect(healed.observationId).toBeDefined();
+    expect(healed.jobId).toBeUndefined();
     const l1b = await pg.query<{ n: string }>(
       'select count(*)::int as n from raw_captures where external_id = $1',
       [externalId],
     );
     expect(Number(l1b.rows[0].n)).toBe(1); // SAME row reused, not re-appended
-    expect((await listJobsForCustomer(customer.id)).length).toBe(1); // healed → job exists
+    expect((await listJobsForCustomer(customer.id)).length).toBe(0); // nothing created
+    expect((await observationsFor(healed.captureId)).length).toBe(1);
 
-    // Third delivery now finds linked L2 → real duplicate no-op (no new job).
+    // Third delivery: the observation IS the processed marker → duplicate no-op.
     const third = await recordFieldNote(note, { extract: flaky });
     expect(third.status).toBe('duplicate');
-    expect((await listJobsForCustomer(customer.id)).length).toBe(1);
+    expect((await listJobsForCustomer(customer.id)).length).toBe(0);
+    expect((await observationsFor(healed.captureId)).length).toBe(1); // never asked twice
   });
 
   test('structure:false stores L1 only — no extract, no job/visit, status captured', async () => {
@@ -916,19 +957,381 @@ describe('recordFieldNote', () => {
     expect(Number(l2.rows[0].n)).toBe(0);
   });
 
-  test('structure omitted → still structures (default true unchanged)', async () => {
+  test('structure omitted → still structures, and a call with no open job ASKS (rung 10)', async () => {
     const customer = await createCustomer({ tenantId, name: 'Default Structures', phone: '555-9090' });
     const r = await recordFieldNote(
       { tenantId, technicianRef: 'phone-line', channel: 'phone_call', text: 'furnace down' },
       stub({ phone: '555-9090', workPerformed: 'furnace repair' }),
     );
     expect(r.status).toBe('matched');
-    expect(r.customerId).toBe(customer.id); // L2 built when structure is left default
-    expect(r.jobId).toBeDefined();
-    // INVERTED by rung 9b: a phone call is NOT a trip. `visits` is now the
-    // schedule, so minting a row here would put a visit nobody made on the
-    // board and brief it as past work. Only a TECHNICIAN channel evidences a
-    // trip; a call that commits one is rung 10, and creates it UNPLACED.
+    expect(r.customerId).toBe(customer.id); // identity still resolves
+    // INVERTED AGAIN by rung 10. 9b stopped a call minting a VISIT (`visits` is
+    // the schedule — a call is not a trip). Rung 10 stops it minting a JOB too:
+    // the manager was blind to work appearing on the record, so the capture
+    // raises an observation and a manager is asked instead.
+    expect(r.jobId).toBeUndefined();
     expect(r.visitId).toBeUndefined();
+    expect(r.observationId).toBeDefined();
+    expect((await listJobsForCustomer(customer.id)).length).toBe(0);
+  });
+});
+
+// ---- Rung 10: inbound ASKS before it creates, and what it says is kept ------
+//
+// For a customer we know, an inbound call or email now creates NOTHING. If they
+// have an open job the words are pinned to it and what they said is kept on it;
+// if they have no open job, or the firm agreed to come out with no trip to
+// attach to, an OBSERVATION is written instead and the planner is called about
+// that one item. These pin every arm of that fork, and read the result straight
+// from SQL rather than through the code under test.
+describe('rung 10 — inbound asks before it creates', () => {
+  const TZ = 'America/Los_Angeles';
+  let DAY: string;
+  let phoneSeq = 9100;
+  const naive = (hhmm: string, day?: string) => `${day ?? DAY}T${hhmm}:00.000Z`;
+
+  const inbound = (
+    channel: 'email' | 'phone_call',
+    text: string,
+    extra: Partial<Parameters<typeof recordFieldNote>[0]> = {},
+  ) => ({
+    tenantId,
+    technicianRef: channel === 'email' ? 'connector:gmail' : 'phone-line',
+    channel,
+    text,
+    ...extra,
+  });
+
+  const newCustomer = async (name: string) => {
+    const phone = `555-${phoneSeq++}`;
+    return { customer: await createCustomer({ tenantId, name, phone }), phone };
+  };
+  const withOpenJob = async (name: string) => {
+    const { customer, phone } = await newCustomer(name);
+    const job = await createJob({ tenantId, customerId: customer.id, title: `${name} work` });
+    return { customer, job, phone };
+  };
+
+  beforeAll(async () => {
+    await pg.query('update tenants set timezone = $1 where id = $2', [TZ, tenantId]);
+    DAY = localDateISO(new Date().toISOString(), TZ);
+  });
+
+  test('(1) a COMMITTED email from a known customer with no open job asks — no job, no visit', async () => {
+    const { customer, phone } = await newCustomer('Commit Cora');
+    const jobsBefore = await visitCount();
+    const r = await recordFieldNote(
+      inbound('email', 'my heater is dead — ok, see you Thursday then'),
+      stub({
+        phone,
+        visitCommitted: true,
+        jobTitle: 'heater not firing',
+        attributes: { gateCode: '4412' },
+      }),
+    );
+    expect(r.status).toBe('matched');
+    expect(r.customerId).toBe(customer.id);
+    expect(r.jobId).toBeUndefined();
+    expect(r.visitId).toBeUndefined();
+    expect(r.observationId).toBeDefined();
+    expect((await listJobsForCustomer(customer.id)).length).toBe(0);
+    expect(await visitCount()).toBe(jobsBefore);
+
+    const obs = await observationsFor(r.captureId);
+    expect(obs).toHaveLength(1);
+    expect(obs[0].kind).toBe('inbound_commitment');
+    expect(obs[0].status).toBe('open');
+    const ctx = obs[0].context as Record<string, unknown>;
+    expect(ctx.customerId).toBe(customer.id);
+    expect(ctx.customerName).toBe('Commit Cora');
+    expect(ctx.channel).toBe('email');
+    // No jobId ⇒ the planner reads "a job would be opened too". ONE observation,
+    // never two texts for one message.
+    expect(ctx.jobId).toBeUndefined();
+    expect(ctx.words).toContain('see you Thursday');
+    expect((ctx.asked as Record<string, unknown>).attributes).toEqual({ gateCode: '4412' });
+  });
+
+  test('(2) a COMMITTED call on an open job with no trip: pinned to the job, kept on the job, and asked', async () => {
+    const { customer, job, phone } = await withOpenJob('Commit Cal');
+    const r = await recordFieldNote(
+      inbound('phone_call', 'yes please send someone out tomorrow', {
+        sourceMeta: { from: '+15551234567' },
+      }),
+      stub({ phone, visitCommitted: true, followUp: 'send a tech for the leak' }),
+    );
+    expect(r.jobId).toBe(job.id); // the existing job, not a new one
+    expect(r.visitId).toBeUndefined();
+    expect(r.observationId).toBeDefined();
+    expect((await listJobsForCustomer(customer.id)).length).toBe(1);
+
+    // A: the LINK.
+    expect(await jobCaptureLinks(job.id)).toBe(1);
+    // C: the VALUES.
+    const attrs = await jobAttributes(job.id);
+    const entries = attrs.correspondence as Array<Record<string, unknown>>;
+    expect(entries).toHaveLength(1);
+    expect(entries[0].captureId).toBe(r.captureId);
+    expect(entries[0].channel).toBe('phone_call');
+    expect(entries[0].followUp).toBe('send a tech for the leak');
+
+    const obs = await observationsFor(r.captureId);
+    expect(obs).toHaveLength(1);
+    expect(obs[0].kind).toBe('inbound_commitment');
+    expect((obs[0].context as Record<string, unknown>).jobId).toBe(job.id);
+    expect((obs[0].context as Record<string, unknown>).from).toBe('+15551234567');
+  });
+
+  test('(3) a COMMITTED email that ATTACHES to a live trip is correspondence, not an ask', async () => {
+    const { job, phone } = await withOpenJob('Booked Bea');
+    const visit = await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianId: null,
+      startsAt: naive('00:00'),
+      endsAt: naive('23:59'),
+      status: 'confirmed',
+    });
+    const r = await recordFieldNote(
+      inbound('email', 'confirming you are coming today — gate code is 9931'),
+      stub({ phone, visitCommitted: true, attributes: { gateCode: '9931' } }),
+    );
+    expect(r.visitId).toBe(visit.id); // attached to the booked trip
+    expect(r.observationId).toBeUndefined(); // nothing to ask — it is already booked
+    expect(await observationsFor(r.captureId)).toHaveLength(0);
+    const { rows } = await pg.query<{ n: string }>(
+      'select count(*)::int as n from visit_notes where visit_id = $1',
+      [visit.id],
+    );
+    expect(Number(rows[0].n)).toBe(1);
+    expect(await jobCaptureLinks(job.id)).toBe(0); // the trip took it, not the job
+    // C still applies: what they said is kept on the job either way.
+    const entries = (await jobAttributes(job.id)).correspondence as Array<Record<string, unknown>>;
+    expect(entries).toHaveLength(1);
+    expect(entries[0].facts).toEqual({ gateCode: '9931' });
+  });
+
+  test('(4) an UNCOMMITTED email from a known customer with no open job asks as inbound_new_job', async () => {
+    const { customer, phone } = await newCustomer('Asking Ada');
+    const r = await recordFieldNote(
+      inbound('email', 'what would it cost to replace the water heater?'),
+      stub({ phone, jobTitle: 'water heater quote' }),
+    );
+    expect(r.jobId).toBeUndefined();
+    expect((await listJobsForCustomer(customer.id)).length).toBe(0);
+    const obs = await observationsFor(r.captureId);
+    expect(obs).toHaveLength(1);
+    expect(obs[0].kind).toBe('inbound_new_job'); // asked for, not agreed to
+  });
+
+  test('(5) an UNCOMMITTED email on an open job is kept, and asks NOTHING', async () => {
+    const { job, phone } = await withOpenJob('Chasing Chad');
+    const r = await recordFieldNote(
+      inbound('email', 'any update on the part?', { externalId: 'gmail-rung10-chad-1' }),
+      stub({ phone, followUp: 'chase the part ETA' }),
+    );
+    expect(r.jobId).toBe(job.id);
+    expect(r.observationId).toBeUndefined();
+    expect(await observationsFor(r.captureId)).toHaveLength(0);
+    expect(await jobCaptureLinks(job.id)).toBe(1);
+    const entries = (await jobAttributes(job.id)).correspondence as Array<Record<string, unknown>>;
+    expect(entries).toHaveLength(1);
+  });
+
+  test('(6) redelivery is a DUPLICATE on BOTH shapes — the link and the ask both mark it processed', async () => {
+    // The job-linked shape (5's message id), and the asked shape.
+    const kept = await withOpenJob('Twice Tina');
+    let calls = 0;
+    const spy = {
+      extract: async () => {
+        calls++;
+        return { phone: kept.phone };
+      },
+    };
+    const linked = inbound('email', 'any update?', { externalId: 'gmail-rung10-twice-1' });
+    const first = await recordFieldNote(linked, spy);
+    expect(first.status).toBe('matched');
+    expect(calls).toBe(1);
+    const again = await recordFieldNote(linked, spy);
+    expect(again.status).toBe('duplicate');
+    expect(calls).toBe(1); // no repeat model call
+
+    const asked = await newCustomer('Twice Tom');
+    let askedCalls = 0;
+    const askedSpy = {
+      extract: async () => {
+        askedCalls++;
+        return { phone: asked.phone, visitCommitted: true };
+      },
+    };
+    const note = inbound('email', 'ok Friday works', { externalId: 'gmail-rung10-twice-2' });
+    const one = await recordFieldNote(note, askedSpy);
+    expect(one.observationId).toBeDefined();
+    const two = await recordFieldNote(note, askedSpy);
+    expect(two.status).toBe('duplicate');
+    expect(askedCalls).toBe(1);
+    expect(await observationsFor(one.captureId)).toHaveLength(1); // asked once, ever
+  });
+
+  test('(7) an UNMATCHED committed call writes no observation — rung 10b owns the new caller', async () => {
+    const before = await pg.query<{ n: string }>('select count(*)::int as n from observations');
+    const r = await recordFieldNote(
+      inbound('phone_call', 'hi, I need someone out to look at my furnace'),
+      stub({ phone: '555-0000-nobody', visitCommitted: true }),
+    );
+    expect(r.status).toBe('needs_disambiguation');
+    expect(r.customerId).toBeUndefined();
+    expect(await observationsFor(r.captureId)).toHaveLength(0);
+    const after = await pg.query<{ n: string }>('select count(*)::int as n from observations');
+    expect(Number(after.rows[0].n)).toBe(Number(before.rows[0].n));
+  });
+
+  test('(8) a TECHNICIAN note is untouched by all of it — walk-in still mints a trip, nothing is kept as correspondence', async () => {
+    const { customer, job, phone } = await withOpenJob('Walkin Wanda');
+    const tech = await insertTechnician({
+      tenantId,
+      ref: 'rung10-tech-1',
+      displayName: 'Rung Ten Tech',
+      seatExempt: true,
+    });
+    const r = await recordFieldNote(
+      { tenantId, technicianRef: tech.ref, channel: 'technician_note', text: 'replaced the igniter' },
+      stub({ phone, visitCommitted: true, workPerformed: 'replaced igniter', laborHours: 1.5 }),
+    );
+    expect(r.jobId).toBe(job.id);
+    expect(r.visitId).toBeDefined(); // step 3 still creates for a technician
+    expect(r.observationId).toBeUndefined(); // visitCommitted is inbound's word only
+    expect(await observationsFor(r.captureId)).toHaveLength(0);
+    expect(await jobCaptureLinks(job.id)).toBe(0);
+    expect((await jobAttributes(job.id)).correspondence).toBeUndefined();
+    expect((await listJobsForCustomer(customer.id)).length).toBe(1);
+  });
+
+  test('THE ASK IS WRITTEN FIRST: a failure after it cannot bury the promise', async () => {
+    // `job_captures` is a "processed" marker, so if the link were written
+    // before the observation, any failure in between would make the redelivery
+    // a duplicate and NOBODY would ever hear that the firm agreed to come out.
+    // Forced here by making the correspondence append throw: a job whose
+    // attributes are not a JSON object is refused by trySetJobAttribute.
+    const { job, phone } = await withOpenJob('Broken Bella');
+    await pg.query(`update jobs set attributes = '"not an object"'::jsonb where id = $1`, [job.id]);
+    const note = inbound('email', 'yes, tomorrow works — see you then', {
+      externalId: 'gmail-rung10-ordering-1',
+    });
+    const ext = stub({ phone, visitCommitted: true, followUp: 'send someone tomorrow' });
+
+    await expect(recordFieldNote(note, ext)).rejects.toThrow(/refusing to replace it/);
+
+    // The ask survived the failure — which is the whole point of the ordering.
+    const { rows } = await pg.query<{ subject_ref: string; kind: string }>(
+      `select subject_ref, kind from observations o
+        where exists (select 1 from raw_captures c
+                       where c.id::text = o.subject_ref and c.external_id = $1)`,
+      ['gmail-rung10-ordering-1'],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe('inbound_commitment');
+
+    // AND THE ORDERING'S PRICE, stated rather than hidden: the observation is
+    // itself a "processed" marker, so the redelivery converges and this job
+    // never gets its own copy of the words. Nothing is LOST — the capture is in
+    // L1 and the observation carries the same fields for the planner to read —
+    // but the job reads silent to the evidence readers until somebody links it.
+    // Reversing the order would trade a dropped promise for a tidy record.
+    const again = await recordFieldNote(note, ext);
+    expect(again.status).toBe('duplicate');
+    expect(await observationsFor(rows[0].subject_ref)).toHaveLength(1);
+    expect(await jobCaptureLinks(job.id)).toBe(0);
+    const asked = (await observationsFor(rows[0].subject_ref))[0].context as {
+      asked: { followUp: string | null };
+    };
+    expect(asked.asked.followUp).toBe('send someone tomorrow');
+  });
+
+  test('THE WORDS SURVIVE A FAILED APPEND: nothing is marked processed until they land', async () => {
+    // The same ordering rule one step down. `job_captures` stops a redelivery,
+    // so if the link were written before the correspondence, a CAS exhaustion
+    // (or a job whose attributes are not an object, forced here) would lose the
+    // caller's words permanently and silently. Ahead of the marker, the retry
+    // simply re-runs and lands them.
+    const { job, phone } = await withOpenJob('Retry Rhea');
+    await pg.query(`update jobs set attributes = '"not an object"'::jsonb where id = $1`, [job.id]);
+    const note = inbound('email', 'the part never arrived', {
+      externalId: 'gmail-rung10-retry-1',
+    });
+    const ext = stub({ phone, followUp: 'chase the supplier' }); // NOT committed — no ask
+
+    await expect(recordFieldNote(note, ext)).rejects.toThrow(/refusing to replace it/);
+    expect(await jobCaptureLinks(job.id)).toBe(0); // nothing was marked processed
+
+    // The job is repaired; the same message is delivered again.
+    await pg.query(`update jobs set attributes = '{}'::jsonb where id = $1`, [job.id]);
+    const healed = await recordFieldNote(note, ext);
+    expect(healed.status).toBe('matched'); // re-runs, rather than short-circuiting
+    expect(healed.jobId).toBe(job.id);
+    const entries = (await jobAttributes(job.id)).correspondence as Array<Record<string, unknown>>;
+    expect(entries).toHaveLength(1);
+    expect(entries[0].followUp).toBe('chase the supplier');
+    expect(await jobCaptureLinks(job.id)).toBe(1);
+  });
+
+  test('a CALL’s caller-ID reaches the planner — the phone door spells it `fromNumber`', async () => {
+    // The two doors spell the sender differently and neither is going to
+    // change: the email webhook writes `from`, the call worker writes
+    // `fromNumber` (src/calls/worker.ts). Reading only `from` left every call —
+    // this rung's headline channel — with no sender to show.
+    const { phone } = await newCustomer('Caller Carl');
+    const r = await recordFieldNote(
+      inbound('phone_call', 'my furnace is out', {
+        sourceMeta: {
+          fromNumber: '+15559998888',
+          recordingProvider: 'signalwire',
+          callSid: 'CA-test-1',
+        },
+      }),
+      stub({ phone }),
+    );
+    const obs = await observationsFor(r.captureId);
+    expect(obs).toHaveLength(1);
+    expect((obs[0].context as Record<string, unknown>).from).toBe('+15559998888');
+  });
+
+  test('(9) correspondence carries the caller’s words only — never the report or the bill — and APPENDS', async () => {
+    const { job, phone } = await withOpenJob('Appending Abe');
+    // A pre-existing top-level L3 key must survive every append.
+    await pg.query(`update jobs set attributes = '{"gateCode":"1111"}'::jsonb where id = $1`, [job.id]);
+
+    const one = await recordFieldNote(
+      inbound('email', 'the leak is under the sink'),
+      stub({
+        phone,
+        followUp: 'bring a basin wrench',
+        workPerformed: 'customer says it drips',
+        laborHours: 9,
+        attributes: { pets: 'dog' },
+      }),
+    );
+    const two = await recordFieldNote(
+      inbound('email', 'also the tap is loose'),
+      stub({ phone, followUp: 'check the tap' }),
+    );
+
+    const attrs = await jobAttributes(job.id);
+    expect(attrs.gateCode).toBe('1111'); // the existing key survives
+    const entries = attrs.correspondence as Array<Record<string, unknown>>;
+    expect(entries).toHaveLength(2); // APPENDED, never merged over the key
+    expect(entries.map((e) => e.captureId)).toEqual([one.captureId, two.captureId]);
+    for (const e of entries) {
+      expect(e).not.toHaveProperty('workPerformed');
+      expect(e).not.toHaveProperty('laborHours');
+      expect(JSON.stringify(e)).not.toContain('drips');
+    }
+    expect(entries[0].facts).toEqual({ pets: 'dog' });
+
+    // Nothing to say ⇒ nothing written: the link still records that it landed.
+    const three = await recordFieldNote(inbound('email', 'thanks!'), stub({ phone }));
+    expect(three.jobId).toBe(job.id);
+    expect(((await jobAttributes(job.id)).correspondence as unknown[]).length).toBe(2);
+    expect(await jobCaptureLinks(job.id)).toBe(3);
   });
 });

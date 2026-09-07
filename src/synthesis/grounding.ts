@@ -1,4 +1,6 @@
 import {
+  CORRESPONDENCE_KEY,
+  correspondenceEntries,
   factSourceIds,
   isFactBundle,
   participantsOf,
@@ -35,6 +37,24 @@ export function serializeContextForPrompt(context: CustomerContext): string {
     }
     const parts = Object.entries(value).map(([key, raw]) => {
       const v = raw ?? null;
+      // BOUNDED (rung 10). `correspondence` is a job's running list of what
+      // customers said — one entry per inbound capture — so on a long-running
+      // job the whole array would crowd every other fact out of the brief. The
+      // newest three are what a reply needs; the rest are one spine_read away,
+      // and the count says they exist rather than hiding them.
+      if (key === CORRESPONDENCE_KEY && Array.isArray(v)) {
+        const entries = correspondenceEntries(value);
+        const shown = entries.slice(-3);
+        const earlier = entries.length - shown.length;
+        // LABELLED, not just rendered (decision C): every other key on this
+        // line is something the FIRM recorded, and these are the customer's own
+        // words. Unlabelled, a model reads "followUp: bring a washer" as the
+        // firm's plan rather than what the caller asked for.
+        return (
+          `${key} (what the customer said on their calls and emails)=` +
+          `${JSON.stringify(shown)}${earlier > 0 ? ` (${earlier} earlier)` : ''}`
+        );
+      }
       return isFactBundle(v)
         ? `${key}=${JSON.stringify(v.value)} (capture ${v.sourceCaptureId})`
         : `${key}=${JSON.stringify(v)}`;
@@ -130,6 +150,15 @@ export function validateCitations(
   // citations silently dropped as hallucinated (review finding).
   for (const id of factSourceIds(context.customer?.attributes ?? null)) realIds.add(id);
   for (const j of context.jobs) for (const id of factSourceIds(j.attributes)) realIds.add(id);
+  // CORRESPONDENCE ids too (rung 10), and here it is NOT incidental: an inbound
+  // capture on an existing job is never stamped with a customer_id (identity
+  // resolves after L1, which is immutable), so it is in NEITHER set above. The
+  // job line shows the model those ids; without this, a model citing exactly
+  // what it was just shown has the citation dropped silently, which is the
+  // ungrounded-brief failure this function exists to prevent.
+  for (const j of context.jobs) {
+    for (const entry of correspondenceEntries(j.attributes)) realIds.add(entry.captureId);
+  }
   const seen = new Set<string>();
   const valid: Citation[] = [];
   // Guard a non-array too, not just absent — the model could emit citations as a

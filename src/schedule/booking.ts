@@ -246,6 +246,13 @@ export interface BookVisitInput {
   // computed detail always wins on a name clash. A batch caller stamps its own
   // run identity here so the rows it wrote are findable as one run.
   eventDetailExtra?: Json;
+  // RUNG 10 — THE CALL THIS BOOKING CAME FROM. Stamped onto whatever this call
+  // MINTS: the job shell on the customerId path, and the visit always. On the
+  // jobId path only the visit is new, so only the visit cites — the job was
+  // opened by something else and its own `source_capture_id` is that thing.
+  // Absent for a booking nobody asked for by phone or email, which is most of
+  // them; the citation is what lets "why is this on the calendar" be answered.
+  sourceCaptureId?: string;
   actorRef: string;
 }
 
@@ -285,7 +292,7 @@ interface ResolvedBooking {
  * the work on file — seven of nine eval failures were this one signature, and
  * every one minted a duplicate job whose booking reply looked perfect.
  */
-export function openWorkSteer(verb: 'booked' | 'searched', jobs: Job[]): string {
+export function openWorkSteer(verb: 'booked' | 'searched' | 'opened', jobs: Job[]): string {
   const list = jobs
     .map(
       (j) =>
@@ -562,6 +569,7 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       // (fail-closed, never invented; plan 4b-2).
       durationMinutes:
         r.startISO && r.endISO ? bookedSpanMinutes(r.startISO, r.endISO) : null,
+      ...(input.sourceCaptureId ? { sourceCaptureId: input.sourceCaptureId } : {}),
     }));
 
   let assignment: Visit;
@@ -573,6 +581,7 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       startsAt: r.startISO,
       endsAt: r.endISO,
       status: 'confirmed',
+      ...(input.sourceCaptureId ? { sourceCaptureId: input.sourceCaptureId } : {}),
     });
   } catch (err) {
     // The pre-check raced a concurrent booking and the DB guard fired. If WE

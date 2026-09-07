@@ -2,12 +2,16 @@
 date: 2026-09-06
 task: Rung 10 — inbound ASKS before it creates, and what it creates cites the call. The extractor is the planner's eye on call → job → visit; a new job or a detected commitment calls the planner IMMEDIATELY for that one item (a focused pass, ~10 s); the planner decides in its own words whether to text the manager; the manager's own agent opens the job / books an untimed visit, and the row cites the capture; what the caller said is kept on the job.
 research: thoughts/shared/research/2026-09-06-rung-10-inbound-commits-a-visit.md
-status: draft
+status: complete
 supersedes: nothing as a document — AMENDS the 2026-09-03 ruling "create, don't stage" at docs/engineering-memory.md:5064-5077 and the ladder row at :3573. User, 2026-09-06: "Before creating the visit, someone gets asked"; "the planner should be specifically called for the one issue". User, 2026-09-07: "for new jobs, we also want the planner to ask the manager"; amendments A, B, C "are all necessary".
 ---
 
 **`supersedes:` is not optional bookkeeping.** No thoughts/ document is overturned. The ruling
 this plan changes lives in `docs/engineering-memory.md`; Phase 3 rewrites it in place.
+
+**COMPLETE 2026-09-07** — `930c5bf` (phase 1), `e05d6b5` (phase 2), `dafb694` (phase 3), plus a
+cross-phase review pass. NOT YET DEPLOYED: the migration, the env names and the six seat wires at
+the end of Phase 3 are the owner's call, and the live verification needs them.
 
 ## Overview
 
@@ -79,9 +83,20 @@ call / email ─► L1 ─► extractor ─► matched customer? ──no──�
   Render trigger-run API (a broad key on an internet-facing service).
 - **Two markers on the observation, `pinged_at` and `asked_at`** — `pinged_at` = the planner was
   CALLED about it (the worker's guarded claim; the heartbeat also stamps what it showed);
-  `asked_at` = a text went out, set by the `send` itself under a guard (`asked_at is null`), so
+  `asked_at` = a text went out, set by the `send` itself under a guard, so
   the focused pass and the heartbeat can never both text the manager, and the planner's own
   `hold` never blocks its later `send` (round-2 #1).
+  **AMENDED at implementation (2026-09-07): the ask guard is a 24-HOUR WINDOW, not `asked_at is
+  null`.** As drafted the two halves of this plan contradicted each other — the Decisions bullet
+  above says "the planner re-asks by its own doctrine", and an absolute `is null` guard makes that
+  impossible: a manager who ignores the one text means the job is never opened, ever. The hazard
+  the guard actually exists for is a focused pass racing the heartbeat *≤30 minutes later*; a day
+  is deliberately wider than that, because the question is not only "can two passes collide" but
+  "how often may one call reach a manager", and more than once a day is spam. Wider still would
+  reinstate the code-side pacing cap the nudge-cap ruling deleted. `markObservationAsked` therefore
+  takes the re-ask threshold as an argument (`INBOUND_REASK_MS`) and writes NO `not_before`: the
+  window is the hold, and a stored hold would print a raw ISO date into the gap block that the date
+  rail then refuses to let the planner use — killing the very re-ask the window exists to allow.
 - **No template** *(user)* — the gap view shows the caller's words (bounded) with a pointer to
   the full capture, the customer, the open job, the extractor's fields; the doctrine says what
   the situation is and what the manager's agent can do, and that the usual move is to ask
@@ -130,6 +145,10 @@ creates visits silently; the dead Gmail pull goes.
   `lifecycle-heart`: `INFERENCE_MODEL`, `INFERENCE_BASE_URL`, `INFERENCE_CACHE_KEY`,
   `MODEL_PROVIDER`, `PLANNER_MODE` (it has `INFERENCE_API_KEY`, `SUPABASE_*`, `BOARD_BOT_TOKEN`).
   Names only — never paste values.
+  **AND `ANTHROPIC_API_KEY` (final review):** `hasModelCredentials()` reads it whenever
+  `MODEL_PROVIDER=anthropic`, which is the recorded planner rollback lever. Flipping that on
+  `lifecycle-heart` ALONE now silently disables every focused pass on `Calls-worker` — one deduped
+  warn line, nothing red. **The rollback touches two services from now on.**
 - **Phase 3:** none. Deploy: fork push rights; `ssh tradesbox`; `supabase-test` MCP.
 
 ## Phase 1: The eye and the record — inbound attaches, keeps, or asks; never creates
@@ -245,11 +264,33 @@ twin link; `set_fact` with key `correspondence` refused; `getCustomerContext` dr
 entry. `schema.test.ts`: `job_captures` RLS pin. Schema pin on `EXTRACTION_TOOL`.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`; `supabase db reset` clean;
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`; `supabase db reset` clean;
       `git diff --stat src/db/database.types.ts` shows the two columns and the table
-- [ ] (1)–(9) pass; falsify (4) by restoring `createJob` for inbound → job count; (3) by moving the
+- [x] (1)–(9) pass; falsify (4) by restoring `createJob` for inbound → job count; (3) by moving the
       observation above the attach; (6) by dropping the `job_captures` arm from `captureHasLinkedL2`
 ### Live verification — none until Phase 3. ### Manual verification — none. *Continue.*
+
+**Landed 2026-09-07.** 2669 tests green. Three review rounds folded in; what they changed that the
+plan did not say:
+- **Order the tail by what it costs to lose** — ask → correspondence → link → status. Every link is
+  a "processed" marker `captureHasLinkedL2` reads, so writing one before the ask would let a
+  failure in between bury a promise permanently. The ask is itself a marker, so keeping it first
+  is a deliberate trade (a failed correspondence append then costs that job its own copy of the
+  words); the code says so, and a test pins both halves.
+- **`idx_observations_subject_ref`** — `captureHasObservation` reads by `subject_ref` alone, which
+  `uq_observations_subject_ever` cannot serve (tenant leads it, and its `author='detector'`
+  predicate is not implied). Without it, a Seq Scan per inbound delivery on a table with no delete
+  path. `EXPLAIN` confirms the Index Scan.
+- **`from` AND `fromNumber`** — the phone door spells the sender differently from the email door,
+  so the rung's headline channel was storing `from: null`.
+- **The retraction preview grew a `correspondence` arm**, and `get_job` folds it too: naming it in
+  `willAlsoRemove` without folding it there would have promised a removal that did not happen.
+- **The reserved key is refused on the confirm path as well**, before the L1 append — a token
+  staged pre-deploy would otherwise strand an orphan capture and loop on a retry that cannot
+  converge.
+- **Both `job_captures` readers re-check the embedded capture's tenant** (`capture_id` is an
+  id-only FK), and `validateCitations` accepts correspondence ids — an inbound capture is in no
+  other citeable list, so a model quoting what it was shown was being silently dropped.
 
 ## Phase 2: The focused pass — called at once, about one thing, in its own words
 
@@ -293,12 +334,15 @@ two independent loops, each with its own backoff (round-2 #4).
   file: open job … (job id …) | no open job — a job would be opened`, `  the firm agreed to come
   out: yes | not said`, `  capture id: … (spine_read v_captures for the full words)`, and when
   `asked_at`: `  you texted a manager about this ${ago}`. No clock label; `dateLabels` unchanged.
-- `apply` `case 'send'` (`:3017`): for these kinds, FIRST `markObservationAsked(id, now + 24h)`
-  (returns the stamp); null ⇒ `{ outcome: 'refused', detail: 'already asked' }`; then the office
+- `apply` `case 'send'` (`:3017`): for these kinds, FIRST `markObservationAsked(id, now − 24h)`
+  (returns the stamp); null ⇒ refused, "texted within the last day"; then the office
   row `via: 'chat'`. If `createOffice` THROWS, `clearObservationAsked(id, stamp)` (guarded on the
   same stamp) before rethrowing — otherwise a transient write failure leaves the row stamped with
-  nothing delivered and un-askable forever (round-3 #14). Validate: `as` must be `'chat'`, `to`
-  present, `countsAsTheAsk` absent.
+  nothing delivered and un-askable (round-3 #14). `as` must be `'chat'` — refused AT VALIDATE, so
+  the model can rewrite on the same tick; `to` present and `countsAsTheAsk` absent are the
+  pre-existing rails. In a FOCUSED pass the first gap-less `send` is bound to the focus
+  observation, so a message that names no item still marks the ask (only the first: gap-less sends
+  are not deduped, so binding all of them would refuse every manager after the first).
 - `mootFactFor` (`:3819-3830`) stays a SYNC closure over pre-batched maps (round-3 #13): before the
   per-gap loop, batch `listL2CitingCapture(captureIds)` (new in `src/db/rawCaptures.ts`: jobs +
   visits with `source_capture_id in (…)`) and `listVisitsCreatedSince(tenantId, minNoticedAt)` (new
@@ -335,7 +379,25 @@ refused; (15) the heading. `lifecycle.test.ts`: `listFreshPings: async () => []`
 throwing pass keeps the claim.
 
 ### Automated verification
-- [ ] gates green; (10)–(15) + worker tests pass; falsify (14) by removing the guard → double send
+- [x] gates green; (10)–(15) + worker tests pass; falsify (14) by removing the guard → double send
+### Landed 2026-09-07. What two review rounds changed that the plan did not say:
+- **`focusedPassBlockedBy()` gates BEFORE the claim.** Nothing releases a `pinged_at`, so a worker
+  deployed before its env landed would have drained the queue marking calls "the planner was called
+  about this" while calling nobody — permanently, since both fast-path readers require
+  `pinged_at is null`. The gate also carries the spine-model rail the heartbeat has.
+- **A focused pass's first gap-less `send` is bound to its item** (see above), and the heartbeat's
+  is NOT — a tick shows many items, so there is no one item a bare send is about. Accepted: the
+  doctrine asks the planner to name the item, and the cost of forgetting there is a second text at
+  the next tick, not a lost call.
+- **The focused pass is scoped against MUTATION too** — `listDismissedIds`/`listDismissedNudges`
+  are stubbed empty, or `recover` (validated against those sets, not against the gaps on screen)
+  could un-dismiss any gap in the firm from a pass about one call. Tenant eligibility filters the
+  real Telegram-binding read, so a firm the planner does not serve cannot get undeliverable rows.
+- **The inferred-booking floor is clamped to `EVIDENCE_FLOOR_MAX_DAYS`** — one unanswered
+  observation would otherwise page the firm's whole visit history on every heartbeat, forever.
+- **The ask-marker line carries no elapsed phrase.** "2 hours ago" is a temporal phrase the date
+  rail matches and `dateLabels` does not contain for these kinds, so a planner echoing it would
+  have its whole message dropped.
 ### Live verification — none until Phase 3. ### Manual verification — none. *Continue.*
 
 ## Phase 3: The hands, the citation, the record, and the deploy
@@ -396,9 +458,29 @@ booking unchanged; (18) `open_job` cites, copies, refuses with open work unless 
 wire s2` (md5 the repo copy first), read rule 7 back, `nemoclaw s2 gateway restart`, then s3 s5 s6 s7 s8.
 
 ### Automated verification
-- [ ] gates green; `doctrine.test.ts` green; (16)–(18) pass;
-      `grep -rn "ingestEmail\|email/ingest\|from 'googleapis'\|\"googleapis\"" src scripts docs package.json`
-      → 0 (`routes.googleapis.com` in `googleRoutes.ts:21` is a URL, not the package — round-3 #22)
+- [x] gates green; `doctrine.test.ts` green; (16)–(18) pass;
+      `grep -rn "ingestEmail\|email/ingest\|from 'googleapis'\|\"googleapis\"" src scripts package.json`
+      → 0 (`routes.googleapis.com` in `googleRoutes.ts:21` is a URL, not the package — round-3 #22).
+      **`docs` is NOT in the gate**: three hits remain there on purpose, and they are the records
+      saying the puller was deleted and why.
+### Landed 2026-09-07. What the review changed that the plan did not say:
+- **The citation is narrowed three ways**, because citing the WRONG call is worse than citing none
+  — a false citation closes a live ask on unrelated work and puts one caller's words permanently
+  onto another's job. An ask is citable only if (1) `asked_at` is set: the office actually texted a
+  manager, so their agent can be answering it; (2) it is recent (`CITE_ASK_WINDOW_MS`, 7 days) —
+  otherwise an ask nobody ever answered is swallowed by the next unrelated booking, forever; and
+  (3) the shape matches — a booking that MINTS a job can only answer an ask that had no job on file.
+- **The entry carries the CALL's channel and time**, read from the observation, not `'phone_call'`
+  and the booking's clock. The brief renders these verbatim, so hardcoding them told every reader
+  that an emailer phoned, at the hour the manager happened to answer.
+- **A cancelled row is not "created from this capture"** (`listL2CitingCapture`). `bookVisit` rolls
+  a minted shell back by flipping it to `cancelled` and the stamp stays — so the overlap race would
+  otherwise close the ask on a booking that never happened.
+- **`open_job`'s mint guard is `book_visit`'s exact test**, not a stricter one: a title that NAMES
+  an open job. Stricter, it would refuse an open that `book_visit` would allow and send the agent
+  round a loop the shared steer cannot resolve (it says "pass the matching jobId", which this tool
+  does not accept — so the steer gained a sentence saying what to do here).
+- Five more stale comments and `.env.example`'s `GMAIL_*` block went with the puller.
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP, `ssh tradesbox`, Render logs for `Calls-worker`, a paired
   manager mailbox, and ONE human action: the owner emails it from a known customer's address with

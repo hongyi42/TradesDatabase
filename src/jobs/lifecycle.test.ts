@@ -799,6 +799,10 @@ describe('the planner gate', () => {
     expire: async () => EXPIRE_OK,
     ingestLogs: async () => INGEST_OK,
     hasModelKey: () => true,
+    // RUNG 10: the unclaimed-observation probe. Stubbed like every other
+    // reader — unstubbed it is a live database read from a unit test, and it
+    // decides whether an off-cadence tick plans at all.
+    listFreshPings: async () => false,
   };
 
   const planned = (over: Record<string, unknown> = {}) => {
@@ -874,6 +878,28 @@ describe('the planner gate', () => {
     }
   });
 
+  test('an UNCLAIMED inbound observation makes an off-cadence tick plan anyway (rung 10)', async () => {
+    // The Calls-worker's ping loop normally answers a committed call within
+    // ~10s. When that process is down, this is the fallback — a customer told
+    // "someone will come out" must not wait for the next half hour.
+    process.env.PLANNER_MODE = 'shadow';
+    const waiting = planned({ listFreshPings: async () => true });
+    await runLifecycle('2026-07-02T12:10:00.000Z', waiting.deps);
+    expect(waiting.calls.length).toBe(1);
+
+    // A FAILED probe must not start planning every firm — it reads as "none".
+    const broken = planned({
+      listFreshPings: async () => {
+        throw new Error('database down');
+      },
+    });
+    const s = await runLifecycle('2026-07-02T12:10:00.000Z', broken.deps);
+    expect(broken.calls.length).toBe(0);
+    expect(s.teamLeadPlanner).toEqual({
+      skipped: 'off-cadence tick (no firm due, no unclaimed observation)',
+    });
+  });
+
   test('the COARSE candidate gate: :00 and :30 run, :10 and :40 skip', async () => {
     // This is no longer the whole cadence decision (plan 2026-08-29 Phase 3) —
     // it is the cheap "could ANY firm be due?" check that keeps an off-cadence
@@ -900,7 +926,7 @@ describe('the planner gate', () => {
       expect(calls.length, `minute :${minute}`).toBe(shouldRun ? 1 : 0);
       if (!shouldRun) {
         expect(s.teamLeadPlanner).toEqual({
-          skipped: 'off-cadence tick (no firm can be due this minute)',
+          skipped: 'off-cadence tick (no firm due, no unclaimed observation)',
         });
       }
     }

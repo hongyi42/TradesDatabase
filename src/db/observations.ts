@@ -217,3 +217,169 @@ export async function setObservationStatus(
   if (error) throw new Error(`setObservationStatus failed: ${error.message}`);
   return data as Observation | null;
 }
+
+// ── RUNG 10: the ping loop's markers ─────────────────────────────────────────
+//
+// TWO markers, deliberately separate:
+//   pinged_at — the planner was CALLED about this row. Written by the
+//               Calls-worker's guarded claim (and best-effort by a heartbeat
+//               pass that showed the row), so exactly one process runs the
+//               focused pass for it.
+//   asked_at  — a message actually WENT OUT about it. Written by the send
+//               itself, under its own guard, so the focused pass and the
+//               heartbeat can never both text a manager about one call.
+// A planner that reads the item and decides to WAIT has pinged, not asked —
+// which is why `hold` must not consume the ask.
+
+// The kinds the ping loop watches. Kind-blind by construction: rung 10b appends
+// `inbound_unmatched` here and every helper below follows without editing.
+export const PINGED_KINDS: ReviewKind[] = ['inbound_new_job', 'inbound_commitment'];
+
+// Has this capture already been noticed? The write-path's dedup arm — an
+// observation is the only L2-side trace a "matched customer, nothing created"
+// inbound capture leaves, so without this a redelivery re-runs the extractor
+// and re-asks. Subject-ref keyed, any kind, any status, FLEET-WIDE: the caller
+// holds a capture id, which is proof enough of tenancy (the captureHasVisitNote
+// precedent).
+export async function captureHasObservation(captureId: string): Promise<boolean> {
+  const { data, error } = await getClient()
+    .from('observations')
+    .select('id')
+    .eq('subject_ref', captureId)
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`captureHasObservation failed: ${error.message}`);
+  return !!data;
+}
+
+// The ping loop's read: open rows of these kinds nobody has called the planner
+// about and nobody has texted about, oldest first. FLEET-WIDE — the worker
+// polls every firm at once, which is why idx_observations_unpinged has no
+// leading tenant column and why this WHERE must match its predicate exactly.
+export async function listUnpingedObservations(
+  kinds: ReviewKind[],
+  limit: number,
+): Promise<Observation[]> {
+  if (kinds.length === 0) return []; // PostgREST `in.()` with zero values errors
+  const { data, error } = await getClient()
+    .from('observations')
+    .select()
+    .eq('status', 'open')
+    .in('kind', kinds)
+    .is('pinged_at', null)
+    .is('asked_at', null)
+    .order('noticed_at', { ascending: true })
+    .limit(limit);
+  if (error) throw new Error(`listUnpingedObservations failed: ${error.message}`);
+  return (data ?? []) as Observation[];
+}
+
+// THE HEARTBEAT'S CHEAP PROBE: is there an inbound observation the ping loop
+// has not got to? Boolean, and BOUNDED BY AGE on purpose — an unclaimed row is
+// normally claimed within ~10s, so one still sitting here means the Calls-worker
+// is down, restarting, or died on it. The window keeps that from becoming
+// permanent: a row nothing ever manages to ping must not force the planner to
+// run on every heartbeat forever. The half-hourly pass shows it anyway.
+export async function hasFreshUnpingedObservation(
+  kinds: ReviewKind[],
+  sinceIso: string,
+): Promise<boolean> {
+  if (kinds.length === 0) return false; // PostgREST `in.()` with zero values errors
+  const { data, error } = await getClient()
+    .from('observations')
+    .select('id')
+    .eq('status', 'open')
+    .in('kind', kinds)
+    .is('pinged_at', null)
+    .is('asked_at', null)
+    .gte('noticed_at', sinceIso)
+    .limit(1);
+  if (error) throw new Error(`hasFreshUnpingedObservation failed: ${error.message}`);
+  return (data ?? []).length > 0;
+}
+
+// CLAIM one row for a focused pass. Guarded on `pinged_at is null`, so two
+// workers racing the same row converge: the loser gets null and does nothing.
+// Null therefore means exactly "somebody else has it", never an error.
+export async function claimObservationPing(id: string): Promise<Observation | null> {
+  const { data, error } = await getClient()
+    .from('observations')
+    .update({ pinged_at: new Date().toISOString() })
+    .eq('id', id)
+    .is('pinged_at', null)
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`claimObservationPing failed: ${error.message}`);
+  return data as Observation | null;
+}
+
+// MARK ASKED. Called by the send itself, and the guard is what makes "one call,
+// one text" structural rather than a doctrine hope.
+//
+// IT WRITES NO `not_before`, deliberately. An earlier draft set one to the same
+// distance, which was redundant — `asked_at` plus the window below already
+// holds the row — and actively harmful twice over: the gap view renders
+// `currently held until: <ISO>`, a raw date the planner may NOT use (it is not
+// in `dateLabels`), so the day-later re-ask this window exists to allow would
+// have had its whole message dropped by the date rail; and the failure
+// compensation clears `asked_at` only, so a transient write failure would have
+// left a hold nothing could lift. `not_before` stays what it was: the planner's
+// own `hold`.
+//
+// A WINDOW, NOT A ONE-TIME CAP, and the difference is the whole point. What has
+// to be impossible is the focused pass and the half-hourly heartbeat BOTH
+// texting a manager about one call — two passes minutes apart. What must stay
+// possible is the planner deciding, a day later, that an unanswered call is
+// worth raising again: pacing is its judgment, not a number in this file (the
+// standing ruling behind the deleted nudge cap). So the row is askable again
+// once `asked_at` is older than `reaskAfterIso`, and the caller picks that
+// distance.
+//
+// Concurrency-safe despite the OR: Postgres re-checks an UPDATE's qualification
+// after taking the row lock, so of two passes racing here the second finds
+// `asked_at` already set to now and matches nothing.
+//
+// Returns the stamp it wrote, so the caller can compensate if the delivery then
+// fails; null = asked too recently (or the row moved), and the send is refused.
+export async function markObservationAsked(
+  id: string,
+  reaskAfterIso: string,
+): Promise<string | null> {
+  const stamp = new Date().toISOString();
+  const { data, error } = await getClient()
+    .from('observations')
+    .update({ asked_at: stamp })
+    .eq('id', id)
+    .eq('status', 'open')
+    .or(`asked_at.is.null,asked_at.lt.${reaskAfterIso}`)
+    .select('id')
+    .maybeSingle();
+  if (error) throw new Error(`markObservationAsked failed: ${error.message}`);
+  return data ? stamp : null;
+}
+
+// The compensation for a send that stamped and then failed to deliver. Guarded
+// on the EXACT stamp this caller wrote, so it can never clear somebody else's
+// later, successful ask. Without it a transient office-write failure leaves the
+// row marked asked with nothing delivered — un-askable forever.
+export async function clearObservationAsked(id: string, stamp: string): Promise<void> {
+  const { error } = await getClient()
+    .from('observations')
+    .update({ asked_at: null })
+    .eq('id', id)
+    .eq('asked_at', stamp);
+  if (error) throw new Error(`clearObservationAsked failed: ${error.message}`);
+}
+
+// The heartbeat's best-effort stamp: a :00/:30 pass that SHOWED these rows has
+// called the planner about them, so the ping loop must not call again. Guarded
+// on `pinged_at is null` so it never overwrites a real claim's timestamp.
+export async function stampObservationsPinged(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const { error } = await getClient()
+    .from('observations')
+    .update({ pinged_at: new Date().toISOString() })
+    .in('id', ids)
+    .is('pinged_at', null);
+  if (error) throw new Error(`stampObservationsPinged failed: ${error.message}`);
+}

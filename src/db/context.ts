@@ -23,6 +23,7 @@ import {
   type RawCapture,
 } from './rawCaptures.js';
 import { factSourceIds, foldRetractedFacts } from './standingFacts.js';
+import { correspondenceEntries, foldRetractedCorrespondence } from './jobs.js';
 
 // One upcoming stop, in the schedule's display conventions: date + HH:MM
 // slices of the naive-local timestamps (never timezone-converted — the wire's
@@ -156,8 +157,16 @@ export async function getCustomerContext(
       ...factSourceIds(customer?.attributes ?? null),
       ...jobs.flatMap((j) => factSourceIds(j.attributes)),
     ];
+    // Correspondence entries carry their own evidence (rung 10) and are in the
+    // SAME position as standing facts: an inbound capture on an existing job is
+    // never stamped with a customer_id (identity resolves after L1, which is
+    // immutable), so its retraction would not be found by the capture lists
+    // above and a retracted email would keep speaking from the job's L3.
+    const correspondenceIds = jobs.flatMap((j) =>
+      correspondenceEntries(j.attributes).map((e) => e.captureId),
+    );
     const retractions = await findRetractionsFor([
-      ...new Set([...recentCaptures.map((c) => c.id), ...factIds]),
+      ...new Set([...recentCaptures.map((c) => c.id), ...factIds, ...correspondenceIds]),
     ]);
     recentCaptures = foldRetractions(recentCaptures, retractions);
     const retractedIds = new Set(
@@ -178,7 +187,10 @@ export async function getCustomerContext(
     }
     jobsOut = jobs.map((j) => ({
       ...j,
-      attributes: foldRetractedFacts(j.attributes, retractedIds),
+      attributes: foldRetractedCorrespondence(
+        foldRetractedFacts(j.attributes, retractedIds),
+        retractedIds,
+      ),
     }));
   }
 

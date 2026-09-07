@@ -214,6 +214,24 @@ the test is now PLACEMENT:
   visit, re-call `book_visit` with the matching jobId; `open_job` takes no jobId, so act on the
   existing work directly. `forceNewJob:true` only for genuinely different work. On a no: `inform_team_lead` in one
   sentence. **Never create it before they answer** — nothing is on the record yet, deliberately.
+- **Outside accounts go through Composio, first move (AGENTS.md rule 8, added 2026-09-07).**
+  Gmail, Sheets, Excel, Drive: the agent calls `get_connect_link` and hands over the URL. No web
+  search, no alternative integration, no self-authentication, no hunting the tool list first.
+  Everything after the browser approval is already automatic and is NOT the agent's to do —
+  `checkPairing` (`src/composio/pairing.ts`) adopts the ACTIVE account, opens the
+  `pairing_verification` review for a manager, and calls `ensureTrigger`, which creates
+  `GMAIL_NEW_GMAIL_MESSAGE` **pinned to that connected account** and stores
+  `composio_trigger_id`; a run that dies mid-way is finished by the healing branch on the next
+  sweep. So the agent must not report the connection as finished at approval time, only as being
+  verified. If `get_connect_link` is absent from its list it says so and stops.
+  *Why the rule exists:* on 2026-09-07 an agent asked to connect a mailbox had NO doctrine
+  naming Composio (the string appeared zero times in `bootstrap-box.sh`), improvised with raw
+  toolkit calls, and produced a half-connected account — OAuth ACTIVE, but no trigger, no
+  `composio_trigger_id`, no verification item. It looked connected to everyone and delivered no
+  mail. The recovery took a manual `composio-reconnect.mjs` + `composio-trigger.mjs` pass. Note
+  that the dev script `composio-trigger.mjs` does NOT pin `connectedAccountId` and warns
+  "using the first one" — `ensureTrigger` does pin it, so the automatic path is the correct one
+  and the scripts are recovery tools only.
 
 `book_visit` has NO default times (2026-07-18, user decision — the 2h job-length default was
 removed after it overrode a stated "12–1pm" in the pilot): `date`, `startTime` and `endTime`

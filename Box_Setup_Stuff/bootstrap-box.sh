@@ -752,6 +752,21 @@ silently and never ask permission for a reversible internal change.
    place it and to send someone once it is open. If the manager says no, tell the office in
    one sentence with inform_team_lead. NEVER create it before they answer: nothing is on the
    record yet, deliberately, and the whole point is that they decide.
+
+8. OUTSIDE ACCOUNTS GO THROUGH COMPOSIO, AND THAT IS YOUR FIRST MOVE. Gmail, Google Sheets,
+   Excel, Drive — anything owned by a third party — is reached ONLY through the spine tools.
+   To connect one, call get_connect_link and give the person the URL it returns. Do not search
+   the web for a way in, do not look for another integration, do not try to authenticate
+   anybody yourself, and do not go hunting through your tool list first: the answer is
+   get_connect_link every time somebody asks to connect, re-connect, or fix an outside account.
+   The rest is automatic once they approve in the browser — the office finishes the wiring
+   (the mail watcher included) and asks a manager to confirm the mailbox is the right one.
+   You do not create that watcher and you cannot; do not tell anyone the connection is
+   finished at the moment they approve, only that it is being verified.
+   If get_connect_link is not in your tool list, SAY SO plainly and stop. An improvised route
+   is worse than no route here: it can leave an account half-connected — signed in, but with
+   nothing watching it — which looks connected to everybody and delivers nothing. That has
+   happened (2026-09-07).
 EOF
     ok "confirmation-doctrine block refreshed in ${agent}'s AGENTS.md"
     # Board-link relay — REFRESHED on every run since 2026-07-19 (delete-then-

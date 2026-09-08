@@ -202,79 +202,79 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L4624 · The quiet-firm skip
 - L4627 · No v_office_messages
 - L4629 · B65-REACH-A-MANAGER
-- L4820 · For a customer we know, inbound creates NOTHING.
-- L4823 · The extractor gained one field, visitCommitted
-- L4825 · A. job_captures
-- L4829 · B. What a yes creates CITES the call.
-- L4832 · C. attributes.correspondence[]
-- L4836 · open_job
-- L4839 · The focused pass.
-- L4843 · Two markers, pinged_at and asked_at.
-- L4851 · A "processed" marker must be the LAST thing written.
-- L4857 · Nothing releases a pinged_at.
-- L4861 · The two doors spell the sender differently.
-- L4864 · captureHasObservation needed its own index.
-- L4868 · A gap-less send never reaches the ask marker.
-- L4872 · The date rail reaches further than it looks.
-- L4875 · ingestEmail and googleapis are deleted.
-- L4877 · ⚠ THE PHONE DOOR ONLY REACHES THIS RUNG ON A new_job INTENT. _(2026-08-06)_
-- L4883 · findFoldImpact's superset invariant is now load-bearing in a second place.
-- L4889 · THE EMAIL CHANNEL DROPS ITS THREAD ID — verified 2026-09-07, and it is time-sensitive. _(2026-09-07)_
-- L4940 · TRAP — nemoclaw <s> status LIES about the gateway right after a restart.
-- L4972 · A visit carries a CREW, and a crew has no lead
-- L4977 · The double-booking guard MOVED with the person
-- L4991 · A composite PK on a link table makes PostgREST synthesise a junction
-- L4999 · A bare ON CONFLICT DO NOTHING swallows an exclusion constraint
-- L5003 · Moving a filter from SQL into JS meets PostgREST's max_rows
-- L5007 · A derived column needs its trigger on UPDATE too, and a FOR SHARE on the parent
-- L5012 · Order is load-bearing in two different places
-- L5018 · Deploy shape: an additive migration BEFORE the code, the drop AFTER
-- L5134 · ON DELETE SET NULL is an UPDATE.
-- L5136 · Naive-local vs real UTC, again. _(2026-09-08)_
-- L5141 · A once-ever index plus stable ids = a detector that fires once, forever.
-- L5148 · A liveness filter can be bypassed by an id rename.
-- L5152 · A compat view bridges the deploy. _(2026-09-05)_
-- L5166 · schedule_events.assignment_id KEEPS ITS NAME this rung.
-- L5169 · The completed-stamp CHECK was dropped.
-- L5179 · RECORDED, NOT FIXED — a crew edit is three HTTP round trips and is NOT atomic.
-- L5189 · RECORDED, NOT FIXED — the tray became an unbounded full-table read.
-- L5275 · A green suite proves nothing when you mass-edit tests.
-- L5280 · A test can pin the bug.
-- L5283 · Reachability is not a compile error.
-- L5359 · A technician's seat agent has NO scheduling verb at any tier.
-- L5362 · Live specimen in the pilot _(2026-09-01)_
-- L5372 · Counting.
-- L5374 · Detection.
-- L5379 · Booking.
-- L5392 · Build 6 (vocabulary): _(2026-09-01)_
-- L5397 · Build 7 (detectors report): _(2026-09-05)_
-- L5407 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L4867 · For a customer we know, inbound creates NOTHING.
+- L4870 · The extractor gained one field, visitCommitted
+- L4872 · A. job_captures
+- L4876 · B. What a yes creates CITES the call.
+- L4879 · C. attributes.correspondence[]
+- L4883 · open_job
+- L4886 · The focused pass.
+- L4890 · Two markers, pinged_at and asked_at.
+- L4898 · A "processed" marker must be the LAST thing written.
+- L4904 · Nothing releases a pinged_at.
+- L4908 · The two doors spell the sender differently.
+- L4911 · captureHasObservation needed its own index.
+- L4915 · A gap-less send never reaches the ask marker.
+- L4919 · The date rail reaches further than it looks.
+- L4922 · ingestEmail and googleapis are deleted.
+- L4924 · ⚠ THE PHONE DOOR ONLY REACHES THIS RUNG ON A new_job INTENT. _(2026-08-06)_
+- L4930 · findFoldImpact's superset invariant is now load-bearing in a second place.
+- L4936 · THE EMAIL CHANNEL DROPS ITS THREAD ID — verified 2026-09-07, and it is time-sensitive. _(2026-09-07)_
+- L4987 · TRAP — nemoclaw <s> status LIES about the gateway right after a restart.
+- L5019 · A visit carries a CREW, and a crew has no lead
+- L5024 · The double-booking guard MOVED with the person
+- L5038 · A composite PK on a link table makes PostgREST synthesise a junction
+- L5046 · A bare ON CONFLICT DO NOTHING swallows an exclusion constraint
+- L5050 · Moving a filter from SQL into JS meets PostgREST's max_rows
+- L5054 · A derived column needs its trigger on UPDATE too, and a FOR SHARE on the parent
+- L5059 · Order is load-bearing in two different places
+- L5065 · Deploy shape: an additive migration BEFORE the code, the drop AFTER
+- L5181 · ON DELETE SET NULL is an UPDATE.
+- L5183 · Naive-local vs real UTC, again. _(2026-09-08)_
+- L5188 · A once-ever index plus stable ids = a detector that fires once, forever.
+- L5195 · A liveness filter can be bypassed by an id rename.
+- L5199 · A compat view bridges the deploy. _(2026-09-05)_
+- L5213 · schedule_events.assignment_id KEEPS ITS NAME this rung.
+- L5216 · The completed-stamp CHECK was dropped.
+- L5226 · RECORDED, NOT FIXED — a crew edit is three HTTP round trips and is NOT atomic.
+- L5236 · RECORDED, NOT FIXED — the tray became an unbounded full-table read.
+- L5322 · A green suite proves nothing when you mass-edit tests.
+- L5327 · A test can pin the bug.
+- L5330 · Reachability is not a compile error.
+- L5406 · A technician's seat agent has NO scheduling verb at any tier.
+- L5409 · Live specimen in the pilot _(2026-09-01)_
+- L5419 · Counting.
+- L5421 · Detection.
+- L5426 · Booking.
+- L5439 · Build 6 (vocabulary): _(2026-09-01)_
+- L5444 · Build 7 (detectors report): _(2026-09-05)_
+- L5454 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L5803 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L5826 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L5873 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L5910 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L5942 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L5947 · Every member row stores the FULL grouped message in question.
-- L5951 · The attribution stamp is an audit link, not a gate.
-- L5955 · The derived stamp requires a capture a badge-holder SPOKE
-- L5959 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L5965 · The follow-up loop has two halves and both had to be written down.
-- L5971 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L6045 · Batching works.
-- L6047 · The follow-up leg works, including the half that fails silently.
-- L6051 · Both attribution paths fired, each in its designed case.
-- L6055 · Escalation fired correctly
-- L6056 · The planner's group-aware pacing is the result worth keeping.
+- L5850 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L5873 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L5920 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L5957 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L5989 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L5994 · Every member row stores the FULL grouped message in question.
+- L5998 · The attribution stamp is an audit link, not a gate.
+- L6002 · The derived stamp requires a capture a badge-holder SPOKE
+- L6006 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L6012 · The follow-up loop has two halves and both had to be written down.
+- L6018 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L6092 · Batching works.
+- L6094 · The follow-up leg works, including the half that fails silently.
+- L6098 · Both attribution paths fired, each in its designed case.
+- L6102 · Escalation fired correctly
+- L6103 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L6408 · Evals:
-- L6415 · Runbooks:
-- L6420 · Decision history with citations:
-- L6424 · This file
+- L6455 · Evals:
+- L6462 · Runbooks:
+- L6467 · Decision history with citations:
+- L6471 · This file
 
 <!-- INDEX:END -->
 
@@ -4774,6 +4774,53 @@ ladder was a workaround for that CHECK. Removing the CHECK removes the reason th
 **The migration is unblocked** (user, 2026-09-05): *"I am not afraid of a real data migration
 because we are operating in a test suite and nothing is in production right now."* Destructive is
 permitted, consistent with the L1 waiver recorded above.
+
+### 🟡 BUILT 2026-09-08, NOT YET DEPLOYED — rung 10b, "the new caller"
+
+Branch `feat/rung-10b-new-caller` (6 commits). Plan:
+`thoughts/shared/plans/2026-09-08-rung-10b-the-new-caller.md`. What it changes, in one line each:
+
+1. **The matcher learned two keys**: the sender's email address and the Gmail THREAD, in the order
+   phone → email → thread → address, each unique-or-refuse. The thread key also names the JOB when
+   the thread's captures point at exactly one. This is what would have caught the 2026-09-08 live
+   specimen — a known customer's reschedule reply, parked as a stranger because it carried neither
+   their phone nor their address.
+2. **An unmatched caller is an ITEM, not a dead end.** `inbound_unmatched` (a third `PINGED_KINDS`
+   entry — the list was written kind-blind and this proved it) replaces the `unlinked_call` review
+   and its push, which no tool could ever act on. The kind and its existing rows are KEPT; only the
+   writer is deleted, the `flagNudgeGap` precedent. The six open pilot rows stay for hand
+   resolution.
+3. **The planner may send a PAIR** (user, 2026-09-08): the text that reaches a manager's phone plus
+   a quiet `as:"assistant"` note to that manager's assistant carrying the item id, so the answer
+   comes back stapled to the right call. Rung 10's refusal of an assistant-leg send naming an
+   inbound item is replaced by a marker rule — only the chat leg stamps `asked_at` — with the note
+   bounded twice: it is dropped unless a chat send to the SAME manager about the SAME item was
+   accepted in the same plan, and it is refused at apply unless that text's guarded stamp actually
+   LANDED. Both bounds exist because the text is rate-limited to one a day and the note was not.
+4. **`record_caller` — the planner's first write to the customer record.** It re-runs
+   `recordFieldNote` for the capture the item names, so every row cites the call. **The identity's
+   header rule "nothing irreversible or externally visible may dispatch for it" is RETIRED here**
+   (see the team-lead surface entry above). Idempotent by reading `listL2CitingCapture` first, and
+   by a DB index: `uq_customers_one_per_capture`. Customers only — `bookVisit` rolls a job shell
+   back by flipping it to cancelled and the stamp STAYS, so the same index on jobs would refuse
+   that legitimate retry, and the pilot already carries such a pair.
+5. **The extractor reads the conversation**, fetched from Gmail through Composio (8s deadline,
+   billed either way, skipped for a starter / an unpaired mailbox / a redelivery the door will
+   no-op on) with our own captures as the fallback. Identity may come from earlier messages;
+   `jobTitle`, `statusSignal`, `visitCommitted`, `touchesOperations`, `followUp` and `attributes`
+   describe the LATEST message alone — and identity may never come from the firm's own signature
+   block, because those fields feed the deterministic matcher.
+
+**TWO MIGRATIONS MUST BE HAND-APPLIED BEFORE THE DEPLOY** (deploys run none):
+`20260908110000_thread_id_index.sql` (a partial index on `metadata->>'threadId'`, without which the
+thread key scans the tenant's whole capture history inside the webhook request) and
+`20260908120000_one_customer_per_capture.sql`. Re-run the zero-duplicates check immediately before
+applying the second — it aborts the migration if any exists.
+
+**Deferred and NOT done**: every live check (all need the pilot deployed), the Phase 3 manual read
+of the manager's text, and the seat wire pass that puts rule 7's relay line on the boxes (user-
+deferred; `Box_Setup_Stuff/bootstrap-box.sh` and `docs/nemoclaw-tech-agent.md` carry it in the
+repo). Also open: no behavioural eval pins the "latest message alone" guard, which is prompt-only.
 
 ### ✅ DEPLOYED 2026-09-07 — rung 10, "inbound asks before it creates"
 

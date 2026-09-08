@@ -70,6 +70,7 @@ describe('tool cases — the corpus covers the surface', () => {
       'write_memory',
       'read_job_note',
       'write_job_note',
+      'record_caller',
     ]);
     // A name in both lists would mean a tool the eval must cover AND a tool no
     // badge can call — a contradiction, and in practice the sign that spine_read

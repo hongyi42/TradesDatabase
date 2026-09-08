@@ -26,6 +26,10 @@ import {
   getOpenReviewItem,
   listOpenJobsForCustomer,
   getRawCapture,
+  getObservationForTenant,
+  TERMINAL_JOB_STATUSES,
+  listL2CitingCapture,
+  listJobsForCustomer,
   getRawCaptureByExternalId,
   searchCustomers,
   factSourceIds,
@@ -128,6 +132,7 @@ import {
   type ResolvedIdentity,
 } from '../writePath/recordFieldNote.js';
 import { matchIdentity, type MatchResult } from '../writePath/identityMatch.js';
+import { emailAddressOf } from '../email/format.js';
 import { defaultExtractor, type ExtractedFields } from '../writePath/extract.js';
 import {
   requireOutboundCapable,
@@ -1892,6 +1897,70 @@ const TEAM_LEAD_TOOLS = [
       required: ['jobId', 'content'],
     },
   },
+  {
+    name: 'record_caller',
+    description:
+      'SETTLE WHO CALLED, and write it down. For an item that says nobody on file matches the ' +
+      'sender: name the customer it really was with `customerId`, or the one to create with ' +
+      '`newCustomer` once a manager has said so. Exactly one of the two. Everything this writes ' +
+      'CITES the call, so the record can always answer where a customer, a job or a trip came ' +
+      'from. ' +
+      'LINKING somebody we already know needs nobody\'s permission — a customer at a new number ' +
+      'or a new address is a fact you established, not a decision. CREATING a customer, opening ' +
+      'a job with `openJob`, and booking a trip with `bookVisit` are asked first, and that goes ' +
+      'double for the trip: something on the board is a promise to a person. ' +
+      'A booked trip is UNTIMED — on the board with no day and no time — because when it happens ' +
+      'is the manager\'s to say, and you were not given a date. ' +
+      'The item CLOSES ITSELF on the record at your next pass, so do not also close it by hand.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        observationId: {
+          type: 'string',
+          description: "The item id, copied exactly from its `gap` line.",
+        },
+        customerId: {
+          type: 'string',
+          description:
+            'The customer this really was — use it when a lookup found them at a different ' +
+            'number or address. Never together with `newCustomer`.',
+        },
+        newCustomer: {
+          type: 'object',
+          description:
+            'Create the customer from what the caller gave. Only after a manager has said so.',
+          properties: {
+            name: { type: 'string', description: 'Their name, as they gave it.' },
+            phone: { type: 'string' },
+            email: { type: 'string' },
+            addressLine1: { type: 'string' },
+            city: { type: 'string' },
+            state: { type: 'string' },
+            postalCode: { type: 'string' },
+          },
+          required: ['name'],
+        },
+        openJob: {
+          type: 'object',
+          description:
+            'Open a job for this caller as well. Leave it out and nothing is opened — the call ' +
+            'is simply filed against whoever you named.',
+          properties: {
+            title: { type: 'string', description: 'What the work is, in a few words.' },
+            jobType: { type: 'string' },
+          },
+        },
+        bookVisit: {
+          type: 'boolean',
+          description:
+            'true books an UNTIMED trip on the job — only when a manager said someone is going. ' +
+            'false records that nobody is going, and asks nothing further. Leave it out and the ' +
+            'usual question is raised if the firm agreed to come out.',
+        },
+      },
+      required: ['observationId'],
+    },
+  },
 ];
 
 // Handed to the team-lead loop as its tool schemas. Exported (the array itself is
@@ -2538,6 +2607,26 @@ async function isActiveManager(identity: RequestIdentity): Promise<boolean> {
 // `identity` is a parameter rather than a default because there is no ambient
 // team-lead identity: the caller must name the tenant it is acting for, exactly
 // as the gateway does for a badge.
+// The read-based idempotency guard in `record_caller` is not a lock — the window
+// between it and the write spans a live extractor call — so the DATABASE is the
+// authority: uq_customers_one_per_capture refuses a second customer from one
+// capture. When it fires, the loser must get the same deliberate steer the read
+// path gives ("name it with `customerId`"), not a raw Postgres constraint string
+// that reads as a system fault the planner will simply retry.
+async function recordCallerThroughTheDoor<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      throw new Error(
+        'a customer was already created from this call while this was running — read the item ' +
+          'again and name that customer with `customerId` instead.',
+      );
+    }
+    throw err;
+  }
+}
+
 export async function dispatchForIdentity(
   name: string,
   args: Record<string, unknown>,
@@ -2609,15 +2698,23 @@ async function dispatch(
   // The team-lead ceiling (plan 2026-08-15 feature B; direction constraint
   // 2): the ENTIRE `spine:` namespace is capped to TEAM_LEAD_TOOL_NAMES —
   // deny-by-default, so a tool this set forgot fails CLOSED (targetGuard
-  // doctrine). There is no human behind a spine: identity to confirm
-  // anything, so nothing irreversible or externally visible may dispatch for
-  // it; this gate is the mechanism, the prompt is merely steering. Placed
+  // doctrine). This gate is the mechanism; the prompt is merely steering.
+  //
+  // It used to say "nothing irreversible or externally visible may dispatch for
+  // it, because there is no human behind a spine: identity to confirm anything".
+  // RUNG 10B RETIRED THAT (user ruling 2026-09-07: the planner writes L2) — see
+  // the header of src/teamLead/identity.ts for what replaced it. In short: the
+  // set is still the ceiling, every write it permits cites the capture it came
+  // from, ask-first is doctrine rather than mechanism, and nothing in the set
+  // reaches a person (a `send` is still proposed here and performed after the
+  // loop by applyDecision, where the rails are). Placed
   // after the cost event (a refused call still burned a decision — the
   // admin-gate precedent) and before every tool body. tools/list is
   // untouched: discovery is cosmetic, dispatch is the gate.
   if (identity.technicianRef.startsWith('spine:') && !TEAM_LEAD_TOOL_NAMES.has(name)) {
     throw new Error(
-      'the team-lead identity is capped to reading, asking and its own notes — tool not allowed',
+      'the team-lead identity is capped to reading, asking, its own notes and recording a ' +
+        'caller — tool not allowed',
     );
   }
   // The INVERSE of that ceiling, and the reason spine_read can safely sit outside
@@ -5946,6 +6043,231 @@ async function dispatch(
         action: 'saved',
         chars: checked.content.length,
         writtenAt: saved.written_at,
+      };
+    }
+
+    // RUNG 10B — THE PLANNER'S FIRST WRITE TO THE RECORD, and it goes through the
+    // ONE DOOR rather than around it: this re-runs `recordFieldNote` for the very
+    // capture the item is about, with the identity the planner settled and what a
+    // manager decided. Nothing here writes a customer, a job or a visit itself —
+    // the door does, and every row it writes cites the call, exactly as it would
+    // have if code had recognised the caller in the first place.
+    case 'record_caller': {
+      const observationId = str('observationId');
+      if (!observationId) {
+        throw new Error("observationId is required (copy it from the item's `gap` line)");
+      }
+      const obs = await getObservationForTenant(observationId, tenantId);
+      if (!obs) {
+        throw new Error(
+          'No such item on this firm — check the id against the gap you are looking at.',
+        );
+      }
+      if (obs.kind !== 'inbound_unmatched') {
+        throw new Error(
+          `record_caller is for an item that says nobody on file matches the sender; ` +
+            `${observationId} is a ${obs.kind}. The caller there is already known.`,
+        );
+      }
+      if (obs.status !== 'open') {
+        throw new Error(`that item is already ${obs.status} — there is nothing left to record.`);
+      }
+      // The call itself. `subject_ref` is the L1 capture id for this kind.
+      const capture = await getRawCapture(obs.subject_ref);
+      if (!capture || capture.tenant_id !== tenantId) {
+        throw new Error('the call this item is about is not on file — nothing to record it onto.');
+      }
+      if (!capture.technician_ref) {
+        // The column is nullable (pre-column rows), and the door attributes
+        // everything it writes to a person. Refuse rather than invent one.
+        throw new Error('that call has nobody on it, so it cannot be recorded — raise it instead.');
+      }
+      // Hoisted: the door's call is inside a closure, where the narrowing above
+      // does not survive.
+      const capturedBy = capture.technician_ref;
+
+      const customerId = str('customerId');
+      const newCustomer =
+        args.newCustomer && typeof args.newCustomer === 'object' && !Array.isArray(args.newCustomer)
+          ? (args.newCustomer as Record<string, unknown>)
+          : undefined;
+      if (!!customerId === !!newCustomer) {
+        throw new Error(
+          'name exactly ONE of `customerId` (somebody already on file) or `newCustomer` ' +
+            '(somebody a manager said to create).',
+        );
+      }
+      // BY HAND, because `required` in the inputSchema is decorative here:
+      // coerceBySchema only coerces declared TYPES and never enforces required
+      // (the write_memory precedent). Unvalidated, `newCustomer: {}` mints a row
+      // literally called "Unknown customer" — the door's fallback — and a
+      // nameless person on the record is worse than a refusal.
+      const newName = typeof newCustomer?.name === 'string' ? newCustomer.name.trim() : '';
+      if (newCustomer && !newName) {
+        throw new Error(
+          '`newCustomer` needs a `name` — record who the caller said they were, or name them ' +
+            'with `customerId` if they turn out to be somebody already on file.',
+        );
+      }
+
+      // IDEMPOTENT BY READING THE RECORD FIRST. A retry after a downstream throw
+      // must not mint a SECOND customer or job citing this same call: those rows
+      // are L1-pinned, so they can never be deleted (a stamped capture makes its
+      // customer permanently undeletable). What already cites the capture is the
+      // authority on what this call still has left to do.
+      const already = await listL2CitingCapture([capture.id]);
+      if (newCustomer && already.some((r) => r.kind === 'customer')) {
+        const existing = already.find((r) => r.kind === 'customer');
+        throw new Error(
+          `a customer was already created from this call (${existing?.id}) — name it with ` +
+            '`customerId` instead of creating a second one.',
+        );
+      }
+      if (customerId) {
+        const target = await getCustomer(customerId);
+        if (!target || target.tenant_id !== tenantId) {
+          throw new Error('no such customer on this firm — look them up before naming them.');
+        }
+      }
+      // A job already opened from this call is done; asking for it again would
+      // mint a twin. Silently dropped rather than refused, so a retry finishes
+      // the parts that did NOT land instead of failing whole.
+      const jobAlreadyOpened = already.some((r) => r.kind === 'job');
+      const openJobArg =
+        args.openJob && typeof args.openJob === 'object' && !Array.isArray(args.openJob)
+          ? (args.openJob as Record<string, unknown>)
+          : undefined;
+      const openJob =
+        jobAlreadyOpened || !openJobArg
+          ? undefined
+          : {
+              title: typeof openJobArg.title === 'string' ? openJobArg.title : null,
+              jobType: typeof openJobArg.jobType === 'string' ? openJobArg.jobType : null,
+            };
+      const bookVisitArg = typeof args.bookVisit === 'boolean' ? args.bookVisit : undefined;
+      // WHAT THIS CALL WILL LEAVE BEHIND, predicted before it runs — and the
+      // prediction has to model what the DOOR does, not what reads convenient.
+      // A call that nothing CITES can never become moot, so the item would sit
+      // open forever while this tool told the planner to leave it alone.
+      //
+      // The door resolves the job as: the customer's most recent NON-TERMINAL
+      // job, else mint one when `openJob` says so, else file the call onto their
+      // most recent job of any status. And the citation only counts when the job
+      // it lands on is not CANCELLED (listL2CitingCapture drops those, because a
+      // rolled-back shell is not an answer).
+      //
+      // Creating a customer always cites (customers.source_capture_id), so only
+      // the LINK path needs either check.
+      const onFile = customerId ? await listJobsForCustomer(customerId) : [];
+      const liveJobs = onFile.filter((j) => !TERMINAL_JOB_STATUSES.has(j.status));
+      if (customerId && !openJob && !onFile.some((j) => j.status !== 'cancelled')) {
+        throw new Error(
+          'there is nothing to file this call onto — that customer has no job it could land on. ' +
+            'Pass `openJob` as well, or dismiss the item if there is no work in the call.',
+        );
+      }
+      // A TRIP NEEDS A JOB TO SIT ON — a LIVE one. `openJob` here is the request
+      // AFTER the already-opened drop above, so this reads the same job the door
+      // will: a customer whose only jobs are paid or declined has nothing a visit
+      // can hang on, and without this the door would file the call, book nothing,
+      // and the planner would tell a manager somebody is going.
+      if (bookVisitArg === true && !openJob && liveJobs.length === 0) {
+        throw new Error(
+          'a trip needs a job to sit on — pass `openJob` as well, or name a customer who ' +
+            'already has one open.',
+        );
+      }
+
+      const meta =
+        capture.metadata && typeof capture.metadata === 'object' && !Array.isArray(capture.metadata)
+          ? (capture.metadata as Record<string, unknown>)
+          : {};
+      const resolved: ResolvedIdentity = customerId
+        ? { customerId }
+        : {
+            createFrom: {
+              customerName: newName || null,
+              phone: typeof newCustomer?.phone === 'string' ? newCustomer.phone : null,
+              email: typeof newCustomer?.email === 'string' ? newCustomer.email : null,
+              addressLine1:
+                typeof newCustomer?.addressLine1 === 'string' ? newCustomer.addressLine1 : null,
+              city: typeof newCustomer?.city === 'string' ? newCustomer.city : null,
+              state: typeof newCustomer?.state === 'string' ? newCustomer.state : null,
+              postalCode:
+                typeof newCustomer?.postalCode === 'string' ? newCustomer.postalCode : null,
+            },
+          };
+      const r = await recordCallerThroughTheDoor(() => recordFieldNote({
+        tenantId,
+        technicianRef: capturedBy,
+        channel: capture.channel,
+        text: capture.raw_text,
+        blobPath: capture.blob_path,
+        captureId: capture.id,
+        sourceMeta: capture.metadata,
+        // THE SAME KEYS THE DOOR HAD THE FIRST TIME. A customer created here
+        // keeps the caller's number and the address they wrote from, so the next
+        // message from them is recognised by code and never becomes a second
+        // item on this list.
+        fallbackPhone: typeof meta.fromNumber === 'string' ? meta.fromNumber : null,
+        fallbackEmail: emailAddressOf(typeof meta.from === 'string' ? meta.from : null),
+        threadId: typeof meta.threadId === 'string' ? meta.threadId : null,
+        resolved,
+        ...(openJob || bookVisitArg !== undefined
+          ? { decided: { ...(openJob ? { openJob } : {}), ...(bookVisitArg !== undefined ? { bookVisit: bookVisitArg } : {}) } }
+          : {}),
+      },
+      // The injected extractor, like every other door on this surface — the
+      // default is the live model, and a test must be able to reach this path
+      // without one.
+      deps.extract ? { extract: deps.extract } : {}));
+      // A RETRACTED CALL IS NOT A RECORDING. The door returns 'duplicate' for a
+      // capture somebody marked recorded-in-error, having written nothing;
+      // reporting that as `ok` would tell the planner the caller was recorded and
+      // leave the item open with no explanation.
+      if (r.status === 'duplicate') {
+        throw new Error(
+          'that call was retracted — somebody marked it recorded in error, so nothing was ' +
+            'written. Dismiss the item instead.',
+        );
+      }
+      // WHAT ACTUALLY LANDED, read back rather than assumed. The door REUSES a
+      // customer's existing open job rather than minting a second one, so
+      // `openJob` can be a no-op — and reporting the reused job as though this
+      // call had opened it would have the planner relay "the job is open" for
+      // work nobody created. Same for a trip: a job with a live visit takes no
+      // second one. What cites the capture is the difference, and it is a fact.
+      const wrote = await listL2CitingCapture([capture.id]);
+      const openedJob = r.jobId ? wrote.some((w) => w.kind === 'job' && w.id === r.jobId) : false;
+      const bookedVisit = r.visitId
+        ? wrote.some((w) => w.kind === 'visit' && w.id === r.visitId)
+        : false;
+      return {
+        status: 'ok',
+        observationId,
+        captureId: capture.id,
+        customerId: r.customerId,
+        customer: customerId ? 'linked' : 'created',
+        ...(r.jobId
+          ? { jobId: r.jobId, job: openedJob ? 'opened from this call' : 'already on file' }
+          : {}),
+        ...(r.visitId
+          ? { visitId: r.visitId, visit: bookedVisit ? 'booked' : 'already on the board' }
+          : {}),
+        // The door may still raise the OTHER question — whether somebody should
+        // go out — when the call carried a promise and nothing was decided about
+        // it. Saying so beats the planner discovering a second item next pass.
+        ...(r.observationId ? { alsoAsked: r.observationId } : {}),
+        // THE ONE CHECK THAT COVERS SHAPES NOBODY ENUMERATED. Everything above
+        // predicts; this READS. If nothing on the record cites the call, the item
+        // cannot become moot however well the write went, and telling the planner
+        // to leave it alone would strand it open forever.
+        note:
+          wrote.length > 0
+            ? 'the caller is on the record now — this item closes itself on the record at your ' +
+              'next pass, so leave it alone.'
+            : 'the caller is recorded, BUT nothing on the record cites this call, so this item ' +
+              'will not close itself — dismiss it, saying who it turned out to be.',
       };
     }
     case 'read_memory': {

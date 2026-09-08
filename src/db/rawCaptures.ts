@@ -503,12 +503,19 @@ export async function listRawCapturesForCustomer(customerId: string): Promise<Ra
 //                The link has no row id of its own — its primary key is
 //                (job_id, capture_id) — so `id` carries the job's, same as
 //                `jobId`.
+//   'note'      — the capture was attached to a live TRIP (`visit_notes`). The
+//                OTHER shape a link takes, and it is not interchangeable: when a
+//                job already has a visit the capture attaches to the visit and no
+//                `job_captures` row is written at all, so without this arm a
+//                reply landing on a booked job would cite nothing and its item
+//                could never become moot. `id` is the visit's, `jobId` the trip's
+//                job.
 // The two new kinds are NOT closers for `inbound_new_job` / `inbound_commitment`:
 // the door writes a `job_captures` link in the SAME call it raises those asks, so
 // counting it would close every one of them the moment it was raised. The
 // planner's moot fact is kind-aware for exactly that reason.
 export interface L2CitingCapture {
-  kind: 'job' | 'visit' | 'customer' | 'link';
+  kind: 'job' | 'visit' | 'customer' | 'link' | 'note';
   id: string;
   captureId: string;
   jobId: string | null;
@@ -601,6 +608,31 @@ export async function listL2CitingCapture(captureIds: string[]): Promise<L2Citin
       }[]) {
         if (row.jobs && row.jobs.status !== 'cancelled') {
           out.push({ kind: 'link', id: row.job_id, captureId: row.capture_id, jobId: row.job_id });
+        }
+      }
+      if (!data || data.length < PAGE) break;
+    }
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('visit_notes')
+        .select('capture_id, visits!inner(id, job_id, status)')
+        .in('capture_id', slice)
+        .order('capture_id', { ascending: true })
+        .order('visit_id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listL2CitingCapture failed on visit_notes: ${error.message}`);
+      for (const row of (data ?? []) as unknown as {
+        capture_id: string;
+        visits: { id: string; job_id: string; status: string } | null;
+      }[]) {
+        // Same rule as every arm above: a cancelled trip is not an answer.
+        if (row.visits && row.visits.status !== 'cancelled') {
+          out.push({
+            kind: 'note',
+            id: row.visits.id,
+            captureId: row.capture_id,
+            jobId: row.visits.job_id,
+          });
         }
       }
       if (!data || data.length < PAGE) break;

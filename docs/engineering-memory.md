@@ -2068,10 +2068,18 @@ were unreachable when those items were created, the per-tick routing cap deferre
   this entry was written. `spine_read`, `recall_decisions`, `read_memory` and `write_memory` are a
   **team-lead-only surface that REPLACES rather than extends**, gated to the `spine:` namespace.
   The last two arrived with build 3 (2026-08-30) and `write_memory` is **the identity's first
-  write verb** — it passes the gate's "nothing irreversible or externally visible" rule because
-  every overwrite is versioned and no person receives anything, but it is the first model call in
-  this codebase that mutates durable state from INSIDE the tool loop, with no post-loop validation
-  stage the way `applyDecision` has. The reasoning lives beside the allowlist in
+  write verb** — it passed the gate's then-rule ("nothing irreversible or externally visible")
+  because every overwrite is versioned and no person receives anything, but it is the first model
+  call in this codebase that mutates durable state from INSIDE the tool loop, with no post-loop
+  validation stage the way `applyDecision` has.
+  **That rule is RETIRED (rung 10b, 2026-09-08, user ruling 2026-09-07: the planner writes L2.)**
+  It was a v1 posture, not a design — it described a planner nobody had yet decided should write
+  the record. `record_caller` is the first verb that writes the customer record itself. What
+  replaces the rule: the allowlist is still the CEILING, every write it permits cites the capture
+  it came from, ask-first is doctrine rather than mechanism (linking a known caller needs nobody's
+  permission; creating, opening a job and booking a trip are put to a manager), and nothing on the
+  surface reaches a person — a `send` is still proposed by the planner and performed after the loop
+  by `applyDecision`, where the rails live. The reasoning lives beside the allowlist in
   `src/teamLead/identity.ts`; a test pins that a name on the allowlist and a schema in
   `TEAM_LEAD_TOOLS` are added together. `spine_read` now exposes
   **twelve** views — the four ④ additions (`v_captures`, `v_visits`, `v_nudges`,
@@ -4249,8 +4257,10 @@ stored at all — the system's whole memory of noticing IS the ask it sent.
   The sweep that stops deciding must also stop needing per-kind specs to decide with.
 - Build 6: dismiss / recover / open-an-observation are intents the verb vocabulary must express.
 - The dispatch gate: opening an observation is internal and reversible, so a planner-opened gap
-  passes "nothing irreversible or externally visible" unchanged — a standing argument for the
-  observation being its own record rather than a checkbox on the ask row.
+  passed the then-rule ("nothing irreversible or externally visible") unchanged — a standing
+  argument for the observation being its own record rather than a checkbox on the ask row. (That
+  rule is retired as of rung 10b — see §the team-lead surface above — but the argument for the
+  observation being its own record stands on its own.)
 
 ### 5. The sweep stops deciding — clocks become alarms (BUILT 2026-08-31)
 

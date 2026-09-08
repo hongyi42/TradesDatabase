@@ -214,6 +214,12 @@ the test is now PLACEMENT:
   visit, re-call `book_visit` with the matching jobId; `open_job` takes no jobId, so act on the
   existing work directly. `forceNewJob:true` only for genuinely different work. On a no: `inform_team_lead` in one
   sentence. **Never create it before they answer** — nothing is on the record yet, deliberately.
+  **Rung 10b (added 2026-09-08): the caller nobody matches.** The office's message may instead say
+  it does not know who got in touch. The agent creates NOTHING there — not even on a yes — because
+  the office records the caller itself with `record_caller`. It puts the question to the manager
+  and relays the answer with `inform_team_lead`, mentioning the id from the office's quiet note
+  (that note lands in the agent's own session and may arrive after the text; with no id yet, the
+  caller's number as the office wrote it). It says it passed the answer on, never that it is done.
 - **Outside accounts go through Composio, first move (AGENTS.md rule 8, added 2026-09-07).**
   Gmail, Sheets, Excel, Drive: the agent calls `get_connect_link` and hands over the URL. No web
   search, no alternative integration, no self-authentication, no hunting the tool list first.

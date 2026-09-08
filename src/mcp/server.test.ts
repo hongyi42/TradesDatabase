@@ -3,7 +3,7 @@ import { Client as PgClient } from 'pg';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { getClient } from '../db/client.js';
-import { appendRawCapture } from '../db/rawCaptures.js';
+import { appendRawCapture, listL2CitingCapture } from '../db/rawCaptures.js';
 import { createCustomer } from '../db/customers.js';
 import { appendJobCorrespondence, createJob, insertJobCapture } from '../db/jobs.js';
 import { createVisit, insertVisitNote, updateVisitStatus } from '../db/visits.js';
@@ -6719,7 +6719,7 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
       ] as Array<[string, Record<string, unknown>]>) {
         const res = await callWith(name, args);
         expect(res.isError).toBe(true);
-        expect(res.text).toContain('the team-lead identity is capped to reading, asking and its own notes');
+        expect(res.text).toContain('the team-lead identity is capped to reading, asking');
       }
     } finally {
       await c.close();
@@ -6731,7 +6731,7 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     try {
       const res = await callWith('record_field_note', { rawText: 'x' });
       expect(res.isError).toBe(true);
-      expect(res.text).toContain('capped to reading, asking and its own notes');
+      expect(res.text).toContain('capped to reading, asking');
     } finally {
       await c.close();
     }
@@ -6781,7 +6781,7 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     try {
       const res = await callWith('inform_team_lead', { note: 'talking to myself' });
       expect(res.isError).toBe(true);
-      expect(res.text).toContain('capped to reading, asking and its own notes');
+      expect(res.text).toContain('capped to reading, asking');
     } finally {
       await c.close();
     }
@@ -6857,7 +6857,7 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     try {
       const res = await spineCall('ask_team_lead', { question: 'asking myself' });
       expect(res.isError).toBe(true);
-      expect(res.text).toContain('capped to reading, asking and its own notes');
+      expect(res.text).toContain('capped to reading, asking');
     } finally {
       await s.close();
     }
@@ -7107,7 +7107,7 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     try {
       const res = await callWith('query_spine', { sql: 'select 1 as one' });
       expect(res.isError).toBe(true);
-      expect(res.text).toContain('capped to reading, asking and its own notes');
+      expect(res.text).toContain('capped to reading, asking');
     } finally {
       await c.close();
     }
@@ -7126,6 +7126,8 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
       'write_memory',
       'read_job_note',
       'write_job_note',
+      // RUNG 10B — the first verb that writes the customer record itself.
+      'record_caller',
     ]);
     const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
     // the catalog — fourteen since v_roster_events (build 6.5 Phase 1); the
@@ -7209,7 +7211,7 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
         { tenantId, technicianRef: 'spine:team-lead' },
         { recordCost: async () => {} },
       ),
-    ).rejects.toThrow(/capped to reading, asking and its own notes/);
+    ).rejects.toThrow(/capped to reading, asking/);
 
     await expect(
       dispatchForIdentity(
@@ -7485,6 +7487,358 @@ describe("read_memory / write_memory — the planner's own notes", () => {
         ),
       ).rejects.toThrow(/team lead's own tool/);
     }
+  });
+
+  // ---- RUNG 10B: record_caller, the planner's first write to the record -----
+  describe('record_caller', () => {
+    // The door ALWAYS extracts; without a stub this reaches the live model.
+    const call = (name: string, args: Record<string, unknown>) =>
+      dispatchForIdentity(name, args, { tenantId, technicianRef: 'spine:team-lead' }, {
+        ...noCost,
+        extract: async () => ({ jobTitle: 'what the model read' }),
+      }) as Promise<Record<string, unknown>>;
+
+    const parked = async (over: { tenantId?: string; text?: string; meta?: Json } = {}) => {
+      const capture = await appendRawCapture({
+        tenantId: over.tenantId ?? tenantId,
+        channel: 'phone_call',
+        technicianRef: 'phone-line',
+        rawText: over.text ?? 'hi, my heater is dead and nobody has been out',
+        metadata: over.meta ?? { fromNumber: '+15557770000' },
+      });
+      const obs = await createObservation({
+        tenantId: over.tenantId ?? tenantId,
+        kind: 'inbound_unmatched',
+        subjectRef: capture.id,
+        technicianId: null,
+        context: { captureId: capture.id, channel: 'phone_call', from: '+15557770000' },
+      });
+      if (!obs) throw new Error('fixture observation was not created');
+      return { capture, obs };
+    };
+
+    test('LINKS an existing customer, and every row it writes cites the call', async () => {
+      const { capture, obs } = await parked();
+      const customer = await createCustomer({ tenantId, name: `Linked ${Date.now()}` });
+      const res = await call('record_caller', {
+        observationId: obs.id,
+        customerId: customer.id,
+        openJob: { title: 'heater is dead' },
+      });
+      expect(res.status).toBe('ok');
+      expect(res.customerId).toBe(customer.id);
+      expect(res.jobId).toBeDefined();
+      expect(String(res.note)).toContain('closes itself on the record');
+      // Independent read-back — the tool agreeing with itself proves nothing.
+      const { rows } = await pg.query(
+        'select source_capture_id from jobs where id = $1',
+        [res.jobId],
+      );
+      expect(rows[0].source_capture_id).toBe(capture.id);
+    });
+
+    test('CREATES a customer keeping the caller-ID, so code recognises them next time', async () => {
+      const { capture, obs } = await parked({ meta: { fromNumber: '+15557771234' } });
+      const res = await call('record_caller', {
+        observationId: obs.id,
+        newCustomer: { name: 'Brand New Bella', addressLine1: '3 Fresh Way' },
+      });
+      const { rows } = await pg.query<{ phone: string | null; address_line1: string | null; source_capture_id: string | null }>(
+        'select phone, address_line1, source_capture_id from customers where id = $1',
+        [res.customerId],
+      );
+      expect(rows[0].phone).toBe('+15557771234');
+      expect(rows[0].address_line1).toBe('3 Fresh Way');
+      expect(rows[0].source_capture_id).toBe(capture.id);
+    });
+
+    test('exactly one of customerId / newCustomer — neither and both are refused', async () => {
+      const { obs } = await parked();
+      await expect(call('record_caller', { observationId: obs.id })).rejects.toThrow(/exactly ONE/);
+      await expect(
+        call('record_caller', {
+          observationId: obs.id,
+          customerId: '00000000-0000-0000-0000-000000000000',
+          newCustomer: { name: 'Both' },
+        }),
+      ).rejects.toThrow(/exactly ONE/);
+    });
+
+    test('refuses an item that is not an unmatched caller, and one that is not open', async () => {
+      const capture = await appendRawCapture({
+        tenantId,
+        channel: 'phone_call',
+        technicianRef: 'phone-line',
+        rawText: 'a committed call',
+      });
+      const wrongKind = await createObservation({
+        tenantId,
+        kind: 'inbound_commitment',
+        subjectRef: capture.id,
+        technicianId: null,
+        context: { captureId: capture.id },
+      });
+      await expect(
+        call('record_caller', { observationId: wrongKind?.id, customerId: '00000000-0000-0000-0000-000000000000' }),
+      ).rejects.toThrow(/nobody on file matches the sender/);
+
+      const { obs } = await parked();
+      await pg.query(`update observations set status = 'dismissed' where id = $1`, [obs.id]);
+      await expect(
+        call('record_caller', { observationId: obs.id, newCustomer: { name: 'Too late' } }),
+      ).rejects.toThrow(/already dismissed/);
+    });
+
+    test("refuses another firm's item and another firm's customer", async () => {
+      const other = await createTenant(`record-caller-scope-${Date.now()}`);
+      try {
+        const theirs = await parked({ tenantId: other.id });
+        await expect(
+          call('record_caller', { observationId: theirs.obs.id, newCustomer: { name: 'Not ours' } }),
+        ).rejects.toThrow(/No such item on this firm/);
+
+        const { obs } = await parked();
+        const theirCustomer = await createCustomer({ tenantId: other.id, name: 'Theirs' });
+        await expect(
+          call('record_caller', { observationId: obs.id, customerId: theirCustomer.id }),
+        ).rejects.toThrow(/no such customer on this firm/);
+      } finally {
+        await pg.query('delete from customers where tenant_id = $1', [other.id]);
+        await pg.query('delete from observations where tenant_id = $1', [other.id]);
+        // The probe tenant STAYS. Its fixture wrote an L1 capture, and L1 is
+        // append-only — the trigger refuses the delete, so the tenant row cannot
+        // go either. Leaving it is the honest outcome of the rule, not a leak.
+      }
+    });
+
+    test('IDEMPOTENT: a retry mints no twins — L1-pinned rows can never be deleted', async () => {
+      const { capture, obs } = await parked();
+      const first = await call('record_caller', {
+        observationId: obs.id,
+        newCustomer: { name: `Retry Rowan ${Date.now()}` },
+        openJob: { title: 'first pass' },
+      });
+      // The item is still open (it closes on the record at the next pass), so a
+      // retry really can reach this code again.
+      await expect(
+        call('record_caller', { observationId: obs.id, newCustomer: { name: 'A SECOND ROWAN' } }),
+      ).rejects.toThrow(/already created from this call/);
+      // …and asking for the job again is DROPPED, not refused, so the retry can
+      // finish the parts that did not land.
+      const second = await call('record_caller', {
+        observationId: obs.id,
+        customerId: first.customerId,
+        openJob: { title: 'a twin job' },
+      });
+      expect(second.status).toBe('ok');
+      const { rows } = await pg.query<{ n: number }>(
+        'select count(*)::int as n from jobs where source_capture_id = $1',
+        [capture.id],
+      );
+      expect(rows[0].n).toBe(1);
+    });
+
+    test('a LINK with nothing to file the call onto is refused, not reported as done', async () => {
+      // Nothing would cite the capture, so THE RECORD could never make the item
+      // moot — and the note tells the planner to leave it alone. Silent, forever.
+      const { obs } = await parked();
+      const customer = await createCustomer({ tenantId, name: `Jobless Link ${Date.now()}` });
+      await expect(
+        call('record_caller', { observationId: obs.id, customerId: customer.id }),
+      ).rejects.toThrow(/nothing to file this call onto/);
+    });
+
+    test('a LINK onto an existing job files the call there, and says the job was NOT opened', async () => {
+      const { capture, obs } = await parked();
+      const customer = await createCustomer({ tenantId, name: `Linked Live ${Date.now()}` });
+      const job = await createJob({ tenantId, customerId: customer.id, title: 'boiler service' });
+      const res = await call('record_caller', {
+        observationId: obs.id,
+        customerId: customer.id,
+        openJob: { title: 'kitchen tap leaking' },
+      });
+      expect(res.jobId).toBe(job.id);
+      expect(res.job).toBe('already on file'); // never reported as opened
+      expect(res.customer).toBe('linked');
+      // The call is filed onto that job, which is what lets the item close.
+      const { rows } = await pg.query<{ n: number }>(
+        'select count(*)::int as n from job_captures where job_id = $1 and capture_id = $2',
+        [job.id, capture.id],
+      );
+      expect(rows[0].n).toBe(1);
+      // …and no SECOND ask was raised about who this is.
+      const kinds = await pg.query<{ kind: string }>(
+        'select kind from observations where subject_ref = $1',
+        [capture.id],
+      );
+      expect(kinds.rows.map((r) => r.kind)).toEqual(['inbound_unmatched']);
+    });
+
+    test('a RETRACTED call is refused, never reported as recorded', async () => {
+      const { capture, obs } = await parked();
+      await appendRawCapture({
+        tenantId,
+        channel: 'manual_correction',
+        technicianRef: 'tech-mcp',
+        rawText: 'that was a wrong number',
+        retractsCaptureId: capture.id,
+      });
+      await expect(
+        call('record_caller', { observationId: obs.id, newCustomer: { name: 'Should not exist' } }),
+      ).rejects.toThrow(/was retracted/);
+      const { rows } = await pg.query<{ n: number }>(
+        'select count(*)::int as n from customers where source_capture_id = $1',
+        [capture.id],
+      );
+      expect(rows[0].n).toBe(0);
+    });
+
+    test('newCustomer needs a NAME — an empty one would mint "Unknown customer" forever', async () => {
+      const { obs } = await parked();
+      for (const bad of [{}, { name: '   ' }, { name: 42 }]) {
+        await expect(
+          call('record_caller', { observationId: obs.id, newCustomer: bad }),
+        ).rejects.toThrow(/needs a `name`/);
+      }
+    });
+
+    test('the created customer keeps the email it wrote from', async () => {
+      const capture = await appendRawCapture({
+        tenantId,
+        channel: 'email',
+        technicianRef: 'connector:gmail',
+        rawText: 'my extractor fan has stopped',
+        metadata: { from: 'Nina Vale <Nina@Vale.test>', threadId: `t-${Date.now()}` },
+      });
+      const obs = await createObservation({
+        tenantId,
+        kind: 'inbound_unmatched',
+        subjectRef: capture.id,
+        technicianId: null,
+        context: { captureId: capture.id, channel: 'email' },
+      });
+      const res = await call('record_caller', {
+        observationId: obs?.id,
+        newCustomer: { name: 'Nina Vale', email: 'nina@vale.test' },
+        openJob: { title: 'extractor fan' },
+      });
+      expect(res.customer).toBe('created');
+      expect(res.job).toBe('opened from this call');
+      const { rows } = await pg.query<{ email: string | null }>(
+        'select email from customers where id = $1',
+        [res.customerId],
+      );
+      expect(rows[0].email).toBe('nina@vale.test');
+    });
+
+    test('the DATABASE refuses a second customer from one call, whatever the read said', async () => {
+      // The read-based guard is not a lock: the window between it and the insert
+      // spans a live extractor round trip, and the tool loop's deadline is a race
+      // whose loser keeps running while the model retries.
+      const { capture, obs } = await parked();
+      await call('record_caller', {
+        observationId: obs.id,
+        newCustomer: { name: `Only Once ${Date.now()}` },
+        openJob: { title: 'the one job' },
+      });
+      await expect(
+        createCustomer({ tenantId, name: 'A SECOND ONE', sourceCaptureId: capture.id }),
+      ).rejects.toThrow(/duplicate key|uq_customers_one_per_capture/);
+    });
+
+    test('bookVisit:true reports the trip as BOOKED, and a pre-existing one as already on the board', async () => {
+      const first = await parked();
+      const customer = await createCustomer({ tenantId, name: `Boarded ${Date.now()}` });
+      const booked = await call('record_caller', {
+        observationId: first.obs.id,
+        customerId: customer.id,
+        openJob: { title: 'no hot water' },
+        bookVisit: true,
+      });
+      expect(booked.visit).toBe('booked');
+      expect(booked.visitId).toBeDefined();
+
+      // A SECOND call about a different capture, onto the same job, which now
+      // carries that live trip: nothing is booked and the tool says so.
+      const second = await parked();
+      const again = await call('record_caller', {
+        observationId: second.obs.id,
+        customerId: customer.id,
+        bookVisit: true,
+      });
+      expect(again.visit).toBe('already on the board');
+      expect(again.visitId).toBe(booked.visitId);
+    });
+
+    test('a LINK onto a job with a LIVE trip still cites the call — through the trip', async () => {
+      // The shape the first guard missed: the capture attaches to the VISIT, so
+      // no `job_captures` row is ever written. Without the visit_notes arm the
+      // item could never become moot and the tool would say "leave it alone".
+      const { capture, obs } = await parked();
+      const customer = await createCustomer({ tenantId, name: `Booked Already ${Date.now()}` });
+      const job = await createJob({ tenantId, customerId: customer.id, title: 'in flight' });
+      await createVisit({
+        tenantId,
+        jobId: job.id,
+        technicianIds: [],
+        startsAt: null,
+        endsAt: null,
+        status: 'confirmed',
+      });
+      const res = await call('record_caller', { observationId: obs.id, customerId: customer.id });
+      expect(res.status).toBe('ok');
+      expect(String(res.note)).toContain('closes itself on the record');
+      expect(String(res.note)).not.toContain('will not close itself');
+      const citing = await listL2CitingCapture([capture.id]);
+      expect(citing.map((c) => c.kind)).toContain('note');
+    });
+
+    test('a customer whose only job is CANCELLED has nothing to file onto', async () => {
+      // `job_captures` onto a cancelled job is deliberately not an answer, so
+      // filing there would leave the item open with the tool saying otherwise.
+      const { obs } = await parked();
+      const customer = await createCustomer({ tenantId, name: `All Cancelled ${Date.now()}` });
+      const job = await createJob({ tenantId, customerId: customer.id, title: 'called off' });
+      await pg.query(`update jobs set status = 'cancelled' where id = $1`, [job.id]);
+      await expect(
+        call('record_caller', { observationId: obs.id, customerId: customer.id }),
+      ).rejects.toThrow(/nothing to file this call onto/);
+    });
+
+    test('bookVisit onto a customer whose only job is PAID is refused, not dropped', async () => {
+      // The guard has to read the job the DOOR will: a terminal job is not one a
+      // trip can hang on, however recently it cited this very call.
+      const { obs } = await parked();
+      const customer = await createCustomer({ tenantId, name: `Paid Only ${Date.now()}` });
+      const job = await createJob({ tenantId, customerId: customer.id, title: 'settled' });
+      await pg.query(`update jobs set status = 'paid' where id = $1`, [job.id]);
+      await expect(
+        call('record_caller', { observationId: obs.id, customerId: customer.id, bookVisit: true }),
+      ).rejects.toThrow(/a trip needs a job to sit on/);
+    });
+
+    test('a trip needs a job to sit on — bookVisit alone is refused, not silently dropped', async () => {
+      const { obs } = await parked();
+      const customer = await createCustomer({ tenantId, name: `Settled Up ${Date.now()}` });
+      // A job on file, but a FINISHED one — so the call has somewhere to be
+      // filed, and still nothing a trip could sit on.
+      const done = await createJob({ tenantId, customerId: customer.id, title: 'paid up' });
+      await pg.query(`update jobs set status = 'paid' where id = $1`, [done.id]);
+      await expect(
+        call('record_caller', { observationId: obs.id, customerId: customer.id, bookVisit: true }),
+      ).rejects.toThrow(/a trip needs a job to sit on/);
+    });
+
+    test('a MANAGER badge cannot record a caller — it is the team lead\'s own tool', async () => {
+      await expect(
+        dispatchForIdentity(
+          'record_caller',
+          { observationId: '00000000-0000-0000-0000-000000000000', newCustomer: { name: 'X' } },
+          { tenantId, technicianRef: 'mgr-test' },
+          noCost,
+        ),
+      ).rejects.toThrow(/team lead's own tool/);
+    });
   });
 
   test('every allowlisted team-lead name either has a schema or is known unreachable', () => {

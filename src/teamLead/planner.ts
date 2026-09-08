@@ -4321,6 +4321,7 @@ export async function runPlanner(
               cited.some((c) => c.kind === 'job') ? 'a job was opened from it' : null,
               cited.some((c) => c.kind === 'visit') ? 'a visit was booked from it' : null,
               cited.some((c) => c.kind === 'link') ? 'it was recorded onto a job' : null,
+              cited.some((c) => c.kind === 'note') ? 'it was attached to a trip' : null,
             ].filter((line): line is string => line !== null);
             if (said.length > 0) {
               return `${said.join(', and ')} — this caller is on the record now`;

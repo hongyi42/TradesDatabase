@@ -9,7 +9,7 @@ import {
 } from './rawCaptures.js';
 import { createCustomer } from './customers.js';
 import { createJob, insertJobCapture } from './jobs.js';
-import { createVisit, insertVisitNote } from './visits.js';
+import { createVisit, insertVisitNote, updateVisitStatus } from './visits.js';
 import { createTenant } from './tenants.js';
 
 // listJobEvidenceSince is what decides WHAT A CITATION MAY BE CHECKED AGAINST,
@@ -414,6 +414,31 @@ describe('listL2CitingCapture', () => {
     ]);
 
     await pg.query(`update jobs set status = 'cancelled' where id = $1`, [job.id]);
+    expect(await listL2CitingCapture([cap.id])).toEqual([]);
+  });
+
+  test('a capture ATTACHED TO A TRIP cites through the trip — the other shape a link takes', async () => {
+    // When the job already has a visit, the capture attaches to the VISIT and no
+    // job_captures row is written at all. Without this arm a reply landing on a
+    // booked job would cite nothing, and its item could never become moot.
+    const cap = await capture({ tenantId, jobId: null, text: 'about Friday', at: after });
+    const customer = await createCustomer({ tenantId, name: 'Attached Ana' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'in flight' });
+    const visit = await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianIds: [],
+      startsAt: null,
+      endsAt: null,
+      status: 'confirmed',
+    });
+    await insertVisitNote({ tenantId, visitId: visit.id, captureId: cap.id });
+    expect(await listL2CitingCapture([cap.id])).toEqual([
+      { kind: 'note', id: visit.id, captureId: cap.id, jobId: job.id },
+    ]);
+
+    // A CANCELLED trip is not an answer, the same as every other arm.
+    await updateVisitStatus(visit.id, 'cancelled', 'test');
     expect(await listL2CitingCapture([cap.id])).toEqual([]);
   });
 });

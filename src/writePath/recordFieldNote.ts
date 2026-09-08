@@ -1,6 +1,7 @@
 import {
   appendRawCapture,
   findRetractionsFor,
+  getRawCapture,
   getRawCaptureByExternalId,
   captureHasLinkedL2,
   isUniqueViolation,
@@ -32,6 +33,10 @@ import {
 import { defaultExtractor, type Extractor, type ExtractedFields } from './extract.js';
 import { matchIdentity, type MatchResult, type ScheduledCustomerDraft } from './identityMatch.js';
 import { resolveVisitForNote } from './attachNote.js';
+// The ONE booking writer. No cycle: booking.ts imports only ../db and
+// ./availability, and nothing under either reaches back here.
+import { bookVisit } from '../schedule/booking.js';
+import { TEAM_LEAD_REF } from '../teamLead/identity.js';
 
 // Identity resolved during the staged-confirm flow (MCP tool path): commit must
 // use EXACTLY what the preview showed, so the resolution travels here and
@@ -75,6 +80,24 @@ export interface RecordFieldNoteInput {
   // unset (calls, technician notes).
   fallbackEmail?: string | null;
   threadId?: string | null;
+  // RUNG 10B — RE-ENTRY. The planner settled who called and sends the door back
+  // through the SAME capture: reuse this L1 row rather than appending a second
+  // one (L1 is append-only, so a second row would be permanent), and skip the
+  // externalId dedup, which would otherwise report the capture as a duplicate of
+  // itself. The RETRACTION guard is NOT skipped — a capture somebody marked
+  // recorded-in-error stays terminal however it is re-entered.
+  captureId?: string;
+  // RUNG 10B — WHAT THE PLANNER DECIDED, and the absence of it means rung 10's
+  // behaviour, unchanged:
+  //   openJob absent      → today's gate: ask (or file) rather than mint
+  //   openJob present     → mint the job, no ask
+  //   bookVisit undefined → today's commitment ask
+  //   bookVisit true      → book an UNTIMED visit on the job, ask nothing
+  //   bookVisit false     → book nothing AND ask nothing (a manager said no)
+  decided?: {
+    openJob?: { title?: string | null; jobType?: string | null };
+    bookVisit?: boolean;
+  };
   // L1-only switch (default true = structure). When explicitly false, append the
   // verbatim capture to L1 and STOP — no extract, no match, no L2/L3. The phone
   // router uses this for a non-`new_job` call: the transcript is always kept as
@@ -162,7 +185,24 @@ export async function recordFieldNote(
     // nothing, which is the cheaper side of that trade.)
     let landed: RawCapture | null = null;
 
-    if (input.externalId) {
+    // RE-ENTRY BY CAPTURE ID (rung 10b) comes first and short-circuits the
+    // dedup entirely: this capture is KNOWN to have been processed — it raised
+    // an `inbound_unmatched` ask, which is itself the processed marker — and the
+    // whole point of the re-entry is to run the rest of the door again now that
+    // the identity is settled. Its tenant is checked here, not trusted from the
+    // caller, and a RETRACTED capture is still terminal.
+    if (input.captureId) {
+      const row = await getRawCapture(input.captureId);
+      if (!row || row.tenant_id !== tenantId) {
+        throw new Error(`recordFieldNote: capture ${input.captureId} is not this firm's`);
+      }
+      if ((await findRetractionsFor([row.id])).length > 0) {
+        return { status: 'duplicate', captureId: row.id };
+      }
+      landed = row;
+    }
+
+    if (!landed && input.externalId) {
       const dup = await getRawCaptureByExternalId(tenantId, input.externalId);
       if (dup) {
         if (await captureHasLinkedL2(dup.id)) return { status: 'duplicate', captureId: dup.id };
@@ -463,7 +503,39 @@ export async function recordFieldNote(
   // AMENDED 2026-09-07 (user): inbound with no open job ASKS. It used to mint
   // one here and the manager never heard of it — "so the manager can know,
   // instead of being blind to the job being created."
-  if (!isTechnicianChannel && !job) {
+  // RUNG 10B: `decided.openJob` is a manager's yes, relayed. It is the ONE thing
+  // that lets an inbound capture mint work without asking, and it arrives only
+  // through `record_caller` — which is why the gate reads the field rather than
+  // the channel.
+  if (!isTechnicianChannel && !job && !input.decided?.openJob) {
+    // A SETTLED RE-ENTRY NEVER ASKS "WHO IS THIS" AGAIN. `captureId` means the
+    // planner already answered that question — it is why this call exists — so
+    // raising a fresh `inbound_new_job` here would open a SECOND ask on a capture
+    // whose first one is still open, and the caller of `record_caller` would be
+    // told the work was recorded while nobody had been asked anything. The
+    // capture is filed on their most recent job instead, whatever its status,
+    // which is also what lets THE RECORD close the original item. With no job at
+    // all there is nothing to file it onto — the MCP dispatch refuses that
+    // combination up front rather than letting it land here silently.
+    if (input.captureId) {
+      // listJobsForCustomer orders created_at ASCENDING, so the tail is newest.
+      const onJob = priorJobs[priorJobs.length - 1] ?? null;
+      // …BUT THE PROMISE STILL ASKS, and it asks FIRST. Settling WHO called says
+      // nothing about whether anybody is going: if the call carried "we agreed to
+      // come out" and nobody decided about the trip, that question is untouched,
+      // and it is the one question in this whole file whose loss costs something
+      // OUTSIDE this database — a customer was told someone is coming and nobody
+      // at the firm knows. A commitment outranks the touchesOperations filter
+      // here exactly as it does on the matched path below.
+      const promised =
+        input.decided?.bookVisit === undefined && extracted.visitCommitted === true
+          ? await observeInbound(onJob)
+          : null;
+      const filed = await fileWithoutAsking(onJob);
+      return promised?.observationId
+        ? { ...filed, observationId: promised.observationId }
+        : filed;
+    }
     // AMENDED again the same day, after the first version woke the planner for
     // every email from a settled customer: the extractor decides, not the job
     // lookup. The question it answers is "is there anything here for L2?" — a
@@ -479,8 +551,9 @@ export async function recordFieldNote(
     job = await createJob({
       tenantId,
       customerId,
-      title: extracted.jobTitle ?? null,
-      jobType: extracted.jobType ?? null,
+      // What the planner was TOLD to open it as wins over what the model read.
+      title: input.decided?.openJob?.title ?? extracted.jobTitle ?? null,
+      jobType: input.decided?.openJob?.jobType ?? extracted.jobType ?? null,
       sourceCaptureId: captureId,
     });
   }
@@ -555,8 +628,31 @@ export async function recordFieldNote(
   //
   // A committed capture that landed on a LIVE visit asks nothing: that is
   // correspondence about work already booked, and asking would be noise.
+  //
+  // RUNG 10B — OR THE PLANNER ALREADY SETTLED IT. `decided.bookVisit` is a
+  // manager's answer relayed through `record_caller`, so there is nothing left to
+  // ask: `true` puts an UNTIMED trip on the board (no day, no time — "sometime
+  // next week" is a conversation, not a column), `false` books nothing and asks
+  // nothing, and ABSENT is rung 10 unchanged. A visit already attached takes
+  // neither branch: that trip is already booked and both asking and booking
+  // would be noise.
+  const decidedBook = input.decided?.bookVisit;
+  let bookedVisitId: string | null = null;
+  if (decidedBook === true && !visit) {
+    const booked = await bookVisit({
+      tenantId,
+      jobId: job.id,
+      sourceCaptureId: captureId,
+      actorRef: TEAM_LEAD_REF,
+      reason: 'record_caller',
+    });
+    bookedVisitId = booked.assignment.id;
+  }
   const asked =
-    !isTechnicianChannel && extracted.visitCommitted === true && !visit
+    !isTechnicianChannel &&
+    decidedBook === undefined &&
+    extracted.visitCommitted === true &&
+    !visit
       ? await observeInbound(job)
       : null;
 
@@ -682,7 +778,11 @@ export async function recordFieldNote(
     customerId,
     jobId: job.id,
     // `true`: this note IS a link, so the visit is reported by construction.
-    ...(visit ? { visitId: visit.id, stage: stageOf(visit, true) } : {}),
+    ...(visit
+      ? { visitId: visit.id, stage: stageOf(visit, true) }
+      : bookedVisitId
+        ? { visitId: bookedVisitId }
+        : {}),
   };
 }
 

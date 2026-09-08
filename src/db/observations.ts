@@ -69,6 +69,24 @@ export async function createObservation(
 // newer observation with no error anywhere. The nudgeDecisions .range() idiom.
 const PAGE = 1000;
 
+// One observation, tenant-guarded. The MCP dispatch needs it: a team-lead tool
+// naming an item must prove the item is this firm's before it acts on it, and
+// every other reader here is either fleet-wide by capture id (where holding the
+// id is proof enough) or already tenant-scoped by its query.
+export async function getObservationForTenant(
+  id: string,
+  tenantId: string,
+): Promise<Observation | null> {
+  const { data, error } = await getClient()
+    .from('observations')
+    .select()
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  if (error) throw new Error(`getObservationForTenant failed: ${error.message}`);
+  return (data as Observation | null) ?? null;
+}
+
 export async function listObservationsByStatus(
   tenantId: string,
   statuses: ObservationStatus[],

@@ -18,263 +18,265 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 ## What is in here
 
-232 entries — the map this file never had. Jump by line number, or grep the title.
+234 entries — the map this file never had. Jump by line number, or grep the title.
 
 **1. How we work (process rules)**
 
-- L283 · Every code change goes through a PR before main _(2026-07-12)_
-- L288 · RPI workflow
-- L291 · Box_Setup_Stuff/ is not documentation — it's the only context a host-side Claude gets
-- L295 · Decision briefs follow ONE layout _(2026-08-26)_
-- L305 · Verify vendor claims against live docs, cite URLs
-- L307 · Never paste badge plaintext anywhere _(2026-07-03)_
-- L309 · Concurrent sessions share a checkout at their peril _(2026-08-15)_
-- L315 · Two operators on trades-box-1 at once is an outage waiting to happen _(2026-09-05)_
-- L324 · Never size anything from the pilot's accumulated state — including inference cost _(2026-08-26)_
-- L332 · A new table that references ONLY tenants escapes every cleanup cascade _(2026-08-15)_
+- L285 · Every code change goes through a PR before main _(2026-07-12)_
+- L290 · RPI workflow
+- L293 · Box_Setup_Stuff/ is not documentation — it's the only context a host-side Claude gets
+- L297 · Decision briefs follow ONE layout _(2026-08-26)_
+- L307 · Verify vendor claims against live docs, cite URLs
+- L309 · Never paste badge plaintext anywhere _(2026-07-03)_
+- L311 · Concurrent sessions share a checkout at their peril _(2026-08-15)_
+- L317 · Two operators on trades-box-1 at once is an outage waiting to happen _(2026-09-05)_
+- L326 · Never size anything from the pilot's accumulated state — including inference cost _(2026-08-26)_
+- L334 · A new table that references ONLY tenants escapes every cleanup cascade _(2026-08-15)_
 
 **2. Product principles (user decisions — don't re-litigate, do cite when relevant)**
 
-- L344 · Agent-first framing + the intelligent-spine direction _(2026-08-15)_
-- L372 · Nudge frequency is paced by URGENCY, never capped _(2026-08-18)_
-- L427 · The spine is not the books _(2026-08-15)_
-- L440 · The money layer is workflow-agnostic — never pilot-fitted _(2026-08-15)_
-- L450 · Telegram is the entire UI _(2026-07-03)_
-- L460 · A schedule READ renders the booked order; it never re-derives one _(2026-07-31)_
-- L480 · Vocabulary must track what actually gates _(2026-07-23)_
-- L488 · Two access tiers, manager and technician _(2026-07-02)_
-- L495 · Seat-based licensing _(2026-07-02)_
-- L499 · EXPLORATORY direction — software-for-physical-data exchange _(2026-07-26)_
-- L516 · Spine scope boundary _(2026-07-06)_
-- L521 · Confirmation doctrine _(2026-07-17)_
-- L535 · REJECTED direction — do not propose again: _(2026-07-15)_
-- L539 · Agent model: _(2026-08-15)_
-- L612 · Candidate seat model, MEASURED but NOT adopted (2026-08-24) — Gemini 3.7 Flash. _(2026-08-24)_
-- L753 · Homogeneous memory collapses retrieval
-- L756 · Context collapse / brevity bias
-- L760 · Hint leakage
-- L791 · Push the keys, pull the content.
-- L797 · Only accumulate what something can later falsify.
-- L801 · Traces are not memory.
-- L804 · Append-only, never model-rewritten.
-- L806 · Keep it out of the record.
-- L814 · Field notes record one-shot; standing facts still confirm _(2026-08-21)_
-- L849 · A mixed batch confirms as a whole _(2026-08-21)_
-- L949 · Independent rollback of the technician-facing voice.
-- L951 · Per-gap failure isolation.
-- L987 · ONE ask.
-- L989 · The queue is the resting place, not a staging area.
-- L991 · escalated presumes a second party.
-- L994 · Detection is one query:
-- L1027 · Coexist with the incumbent FSM — the spine is OUR record, fed from theirs _(2026-09-06)_
+- L346 · Agent-first framing + the intelligent-spine direction _(2026-08-15)_
+- L374 · Nudge frequency is paced by URGENCY, never capped _(2026-08-18)_
+- L429 · The spine is not the books _(2026-08-15)_
+- L442 · The money layer is workflow-agnostic — never pilot-fitted _(2026-08-15)_
+- L452 · Telegram is the entire UI _(2026-07-03)_
+- L462 · A schedule READ renders the booked order; it never re-derives one _(2026-07-31)_
+- L482 · Vocabulary must track what actually gates _(2026-07-23)_
+- L490 · Two access tiers, manager and technician _(2026-07-02)_
+- L497 · Seat-based licensing _(2026-07-02)_
+- L501 · EXPLORATORY direction — software-for-physical-data exchange _(2026-07-26)_
+- L518 · Spine scope boundary _(2026-07-06)_
+- L523 · Confirmation doctrine _(2026-07-17)_
+- L537 · REJECTED direction — do not propose again: _(2026-07-15)_
+- L541 · Agent model: _(2026-08-15)_
+- L614 · Candidate seat model, MEASURED but NOT adopted (2026-08-24) — Gemini 3.7 Flash. _(2026-08-24)_
+- L755 · Homogeneous memory collapses retrieval
+- L758 · Context collapse / brevity bias
+- L762 · Hint leakage
+- L793 · Push the keys, pull the content.
+- L799 · Only accumulate what something can later falsify.
+- L803 · Traces are not memory.
+- L806 · Append-only, never model-rewritten.
+- L808 · Keep it out of the record.
+- L816 · Field notes record one-shot; standing facts still confirm _(2026-08-21)_
+- L851 · A mixed batch confirms as a whole _(2026-08-21)_
+- L951 · Independent rollback of the technician-facing voice.
+- L953 · Per-gap failure isolation.
+- L989 · ONE ask.
+- L991 · The queue is the resting place, not a staging area.
+- L993 · escalated presumes a second party.
+- L996 · Detection is one query:
+- L1029 · Coexist with the incumbent FSM — the spine is OUR record, fed from theirs _(2026-09-06)_
 
 **3. Environments & infrastructure**
 
-- L1106 · A CRON service cannot be deployed by commit id at all. _(2026-08-20)_
-- L1114 · Nothing auto-applies DB migrations to the pilot.
-- L1118 · Deploy-before-migration _(2026-07-19)_
-- L1121 · A new tool surface silently bypasses whatever doctrine rule did not name it — twice now. _(2026-08-06)_
-- L1151 · local_weekday did not close it — resolve_date week ranges were the real hole (2026-08-06). _(2026-08-06)_
-- L1169 · A HOOK plugin is not installed until the GATEWAY's startup line says so (2026-08-06). _(2026-08-06)_
-- L1180 · openclaw plugins install — the VENDOR's own CLI — trips the config-hash trap (2026-08-06). _(2026-08-06)_
-- L1188 · gateway restart does NOT re-render config from sandboxes.json _(2026-08-19)_
-- L1195 · DOCTRINE — the manager is NEVER a verification layer for dates (owner decision, 2026-08-11). _(2026-08-11)_
-- L1223 · WHY the guard was deaf, and proof the version upgrade fixes it (2026-08-12). _(2026-08-12)_
-- L1284 · Guard v0.3.0 fixes both eval-found detector defects (2026-08-12, PR #124). _(2026-08-12)_
-- L1451 · Eval truth-set conventions (2026-08-13 adjudication, five grader bugs): _(2026-08-13)_
-- L1519 · medic v4+v5 are DEPLOYED as of 2026-08-13 19:54:23Z — the NVIDIA failover can no longer fire. _(2026-08-13)_
-- L1598 · Ops alerting: the verdict now leaves the box (2026-08-12). _(2026-08-12)_
-- L1668 · The ladder cannot see the MONEY LEDGER — and a money-only answer leaves the nudge open _(2026-08-19)_
-- L1740 · Stage-1 shadow CONFIRMED on the pilot (2026-08-18T00:05Z). _(2026-08-18)_
-- L1772 · USER DECISION 2026-08-18 — DeepInfra is being RETIRED; Fireworks replaces its inference key. _(2026-08-18)_
-- L1799 · Stage 1 is PROVEN END TO END IN PRODUCTION (2026-08-18 23:10-23:17Z, first clean run). _(2026-08-18)_
-- L1927 · nemoclaw list shows the ONBOARDING RECORD, not the live inference route (2026-08-06). _(2026-08-06)_
-- L1959 · revoke ... from public does NOT revoke anon/authenticated on a new function. _(2026-08-06)_
+- L1108 · A CRON service cannot be deployed by commit id at all. _(2026-08-20)_
+- L1116 · Nothing auto-applies DB migrations to the pilot.
+- L1120 · Deploy-before-migration _(2026-07-19)_
+- L1123 · A new tool surface silently bypasses whatever doctrine rule did not name it — twice now. _(2026-08-06)_
+- L1153 · local_weekday did not close it — resolve_date week ranges were the real hole (2026-08-06). _(2026-08-06)_
+- L1171 · A HOOK plugin is not installed until the GATEWAY's startup line says so (2026-08-06). _(2026-08-06)_
+- L1182 · openclaw plugins install — the VENDOR's own CLI — trips the config-hash trap (2026-08-06). _(2026-08-06)_
+- L1190 · gateway restart does NOT re-render config from sandboxes.json _(2026-08-19)_
+- L1197 · DOCTRINE — the manager is NEVER a verification layer for dates (owner decision, 2026-08-11). _(2026-08-11)_
+- L1225 · WHY the guard was deaf, and proof the version upgrade fixes it (2026-08-12). _(2026-08-12)_
+- L1286 · Guard v0.3.0 fixes both eval-found detector defects (2026-08-12, PR #124). _(2026-08-12)_
+- L1453 · Eval truth-set conventions (2026-08-13 adjudication, five grader bugs): _(2026-08-13)_
+- L1521 · medic v4+v5 are DEPLOYED as of 2026-08-13 19:54:23Z — the NVIDIA failover can no longer fire. _(2026-08-13)_
+- L1600 · Ops alerting: the verdict now leaves the box (2026-08-12). _(2026-08-12)_
+- L1670 · The ladder cannot see the MONEY LEDGER — and a money-only answer leaves the nudge open _(2026-08-19)_
+- L1742 · Stage-1 shadow CONFIRMED on the pilot (2026-08-18T00:05Z). _(2026-08-18)_
+- L1774 · USER DECISION 2026-08-18 — DeepInfra is being RETIRED; Fireworks replaces its inference key. _(2026-08-18)_
+- L1801 · Stage 1 is PROVEN END TO END IN PRODUCTION (2026-08-18 23:10-23:17Z, first clean run). _(2026-08-18)_
+- L1929 · nemoclaw list shows the ONBOARDING RECORD, not the live inference route (2026-08-06). _(2026-08-06)_
+- L1961 · revoke ... from public does NOT revoke anon/authenticated on a new function. _(2026-08-06)_
 
 **4. Live-state snapshot (as of 2026-08-24 — verify before relying)**
 
-- L2009 · The ladder is complete through ⑤ — all five stages merged AND deployed (2026-08-24). _(2026-08-24)_
-- L2018 · Model routing differs BY RENDER SERVICE (verified 2026-08-24). _(2026-08-24)_
-- L2043 · The Render estate — six services, two of them behind main (API-read 2026-08-24). _(2026-08-24)_
-- L2089 · What the brain has produced on the pilot: proven machinery, empty corpus (2026-08-24). _(2026-08-24)_
-- L2100 · In flight, NOT on main: the one-call collapse _(2026-08-24)_
-- L2105 · Tenants on the pilot DB — FOUR, not two (2026-08-24). _(2026-08-24)_
-- L2117 · The demo schedule has run out — re-shift before the next demo (2026-08-24). _(2026-08-24)_
-- L2123 · Roster: 31 technician rows, and the flag is a STATE, not a boolean (2026-08-24). _(2026-08-24)_
-- L2130 · Sandbox map on trades-box-1 (2026-08-24) _(2026-08-24)_
-- L2143 · sandbox_pool is a partial ledger, not the pool — never answer "which seats exist" from it.
-- L2148 · Board:
-- L2161 · Live: _(2026-07-20)_
-- L2509 · Deferred / backlog (each has an owner-stated reason — check before resurrecting): _(2026-07-25)_
-- L2779 · FIXED 2026-07-30 — agent turns took 60–80s; cause was ONE tool's schema. _(2026-07-30)_
-- L2851 · Dated debts (reviewed 2026-08-24): _(2026-08-24)_
-- L2874 · Pending human tests:
-- L2931 · Money's structure in the spine is load-bearing for FUTURE BUSINESS ANALYTICS _(2026-08-19)_
+- L2011 · The ladder is complete through ⑤ — all five stages merged AND deployed (2026-08-24). _(2026-08-24)_
+- L2020 · Model routing differs BY RENDER SERVICE (verified 2026-08-24). _(2026-08-24)_
+- L2045 · The Render estate — six services, two of them behind main (API-read 2026-08-24). _(2026-08-24)_
+- L2091 · What the brain has produced on the pilot: proven machinery, empty corpus (2026-08-24). _(2026-08-24)_
+- L2102 · In flight, NOT on main: the one-call collapse _(2026-08-24)_
+- L2107 · Tenants on the pilot DB — FOUR, not two (2026-08-24). _(2026-08-24)_
+- L2119 · The demo schedule has run out — re-shift before the next demo (2026-08-24). _(2026-08-24)_
+- L2125 · Roster: 31 technician rows, and the flag is a STATE, not a boolean (2026-08-24). _(2026-08-24)_
+- L2132 · Sandbox map on trades-box-1 (2026-08-24) _(2026-08-24)_
+- L2145 · sandbox_pool is a partial ledger, not the pool — never answer "which seats exist" from it.
+- L2150 · Board:
+- L2163 · Live: _(2026-07-20)_
+- L2511 · Deferred / backlog (each has an owner-stated reason — check before resurrecting): _(2026-07-25)_
+- L2781 · FIXED 2026-07-30 — agent turns took 60–80s; cause was ONE tool's schema. _(2026-07-30)_
+- L2853 · Dated debts (reviewed 2026-08-24): _(2026-08-24)_
+- L2876 · Pending human tests:
+- L2933 · Money's structure in the spine is load-bearing for FUTURE BUSINESS ANALYTICS _(2026-08-19)_
 
 **5. The walls — traps by the time you'd hit them**
 
-- L2976 · md5 a box-local bootstrap-box.sh against the repo before running it
-- L2979 · wire needs the WHOLE Box_Setup_Stuff/ tree
-- L2981 · 4 of the 9 AGENTS.md blocks are append-once
-- L2984 · s2 is the canary and must stay the most up-to-date seat
-- L3025 · Concurrent local stacks are the top cause of phantom test failures on this machine.
-- L3050 · Retuning a constant is retroactive.
-- L3053 · TEST ROT — hit three times in one day.
-- L3073 · A tool DESCRIPTION change is not deploy-only; a result-side field is. _(2026-07-31)_
-- L3095 · A sandbox can hold a badge the doorman no longer knows — and nothing says so. _(2026-08-04)_
-- L3123 · Credentials inject into a sandbox's process env at container launch ONLY.
-- L3149 · NEVER change a sandbox's openclaw.json with openclaw config patch. _(2026-07-30)_
-- L3187 · nemoclaw rebuild can destroy the sandbox's device private key
-- L3192 · The placeholder versioning trap:
-- L3196 · nemoclaw onboard/rebuild resets the gateway inference route
-- L3199 · Tool VOCABULARY lives in three places, and one of them self-reapplies. _(2026-07-25)_
-- L3207 · There is NO per-tool allowlist file
-- L3212 · The Telegram sender allowlist lives in TWO places
-- L3215 · Never health-check via nemoclaw <s> agent
-- L3218 · Trust box evidence over vendor status pages
-- L3220 · DeepInfra balance runs out roughly monthly and NOTHING alerts on it _(2026-07-11)_
-- L3233 · A deactivated seat's bot goes silent but alive
-- L3238 · Don't verify badges by extracting them from /proc/<pid>/environ
-- L3252 · CLI chat probes run on the EMBEDDED agent, not the gateway _(2026-07-23)_
-- L3280 · /hooks/agent (the gateway's HTTP webhook) CANNOT drive an agent turn on this box.
-- L3306 · A status gate outlives its truth — date it, or delete it. _(2026-08-06)_
-- L3316 · Resolve merge state with merge-base, never by eyeballing git log on a feature branch. _(2026-08-06)_
-- L3325 · When inbound email "stops working", check the webhook subscription FIRST
-- L3365 · npm test truncates the local stack, and that wipes the spine-eval world.
-- L3371 · An eval's own fixtures collide unless each scenario owns its rows AND its people. _(2026-08-12)_
-- L3378 · Fixture data must look like customer data.
-- L3383 · A missing BOARD_BOT_HANDLE makes the agent invent board links. _(2026-07-22)_
-- L3390 · resolve_date now has calendar-PERIOD modes _(2026-08-12)_
-- L3471 · Design consequence worth reusing: make the cheap tier the control group.
-- L3475 · The pilot DB is an accepted test-write target (user decision, 2026-08-12) _(2026-08-12)_
-- L3485 · L1 PINS L2: a stamped capture makes its customer permanently undeletable. _(2026-08-12)_
-- L3506 · A new tenant in the pilot silently enlists in the lifecycle cron.
-- L3557 · No reachable technician, so rung 1 can never mint a nudge. _(2026-08-19)_
-- L3563 · Nothing is fresh any more, and nothing new is arriving. _(2026-08-24)_
+- L2978 · md5 a box-local bootstrap-box.sh against the repo before running it
+- L2981 · wire needs the WHOLE Box_Setup_Stuff/ tree
+- L2983 · 4 of the 9 AGENTS.md blocks are append-once
+- L2986 · s2 is the canary and must stay the most up-to-date seat
+- L3027 · Concurrent local stacks are the top cause of phantom test failures on this machine.
+- L3052 · Retuning a constant is retroactive.
+- L3055 · TEST ROT — hit three times in one day.
+- L3075 · A tool DESCRIPTION change is not deploy-only; a result-side field is. _(2026-07-31)_
+- L3097 · A sandbox can hold a badge the doorman no longer knows — and nothing says so. _(2026-08-04)_
+- L3125 · Credentials inject into a sandbox's process env at container launch ONLY.
+- L3151 · NEVER change a sandbox's openclaw.json with openclaw config patch. _(2026-07-30)_
+- L3189 · nemoclaw rebuild can destroy the sandbox's device private key
+- L3194 · The placeholder versioning trap:
+- L3198 · nemoclaw onboard/rebuild resets the gateway inference route
+- L3201 · Tool VOCABULARY lives in three places, and one of them self-reapplies. _(2026-07-25)_
+- L3209 · There is NO per-tool allowlist file
+- L3214 · The Telegram sender allowlist lives in TWO places
+- L3217 · Never health-check via nemoclaw <s> agent
+- L3220 · Trust box evidence over vendor status pages
+- L3222 · DeepInfra balance runs out roughly monthly and NOTHING alerts on it _(2026-07-11)_
+- L3235 · A deactivated seat's bot goes silent but alive
+- L3240 · Don't verify badges by extracting them from /proc/<pid>/environ
+- L3254 · CLI chat probes run on the EMBEDDED agent, not the gateway _(2026-07-23)_
+- L3282 · /hooks/agent (the gateway's HTTP webhook) CANNOT drive an agent turn on this box.
+- L3308 · A status gate outlives its truth — date it, or delete it. _(2026-08-06)_
+- L3318 · Resolve merge state with merge-base, never by eyeballing git log on a feature branch. _(2026-08-06)_
+- L3327 · When inbound email "stops working", check the webhook subscription FIRST
+- L3367 · npm test truncates the local stack, and that wipes the spine-eval world.
+- L3373 · An eval's own fixtures collide unless each scenario owns its rows AND its people. _(2026-08-12)_
+- L3380 · Fixture data must look like customer data.
+- L3385 · A missing BOARD_BOT_HANDLE makes the agent invent board links. _(2026-07-22)_
+- L3392 · resolve_date now has calendar-PERIOD modes _(2026-08-12)_
+- L3473 · Design consequence worth reusing: make the cheap tier the control group.
+- L3477 · The pilot DB is an accepted test-write target (user decision, 2026-08-12) _(2026-08-12)_
+- L3487 · L1 PINS L2: a stamped capture makes its customer permanently undeletable. _(2026-08-12)_
+- L3508 · A new tenant in the pilot silently enlists in the lifecycle cron.
+- L3559 · No reachable technician, so rung 1 can never mint a nudge. _(2026-08-19)_
+- L3565 · Nothing is fresh any more, and nothing new is arriving. _(2026-08-24)_
 
 **6a. The build order — the harness rebuild (2026-08-28 → )**
 
-- L3663 · It needs its own claim column.
-- L3667 · The scoping INVERTS.
-- L3670 · The gate goes before the claim.
-- L3735 · The seats are an eye.
-- L3738 · AUTHORSHIP: the seat PROPOSES, the planner RECORDS.
-- L3743 · SCOPE: build 7 is the subject decision + authorship.
-- L3794 · It cost one line of code.
-- L3798 · The metric does not widen.
-- L3812 · Volume.
-- L3816 · The quiet-firm skip becomes materially more reachable.
-- L3893 · A looked-up citation stamps NO capture id.
-- L3896 · THE PLANNER COULD CITE ITSELF
-- L3901 · ACCEPTED RESIDUE:
-- L3905 · ORDERING:
-- L3912 · The regression this phase introduced and review caught:
-- L3972 · The turn ceiling binds before the clock.
-- L3975 · A 15-minute tick eats the cadence behind it. _(2026-08-29)_
-- L4015 · MIN_TURN_BUDGET_MS = 15_000
-- L4020 · MAX_TOOL_CALL_MS = 90_000
-- L4037 · Context exhaustion is now the de-facto outer limit.
-- L4041 · The model is NOT told its remaining time
-- L4128 · Doctrine, not a code-enforced phase
-- L4130 · Churn: no brake
-- L4132 · Crowding out: watched, not prevented.
-- L4197 · No cap on the NUMBER of memory files, or on total bytes per firm.
-- L4203 · write_memory has NO mode gate
-- L4233 · The record grows without bound.
-- L4238 · The planner curates it.
-- L4243 · Detectors stay ours, and that is the point.
-- L4247 · The detector must not be the only way a gap opens.
-- L4307 · NUDGES_MODE is RETIRED
-- L4342 · agent informs the office
-- L4348 · agent asks the office _(2026-09-01)_
-- L4363 · the office reaches an agent
-- L4374 · seat-to-seat informs
-- L4422 · A partial index is only usable when the query IMPLIES its predicate.
-- L4535 · Durability.
-- L4537 · Observability.
-- L4597 · 1 · the firm's roster.
-- L4599 · 2 · who you can reach.
-- L4601 · 3 · a message need not be about a gap.
-- L4603 · 4 · one verb.
-- L4606 · 5 · seeing what you sent.
-- L4618 · as: 'board'
-- L4621 · Several addressees on one message
-- L4624 · The quiet-firm skip
-- L4627 · No v_office_messages
-- L4629 · B65-REACH-A-MANAGER
-- L4867 · For a customer we know, inbound creates NOTHING.
-- L4870 · The extractor gained one field, visitCommitted
-- L4872 · A. job_captures
-- L4876 · B. What a yes creates CITES the call.
-- L4879 · C. attributes.correspondence[]
-- L4883 · open_job
-- L4886 · The focused pass.
-- L4890 · Two markers, pinged_at and asked_at.
-- L4898 · A "processed" marker must be the LAST thing written.
-- L4904 · Nothing releases a pinged_at.
-- L4908 · The two doors spell the sender differently.
-- L4911 · captureHasObservation needed its own index.
-- L4915 · A gap-less send never reaches the ask marker.
-- L4919 · The date rail reaches further than it looks.
-- L4922 · ingestEmail and googleapis are deleted.
-- L4924 · ⚠ THE PHONE DOOR ONLY REACHES THIS RUNG ON A new_job INTENT. _(2026-08-06)_
-- L4930 · findFoldImpact's superset invariant is now load-bearing in a second place.
-- L4936 · THE EMAIL CHANNEL DROPS ITS THREAD ID — verified 2026-09-07, and it is time-sensitive. _(2026-09-07)_
-- L4987 · TRAP — nemoclaw <s> status LIES about the gateway right after a restart.
-- L5019 · A visit carries a CREW, and a crew has no lead
-- L5024 · The double-booking guard MOVED with the person
-- L5038 · A composite PK on a link table makes PostgREST synthesise a junction
-- L5046 · A bare ON CONFLICT DO NOTHING swallows an exclusion constraint
-- L5050 · Moving a filter from SQL into JS meets PostgREST's max_rows
-- L5054 · A derived column needs its trigger on UPDATE too, and a FOR SHARE on the parent
-- L5059 · Order is load-bearing in two different places
-- L5065 · Deploy shape: an additive migration BEFORE the code, the drop AFTER
-- L5181 · ON DELETE SET NULL is an UPDATE.
-- L5183 · Naive-local vs real UTC, again. _(2026-09-08)_
-- L5188 · A once-ever index plus stable ids = a detector that fires once, forever.
-- L5195 · A liveness filter can be bypassed by an id rename.
-- L5199 · A compat view bridges the deploy. _(2026-09-05)_
-- L5213 · schedule_events.assignment_id KEEPS ITS NAME this rung.
-- L5216 · The completed-stamp CHECK was dropped.
-- L5226 · RECORDED, NOT FIXED — a crew edit is three HTTP round trips and is NOT atomic.
-- L5236 · RECORDED, NOT FIXED — the tray became an unbounded full-table read.
-- L5322 · A green suite proves nothing when you mass-edit tests.
-- L5327 · A test can pin the bug.
-- L5330 · Reachability is not a compile error.
-- L5406 · A technician's seat agent has NO scheduling verb at any tier.
-- L5409 · Live specimen in the pilot _(2026-09-01)_
-- L5419 · Counting.
-- L5421 · Detection.
-- L5426 · Booking.
-- L5439 · Build 6 (vocabulary): _(2026-09-01)_
-- L5444 · Build 7 (detectors report): _(2026-09-05)_
-- L5454 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L3665 · It needs its own claim column.
+- L3669 · The scoping INVERTS.
+- L3672 · The gate goes before the claim.
+- L3737 · The seats are an eye.
+- L3740 · AUTHORSHIP: the seat PROPOSES, the planner RECORDS.
+- L3745 · SCOPE: build 7 is the subject decision + authorship.
+- L3796 · It cost one line of code.
+- L3800 · The metric does not widen.
+- L3814 · Volume.
+- L3818 · The quiet-firm skip becomes materially more reachable.
+- L3895 · A looked-up citation stamps NO capture id.
+- L3898 · THE PLANNER COULD CITE ITSELF
+- L3903 · ACCEPTED RESIDUE:
+- L3907 · ORDERING:
+- L3914 · The regression this phase introduced and review caught:
+- L3974 · The turn ceiling binds before the clock.
+- L3977 · A 15-minute tick eats the cadence behind it. _(2026-08-29)_
+- L4017 · MIN_TURN_BUDGET_MS = 15_000
+- L4022 · MAX_TOOL_CALL_MS = 90_000
+- L4039 · Context exhaustion is now the de-facto outer limit.
+- L4043 · The model is NOT told its remaining time
+- L4130 · Doctrine, not a code-enforced phase
+- L4132 · Churn: no brake
+- L4134 · Crowding out: watched, not prevented.
+- L4199 · No cap on the NUMBER of memory files, or on total bytes per firm.
+- L4205 · write_memory has NO mode gate
+- L4235 · The record grows without bound.
+- L4240 · The planner curates it.
+- L4245 · Detectors stay ours, and that is the point.
+- L4249 · The detector must not be the only way a gap opens.
+- L4309 · NUDGES_MODE is RETIRED
+- L4344 · agent informs the office
+- L4350 · agent asks the office _(2026-09-01)_
+- L4365 · the office reaches an agent
+- L4376 · seat-to-seat informs
+- L4424 · A partial index is only usable when the query IMPLIES its predicate.
+- L4537 · Durability.
+- L4539 · Observability.
+- L4599 · 1 · the firm's roster.
+- L4601 · 2 · who you can reach.
+- L4603 · 3 · a message need not be about a gap.
+- L4605 · 4 · one verb.
+- L4608 · 5 · seeing what you sent.
+- L4620 · as: 'board'
+- L4623 · Several addressees on one message
+- L4626 · The quiet-firm skip
+- L4629 · No v_office_messages
+- L4631 · B65-REACH-A-MANAGER
+- L4820 · The §4 estate table is WRONG about lifecycle-heart:
+- L4823 · Board_Worker was deliberately left BEHIND _(2026-09-08)_
+- L4898 · For a customer we know, inbound creates NOTHING.
+- L4901 · The extractor gained one field, visitCommitted
+- L4903 · A. job_captures
+- L4907 · B. What a yes creates CITES the call.
+- L4910 · C. attributes.correspondence[]
+- L4914 · open_job
+- L4917 · The focused pass.
+- L4921 · Two markers, pinged_at and asked_at.
+- L4929 · A "processed" marker must be the LAST thing written.
+- L4935 · Nothing releases a pinged_at.
+- L4939 · The two doors spell the sender differently.
+- L4942 · captureHasObservation needed its own index.
+- L4946 · A gap-less send never reaches the ask marker.
+- L4950 · The date rail reaches further than it looks.
+- L4953 · ingestEmail and googleapis are deleted.
+- L4955 · ⚠ THE PHONE DOOR ONLY REACHES THIS RUNG ON A new_job INTENT. _(2026-08-06)_
+- L4961 · findFoldImpact's superset invariant is now load-bearing in a second place.
+- L4967 · THE EMAIL CHANNEL DROPS ITS THREAD ID — verified 2026-09-07, and it is time-sensitive. _(2026-09-07)_
+- L5018 · TRAP — nemoclaw <s> status LIES about the gateway right after a restart.
+- L5050 · A visit carries a CREW, and a crew has no lead
+- L5055 · The double-booking guard MOVED with the person
+- L5069 · A composite PK on a link table makes PostgREST synthesise a junction
+- L5077 · A bare ON CONFLICT DO NOTHING swallows an exclusion constraint
+- L5081 · Moving a filter from SQL into JS meets PostgREST's max_rows
+- L5085 · A derived column needs its trigger on UPDATE too, and a FOR SHARE on the parent
+- L5090 · Order is load-bearing in two different places
+- L5096 · Deploy shape: an additive migration BEFORE the code, the drop AFTER
+- L5212 · ON DELETE SET NULL is an UPDATE.
+- L5214 · Naive-local vs real UTC, again. _(2026-09-08)_
+- L5219 · A once-ever index plus stable ids = a detector that fires once, forever.
+- L5226 · A liveness filter can be bypassed by an id rename.
+- L5230 · A compat view bridges the deploy. _(2026-09-05)_
+- L5244 · schedule_events.assignment_id KEEPS ITS NAME this rung.
+- L5247 · The completed-stamp CHECK was dropped.
+- L5257 · RECORDED, NOT FIXED — a crew edit is three HTTP round trips and is NOT atomic.
+- L5267 · RECORDED, NOT FIXED — the tray became an unbounded full-table read.
+- L5353 · A green suite proves nothing when you mass-edit tests.
+- L5358 · A test can pin the bug.
+- L5361 · Reachability is not a compile error.
+- L5437 · A technician's seat agent has NO scheduling verb at any tier.
+- L5440 · Live specimen in the pilot _(2026-09-01)_
+- L5450 · Counting.
+- L5452 · Detection.
+- L5457 · Booking.
+- L5470 · Build 6 (vocabulary): _(2026-09-01)_
+- L5475 · Build 7 (detectors report): _(2026-09-05)_
+- L5485 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L5850 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L5873 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L5920 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L5957 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L5989 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L5994 · Every member row stores the FULL grouped message in question.
-- L5998 · The attribution stamp is an audit link, not a gate.
-- L6002 · The derived stamp requires a capture a badge-holder SPOKE
-- L6006 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L6012 · The follow-up loop has two halves and both had to be written down.
-- L6018 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L6092 · Batching works.
-- L6094 · The follow-up leg works, including the half that fails silently.
-- L6098 · Both attribution paths fired, each in its designed case.
-- L6102 · Escalation fired correctly
-- L6103 · The planner's group-aware pacing is the result worth keeping.
+- L5881 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L5904 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L5951 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L5988 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L6020 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L6025 · Every member row stores the FULL grouped message in question.
+- L6029 · The attribution stamp is an audit link, not a gate.
+- L6033 · The derived stamp requires a capture a badge-holder SPOKE
+- L6037 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L6043 · The follow-up loop has two halves and both had to be written down.
+- L6049 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L6123 · Batching works.
+- L6125 · The follow-up leg works, including the half that fails silently.
+- L6129 · Both attribution paths fired, each in its designed case.
+- L6133 · Escalation fired correctly
+- L6134 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L6455 · Evals:
-- L6462 · Runbooks:
-- L6467 · Decision history with citations:
-- L6471 · This file
+- L6486 · Evals:
+- L6493 · Runbooks:
+- L6498 · Decision history with citations:
+- L6502 · This file
 
 <!-- INDEX:END -->
 
@@ -4775,7 +4777,7 @@ ladder was a workaround for that CHECK. Removing the CHECK removes the reason th
 because we are operating in a test suite and nothing is in production right now."* Destructive is
 permitted, consistent with the L1 waiver recorded above.
 
-### 🟡 BUILT 2026-09-08, NOT YET DEPLOYED — rung 10b, "the new caller"
+### 🟢 DEPLOYED 2026-09-08 — rung 10b, "the new caller" (live checks still owed)
 
 Branch `feat/rung-10b-new-caller` (6 commits). Plan:
 `thoughts/shared/plans/2026-09-08-rung-10b-the-new-caller.md`. What it changes, in one line each:
@@ -4811,11 +4813,40 @@ Branch `feat/rung-10b-new-caller` (6 commits). Plan:
    describe the LATEST message alone — and identity may never come from the firm's own signature
    block, because those fields feed the deterministic matcher.
 
-**TWO MIGRATIONS MUST BE HAND-APPLIED BEFORE THE DEPLOY** (deploys run none):
-`20260908110000_thread_id_index.sql` (a partial index on `metadata->>'threadId'`, without which the
-thread key scans the tenant's whole capture history inside the webhook request) and
-`20260908120000_one_customer_per_capture.sql`. Re-run the zero-duplicates check immediately before
-applying the second — it aborts the migration if any exists.
+**DEPLOYED 2026-09-08 20:02Z.** `Calls-worker` auto-deployed `b71cc10` at 19:59:54; the web service
+and `lifecycle-heart` were triggered BY HAND and reported live at ~20:02 and 20:01:41.
+`GET /health` on the web service answers `b71cc10`, which is the only check that reads the live
+system rather than a written record.
+- **The §4 estate table is WRONG about `lifecycle-heart`:** it says auto-deploy *yes*; the live API
+  says **no**. Read the API, not the table. Auto-deploy is ON for `Calls-worker` and `Calls-purge`
+  only; the web service, `lifecycle-heart` and `Board_Worker` are all hand-deployed.
+- **`Board_Worker` was deliberately left BEHIND** — rung 10b does not touch the board, and the
+  service is to be **retired entirely once the rungs are done** (user, 2026-09-08). Do not "fix"
+  its staleness.
+
+**The two migrations were applied 2026-09-08 20:05Z, and a `db push` trap came with them.** They
+had NOT reached the pilot when the deploy went out — no indexes, and no rows in
+`supabase_migrations.schema_migrations` either, so the earlier apply never touched this database at
+all (a recorded-but-failed apply would have left the rows). Applied via the Supabase MCP's
+`apply_migration`, which records its OWN timestamp rather than the file's, so the ledger and the
+filenames now disagree:
+
+| repo file | ledger row |
+|---|---|
+| `20260908110000_thread_id_index.sql` | `20260908200505 thread_id_index` |
+| `20260908120000_one_customer_per_capture.sql` | `20260908200514 one_customer_per_capture` |
+
+This is the `ledger versions ≠ filenames` trap in the deploy entry above, and the consequence is
+narrow: `supabase migration list` shows both file versions as pending FOREVER, and a `db push`
+(never do one) would try to replay them. Both are `create index if not exists`, so a replay is a
+no-op — the drift is a reporting lie, not a hazard. Both indexes verified
+`indisvalid` + `indisready` true after the apply, with zero duplicate customer citations
+immediately before (the unique index aborts if any exist).
+
+**Neither index is required for CORRECTNESS**, which is why the deploy was safe to ship ahead of
+them: without the thread index the lookup scans 275 rows instead of seeking, and without the unique
+index `record_caller`'s twin guard is the read alone, unlocked against a race. Both matter at real
+volume; neither changes an answer.
 
 **Deferred and NOT done**: every live check (all need the pilot deployed), the Phase 3 manual read
 of the manager's text, and the seat wire pass that puts rule 7's relay line on the boxes (user-

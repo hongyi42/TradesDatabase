@@ -153,126 +153,126 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 **6a. The build order — the harness rebuild (2026-08-28 → )**
 
-- L3615 · It needs its own claim column.
-- L3619 · The scoping INVERTS.
-- L3622 · The gate goes before the claim.
-- L3687 · The seats are an eye.
-- L3690 · AUTHORSHIP: the seat PROPOSES, the planner RECORDS.
-- L3695 · SCOPE: build 7 is the subject decision + authorship.
-- L3746 · It cost one line of code.
-- L3750 · The metric does not widen.
-- L3764 · Volume.
-- L3768 · The quiet-firm skip becomes materially more reachable.
-- L3845 · A looked-up citation stamps NO capture id.
-- L3848 · THE PLANNER COULD CITE ITSELF
-- L3853 · ACCEPTED RESIDUE:
-- L3857 · ORDERING:
-- L3864 · The regression this phase introduced and review caught:
-- L3924 · The turn ceiling binds before the clock.
-- L3927 · A 15-minute tick eats the cadence behind it. _(2026-08-29)_
-- L3967 · MIN_TURN_BUDGET_MS = 15_000
-- L3972 · MAX_TOOL_CALL_MS = 90_000
-- L3989 · Context exhaustion is now the de-facto outer limit.
-- L3993 · The model is NOT told its remaining time
-- L4080 · Doctrine, not a code-enforced phase
-- L4082 · Churn: no brake
-- L4084 · Crowding out: watched, not prevented.
-- L4149 · No cap on the NUMBER of memory files, or on total bytes per firm.
-- L4155 · write_memory has NO mode gate
-- L4185 · The record grows without bound.
-- L4190 · The planner curates it.
-- L4195 · Detectors stay ours, and that is the point.
-- L4199 · The detector must not be the only way a gap opens.
-- L4257 · NUDGES_MODE is RETIRED
-- L4292 · agent informs the office
-- L4298 · agent asks the office _(2026-09-01)_
-- L4313 · the office reaches an agent
-- L4324 · seat-to-seat informs
-- L4372 · A partial index is only usable when the query IMPLIES its predicate.
-- L4485 · Durability.
-- L4487 · Observability.
-- L4547 · 1 · the firm's roster.
-- L4549 · 2 · who you can reach.
-- L4551 · 3 · a message need not be about a gap.
-- L4553 · 4 · one verb.
-- L4556 · 5 · seeing what you sent.
-- L4568 · as: 'board'
-- L4571 · Several addressees on one message
-- L4574 · The quiet-firm skip
-- L4577 · No v_office_messages
-- L4579 · B65-REACH-A-MANAGER
-- L4770 · For a customer we know, inbound creates NOTHING.
-- L4773 · The extractor gained one field, visitCommitted
-- L4775 · A. job_captures
-- L4779 · B. What a yes creates CITES the call.
-- L4782 · C. attributes.correspondence[]
-- L4786 · open_job
-- L4789 · The focused pass.
-- L4793 · Two markers, pinged_at and asked_at.
-- L4801 · A "processed" marker must be the LAST thing written.
-- L4807 · Nothing releases a pinged_at.
-- L4811 · The two doors spell the sender differently.
-- L4814 · captureHasObservation needed its own index.
-- L4818 · A gap-less send never reaches the ask marker.
-- L4822 · The date rail reaches further than it looks.
-- L4825 · ingestEmail and googleapis are deleted.
-- L4827 · ⚠ THE PHONE DOOR ONLY REACHES THIS RUNG ON A new_job INTENT. _(2026-08-06)_
-- L4833 · findFoldImpact's superset invariant is now load-bearing in a second place.
-- L4873 · TRAP — nemoclaw <s> status LIES about the gateway right after a restart.
-- L4905 · A visit carries a CREW, and a crew has no lead
-- L4910 · The double-booking guard MOVED with the person
-- L4924 · A composite PK on a link table makes PostgREST synthesise a junction
-- L4932 · A bare ON CONFLICT DO NOTHING swallows an exclusion constraint
-- L4936 · Moving a filter from SQL into JS meets PostgREST's max_rows
-- L4940 · A derived column needs its trigger on UPDATE too, and a FOR SHARE on the parent
-- L4945 · Order is load-bearing in two different places
-- L4951 · Deploy shape: an additive migration BEFORE the code, the drop AFTER
-- L5067 · ON DELETE SET NULL is an UPDATE.
-- L5069 · Naive-local vs real UTC, again. _(2026-09-08)_
-- L5074 · A once-ever index plus stable ids = a detector that fires once, forever.
-- L5081 · A liveness filter can be bypassed by an id rename.
-- L5085 · A compat view bridges the deploy. _(2026-09-05)_
-- L5099 · schedule_events.assignment_id KEEPS ITS NAME this rung.
-- L5102 · The completed-stamp CHECK was dropped.
-- L5112 · RECORDED, NOT FIXED — a crew edit is three HTTP round trips and is NOT atomic.
-- L5122 · RECORDED, NOT FIXED — the tray became an unbounded full-table read.
-- L5208 · A green suite proves nothing when you mass-edit tests.
-- L5213 · A test can pin the bug.
-- L5216 · Reachability is not a compile error.
-- L5292 · A technician's seat agent has NO scheduling verb at any tier.
-- L5295 · Live specimen in the pilot _(2026-09-01)_
-- L5305 · Counting.
-- L5307 · Detection.
-- L5312 · Booking.
-- L5325 · Build 6 (vocabulary): _(2026-09-01)_
-- L5330 · Build 7 (detectors report): _(2026-09-05)_
-- L5340 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L3619 · It needs its own claim column.
+- L3623 · The scoping INVERTS.
+- L3626 · The gate goes before the claim.
+- L3691 · The seats are an eye.
+- L3694 · AUTHORSHIP: the seat PROPOSES, the planner RECORDS.
+- L3699 · SCOPE: build 7 is the subject decision + authorship.
+- L3750 · It cost one line of code.
+- L3754 · The metric does not widen.
+- L3768 · Volume.
+- L3772 · The quiet-firm skip becomes materially more reachable.
+- L3849 · A looked-up citation stamps NO capture id.
+- L3852 · THE PLANNER COULD CITE ITSELF
+- L3857 · ACCEPTED RESIDUE:
+- L3861 · ORDERING:
+- L3868 · The regression this phase introduced and review caught:
+- L3928 · The turn ceiling binds before the clock.
+- L3931 · A 15-minute tick eats the cadence behind it. _(2026-08-29)_
+- L3971 · MIN_TURN_BUDGET_MS = 15_000
+- L3976 · MAX_TOOL_CALL_MS = 90_000
+- L3993 · Context exhaustion is now the de-facto outer limit.
+- L3997 · The model is NOT told its remaining time
+- L4084 · Doctrine, not a code-enforced phase
+- L4086 · Churn: no brake
+- L4088 · Crowding out: watched, not prevented.
+- L4153 · No cap on the NUMBER of memory files, or on total bytes per firm.
+- L4159 · write_memory has NO mode gate
+- L4189 · The record grows without bound.
+- L4194 · The planner curates it.
+- L4199 · Detectors stay ours, and that is the point.
+- L4203 · The detector must not be the only way a gap opens.
+- L4261 · NUDGES_MODE is RETIRED
+- L4296 · agent informs the office
+- L4302 · agent asks the office _(2026-09-01)_
+- L4317 · the office reaches an agent
+- L4328 · seat-to-seat informs
+- L4376 · A partial index is only usable when the query IMPLIES its predicate.
+- L4489 · Durability.
+- L4491 · Observability.
+- L4551 · 1 · the firm's roster.
+- L4553 · 2 · who you can reach.
+- L4555 · 3 · a message need not be about a gap.
+- L4557 · 4 · one verb.
+- L4560 · 5 · seeing what you sent.
+- L4572 · as: 'board'
+- L4575 · Several addressees on one message
+- L4578 · The quiet-firm skip
+- L4581 · No v_office_messages
+- L4583 · B65-REACH-A-MANAGER
+- L4774 · For a customer we know, inbound creates NOTHING.
+- L4777 · The extractor gained one field, visitCommitted
+- L4779 · A. job_captures
+- L4783 · B. What a yes creates CITES the call.
+- L4786 · C. attributes.correspondence[]
+- L4790 · open_job
+- L4793 · The focused pass.
+- L4797 · Two markers, pinged_at and asked_at.
+- L4805 · A "processed" marker must be the LAST thing written.
+- L4811 · Nothing releases a pinged_at.
+- L4815 · The two doors spell the sender differently.
+- L4818 · captureHasObservation needed its own index.
+- L4822 · A gap-less send never reaches the ask marker.
+- L4826 · The date rail reaches further than it looks.
+- L4829 · ingestEmail and googleapis are deleted.
+- L4831 · ⚠ THE PHONE DOOR ONLY REACHES THIS RUNG ON A new_job INTENT. _(2026-08-06)_
+- L4837 · findFoldImpact's superset invariant is now load-bearing in a second place.
+- L4877 · TRAP — nemoclaw <s> status LIES about the gateway right after a restart.
+- L4909 · A visit carries a CREW, and a crew has no lead
+- L4914 · The double-booking guard MOVED with the person
+- L4928 · A composite PK on a link table makes PostgREST synthesise a junction
+- L4936 · A bare ON CONFLICT DO NOTHING swallows an exclusion constraint
+- L4940 · Moving a filter from SQL into JS meets PostgREST's max_rows
+- L4944 · A derived column needs its trigger on UPDATE too, and a FOR SHARE on the parent
+- L4949 · Order is load-bearing in two different places
+- L4955 · Deploy shape: an additive migration BEFORE the code, the drop AFTER
+- L5071 · ON DELETE SET NULL is an UPDATE.
+- L5073 · Naive-local vs real UTC, again. _(2026-09-08)_
+- L5078 · A once-ever index plus stable ids = a detector that fires once, forever.
+- L5085 · A liveness filter can be bypassed by an id rename.
+- L5089 · A compat view bridges the deploy. _(2026-09-05)_
+- L5103 · schedule_events.assignment_id KEEPS ITS NAME this rung.
+- L5106 · The completed-stamp CHECK was dropped.
+- L5116 · RECORDED, NOT FIXED — a crew edit is three HTTP round trips and is NOT atomic.
+- L5126 · RECORDED, NOT FIXED — the tray became an unbounded full-table read.
+- L5212 · A green suite proves nothing when you mass-edit tests.
+- L5217 · A test can pin the bug.
+- L5220 · Reachability is not a compile error.
+- L5296 · A technician's seat agent has NO scheduling verb at any tier.
+- L5299 · Live specimen in the pilot _(2026-09-01)_
+- L5309 · Counting.
+- L5311 · Detection.
+- L5316 · Booking.
+- L5329 · Build 6 (vocabulary): _(2026-09-01)_
+- L5334 · Build 7 (detectors report): _(2026-09-05)_
+- L5344 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L5736 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L5759 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L5806 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L5843 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L5875 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L5880 · Every member row stores the FULL grouped message in question.
-- L5884 · The attribution stamp is an audit link, not a gate.
-- L5888 · The derived stamp requires a capture a badge-holder SPOKE
-- L5892 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L5898 · The follow-up loop has two halves and both had to be written down.
-- L5904 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L5978 · Batching works.
-- L5980 · The follow-up leg works, including the half that fails silently.
-- L5984 · Both attribution paths fired, each in its designed case.
-- L5988 · Escalation fired correctly
-- L5989 · The planner's group-aware pacing is the result worth keeping.
+- L5740 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L5763 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L5810 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L5847 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L5879 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L5884 · Every member row stores the FULL grouped message in question.
+- L5888 · The attribution stamp is an audit link, not a gate.
+- L5892 · The derived stamp requires a capture a badge-holder SPOKE
+- L5896 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L5902 · The follow-up loop has two halves and both had to be written down.
+- L5908 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L5982 · Batching works.
+- L5984 · The follow-up leg works, including the half that fails silently.
+- L5988 · Both attribution paths fired, each in its designed case.
+- L5992 · Escalation fired correctly
+- L5993 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L6341 · Evals:
-- L6348 · Runbooks:
-- L6353 · Decision history with citations:
-- L6357 · This file
+- L6345 · Evals:
+- L6352 · Runbooks:
+- L6357 · Decision history with citations:
+- L6361 · This file
 
 <!-- INDEX:END -->
 
@@ -3604,9 +3604,13 @@ what to do. Attention curation is a WEIGHTING, never a gate (user, 2026-08-28).
 after it reads one visit). **9c and 10 are INDEPENDENT of each other** — both only need 9b.
 **10b, 10c and 10d all need 10** and are independent of each other: 10b appends a KIND to the
 existing ping loop (the helpers are already kind-blind), 10c adds a second WAKE SOURCE to it, and
-10d changes who may WRITE. 10d SHRINKS 10b by roughly half — the `add_customer` relay through the
-manager's agent collapses into the planner doing it — so if both are wanted, plan 10d first and
-re-scope 10b against the result rather than building a relay you are about to delete.
+10d changes who may WRITE. **10b and 10d are ONE PLAN** (user, 2026-09-08). Under 10d the
+`add_customer` relay through the manager's agent collapses into the planner doing it, and what is
+left of 10b is one new observation kind plus the planner reaching a door that already exists
+(`recordFieldNote` with a `resolved` identity — the staged-confirm path). That is a phase of 10d,
+not a rung of its own. The row stays in the ladder because the CAPABILITY is distinct and worth
+naming; the plan is 10d's, with the new-caller path as its last phase. 10c is separate and
+independent of both.
 
 **Why an inform waking the planner is its own rung (10c), placed here.** It belongs to 5.5's
 territory — the planner's inbox — but it cannot be built until 10 exists, because what it extends

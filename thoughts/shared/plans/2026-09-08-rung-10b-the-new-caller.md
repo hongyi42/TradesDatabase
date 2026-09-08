@@ -2,7 +2,7 @@
 date: 2026-09-08
 task: Rung 10b — the new caller, built the 10d way. Two more identity keys (sender email, Gmail thread) so known customers stop being parked as strangers; an `inbound_unmatched` observation rides rung 10's ping loop; the planner forms the second opinion, texts a manager ONCE with a quiet note to their assistant carrying the item id, and records the caller itself through the one door with its FIRST L2 write tool (`record_caller`: link or create the customer, open the job, book the promised visit untimed); the extractor sees the reply chain, fetched from Composio with an L1 fallback.
 research: thoughts/shared/research/2026-09-08-rung-10b-the-new-caller.md
-status: draft
+status: complete
 supersedes: thoughts/shared/plans/2026-09-06-rung-10-inbound-commits-a-visit-ask-first.md — its Decisions recorded 10b as "the manager's agent runs `add_customer`"; the 10d ruling (user, 2026-09-07: the planner writes L2) replaces the actor. Everything else in that plan stands.
 ---
 

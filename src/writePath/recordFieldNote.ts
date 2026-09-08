@@ -530,8 +530,14 @@ export async function recordFieldNote(
     // all there is nothing to file it onto — the MCP dispatch refuses that
     // combination up front rather than letting it land here silently.
     if (input.captureId) {
-      // listJobsForCustomer orders created_at ASCENDING, so the tail is newest.
-      const onJob = priorJobs[priorJobs.length - 1] ?? null;
+      // The most recent job THAT CAN CITE. listJobsForCustomer orders created_at
+      // ASCENDING, so the search runs from the tail — but a link onto a CANCELLED
+      // job is not a citation (listL2CitingCapture drops those, because a
+      // rolled-back shell is not an answer), so filing there would leave the
+      // item with nothing citing it and no way to close. The MCP guard predicts
+      // exactly this set, and the two must agree or the guard is fiction.
+      const onJob =
+        [...priorJobs].reverse().find((candidate) => candidate.status !== 'cancelled') ?? null;
       // …BUT THE PROMISE STILL ASKS, and it asks FIRST. Settling WHO called says
       // nothing about whether anybody is going: if the call carried "we agreed to
       // come out" and nobody decided about the trip, that question is untouched,

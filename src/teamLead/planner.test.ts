@@ -6698,6 +6698,28 @@ describe('rung 10 — inbound requests reach the planner', () => {
     expect(JSON.stringify(recorded)).toContain('rides WITH the text');
   });
 
+  test('(14d-e) in a FOCUSED pass a gap-less text still carries its note', async () => {
+    // The focused pass rewrites a gap-less chat send to name the one item it is
+    // about. Without telling the pairing rule that, a planner that named the item
+    // on its NOTE but forgot it on the TEXT would have the text go out and be
+    // marked as the ask while the note was dropped — the manager's assistant left
+    // without the id, and the item unaskable for a day.
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    const plan = [
+      { action: 'send', as: 'chat', to: 'sam-ortiz', message: 'Someone rang about no heat. Open a job?', confidence: 'high', reason: 'a new caller' },
+      sendTo({ as: 'assistant', message: 'Relay item obs-1 when Sam answers.' }),
+    ];
+    const { summary } = await liveSend(plan, {
+      focus: { observationId: 'obs-1' } as unknown as NonNullable<PlannerDeps['focus']>,
+      runLoop: loopReturning(plan),
+      createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+      markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
+    });
+    expect(summary.applied).toBe(2);
+    const legs = createOffice.mock.calls.map((c) => (c[0] as { via: string }).via);
+    expect([...legs].sort()).toEqual(['assistant', 'chat']);
+  });
+
   test('(14d-a) a quiet note cannot ride alongside a decision that THREW THE ITEM AWAY', async () => {
     // `[dismiss, quiet note]` would tell a manager's assistant to relay an
     // answer to a question that no longer exists.

@@ -438,6 +438,36 @@ describe('matchIdentity — the thread key', () => {
     expect(r.status).toBe('needs_disambiguation');
   });
 
+  test('the refusal says WHAT each key found — the planner is the second opinion', async () => {
+    // A generic "no unique match" tells the planner nothing about the NEAR miss
+    // it is being asked to adjudicate.
+    await createCustomer({ tenantId, name: 'Shared A', email: 'twins@example.com' });
+    await createCustomer({ tenantId, name: 'Shared B', email: 'twins@example.com' });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note({ phone: '555-nobody-has-this', address: '999 Nowhere Ave' }),
+      email: 'twins@example.com',
+      threadId: 'thread-crossed',
+    });
+    expect(r.status).toBe('needs_disambiguation');
+    expect(r.reason).toContain('no customer has the phone');
+    expect(r.reason).toContain('2 customers share the address twins@example.com');
+    expect(r.reason).toContain('crosses 2 customers');
+    expect(r.reason).toContain('no customer is at 999 Nowhere Ave');
+  });
+
+  test('a message with nothing to match on says so, rather than blaming the schedule', async () => {
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+    });
+    expect(r.reason).toContain('no phone, email, thread or address');
+  });
+
   test('a thread nobody has filed leaves the address key its turn', async () => {
     const r = await matchIdentity({
       tenantId,

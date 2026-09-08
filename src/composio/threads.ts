@@ -43,6 +43,11 @@ function msAt(at: string | null): number {
   return Number.isNaN(parsed) ? Number.NaN : parsed;
 }
 
+function isoAt(at: string | null): string | null {
+  const ms = msAt(at);
+  return Number.isNaN(ms) ? at : new Date(ms).toISOString();
+}
+
 export async function fetchThreadMessages(
   tech: Technician,
   threadId: string,
@@ -61,21 +66,23 @@ export async function fetchThreadMessages(
     // surface later as an unhandled rejection and take the process with it.
     call.catch(() => {});
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // A SENTINEL, not a falsy check: `!result` would read a real answer of
+    // `undefined` — or any other falsy shape a future SDK returns — as a timeout,
+    // and silently skip the billing below with it.
+    const TIMED_OUT = Symbol('timed out');
     const result = await Promise.race([
       call,
-      new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), deps.timeoutMs ?? THREAD_FETCH_TIMEOUT_MS);
+      new Promise<typeof TIMED_OUT>((resolve) => {
+        timer = setTimeout(() => resolve(TIMED_OUT), deps.timeoutMs ?? THREAD_FETCH_TIMEOUT_MS);
       }),
     ]).finally(() => {
       if (timer) clearTimeout(timer);
     });
-    if (!result) {
-      console.error(`thread fetch timed out for ${threadId} — running without the conversation`);
-      return null;
-    }
-    // BILLED EITHER WAY, like every other execution on this surface: Composio
-    // charged for the attempt whatever it returned. The cost write is itself
-    // advisory — a ledger fault must not cost the firm the email.
+    // BILLED EITHER WAY, and "either way" includes the TIMEOUT: we stopped
+    // waiting, Composio did not stop working, and it charges for the execution
+    // it ran. Skipping the ledger row there would make a slow-Composio period
+    // look free. The cost write is itself advisory — a ledger fault must not
+    // cost the firm the email.
     await (deps.recordCost ?? recordComposioCall)({
       tenantId: tech.tenant_id,
       technicianRef: tech.ref,
@@ -84,6 +91,10 @@ export async function fetchThreadMessages(
         `cost: thread fetch not recorded — ${err instanceof Error ? err.message : String(err)}`,
       );
     });
+    if (result === TIMED_OUT) {
+      console.error(`thread fetch timed out for ${threadId} — running without the conversation`);
+      return null;
+    }
     if (result.successful === false) return null;
     const data = result.data as Record<string, unknown> | undefined;
     const nested = (data?.response_data ?? data) as Record<string, unknown> | undefined;
@@ -106,7 +117,11 @@ export async function fetchThreadMessages(
           to: str('to', 'recipient'),
           subject: str('subject'),
           body: str('messageText', 'message_text', 'preview', 'snippet') ?? '',
-          at: str('messageTimestamp', 'message_timestamp', 'internalDate'),
+          // NORMALIZED TO ISO HERE, not only for the sort. `at` is PRINTED to
+          // the model beside each earlier message, and Gmail's `internalDate` is
+          // epoch milliseconds — an unreadable integer is no help to a model
+          // being asked to separate what was true THEN from the latest message.
+          at: isoAt(str('messageTimestamp', 'message_timestamp', 'internalDate')),
         },
       ];
     });

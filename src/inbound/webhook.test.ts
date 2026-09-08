@@ -141,6 +141,7 @@ function baseDeps(over: InboundWebhookDeps = {}): InboundWebhookDeps {
     // Hermetic by default: the live one reads the database, and every test here
     // stubs its world.
     alreadyProcessed: async () => false,
+    listThreadCaptures: async () => ({ messages: [], blockedMessageIds: [] }),
     ...over,
   };
 }
@@ -700,6 +701,7 @@ describe('thread context (rung 10b)', () => {
       at: '2026-06-02T08:30:00.000Z',
     },
   ];
+  const fromL1 = { messages: earlier, blockedMessageIds: [] as string[] };
   const paired = techRow({ composio_connected_account_id: 'ca_test' });
 
   test('a thread STARTER fetches nothing — its thread id IS its own message id', async () => {
@@ -714,7 +716,7 @@ describe('thread context (rung 10b)', () => {
     });
     const rec = recorder();
     const fetchThread = vi.fn(async () => earlier);
-    const listThreadCaptures = vi.fn(async () => earlier);
+    const listThreadCaptures = vi.fn(async () => fromL1);
     const result = await handleInboundWebhook(
       raw,
       sign(raw),
@@ -753,7 +755,7 @@ describe('thread context (rung 10b)', () => {
   test('a FAILED fetch falls back to our own captures, and the mail still lands', async () => {
     const raw = reply();
     const rec = recorder();
-    const listThreadCaptures = vi.fn(async () => earlier);
+    const listThreadCaptures = vi.fn(async () => fromL1);
     const result = await handleInboundWebhook(
       raw,
       sign(raw),
@@ -780,7 +782,7 @@ describe('thread context (rung 10b)', () => {
         recordFieldNote: rec.fn,
         getTechnician: async () => techRow(), // no connected account
         fetchThread,
-        listThreadCaptures: async () => earlier,
+        listThreadCaptures: async () => fromL1,
       }),
     );
     expect(fetchThread).not.toHaveBeenCalled();
@@ -793,7 +795,7 @@ describe('thread context (rung 10b)', () => {
     const raw = reply();
     const rec = recorder();
     const fetchThread = vi.fn(async () => earlier);
-    const listThreadCaptures = vi.fn(async () => earlier);
+    const listThreadCaptures = vi.fn(async () => fromL1);
     const result = await handleInboundWebhook(
       raw,
       sign(raw),
@@ -809,6 +811,50 @@ describe('thread context (rung 10b)', () => {
     expect(fetchThread).not.toHaveBeenCalled();
     expect(listThreadCaptures).not.toHaveBeenCalled();
     void rec;
+  });
+
+  test('a RETRACTED message is kept out even when Composio hands it back', async () => {
+    // Gmail knows nothing of our retractions, so the exclusion has to travel from
+    // OUR view of the thread onto the fetched one — otherwise a retraction holds
+    // only while Composio is down.
+    const raw = reply();
+    const rec = recorder();
+    const result = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        recordFieldNote: rec.fn,
+        getTechnician: async () => paired,
+        listThreadCaptures: async () => ({
+          messages: [],
+          blockedMessageIds: ['gmail-msg-1'],
+        }),
+        fetchThread: async () => earlier, // Gmail still returns the retracted one
+      }),
+    );
+    expect(result.status).toBe('ingested');
+    expect(rec.calls[0]).not.toHaveProperty('threadContext');
+  });
+
+  test('a fetched message with NO id is dropped — it cannot be ruled out', async () => {
+    // If it cannot be placed it might BE the message being read, and showing that
+    // as "earlier" would have the model treat a live commitment as one already
+    // handled: a promise nobody at the firm ever hears about.
+    const raw = reply();
+    const rec = recorder();
+    await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        recordFieldNote: rec.fn,
+        getTechnician: async () => paired,
+        fetchThread: async () => [
+          ...earlier,
+          { messageId: null, from: null, to: null, subject: null, body: 'unplaceable', at: null },
+        ],
+      }),
+    );
+    expect(rec.calls[0].threadContext).toEqual(earlier);
   });
 
   test('BOTH sources failing still ingests — context is an aid, never a condition', async () => {

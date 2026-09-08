@@ -110,7 +110,11 @@ export const EXTRACTION_SYSTEM =
   'operating record — no job, visit, schedule change, parts or money — such as a thank-you, ' +
   'an acknowledgement, an auto-reply, or a wrong number. When in any doubt, leave it true. ' +
   'You may be shown EARLIER MESSAGES from the same conversation. Take ONLY identity details out ' +
-  'of them — a name, a phone number, an address, an email. EVERYTHING ELSE describes the LATEST ' +
+  'of them, and ONLY the CUSTOMER\'s: a name, a phone number, an address, an email that belongs ' +
+  'to the person writing in. NEVER take them from your own firm\'s replies or from a signature ' +
+  'block, letterhead or footer — the firm\'s own number and address identify the firm, and ' +
+  'reporting them as the customer\'s files the message against the wrong person. If you cannot ' +
+  'tell whose a detail is, leave it out. EVERYTHING ELSE describes the LATEST ' +
   'MESSAGE alone: jobTitle, statusSignal, visitCommitted, touchesOperations, followUp and ' +
   'attributes. The earlier messages say what was true then, and they include your own firm\'s ' +
   'replies: a visit the firm agreed to in an earlier message is already handled, so it must NOT ' +

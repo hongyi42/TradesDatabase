@@ -2613,11 +2613,22 @@ async function isActiveManager(identity: RequestIdentity): Promise<boolean> {
 // capture. When it fires, the loser must get the same deliberate steer the read
 // path gives ("name it with `customerId`"), not a raw Postgres constraint string
 // that reads as a system fault the planner will simply retry.
+// Model-supplied ids reach uuid-typed PostgREST filters, where a malformed one
+// raises 22P02 rather than an empty result — an error the caller reads as a
+// system fault and retries. Same shape as the inbound webhook's tenant rail and
+// the planner's own UUID_ISH_RE, for the same reason.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function recordCallerThroughTheDoor<T>(run: () => Promise<T>): Promise<T> {
   try {
     return await run();
   } catch (err) {
-    if (isUniqueViolation(err)) {
+    // ON THE CONSTRAINT NAME, not merely on 23505. The door also runs createJob,
+    // bookVisit and appendScheduleEvent; translating ANY unique violation into
+    // "a customer already exists" would one day hand the planner a confidently
+    // wrong steer down a path that cannot fix the real failure, with the actual
+    // constraint name reaching no log line.
+    if (isUniqueViolation(err) && String(err).includes('uq_customers_one_per_capture')) {
       throw new Error(
         'a customer was already created from this call while this was running — read the item ' +
           'again and name that customer with `customerId` instead.',
@@ -6057,6 +6068,15 @@ async function dispatch(
       if (!observationId) {
         throw new Error("observationId is required (copy it from the item's `gap` line)");
       }
+      // UUID-SHAPED FIRST. These ids go straight into uuid-typed PostgREST
+      // filters, where a malformed one raises 22P02 — a raw database error the
+      // model reads as a system fault and simply retries, instead of the steer
+      // below. The planner.ts UUID rail exists for the same trap.
+      if (!UUID_RE.test(observationId)) {
+        throw new Error(
+          'No such item on this firm — check the id against the gap you are looking at.',
+        );
+      }
       const obs = await getObservationForTenant(observationId, tenantId);
       if (!obs) {
         throw new Error(
@@ -6122,6 +6142,9 @@ async function dispatch(
           `a customer was already created from this call (${existing?.id}) — name it with ` +
             '`customerId` instead of creating a second one.',
         );
+      }
+      if (customerId && !UUID_RE.test(customerId)) {
+        throw new Error('no such customer on this firm — look them up before naming them.');
       }
       if (customerId) {
         const target = await getCustomer(customerId);

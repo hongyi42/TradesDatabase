@@ -144,36 +144,44 @@ export async function findCustomersByPhone(tenantId: string, phone: string): Pro
   return data ?? [];
 }
 
-// Case-insensitive exact match on the first address line within a tenant (no
-// wildcards in the value → ilike behaves as case-insensitive equality).
+// `_` and `%` are LIKE wildcards, and `_` is COMMON in real addresses and email
+// local parts: an unescaped `a_b@x.com` also matches `axb@x.com`, and
+// unique-or-refuse would read that as a confident WRONG customer — worse than no
+// match at all. Both exact-match readers below escape with this and then compare
+// in code, so a wildcard that survives the escape can only widen the candidate
+// set, never the answer. (Belt and braces on purpose: the escape depends on how
+// PostgREST passes a backslash through to ILIKE.)
+const escapeLike = (value: string): string => value.replace(/[\\%_]/g, (c) => `\\${c}`);
+
+// Case-insensitive exact match on the first address line within a tenant.
+//
+// It used to say "no wildcards in the value → ilike behaves as case-insensitive
+// equality", which was an ASSUMPTION about model-supplied text, not a fact: the
+// value comes from the extractor reading a customer's own words. Rung 10b proved
+// the hazard for email and it is identical here — this is the matcher's fourth
+// unique-or-refuse key, so a leaked `%` or `_` either widens the candidate set or
+// matches a different customer at a different address, silently and confidently.
+// Escaped for LIKE, then compared exactly in code, so a wildcard that survives
+// the escape can only widen the candidates and never the answer.
 export async function findCustomersByAddress(
   tenantId: string,
   addressLine1: string,
 ): Promise<Customer[]> {
+  const wanted = addressLine1.trim().toLowerCase();
+  if (!wanted) return [];
   const { data, error } = await getClient()
     .from('customers')
     .select()
     .eq('tenant_id', tenantId)
-    .ilike('address_line1', addressLine1);
+    .ilike('address_line1', escapeLike(wanted));
   if (error) throw new Error(`findCustomersByAddress failed: ${error.message}`);
-  return data ?? [];
+  return (data ?? []).filter((row) => (row.address_line1 ?? '').trim().toLowerCase() === wanted);
 }
 
 // Case-insensitive exact match on email within a tenant — rung 10b's second
 // identity key, for the reply that carries neither a phone number nor an
 // address. Used by deterministic identity matching; the caller decides what a
 // unique (length === 1) result means.
-//
-// `_` and `%` are LIKE wildcards, and `_` is COMMON in real addresses: an
-// unescaped `a_b@x.com` would also match `axb@x.com`, and unique-or-refuse would
-// read that as a confident WRONG customer — worse than no match at all. So the
-// value is escaped for LIKE, and the rows that come back are then compared for
-// exact (case-folded) equality in code. Belt and braces on purpose: the escape
-// depends on how PostgREST passes a backslash through to ILIKE, and the
-// post-filter makes the result correct even if it ever stops doing so — a
-// leaked wildcard can then only widen the candidate set, never the answer.
-const escapeLike = (value: string): string => value.replace(/[\\%_]/g, (c) => `\\${c}`);
-
 export async function findCustomersByEmail(tenantId: string, email: string): Promise<Customer[]> {
   const wanted = email.trim().toLowerCase();
   if (!wanted) return [];

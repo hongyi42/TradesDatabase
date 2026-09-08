@@ -301,12 +301,24 @@ export async function handleInboundWebhook(
       !(envelope.externalId && (await alreadyProcessed(tenantId, envelope.externalId)))
     ) {
       try {
+        // OUR OWN VIEW OF THE THREAD FIRST, ALWAYS — one indexed read, and it is
+        // the only thing that knows which of these messages a manager RETRACTED
+        // or marked manager_only. Gmail knows neither, so without this a
+        // retraction would hold only while Composio happened to be down.
+        const ours = await listThreadCaptures(tenantId, meta.threadId);
+        const blocked = new Set(ours.blockedMessageIds);
         const fetched = tech?.composio_connected_account_id
           ? await fetchThread(tech, meta.threadId)
           : null;
-        const earlier = fetched ?? (await listThreadCaptures(tenantId, meta.threadId));
-        // Never show the model the message it is being asked to read.
-        threadContext = earlier.filter((m) => m.messageId !== envelope.externalId);
+        const earlier = fetched ?? ours.messages;
+        threadContext = earlier.filter((m) => {
+          // NEVER the message being read. An unidentifiable row is dropped for
+          // the same reason: if it cannot be placed, it cannot be ruled out, and
+          // showing the current message as "earlier" would have the model treat
+          // a live commitment as one already handled — a promise nobody hears.
+          if (!m.messageId || m.messageId === envelope.externalId) return false;
+          return !blocked.has(m.messageId);
+        });
       } catch (err) {
         console.error(
           `inbound: thread context unavailable for ${meta.threadId} — ` +

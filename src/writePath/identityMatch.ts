@@ -84,15 +84,31 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
   // 1. Unique existing-customer match by phone, then address (a confirmed address
   //    wins over the extracted one). This branch is also the dedup that stops a
   //    confirmed/scheduled address from minting a duplicate of a known customer.
+  // WHAT EACH KEY ACTUALLY FOUND. A refusal is not "no match": it is usually a
+  // NEAR miss — two customers share that address, the thread crosses two records
+  // — and the planner is asked to be the second opinion on exactly that. Without
+  // it the gap block prints the generic tail and never says what the first
+  // opinion saw (rung 10b review finding).
+  const tried: string[] = [];
   const phone = extracted.phone?.trim();
   if (phone) {
     const byPhone = await findCustomersByPhone(tenantId, phone);
     if (byPhone.length === 1) return { status: 'matched', customerId: byPhone[0].id };
+    tried.push(
+      byPhone.length === 0
+        ? `no customer has the phone ${phone}`
+        : `${byPhone.length} customers share the phone ${phone}`,
+    );
   }
   const email = input.email?.trim();
   if (email) {
     const byEmail = await findCustomersByEmail(tenantId, email);
     if (byEmail.length === 1) return { status: 'matched', customerId: byEmail[0].id };
+    tried.push(
+      byEmail.length === 0
+        ? `no customer has the address ${email}`
+        : `${byEmail.length} customers share the address ${email}`,
+    );
   }
   // THE CONVERSATION KEY. A reply we have already filed one end of identifies its
   // customer even when the reply itself carries no phone and no address — the
@@ -112,11 +128,21 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
         ...(jobs.size === 1 ? { jobId: [...jobs][0] } : {}),
       };
     }
+    tried.push(
+      customers.size === 0
+        ? 'nothing on file belongs to this email thread'
+        : `this email thread crosses ${customers.size} customers`,
+    );
   }
   const address = (confirmed?.address ?? extracted.address)?.trim();
   if (address) {
     const byAddress = await findCustomersByAddress(tenantId, address);
     if (byAddress.length === 1) return { status: 'matched', customerId: byAddress[0].id };
+    tried.push(
+      byAddress.length === 0
+        ? `no customer is at ${address}`
+        : `${byAddress.length} customers are at ${address}`,
+    );
   }
 
   // 2. Consult the DB-owned schedule (confirmed visits) for this
@@ -180,12 +206,17 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
     return {
       status: 'needs_confirmation',
       suggestion: { address: scheduled[0].address, visitId: scheduled[0].visitId },
+      reason: [...tried, `one visit is on this person's schedule today, at ${scheduled[0].address}`]
+        .join('; '),
     };
   }
 
   // 3. Nothing unique to go on — the agent must ask.
   return {
     status: 'needs_disambiguation',
-    reason: 'no unique customer match and no single scheduled entry',
+    reason:
+      tried.length > 0
+        ? `${tried.join('; ')} — and no single scheduled entry`
+        : 'the message carried no phone, email, thread or address to match on',
   };
 }

@@ -428,12 +428,14 @@ describe('listL2CitingCapture', () => {
     // Appended WITH their metadata: L1 is append-only, so there is no later
     // update that could add it — which is the whole reason the thread id had to
     // be captured at the door in the first place.
+    let msg = 0;
     const onThread = async (text: string) =>
       await appendRawCapture({
         tenantId,
         channel: 'email',
         technicianRef: 'connector:gmail',
         rawText: text,
+        externalId: `${thread}-m${msg++}`,
         metadata: { threadId: thread, from: 'jane@home.test' },
       });
     await onThread('my number is 555-0199');
@@ -446,12 +448,15 @@ describe('listL2CitingCapture', () => {
       rawText: 'that one was recorded in error',
       retractsCaptureId: bad.id,
     });
-    const rows = await listCapturesByThread(tenantId, thread);
-    expect(rows.map((r) => r.body)).toEqual([
+    const read = await listCapturesByThread(tenantId, thread);
+    expect(read.messages.map((r) => r.body)).toEqual([
       'my number is 555-0199',
       'and my gate code is 4412',
     ]);
-    expect(rows[0].from).toBe('jane@home.test');
+    expect(read.messages[0].from).toBe('jane@home.test');
+    // …and the retracted one comes back as something the OTHER source must not
+    // show either — Gmail knows nothing of our retractions.
+    expect(read.blockedMessageIds).toEqual([bad.external_id]);
   });
 
   test('a capture ATTACHED TO A TRIP cites through the trip — the other shape a link takes', async () => {

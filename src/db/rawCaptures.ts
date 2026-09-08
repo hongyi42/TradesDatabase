@@ -869,11 +869,20 @@ export async function findCustomersByThread(
 // The same two reads and the same caps as findCustomersByThread, for the same
 // reasons — see its header. `raw_text` is the STORAGE form (headers prepended by
 // formatEmailRawText), which is what the extractor already reads elsewhere.
+export interface ThreadFromL1 {
+  messages: ThreadMessage[];
+  // The Gmail message ids of captures on this thread that must NEVER be shown to
+  // the extractor — retracted, or manager_only. Returned SEPARATELY because the
+  // preferred source is Gmail itself, which knows nothing of either: without
+  // this, a retraction would hold only while Composio was down.
+  blockedMessageIds: string[];
+}
+
 export async function listCapturesByThread(
   tenantId: string,
   threadId: string,
-): Promise<ThreadMessage[]> {
-  if (!threadId) return [];
+): Promise<ThreadFromL1> {
+  if (!threadId) return { messages: [], blockedMessageIds: [] };
   const client = getClient();
   // A READER, NOT A MATCHER — so it does NOT refuse on a full page. Truncation
   // here costs context, not correctness (findCustomersByThread refuses because a
@@ -908,7 +917,7 @@ export async function listCapturesByThread(
       rows.push(row);
     }
   }
-  if (rows.length === 0) return [];
+  if (rows.length === 0) return { messages: [], blockedMessageIds: [] };
 
   // WHAT MUST NEVER BE SHOWN, the same two exclusions every other capture reader
   // applies (listJobEvidenceSince):
@@ -918,11 +927,14 @@ export async function listCapturesByThread(
   //     back into L2/L3 against the NEW capture, which is the same resurrection
   //     by another road.
   //   * `manager_only` — the extractor's output reaches technician-facing rows.
-  const kept = foldRetractions(
-    rows.filter((row) => row.sensitivity !== 'manager_only'),
-    await findRetractionsFor(rows.map((row) => row.id)),
-  );
-  return kept
+  const visible = rows.filter((row) => row.sensitivity !== 'manager_only');
+  const kept = foldRetractions(visible, await findRetractionsFor(rows.map((row) => row.id)));
+  const keptIds = new Set(kept.map((row) => row.id));
+  const blockedMessageIds = rows
+    .filter((row) => !keptIds.has(row.id))
+    .map((row) => row.external_id)
+    .filter((id): id is string => !!id);
+  const messages = kept
     .sort((a, b) => (a.captured_at < b.captured_at ? -1 : 1)) // oldest first, as read
     .map((row) => {
       const meta =
@@ -940,4 +952,5 @@ export async function listCapturesByThread(
         at: row.captured_at,
       };
     });
+  return { messages, blockedMessageIds };
 }

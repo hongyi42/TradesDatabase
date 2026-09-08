@@ -2041,6 +2041,12 @@ export function validateDecisions(
   // Defaulted empty, which makes every `fromMessageId` unknown. That is the
   // right direction: refuse to attribute rather than attribute wrongly.
   unreadFrom: Map<string, string> = new Map(),
+  // RUNG 10B — the item a FOCUSED pass is about, or null. Only one thing depends
+  // on it: in a focused pass a gap-less chat send is rewritten by the caller to
+  // name this item, so the quiet-note pairing below must count it as that item's
+  // text. Nothing else here reads it, and a heartbeat pass passes null (where a
+  // gap-less send really is about nothing in particular).
+  focusObservationId: string | null = null,
 ): { decisions: PlannerDecision[]; dropped: DroppedDecision[]; noteDrops: string[] } {
   const decisions: PlannerDecision[] = [];
   const dropped: DroppedDecision[] = [];
@@ -2345,6 +2351,17 @@ export function validateDecisions(
       // messages to several people in one tick is the ordinary case — it is
       // how the planner tells three managers the same thing (user ruling
       // 2026-09-02: "the planner can just send the same message to all three").
+      //
+      // RUNG 10B: in a FOCUSED pass a gap-less chat send is rewritten to name the
+      // one item this pass is about (runPlanner, `boundGapless`) — so as far as
+      // the quiet-note pairing below is concerned it IS the text for that item.
+      // Without this, a planner that named the item on its note but forgot it on
+      // the text would have the text go out and marked as the ask while the note
+      // was dropped, leaving the manager's assistant without the one thing the
+      // note exists to carry, and the item unaskable for a day.
+      if (as === 'chat' && focusObservationId && !textedInThisPlan.has(focusObservationId)) {
+        textedInThisPlan.set(focusObservationId, to.technicianId);
+      }
       decisions.push({
         nudgeId: null,
         action: 'send',
@@ -4708,6 +4725,13 @@ export async function runPlanner(
               // never saw) but the stated rule and the enforced rule must be
               // the same rule.
               new Map(unreadShown.map((m) => [m.id, m.from_ref])),
+              // RUNG 10B: in a focused pass a gap-less chat send is rewritten
+              // below to name this item, so the quiet-note pairing must count it
+              // as that item's text — or a planner that named the item on its
+              // NOTE but forgot it on the TEXT would have the text go out and be
+              // marked as the ask while the note was dropped, leaving the
+              // manager's assistant without the id it exists to carry.
+              focus?.observationId ?? null,
             );
             outcome = checked; // the LAST submission stands, refusals included
             // A dropped note is not a refused decision, so it would otherwise

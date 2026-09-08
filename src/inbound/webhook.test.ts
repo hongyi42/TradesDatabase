@@ -189,6 +189,39 @@ describe('handleInboundWebhook', () => {
       externalId: 'gmail-msg-1',
       occurredAt: '2026-06-02T08:30:00.000Z',
     });
+    // A payload without a thread id lands without the key — never `threadId: null`.
+    expect(rec.calls[0].sourceMeta).not.toHaveProperty('threadId');
+  });
+
+  // The conversation key reaches L1 (2026-09-07): the webhook copies threadId /
+  // to / labelIds from the envelope into the capture's metadata, under the same
+  // `threadId` the outbound capture uses, so a reply can be chained to what it
+  // answers. Without this the field was dropped before an append-only store.
+  test('threadId, to and labelIds ride into the L1 metadata when the payload carries them', async () => {
+    const raw = body({
+      data: {
+        message_id: 'gmail-msg-2',
+        sender: 'jane@homeowner.com',
+        subject: 'Re: AC repair',
+        message_text: 'yes, Friday works',
+        message_timestamp: '2026-06-03T08:30:00.000Z',
+        thread_id: 'gmail-msg-1',
+        to: 'office@firm.example',
+        label_ids: ['UNREAD', 'INBOX'],
+      },
+    });
+    const rec = recorder();
+    const result = await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
+    expect(result.status).toBe('ingested');
+    expect(rec.calls[0].sourceMeta).toMatchObject({
+      from: 'jane@homeowner.com',
+      subject: 'Re: AC repair',
+      threadId: 'gmail-msg-1',
+      to: 'office@firm.example',
+      labelIds: ['UNREAD', 'INBOX'],
+    });
+    // The body is NOT duplicated into metadata — it lives in raw_text.
+    expect(rec.calls[0].sourceMeta).not.toHaveProperty('body');
   });
 
   test('bare-uuid user_id (retired whole-business mode) → bad_payload, nothing called', async () => {

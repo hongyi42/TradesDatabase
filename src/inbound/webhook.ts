@@ -183,7 +183,14 @@ export async function handleInboundWebhook(
   // deterministically unknown — say so once, with no retry.
   if (!UUID_RE.test(tenantId)) return { status: 'unknown_tenant' };
 
-  const meta = (envelope.sourceMeta ?? {}) as { from?: string; subject?: string; body?: string };
+  const meta = (envelope.sourceMeta ?? {}) as {
+    from?: string;
+    subject?: string;
+    body?: string;
+    threadId?: string;
+    to?: string;
+    labelIds?: string[];
+  };
 
   // From here on, any THROW is a transient fault (DB/model blip) → transient_error
   // (503, retried), except an FK violation (unknown/deleted tenant) → unknown_tenant
@@ -270,6 +277,15 @@ export async function handleInboundWebhook(
       sourceMeta: {
         from: meta.from,
         subject: meta.subject,
+        // THE CONVERSATION KEY (2026-09-07). A reply carries the same thread
+        // id as the message it answers; without it every email is an island
+        // and, L1 being append-only, stays one forever. Same key name as the
+        // outbound capture (`threadId`, src/mcp/server.ts) so a thread's two
+        // directions are found with one predicate. `to` says which mailbox
+        // it reached; `labelIds` says INBOX vs SENT. All three present-only.
+        ...(meta.threadId ? { threadId: meta.threadId } : {}),
+        ...(meta.to ? { to: meta.to } : {}),
+        ...(meta.labelIds ? { labelIds: meta.labelIds } : {}),
         // The account id keys the stamp to a pairing EPISODE: across a
         // wrong-mailbox → dismiss → re-pair loop, a bare boolean couldn't say
         // which rows came from which mailbox (review finding), and L1's

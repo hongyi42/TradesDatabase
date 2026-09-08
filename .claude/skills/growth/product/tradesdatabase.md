@@ -530,3 +530,69 @@ and threatening a chargeback. The community's workaround is screenshotting the G
 nobody names a software feature. Status: evidence chain exists (append-only L1, `source_capture_id`,
 visit timestamps), no human-facing artifact.
 See `thoughts/shared/research/2026-08-18-work-record-artifact.md`.
+
+## 18. Selling frames and landing copy — user rulings, in order
+
+Two rulings landed a day apart and were reconciled 2026-09-07 when both were found uncommitted in
+separate checkouts. **Where 18.8 and 18.9 disagree, 18.9 wins** (it is the later ruling): the
+landing spine is a chronological run-through of one job, not the before/after picture 18.8
+describes. 18.8's naming rule and per-group frames stand.
+
+### 18.8 Per-group selling frames and the naming rule (user markup, 2026-09-04)
+
+**Naming:** never "one AI" — that implies everyone gets the same AI. Say **"an AI system"** / **"your
+AI system"** — unique to each firm (firm-scoped memory makes this literally true).
+
+**Landing page (generalist):** header *"Your trades business, run by an AI you text."*; sub *"It
+follows every job from the first call to the last dollar, and learns how your shop runs."* The spine
+is a **BEFORE → AFTER picture** of the office being automated and time coming back — by hand and from
+memory before; the AI doing the writing, filing, briefing, chasing and drafting after, once it has
+learned the shop. "Plug in / nothing to install / nothing to learn" is NOT generalist — it belongs to
+groups 2 and 3. Avoid trade-specific imagery ("crawlspace") on anything broad.
+
+**Group 1 — solo:** sell a **companion for the business half nobody trained them for**. Managers do
+office work; a newly-solo tech never learned it. Unlike a generic chatbot, this one *has their data*
+— jobs, customers, prices, how they work — so business/tax/quote questions get answered with their
+records in front of it (guidance, not an accountant). Also: **evidence manager** ("the customer says
+you never came" → notes, photos, the call, timestamped — profile §17 proof-of-work; the artifact is
+designed, the evidence chain is built); scheduling HELP is present (ask the agent; drive order) but
+never auto-scheduling; it grows with them — when they hire, the AI already knows the business.
+De-escalate "9pm".
+
+**Group 2 — 2–10 shop (owner = manager):** sell **autopilot / step back**. After adoption the AI keeps
+most of the office running; the owner does a small portion. **The AI does the keep-up** — asks each
+tech what happened, files it, plans, only brings the owner what needs them. Owner sets next week
+(with AI help), someone answers the phone, the AI does the rest. Outcome feeling: a business that
+took years to build becomes closer to passive income; time to enjoy life. Drop "they won't use
+another app" as a selling point (no evidence); the true claim is *no new template / UI / workflow
+to fit into*. Downplay "what one guy knows, everyone knows" (it is in the generalist layer as "the
+AI keeps the record complete"). Evidence manager fits here too. Scheduling presence required.
+
+**Group 3 — in-state multi-location:** sell an **investment**. Business-minded owners/GMs who know AI
+matters but not how to make it work in a trades firm — we are the how. Frames: scale without scaling
+headcount; fewer office hours per job; open a location without opening an office; the trades were
+under-served by software, don't be last on AI (narrative, not doom). Never "your managers still run
+the board" — if the manager still does the board, why buy AI? Show the efficiency picture: managers
+decide, the AI does the work around them. Most already have an evidence system — don't lead with it.
+
+### 18.9 Landing spine and the Telegram rule (user, 2026-09-05) — supersedes 18.8's before/after spine
+
+**Landing spine — SETTLED (user, 2026-09-05).** Not a before/after table (that was a suggestion,
+not a structure). The spine is a **chronological run-through of one job**, and at each step a
+statement of what the AI does plus the headache/time it removes: (1) the call comes in — *the AI
+listens to every call coming into the company, automatically starts a new job, and records every
+detail of the call* (this wording, not "written down and turned into a job"); (2) the manager needs a
+slot and asks the AI, which suggests; (3) the tech heads out and asks the AI for the details; (4) the
+tech finishes and reports back to the AI; (5) the manager asks the AI for the invoice plus an email
+draft to the customer; (6) invoice and email go out, the customer pays. Then one beat after: **the
+record stays with the firm** — never "the new person starts knowing your customers". No closing line
+under the spine. Confirmed group-2 lines: *"An AI that learns how you run your shop — and runs it your
+way."* and *"Your crew's day goes on the record, not through your phone."*
+
+**Telegram named, "no app" retired (user, 2026-09-05).** The hero says managers and technicians talk
+to the AI *in Telegram, a messaging app*, and every chat visual is tagged "Telegram" so mockups do
+not read as a proprietary app. Copy must NEVER claim "no app to download / nothing to install / just
+text": not everyone has Telegram. §8's "there is no software" stands as positioning (nothing to
+learn), not as an installation claim. Page-side edits the owner made on the canvas the same day were
+ported to the shared copy: *"Your crew's day goes on the record, no more guessing."*, *"Set the next
+week with the AI's help."*, evidence label *"Kept forever"*, small-team tag line removed.

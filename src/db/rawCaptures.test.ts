@@ -385,4 +385,35 @@ describe('listL2CitingCapture', () => {
     await pg.query(`update jobs set status = 'cancelled' where id = $1`, [job.id]);
     expect(await listL2CitingCapture([cap.id])).toEqual([]);
   });
+
+  // RUNG 10B: two more kinds, because "nothing was created" is not the hole
+  // `inbound_unmatched` names. That one asks WHO CALLED, and it is answered by
+  // the caller having been identified.
+  test('a CUSTOMER minted from the capture comes back as its own kind', async () => {
+    const cap = await capture({ tenantId, jobId: null, text: 'a stranger rang', at: after });
+    const customer = await createCustomer({
+      tenantId,
+      name: 'Recorded Caller',
+      sourceCaptureId: cap.id,
+    });
+    const rows = await listL2CitingCapture([cap.id]);
+    expect(rows).toEqual([
+      { kind: 'customer', id: customer.id, captureId: cap.id, jobId: null },
+    ]);
+  });
+
+  test('a capture RECORDED ONTO a job comes back as a link — and not when the job is cancelled', async () => {
+    // This is what LINKING a caller we already knew leaves behind: no new row
+    // cites the capture, only a `job_captures` row tying it to their job.
+    const cap = await capture({ tenantId, jobId: null, text: 'it was Tom all along', at: after });
+    const customer = await createCustomer({ tenantId, name: 'Already Known' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'known work' });
+    await insertJobCapture({ tenantId, jobId: job.id, captureId: cap.id });
+    expect(await listL2CitingCapture([cap.id])).toEqual([
+      { kind: 'link', id: job.id, captureId: cap.id, jobId: job.id },
+    ]);
+
+    await pg.query(`update jobs set status = 'cancelled' where id = $1`, [job.id]);
+    expect(await listL2CitingCapture([cap.id])).toEqual([]);
+  });
 });

@@ -493,8 +493,22 @@ export async function listRawCapturesForCustomer(customerId: string): Promise<Ra
 //
 // Fleet-wide by capture id, like every other reader keyed on one: the caller
 // holds the ids, and the rows it gets back name the L2 they belong to.
+// RUNG 10B added two more kinds, because "nothing has been created" is not the
+// hole `inbound_unmatched` names. That one asks WHO CALLED, and it is answered
+// by the caller having been identified:
+//   'customer' — a customer row was created from this capture. `jobId` is null;
+//                `id` is the customer's.
+//   'link'     — the capture was recorded ONTO an existing job (`job_captures`),
+//                which is what LINKING a caller we already knew leaves behind.
+//                The link has no row id of its own — its primary key is
+//                (job_id, capture_id) — so `id` carries the job's, same as
+//                `jobId`.
+// The two new kinds are NOT closers for `inbound_new_job` / `inbound_commitment`:
+// the door writes a `job_captures` link in the SAME call it raises those asks, so
+// counting it would close every one of them the moment it was raised. The
+// planner's moot fact is kind-aware for exactly that reason.
 export interface L2CitingCapture {
-  kind: 'job' | 'visit';
+  kind: 'job' | 'visit' | 'customer' | 'link';
   id: string;
   captureId: string;
   jobId: string | null;
@@ -549,6 +563,44 @@ export async function listL2CitingCapture(captureIds: string[]): Promise<L2Citin
             captureId: row.source_capture_id,
             jobId: row.job_id,
           });
+        }
+      }
+      if (!data || data.length < PAGE) break;
+    }
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('customers')
+        .select('id, source_capture_id')
+        .in('source_capture_id', slice)
+        .order('id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listL2CitingCapture failed on customers: ${error.message}`);
+      for (const row of data ?? []) {
+        if (row.source_capture_id) {
+          out.push({ kind: 'customer', id: row.id, captureId: row.source_capture_id, jobId: null });
+        }
+      }
+      if (!data || data.length < PAGE) break;
+    }
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('job_captures')
+        // The job's status comes through the embed: a link onto a CANCELLED job
+        // is no more an answer than a cancelled job itself is, and the two arms
+        // above drop those for the same reason.
+        .select('job_id, capture_id, jobs!inner(id, status)')
+        .in('capture_id', slice)
+        .order('job_id', { ascending: true })
+        .order('capture_id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listL2CitingCapture failed on job_captures: ${error.message}`);
+      for (const row of (data ?? []) as unknown as {
+        job_id: string;
+        capture_id: string;
+        jobs: { id: string; status: string } | null;
+      }[]) {
+        if (row.jobs && row.jobs.status !== 'cancelled') {
+          out.push({ kind: 'link', id: row.job_id, captureId: row.capture_id, jobId: row.job_id });
         }
       }
       if (!data || data.length < PAGE) break;

@@ -4883,9 +4883,11 @@ stage" (see the §10 remodel paragraph, now marked superseded).
   sweep. The outbound side stores `metadata.threadId` on every assistant-sent email; only inbound
   is blind, and L1 is append-only, so every email landing today is permanently un-chainable.
   Replies a person sends from the Gmail app NEVER arrive (the trigger watches INBOX only).
-  Record: `thoughts/shared/research/2026-09-07-email-thread-context-from-composio.md`. Store
-  `threadId` before the channel carries traffic; the 10b plan treats thread membership as an
-  identity key beside email (a reply in a matched thread is not a new caller).
+  Record: `thoughts/shared/research/2026-09-07-email-thread-context-from-composio.md`.
+  **CAPTURED since 2026-09-07:** inbound captures now carry `threadId`, `to` and `labelIds` in
+  metadata, present-only, under the outbound capture's key names (`gmail.ts` → `webhook.ts`).
+  Nothing reads them yet; the 10b plan treats thread membership as an identity key beside email
+  (a reply in a matched thread is not a new caller).
 
 ### ✅ BUILT **AND DEPLOYED** 2026-09-06 — rung 9c, "a visit carries a crew" (merged as `bd50ab1`, PR #208)
 

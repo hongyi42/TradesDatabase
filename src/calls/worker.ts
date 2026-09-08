@@ -2,7 +2,6 @@ import {
   claimNextPendingCall as liveClaimNextPendingCall,
   markCallError as liveMarkCallError,
   markCallIngested as liveMarkCallIngested,
-  openUnlinkedCallReview as liveOpenUnlinkedCallReview,
   openCallActionReview as liveOpenCallActionReview,
   setAudioRef as liveSetAudioRef,
   type CallIngest,
@@ -42,12 +41,6 @@ export interface WorkerDeps {
     transcript: string,
     ctx?: CostContext,
   ) => Promise<{ intents: CallIntent[]; reason: string }>;
-  openUnlinkedCallReview: (input: {
-    tenantId: string;
-    captureId: string;
-    callerPhone?: string | null;
-    snippet?: string | null;
-  }) => Promise<unknown>;
   openCallActionReview: (input: {
     tenantId: string;
     captureId: string;
@@ -70,7 +63,6 @@ const liveDeps: WorkerDeps = {
   redact: redactSensitive,
   recordFieldNote: liveRecordFieldNote,
   classifyCall: (transcript, ctx) => defaultCallClassifier(transcript, ctx),
-  openUnlinkedCallReview: liveOpenUnlinkedCallReview,
   openCallActionReview: liveOpenCallActionReview,
   notifyManagers,
 };
@@ -127,7 +119,9 @@ export async function processNextCall(deps: WorkerDeps = liveDeps): Promise<'idl
     // raised — a manager asked — when they have no open job, or when the firm
     // agreed to come out and no trip on the calendar carries it. It no longer
     // mints a job, so nothing from a call reaches the board's unscheduled
-    // bucket until somebody says yes.
+    // bucket until somebody says yes. AND SINCE RUNG 10B it no longer needs the
+    // caller to be somebody we already know: an unmatched caller raises
+    // `inbound_unmatched` from inside recordFieldNote, on the same loop.
     const structure = !unclassified && validated.includes('new_job');
 
     const result = await deps.recordFieldNote({
@@ -151,29 +145,19 @@ export async function processNextCall(deps: WorkerDeps = liveDeps): Promise<'idl
       },
     });
 
-    // Route each outcome. These two checks are INDEPENDENT — a mixed call
-    // (e.g. [new_job, cancel]) fires both. Mutations are NEVER auto-executed:
-    // a reschedule/cancel/complaint/question — or an unclassified call — opens a
-    // review and pushes the manager; the human acts.
+    // Route the outcome. Mutations are NEVER auto-executed: a reschedule/cancel/
+    // complaint/question — or an unclassified call — opens a review and pushes
+    // the manager; the human acts.
     //
-    // (a) a new_job caller who matched nothing → the existing unlinked-call review
-    // (link/create), now also pushed. matched/duplicate are not re-flagged.
-    if (
-      !unclassified &&
-      validated.includes('new_job') &&
-      (result.status === 'needs_confirmation' || result.status === 'needs_disambiguation')
-    ) {
-      await deps.openUnlinkedCallReview({
-        tenantId: row.tenant_id,
-        captureId: result.captureId,
-        callerPhone: row.caller_phone,
-        snippet: transcript.slice(0, 200),
-      });
-      await deps.notifyManagers(
-        row.tenant_id,
-        `📋 Call — new customer to link · ${row.caller_phone ?? ''}`,
-      );
-    }
+    // (a) STOOD HERE UNTIL RUNG 10B. A new_job caller who matched nothing opened
+    // an `unlinked_call` review and pushed "Call — new customer to link". It was
+    // a dead end: no tool could act on that item, so the manager could dismiss it
+    // or resolve it and the call still linked to nobody. recordFieldNote now
+    // raises an `inbound_unmatched` observation for exactly that caller, the ping
+    // loop shows the planner within seconds, and the planner can settle it — link
+    // a known customer at a new number, dismiss a supplier, or ask a manager.
+    // Nothing is pushed from here any more; the planner decides whether anyone is
+    // worth interrupting.
 
     // (b) any mutating/enquiry intent — or an unclassified call — → a call_action
     // review, pushed. The `!== 'duplicate'` gate suppresses re-processing only for

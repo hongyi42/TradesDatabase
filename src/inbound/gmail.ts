@@ -41,7 +41,20 @@ export const gmailNewMessageNormalizer: Normalizer = (payload: unknown): Inbound
   // src/mcp/server.ts stamps every assistant-sent email with it), so one
   // thread's inbound and outbound rows share a key. An absent field stays
   // absent rather than becoming `null`: L1 readers test for the key.
-  const threadId = typeof data.thread_id === 'string' && data.thread_id ? data.thread_id : undefined;
+  // LENGTH-CAPPED, and it is the INSERT this protects, not the read. Rung 10b
+  // indexes `metadata->>'threadId'`, and a btree entry tops out around 2704
+  // bytes — so an absurdly long thread id would make the L1 APPEND ITSELF fail
+  // ("index row size exceeds btree maximum") inside the webhook, which the
+  // handler reads as transient and retries forever, paying for an extraction
+  // every time. A real Gmail thread id is 16 characters. Over the cap the key is
+  // DROPPED, never truncated: a truncated id is a key that could match the wrong
+  // conversation, which is worse than having no key at all. The mail still
+  // ingests — the thread id is an aid, never a condition of capture.
+  const THREAD_ID_MAX = 255;
+  const threadId =
+    typeof data.thread_id === 'string' && data.thread_id && data.thread_id.length <= THREAD_ID_MAX
+      ? data.thread_id
+      : undefined;
   const to = typeof data.to === 'string' && data.to ? data.to : undefined;
   const labelIds = Array.isArray(data.label_ids)
     ? data.label_ids.filter((l): l is string => typeof l === 'string')

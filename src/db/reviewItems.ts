@@ -73,7 +73,19 @@ export type ReviewKind =
   // subject_ref is the L1 capture id, author 'detector' — so the once-ever index
   // makes a redelivered call converge instead of asking twice.
   | 'inbound_new_job'
-  | 'inbound_commitment';
+  | 'inbound_commitment'
+  // RUNG 10B — NOBODY ON FILE MATCHES THE SENDER. The one inbound kind with no
+  // customer on it: subject_ref is the L1 capture id, author 'detector', and
+  // `context` carries the sender, the words, and what the extractor read, but no
+  // customerId — because that is the open question. It rides the same ping loop
+  // (PINGED_KINDS) as the two above, so the planner sees it within seconds and
+  // forms the second opinion: a supplier to dismiss, a known customer at a new
+  // number to link, or a genuinely new caller to ask a manager about.
+  //
+  // It REPLACES the `unlinked_call` review the Calls-worker used to open, which
+  // no tool could act on. That kind and its rows are kept (the `flagNudgeGap`
+  // precedent below) — only the writer is gone.
+  | 'inbound_unmatched';
 
 export interface UpsertOpenReviewItemInput {
   tenantId: string;
@@ -182,25 +194,17 @@ export async function listEverFlaggedSubjectRefs(
   return (data ?? []).map((r) => r.subject_ref);
 }
 
-// Flag a phone call whose caller-ID matched no customer, for the manager to link
-// or dismiss. subject_ref = the parked L1 captureId, so a worker retry on the same
-// capture returns the existing open item (via the partial unique index) rather
-// than stacking duplicates — no separate dedup needed. suggestion carries the
-// caller number so list_pending_reviews shows who to call back.
-export async function openUnlinkedCallReview(input: {
-  tenantId: string;
-  captureId: string;
-  callerPhone?: string | null;
-  snippet?: string | null;
-}): Promise<ReviewItem> {
-  return upsertOpenReviewItem({
-    tenantId: input.tenantId,
-    kind: 'unlinked_call',
-    subjectRef: input.captureId,
-    suggestion: input.callerPhone ?? null,
-    detail: { callerPhone: input.callerPhone ?? null, snippet: input.snippet ?? null },
-  });
-}
+// (`openUnlinkedCallReview` stood here until rung 10b. It opened an
+// `unlinked_call` item for a phone call whose caller-ID matched no customer, and
+// pushed the managers about it — a dead end, because NO TOOL could act on that
+// item: the manager could resolve or dismiss it, and nothing would ever link the
+// call to anybody. The unmatched caller now becomes an `inbound_unmatched`
+// observation instead (src/writePath/recordFieldNote.ts), which the planner sees
+// on the ping loop and can actually settle. EVERY ITEM EVER FILED STAYS — the
+// `unlinked_call` kind, its rows, the partial unique index, list_pending_reviews
+// and the board all read unchanged; only the writer is gone, the same way
+// `flagNudgeGap` was retired above. The six open rows on the pilot are left for
+// hand resolution.)
 
 // Open a review for a classified call that needs a human to ACT — a reschedule,
 // cancel, question, or complaint the agentless worker must never auto-execute,

@@ -8,10 +8,27 @@ export const TEAM_LEAD_REF = 'spine:team-lead';
 
 // The identity's ENTIRE tool surface. The dispatch gate denies the whole
 // `spine:` namespace anything NOT in this set — deny-by-default, so a forgotten
-// entry fails closed (targetGuard doctrine). There is no human behind this
-// identity to confirm anything, so nothing irreversible or externally visible
-// may ever dispatch for it; enforcement is mechanism (the gate), never prompt
-// text.
+// entry fails closed (targetGuard doctrine).
+//
+// THE RULE THIS HEADER USED TO STATE — "nothing irreversible or externally
+// visible may ever dispatch for it" — was a v1 POSTURE, and rung 10b retires it
+// (user ruling, 2026-09-07: the planner writes L2). It was never a design: it
+// described a planner that could only read and ask, at a moment when nobody had
+// decided whether it should write the record at all. It has been decided.
+//
+// What replaces it is narrower and actually load-bearing:
+//   * EVERY WRITE CITES A CAPTURE. `record_caller` re-runs the one door for a
+//     specific L1 row, so the customer, the job and the trip it creates all
+//     carry `source_capture_id` — "where did this come from" is answerable for
+//     every row the planner has ever caused.
+//   * ASK-FIRST IS DOCTRINE, NOT MECHANISM, and deliberately so. Linking a
+//     caller we already know needs nobody's permission; creating a customer,
+//     opening a job and booking a trip are put to a manager first. Code sets the
+//     CEILING (what the tool can reach at all); the planner decides the call.
+//   * NOTHING HERE REACHES A PERSON. `send` is still not a tool for this
+//     identity — the planner PROPOSES it and code performs it after the loop,
+//     through applyDecision, where the rails live.
+// Enforcement of the ceiling is still mechanism (this gate), never prompt text.
 //
 // v1 was READ/ASK ONLY. Build 3 (plan 2026-08-30) adds the FIRST WRITE VERB —
 // `write_memory` — and it is worth writing down why it passes the rule rather
@@ -54,4 +71,10 @@ export const TEAM_LEAD_TOOL_NAMES: ReadonlySet<string> = new Set([
   'write_job_note',
   'get_customer_context',
   'resolve_date',
+  // RUNG 10B — the FIRST verb that writes the customer record itself. Admitted
+  // on the terms above: it can only touch the capture an open `inbound_unmatched`
+  // item names, everything it writes cites that capture, and it is idempotent by
+  // reading what already cites it (L1-pinned rows can never be deleted, so a
+  // retry that minted twins would be permanent). BOTH LISTS, together.
+  'record_caller',
 ]);

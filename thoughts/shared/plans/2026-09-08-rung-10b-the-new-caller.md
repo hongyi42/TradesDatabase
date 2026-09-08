@@ -2,7 +2,7 @@
 date: 2026-09-08
 task: Rung 10b — the new caller, built the 10d way. Two more identity keys (sender email, Gmail thread) so known customers stop being parked as strangers; an `inbound_unmatched` observation rides rung 10's ping loop; the planner forms the second opinion, texts a manager ONCE with a quiet note to their assistant carrying the item id, and records the caller itself through the one door with its FIRST L2 write tool (`record_caller`: link or create the customer, open the job, book the promised visit untimed); the extractor sees the reply chain, fetched from Composio with an L1 fallback.
 research: thoughts/shared/research/2026-09-08-rung-10b-the-new-caller.md
-status: draft
+status: complete
 supersedes: thoughts/shared/plans/2026-09-06-rung-10-inbound-commits-a-visit-ask-first.md — its Decisions recorded 10b as "the manager's agent runs `add_customer`"; the 10d ruling (user, 2026-09-07: the planner writes L2) replaces the actor. Everything else in that plan stands.
 ---
 
@@ -115,10 +115,10 @@ Header comment (`:12-15`) restates the order and why.
 **`src/inbound/webhook.ts`** — at the `recordFieldNote` call (`:264-290`): `fallbackEmail: emailAddressOf(meta.from), threadId: meta.threadId ?? null`.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `src/email/format.test.ts` (new or extend): `emailAddressOf` on `"Name <a@b.com>"`, `"a@b.com"`, `"nobody"`, `null`.
-- [ ] `src/writePath/identityMatch.test.ts`: email unique → matched; two customers sharing an email → falls through; thread whose captures name one customer and one job → matched with `jobId`; thread naming two customers → falls through; phone still wins over email.
-- [ ] `src/writePath/recordFieldNote.test.ts`: an inbound email from a customer's address with no phone in the body → matched, filed on the open job; a reply carrying `threadId` of a capture linked to a job → matched, `job_captures` link on THAT job; the technician staged path unchanged (test at `:581` still passes).
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `src/email/format.test.ts` (new or extend): `emailAddressOf` on `"Name <a@b.com>"`, `"a@b.com"`, `"nobody"`, `null`.
+- [x] `src/writePath/identityMatch.test.ts`: email unique → matched; two customers sharing an email → falls through; thread whose captures name one customer and one job → matched with `jobId`; thread naming two customers → falls through; phone still wins over email.
+- [x] `src/writePath/recordFieldNote.test.ts`: an inbound email from a customer's address with no phone in the body → matched, filed on the open job; a reply carrying `threadId` of a capture linked to a job → matched, `job_captures` link on THAT job; the technician staged path unchanged (test at `:581` still passes).
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP (read-back), the pilot deployed.
@@ -163,10 +163,10 @@ if (match.status !== 'matched' && !input.resolved) {
 **`src/calls/worker.ts`** — delete branch (a) (`:159-176`), the `openUnlinkedCallReview` dep (`:45-50`, `:73`) and its import (`:5`). Comment at `:125-130` gains: "an unmatched caller raises `inbound_unmatched`". In `worker.test.ts` drop the `openUnlinkedCallReview` stub and the `flagged` recorder from `makeDeps` (`:65-101`) — an excess property fails typecheck.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `recordFieldNote.test.ts`: rewrite (7) at `:1176` — an unmatched committed call writes ONE `inbound_unmatched` row with `visitCommitted: true` and `from` = `fromNumber`; an unmatched email writes one with `from` = the sender; a stranger's `touchesOperations:false` email writes none; a technician note (`:581`) writes none; a redelivery of the unmatched email is `duplicate` (the observation is the marker); two deliveries racing → one row (`createObservation` returns null, no `observationId`).
-- [ ] `worker.test.ts`: `:152` "unmatched caller → ingested AND flagged once" becomes "…ingested, nothing flagged, no push"; `:238` mixed call → only the `call_action` branch, ONE push.
-- [ ] `observations.test.ts:431` pins the three kinds; a new `inbound_unmatched` row is listed by `listUnpingedObservations`.
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `recordFieldNote.test.ts`: rewrite (7) at `:1176` — an unmatched committed call writes ONE `inbound_unmatched` row with `visitCommitted: true` and `from` = `fromNumber`; an unmatched email writes one with `from` = the sender; a stranger's `touchesOperations:false` email writes none; a technician note (`:581`) writes none; a redelivery of the unmatched email is `duplicate` (the observation is the marker); two deliveries racing → one row (`createObservation` returns null, no `observationId`).
+- [x] `worker.test.ts`: `:152` "unmatched caller → ingested AND flagged once" becomes "…ingested, nothing flagged, no push"; `:238` mixed call → only the `call_action` branch, ONE push.
+- [x] `observations.test.ts:431` pins the three kinds; a new `inbound_unmatched` row is listed by `listUnpingedObservations`.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP, pilot deployed, the owner sends an email from an address nobody has on file with a new name and no phone in the body.
@@ -198,9 +198,9 @@ note may name an inbound item without counting as the ask.
 **`src/teamLead/plannerPrompt.ts`** — "REQUESTS FROM CALLS AND EMAIL" (`:225-256`): three kinds; `inbound_unmatched` = "nobody on file matches the sender — you are the second opinion: `spine_read v_customers` by name, phone, email, address for a near miss". Rewrite WHAT CAN HAPPEN (`:235-236`): "YOU record the caller with `record_caller` — link when it is somebody we know at a new number or address (no need to ask), create when a manager says so. Opening a job and booking a visit are asked first, and that is strongest for a visit." THE USUAL MOVE (`:238`) for this kind: "send TWO in one turn: `as:"chat"` to a manager, in your words, and `as:"assistant"` to the same manager with the item's id, telling their assistant to reply via inform_team_lead and mention that id when the manager answers. Only the text counts as the ask." WHEN NOT TO: supplier, spam, a wrong number → dismiss. Add to "WHEN A SEAT TELLS YOU SOMETHING" (`:105`): a reply "in reply to your ask on gap X" about a caller is your cue to `record_caller` X.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `planner.test.ts`: rewrite (14d) at `:6681-6692`, which asserts the deleted refusal, into (c) below; (a) gap block for an `inbound_unmatched` row shows the sender, the reason, "they gave", the commitment line from context, no customer line, no date; (b) `validateDecisions` accepts `send as:"assistant"` naming an inbound item; (c) in apply, an assistant-leg send naming an inbound item does NOT call `markAsked`, a chat send does; (d) a submission with both sends applies both and binds only the chat one in a focused pass (`:4596-4610`); (e) moot fact for `inbound_unmatched` when only a customer, or only a `job_captures` link, cites it; and an `inbound_commitment` on an existing job (linked in the same call) is NOT closed by that link.
-- [ ] `src/db/rawCaptures.test.ts`: `listL2CitingCapture` returns the `customer` and `link` kinds.
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `planner.test.ts`: rewrite (14d) at `:6681-6692`, which asserts the deleted refusal, into (c) below; (a) gap block for an `inbound_unmatched` row shows the sender, the reason, "they gave", the commitment line from context, no customer line, no date; (b) `validateDecisions` accepts `send as:"assistant"` naming an inbound item; (c) in apply, an assistant-leg send naming an inbound item does NOT call `markAsked`, a chat send does; (d) a submission with both sends applies both and binds only the chat one in a focused pass (`:4596-4610`); (e) moot fact for `inbound_unmatched` when only a customer, or only a `job_captures` link, cites it; and an `inbound_commitment` on an existing job (linked in the same call) is NOT closed by that link.
+- [x] `src/db/rawCaptures.test.ts`: `listL2CitingCapture` returns the `customer` and `link` kinds.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP; the Phase 2 email already on the pilot.
@@ -235,9 +235,9 @@ rule 7 gains the relay line.
 **`Box_Setup_Stuff/bootstrap-box.sh`** rule 7 (`:739-753`) gains: "If the office says nobody on file matches the caller, do NOT create the customer: put the question to the manager, then relay their answer with inform_team_lead, mentioning the id the office's note gave you (it may arrive after the text — include the caller's number as the office wrote it). Say you passed it on, never that it is done. (added 2026-09-08)". Mirror in `docs/nemoclaw-tech-agent.md`. Wire pass deferred.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` (`doctrine.test.ts` passes: the bullet carries `added`).
-- [ ] `recordFieldNote.test.ts`: re-entry by `captureId` reuses the row (no second L1 row); `decided.openJob` mints a job citing the capture with no observation; `bookVisit:true` books an untimed `confirmed` visit citing it; `bookVisit:false` books nothing and asks nothing; `decided` absent on a committed re-run raises `inbound_commitment` on the job (rung 10 unchanged); `createFrom.email` lands on the customer.
-- [ ] `server.test.ts`: `record_caller` dispatches for `spine:team-lead` and is refused for a manager badge (`TEAM_LEAD_ONLY`); refuses a foreign tenant's observation and customer; refuses an item that is not `inbound_unmatched`/open; refuses `newCustomer` when a customer already cites the capture and skips `openJob` when a job does (idempotent retry); the pairing test (`:7490`) passes. Add the name to the two exact-list pins: `server.test.ts:7122-7129` and `src/eval/toolCases.test.ts:66-75` (it scans `server.ts` source).
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` (`doctrine.test.ts` passes: the bullet carries `added`).
+- [x] `recordFieldNote.test.ts`: re-entry by `captureId` reuses the row (no second L1 row); `decided.openJob` mints a job citing the capture with no observation; `bookVisit:true` books an untimed `confirmed` visit citing it; `bookVisit:false` books nothing and asks nothing; `decided` absent on a committed re-run raises `inbound_commitment` on the job (rung 10 unchanged); `createFrom.email` lands on the customer.
+- [x] `server.test.ts`: `record_caller` dispatches for `spine:team-lead` and is refused for a manager badge (`TEAM_LEAD_ONLY`); refuses a foreign tenant's observation and customer; refuses an item that is not `inbound_unmatched`/open; refuses `newCustomer` when a customer already cites the capture and skips `openJob` when a job does (idempotent retry); the pairing test (`:7490`) passes. Add the name to the two exact-list pins: `server.test.ts:7122-7129` and `src/eval/toolCases.test.ts:66-75` (it scans `server.ts` source).
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP; Phase 3's live item; the owner answers the text "yes, new customer, open the job".
@@ -268,10 +268,10 @@ if the fetch fails, the earlier messages come from our own captures on that thre
 **`src/inbound/webhook.ts`** — after the classifier, when `meta.threadId && meta.threadId !== envelope.externalId && tech?.composio_connected_account_id`: `earlier = (await fetchThreadMessages(tech, meta.threadId)) ?? (await listCapturesByThread(tenantId, meta.threadId))`, minus the current message id; pass as `threadContext`. Injectable via `InboundWebhookDeps.fetchThread`.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `extract.test.ts`: `renderThreadContext` bounds (8 messages, 600 chars, oldest first) and the "LATEST MESSAGE" label; the system sentence pinned.
-- [ ] `webhook.test.ts`: a starter (`thread_id === message_id`) fetches nothing; a reply fetches once and passes `threadContext` (stub returns two messages, current one excluded); a failing fetch falls back to the L1 read; the ingest result is `ingested` either way.
-- [ ] `src/composio/threads.test.ts`: response mapping and the cost record on `successful:false`.
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `extract.test.ts`: `renderThreadContext` bounds (8 messages, 600 chars, oldest first) and the "LATEST MESSAGE" label; the system sentence pinned.
+- [x] `webhook.test.ts`: a starter (`thread_id === message_id`) fetches nothing; a reply fetches once and passes `threadContext` (stub returns two messages, current one excluded); a failing fetch falls back to the L1 read; the ingest result is `ingested` either way.
+- [x] `src/composio/threads.test.ts`: response mapping and the cost record on `successful:false`.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP, `COMPOSIO_API_KEY` on the web service, pilot deployed.

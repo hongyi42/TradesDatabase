@@ -1,6 +1,7 @@
 import {
   appendRawCapture,
   findRetractionsFor,
+  getRawCapture,
   getRawCaptureByExternalId,
   captureHasLinkedL2,
   isUniqueViolation,
@@ -22,7 +23,7 @@ import {
   appendScheduleEvent,
   getTechnician,
   getTenant,
-  ALLOWED_TRANSITIONS,
+  TERMINAL_JOB_STATUSES,
   type CaptureChannel,
   type Job,
   type JobStatus,
@@ -32,6 +33,11 @@ import {
 import { defaultExtractor, type Extractor, type ExtractedFields } from './extract.js';
 import { matchIdentity, type MatchResult, type ScheduledCustomerDraft } from './identityMatch.js';
 import { resolveVisitForNote } from './attachNote.js';
+// The ONE booking writer. No cycle: booking.ts imports only ../db and
+// ./availability, and nothing under either reaches back here.
+import { bookVisit } from '../schedule/booking.js';
+import type { ThreadMessage } from '../email/format.js';
+import { TEAM_LEAD_REF } from '../teamLead/identity.js';
 
 // Identity resolved during the staged-confirm flow (MCP tool path): commit must
 // use EXACTLY what the preview showed, so the resolution travels here and
@@ -67,6 +73,39 @@ export interface RecordFieldNoteInput {
   // Inert when unset (email / tech notes pass nothing) — the only phone-specific
   // hook in the shared write-path.
   fallbackPhone?: string | null;
+  // RUNG 10B — the email door's two envelope keys: the sender's bare address and
+  // the Gmail thread the message belongs to. They go STRAIGHT to matchIdentity
+  // (not through `extracted`) because they are facts about the delivery, not
+  // something a model read out of the words — and a create-new keeps the address
+  // on the customer, so the same sender is recognised next time. Inert when
+  // unset (calls, technician notes).
+  fallbackEmail?: string | null;
+  threadId?: string | null;
+  // RUNG 10B — RE-ENTRY. The planner settled who called and sends the door back
+  // through the SAME capture: reuse this L1 row rather than appending a second
+  // one (L1 is append-only, so a second row would be permanent), and skip the
+  // externalId dedup, which would otherwise report the capture as a duplicate of
+  // itself. The RETRACTION guard is NOT skipped — a capture somebody marked
+  // recorded-in-error stays terminal however it is re-entered.
+  captureId?: string;
+  // RUNG 10B — WHAT THE PLANNER DECIDED, and the absence of it means rung 10's
+  // behaviour, unchanged:
+  //   openJob absent      → today's gate: ask (or file) rather than mint
+  //   openJob present     → mint the job, no ask
+  //   bookVisit undefined → today's commitment ask
+  //   bookVisit true      → book an UNTIMED visit on the job, ask nothing
+  //   bookVisit false     → book nothing AND ask nothing (a manager said no)
+  decided?: {
+    openJob?: { title?: string | null; jobType?: string | null };
+    bookVisit?: boolean;
+  };
+  // RUNG 10B — THE CONVERSATION this message belongs to, oldest first and
+  // without the message itself. Handed to the extractor as context: a reply's
+  // own words are often useless alone ("Friday afternoon instead?") while the
+  // name and the number sit three messages up. The DOOR assembles it, because
+  // fetching a thread is a connector's job and this file must not know about
+  // Composio. Absent for every channel that has no thread.
+  threadContext?: ThreadMessage[];
   // L1-only switch (default true = structure). When explicitly false, append the
   // verbatim capture to L1 and STOP — no extract, no match, no L2/L3. The phone
   // router uses this for a non-`new_job` call: the transcript is always kept as
@@ -93,11 +132,9 @@ export interface RecordFieldNoteResult {
 }
 
 // Terminal job states (no outgoing transitions) — never reused for a new note.
-const TERMINAL_STATUSES: ReadonlySet<JobStatus> = new Set(
-  (Object.keys(ALLOWED_TRANSITIONS) as JobStatus[]).filter(
-    (status) => ALLOWED_TRANSITIONS[status].length === 0,
-  ),
-);
+// Derived once, in db/jobs.ts beside the machine it comes from; rung 10b's
+// thread key needs the same set and a second derivation would be free to drift.
+const TERMINAL_STATUSES = TERMINAL_JOB_STATUSES;
 
 // Which statusSignal moves a NOTE may drive. Notes speak about the WORK
 // dimension only — start, finish, reopen. The money tail (invoiced/paid) is
@@ -148,11 +185,32 @@ export async function recordFieldNote(
     // every redelivery re-ran the extractor. Rung 10 gives that capture its own
     // links — `job_captures` when it lands on a job, an `observations` row when
     // it asks instead — and captureHasLinkedL2 reads both, so a redelivery is a
-    // real duplicate. What still re-runs is a work-but-UNMATCHED capture, by
-    // design (rung 10b gives that one its own observation).
+    // real duplicate. RUNG 10B CLOSED THE LAST ONE: a work-but-UNMATCHED inbound
+    // capture now raises `inbound_unmatched`, which is an observation like any
+    // other, so its redelivery is a real duplicate too and the extractor is not
+    // paid for twice. (A capture that asks NOTHING — a stranger's thank-you —
+    // still leaves no marker and still re-extracts on redelivery. It writes
+    // nothing, which is the cheaper side of that trade.)
     let landed: RawCapture | null = null;
 
-    if (input.externalId) {
+    // RE-ENTRY BY CAPTURE ID (rung 10b) comes first and short-circuits the
+    // dedup entirely: this capture is KNOWN to have been processed — it raised
+    // an `inbound_unmatched` ask, which is itself the processed marker — and the
+    // whole point of the re-entry is to run the rest of the door again now that
+    // the identity is settled. Its tenant is checked here, not trusted from the
+    // caller, and a RETRACTED capture is still terminal.
+    if (input.captureId) {
+      const row = await getRawCapture(input.captureId);
+      if (!row || row.tenant_id !== tenantId) {
+        throw new Error(`recordFieldNote: capture ${input.captureId} is not this firm's`);
+      }
+      if ((await findRetractionsFor([row.id])).length > 0) {
+        return { status: 'duplicate', captureId: row.id };
+      }
+      landed = row;
+    }
+
+    if (!landed && input.externalId) {
       const dup = await getRawCaptureByExternalId(tenantId, input.externalId);
       if (dup) {
         if (await captureHasLinkedL2(dup.id)) return { status: 'duplicate', captureId: dup.id };
@@ -223,7 +281,11 @@ export async function recordFieldNote(
   // The inbound-email webhook and the call worker both call recordFieldNote with
   // no deps.extract, so they fall through to the live model here — instrumenting
   // only the MCP staging call would have missed the highest-volume consumer.
-  const extracted = await extract(rawText, { tenantId, technicianRef });
+  const extracted = await extract(
+    rawText,
+    { tenantId, technicianRef },
+    input.threadContext?.length ? { earlier: input.threadContext } : undefined,
+  );
 
   // Caller-ID fallback: the inbound call's `From` is a strong identity key the
   // transcript often lacks. Apply it only when extraction found no phone, and
@@ -245,13 +307,77 @@ export async function recordFieldNote(
       technicianRef,
       capturedAt,
       extracted,
+      email: input.fallbackEmail ?? null,
+      threadId: input.threadId ?? null,
     });
   }
 
-  // (6) Unresolved and nothing resolved → hand back to the caller.
-  // (Inbound: the capture stays L1-only until a later delivery resolves it.)
+  // (6) NOBODY MATCHED. Until rung 10b this was a dead end for inbound: the
+  // capture stayed L1-only, a CALL got a review item no tool could act on, and an
+  // EMAIL got nothing at all — so a new customer's first message reached no
+  // human until somebody happened to read the mailbox. It now becomes an
+  // observation on the planner's list, on the same ping loop rung 10 built, and
+  // the planner forms the second opinion: a supplier to dismiss, somebody we
+  // know at a new number to link, or a real new caller to ask a manager about.
+  //
+  // THREE THINGS DO NOT ASK, each for its own reason:
+  //   * a TECHNICIAN channel — their notes resolve through the staged-confirm
+  //     flow, which hands identity in via `resolved` and never lands here;
+  //   * anything that is not an inbound channel — chat, quotes, corrections and
+  //     the rest have their own doors and no caller to identify;
+  //   * a stranger's message the extractor found no operations content in and no
+  //     commitment in ("thanks, got it") — the same `=== false` filter the
+  //     matched path uses below. Absent and null keep asking.
+  // `structure: false` returned long before this, so a cancel/complaint/question
+  // call never reaches here either — the phone router's human review carries it.
   if (match.status !== 'matched' && !input.resolved) {
-    return { status: match.status, captureId, suggestion: match.suggestion };
+    const inbound = channel === 'email' || channel === 'phone_call' || channel === 'web_form';
+    const closesItself = extracted.touchesOperations === false && extracted.visitCommitted !== true;
+    if (!inbound || closesItself) {
+      return { status: match.status, captureId, suggestion: match.suggestion };
+    }
+    // `null` means the once-ever index already holds this capture — a raced
+    // redelivery — so the FIRST row keeps the ask and there is nothing to report.
+    const obs = await createObservation({
+      tenantId,
+      kind: 'inbound_unmatched',
+      subjectRef: captureId,
+      technicianId: null,
+      context: {
+        captureId,
+        capturedAt,
+        channel,
+        from: fromOf(input.sourceMeta),
+        // WHY code could not decide, in the matcher's own words — the planner is
+        // the second opinion and needs to know what the first one tried.
+        matchReason: match.reason ?? null,
+        // Read from the CONTEXT, not from the kind: this one kind carries both
+        // shapes, so "the firm agreed to come out" is a field here rather than
+        // something the planner infers from the name.
+        visitCommitted: extracted.visitCommitted ?? null,
+        // What the extractor read out of the words, nulls kept — an absent field
+        // and a field the model declined to fill are different things. `email`
+        // is the DOOR's, not the model's: it is the envelope's sender.
+        asked: {
+          customerName: extracted.customerName ?? null,
+          phone: extracted.phone ?? null,
+          email: input.fallbackEmail ?? null,
+          address: extracted.address ?? null,
+          city: extracted.city ?? null,
+          jobTitle: extracted.jobTitle ?? null,
+          jobType: extracted.jobType ?? null,
+          followUp: extracted.followUp ?? null,
+          attributes: objectOrNull(extracted.attributes),
+        },
+        words: rawText.slice(0, 1500),
+      },
+    });
+    return {
+      status: match.status,
+      captureId,
+      suggestion: match.suggestion,
+      ...(obs ? { observationId: obs.id } : {}),
+    };
   }
 
   // (5) Resolve the customer: matched existing, or create-new from the confirmed
@@ -267,6 +393,9 @@ export async function recordFieldNote(
       tenantId,
       name: draft?.customerName?.trim() || extracted.customerName?.trim() || 'Unknown customer',
       phone: draft?.phone ?? extracted.phone ?? null,
+      // The address they wrote FROM, not one the model read out of the body:
+      // it is the key the next message will arrive under (rung 10b).
+      email: draft?.email ?? input.fallbackEmail ?? null,
       addressLine1: draft?.addressLine1 ?? extracted.address ?? null,
       city: draft?.city ?? extracted.city ?? null,
       state: draft?.state ?? extracted.state ?? null,
@@ -386,7 +515,45 @@ export async function recordFieldNote(
   // AMENDED 2026-09-07 (user): inbound with no open job ASKS. It used to mint
   // one here and the manager never heard of it — "so the manager can know,
   // instead of being blind to the job being created."
-  if (!isTechnicianChannel && !job) {
+  // RUNG 10B: `decided.openJob` is a manager's yes, relayed. It is the ONE thing
+  // that lets an inbound capture mint work without asking, and it arrives only
+  // through `record_caller` — which is why the gate reads the field rather than
+  // the channel.
+  if (!isTechnicianChannel && !job && !input.decided?.openJob) {
+    // A SETTLED RE-ENTRY NEVER ASKS "WHO IS THIS" AGAIN. `captureId` means the
+    // planner already answered that question — it is why this call exists — so
+    // raising a fresh `inbound_new_job` here would open a SECOND ask on a capture
+    // whose first one is still open, and the caller of `record_caller` would be
+    // told the work was recorded while nobody had been asked anything. The
+    // capture is filed on their most recent job instead, whatever its status,
+    // which is also what lets THE RECORD close the original item. With no job at
+    // all there is nothing to file it onto — the MCP dispatch refuses that
+    // combination up front rather than letting it land here silently.
+    if (input.captureId) {
+      // The most recent job THAT CAN CITE. listJobsForCustomer orders created_at
+      // ASCENDING, so the search runs from the tail — but a link onto a CANCELLED
+      // job is not a citation (listL2CitingCapture drops those, because a
+      // rolled-back shell is not an answer), so filing there would leave the
+      // item with nothing citing it and no way to close. The MCP guard predicts
+      // exactly this set, and the two must agree or the guard is fiction.
+      const onJob =
+        [...priorJobs].reverse().find((candidate) => candidate.status !== 'cancelled') ?? null;
+      // …BUT THE PROMISE STILL ASKS, and it asks FIRST. Settling WHO called says
+      // nothing about whether anybody is going: if the call carried "we agreed to
+      // come out" and nobody decided about the trip, that question is untouched,
+      // and it is the one question in this whole file whose loss costs something
+      // OUTSIDE this database — a customer was told someone is coming and nobody
+      // at the firm knows. A commitment outranks the touchesOperations filter
+      // here exactly as it does on the matched path below.
+      const promised =
+        input.decided?.bookVisit === undefined && extracted.visitCommitted === true
+          ? await observeInbound(onJob)
+          : null;
+      const filed = await fileWithoutAsking(onJob);
+      return promised?.observationId
+        ? { ...filed, observationId: promised.observationId }
+        : filed;
+    }
     // AMENDED again the same day, after the first version woke the planner for
     // every email from a settled customer: the extractor decides, not the job
     // lookup. The question it answers is "is there anything here for L2?" — a
@@ -402,8 +569,9 @@ export async function recordFieldNote(
     job = await createJob({
       tenantId,
       customerId,
-      title: extracted.jobTitle ?? null,
-      jobType: extracted.jobType ?? null,
+      // What the planner was TOLD to open it as wins over what the model read.
+      title: input.decided?.openJob?.title ?? extracted.jobTitle ?? null,
+      jobType: input.decided?.openJob?.jobType ?? extracted.jobType ?? null,
       sourceCaptureId: captureId,
     });
   }
@@ -478,8 +646,31 @@ export async function recordFieldNote(
   //
   // A committed capture that landed on a LIVE visit asks nothing: that is
   // correspondence about work already booked, and asking would be noise.
+  //
+  // RUNG 10B — OR THE PLANNER ALREADY SETTLED IT. `decided.bookVisit` is a
+  // manager's answer relayed through `record_caller`, so there is nothing left to
+  // ask: `true` puts an UNTIMED trip on the board (no day, no time — "sometime
+  // next week" is a conversation, not a column), `false` books nothing and asks
+  // nothing, and ABSENT is rung 10 unchanged. A visit already attached takes
+  // neither branch: that trip is already booked and both asking and booking
+  // would be noise.
+  const decidedBook = input.decided?.bookVisit;
+  let bookedVisitId: string | null = null;
+  if (decidedBook === true && !visit) {
+    const booked = await bookVisit({
+      tenantId,
+      jobId: job.id,
+      sourceCaptureId: captureId,
+      actorRef: TEAM_LEAD_REF,
+      reason: 'record_caller',
+    });
+    bookedVisitId = booked.assignment.id;
+  }
   const asked =
-    !isTechnicianChannel && extracted.visitCommitted === true && !visit
+    !isTechnicianChannel &&
+    decidedBook === undefined &&
+    extracted.visitCommitted === true &&
+    !visit
       ? await observeInbound(job)
       : null;
 
@@ -605,7 +796,11 @@ export async function recordFieldNote(
     customerId,
     jobId: job.id,
     // `true`: this note IS a link, so the visit is reported by construction.
-    ...(visit ? { visitId: visit.id, stage: stageOf(visit, true) } : {}),
+    ...(visit
+      ? { visitId: visit.id, stage: stageOf(visit, true) }
+      : bookedVisitId
+        ? { visitId: bookedVisitId }
+        : {}),
   };
 }
 

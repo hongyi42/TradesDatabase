@@ -57,6 +57,24 @@ describe('gmailNewMessageNormalizer', () => {
     expect(bare.sourceMeta).not.toHaveProperty('threadId');
     expect(bare.sourceMeta).not.toHaveProperty('labelIds');
   });
+
+  // RUNG 10B: the thread id is INDEXED, and a btree entry caps at ~2704 bytes —
+  // so an absurd id would break the L1 append itself, inside the webhook, which
+  // retries forever. Dropped rather than truncated (a truncated id is a key that
+  // could match the wrong conversation), and the mail still ingests.
+  test('an absurdly long thread id is dropped, and the rest of the email survives', () => {
+    const env = gmailNewMessageNormalizer({
+      ...gmailPayload,
+      thread_id: 'x'.repeat(256),
+      to: 'office@firm.example',
+    });
+    expect(env.sourceMeta).not.toHaveProperty('threadId');
+    expect(env.sourceMeta).toMatchObject({ from: 'jane@homeowner.com', to: 'office@firm.example' });
+    expect(env.externalId).toBe(gmailPayload.message_id);
+    // The boundary itself is kept.
+    const atCap = gmailNewMessageNormalizer({ ...gmailPayload, thread_id: 'y'.repeat(255) });
+    expect((atCap.sourceMeta as { threadId?: string }).threadId).toBe('y'.repeat(255));
+  });
 });
 
 describe('resolveNormalizer', () => {

@@ -214,6 +214,12 @@ the test is now PLACEMENT:
   visit, re-call `book_visit` with the matching jobId; `open_job` takes no jobId, so act on the
   existing work directly. `forceNewJob:true` only for genuinely different work. On a no: `inform_team_lead` in one
   sentence. **Never create it before they answer** — nothing is on the record yet, deliberately.
+  **Rung 10b (added 2026-09-08): the caller nobody matches.** The office's message may instead say
+  it does not know who got in touch. The agent creates NOTHING there — not even on a yes — because
+  the office records the caller itself with `record_caller`. It puts the question to the manager
+  and relays the answer with `inform_team_lead`, mentioning the id from the office's quiet note
+  (that note lands in the agent's own session and may arrive after the text; with no id yet, the
+  caller's number as the office wrote it). It says it passed the answer on, never that it is done.
 - **Outside accounts go through Composio, first move (AGENTS.md rule 8, added 2026-09-07).**
   Gmail, Sheets, Excel, Drive: the agent calls `get_connect_link` and hands over the URL. No web
   search, no alternative integration, no self-authentication, no hunting the tool list first.
@@ -354,7 +360,12 @@ The router is **multi-label** — one call can be `[new_job, cancel]` and each i
   longer mints a job. For a caller we know, the words are pinned to their open job and kept on it;
   with no open job — or when the firm agreed to come out and no trip carries it — an OBSERVATION is
   raised and a manager is asked. **Nothing reaches the board's unscheduled bucket until somebody
-  says yes.** A new/unknown caller still opens the `unlinked_call` review to link/create (rung 10b).
+  says yes.** **Amended by rung 10b (2026-09-08):** a caller who matches NOBODY no longer opens an
+  `unlinked_call` review — that item was a dead end, since no tool could ever act on it. It raises an
+  `inbound_unmatched` observation instead, which reaches the planner on the same ping loop within
+  seconds; the planner links a known customer at a new number, dismisses a supplier, or asks a
+  manager. Nothing is pushed from the call worker for it. The existing `unlinked_call` rows stay for
+  hand resolution.
   - **KNOWN GAP:** only `new_job` runs the extractor at all, so a committed call about work already
     on file ("we'll come out Tuesday to finish it") is classified `reschedule`/`other`, stops at L1,
     and raises no `inbound_commitment`. Widening which intents structure was deliberately NOT part

@@ -28,3 +28,17 @@ export function emailAddressOf(from: string | null | undefined): string | null {
   const candidate = (angled ? angled[1] : from).trim().toLowerCase();
   return candidate.includes('@') ? candidate : null;
 }
+
+// ONE MESSAGE IN A CONVERSATION, as the extractor is shown it. Lives here rather
+// than beside either producer because it has two: Composio's thread fetch
+// (src/composio/threads.ts) and our own captures on that thread
+// (db/rawCaptures.ts). A shape both a db module and a connector module import
+// belongs in neither.
+export interface ThreadMessage {
+  messageId: string | null;
+  from: string | null;
+  to: string | null;
+  subject: string | null;
+  body: string;
+  at: string | null;
+}

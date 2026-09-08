@@ -8,6 +8,7 @@ import { captureHasJobCapture, TERMINAL_JOB_STATUSES } from './jobs.js';
 // bindings resolve either load order. The alternative (a third module for the
 // SQLSTATE helpers) would touch every db importer to buy nothing.
 import { captureHasObservation } from './observations.js';
+import type { ThreadMessage } from '../email/format.js';
 
 export type RawCapture = Database['public']['Tables']['raw_captures']['Row'];
 export type CaptureChannel = Database['public']['Enums']['capture_channel'];
@@ -856,4 +857,87 @@ export async function findCustomersByThread(
     seen.add(key);
     return true;
   });
+}
+
+// OUR OWN CAPTURES ON A THREAD, as messages — the FALLBACK when Composio cannot
+// hand us the conversation (a blip, a revoked account, a mailbox that never
+// paired). It is strictly weaker than the real thread: it holds only what
+// reached US, so a message the customer sent to somebody else, or one that
+// predates the pairing, is simply not there. That is still better than nothing,
+// and it costs no billed execution.
+//
+// The same two reads and the same caps as findCustomersByThread, for the same
+// reasons — see its header. `raw_text` is the STORAGE form (headers prepended by
+// formatEmailRawText), which is what the extractor already reads elsewhere.
+export async function listCapturesByThread(
+  tenantId: string,
+  threadId: string,
+): Promise<ThreadMessage[]> {
+  if (!threadId) return [];
+  const client = getClient();
+  // A READER, NOT A MATCHER — so it does NOT refuse on a full page. Truncation
+  // here costs context, not correctness (findCustomersByThread refuses because a
+  // truncated page there can leave one customer standing out of three). It asks
+  // for the NEWEST few directly instead of paging a busy thread's full text into
+  // memory on the ingest path: the renderer shows at most eight, and the caller
+  // drops the current message, so a handful of spares is the whole need.
+  const WANT = 16;
+  const seen = new Set<string>();
+  const rows: RawCapture[] = [];
+  for (const read of [
+    client
+      .from('raw_captures')
+      .select()
+      .eq('tenant_id', tenantId)
+      .eq('external_id', threadId)
+      .order('captured_at', { ascending: false })
+      .limit(WANT),
+    client
+      .from('raw_captures')
+      .select()
+      .eq('tenant_id', tenantId)
+      .eq('metadata->>threadId', threadId)
+      .order('captured_at', { ascending: false })
+      .limit(WANT),
+  ]) {
+    const { data, error } = await read;
+    if (error) throw new Error(`listCapturesByThread failed: ${error.message}`);
+    for (const row of (data ?? []) as RawCapture[]) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      rows.push(row);
+    }
+  }
+  if (rows.length === 0) return [];
+
+  // WHAT MUST NEVER BE SHOWN, the same two exclusions every other capture reader
+  // applies (listJobEvidenceSince):
+  //   * a RETRACTED capture — somebody marked it recorded in error, and the
+  //     write-path treats it as terminal precisely so it can never be rebuilt
+  //     from. Handing its words to the extractor as context would launder them
+  //     back into L2/L3 against the NEW capture, which is the same resurrection
+  //     by another road.
+  //   * `manager_only` — the extractor's output reaches technician-facing rows.
+  const kept = foldRetractions(
+    rows.filter((row) => row.sensitivity !== 'manager_only'),
+    await findRetractionsFor(rows.map((row) => row.id)),
+  );
+  return kept
+    .sort((a, b) => (a.captured_at < b.captured_at ? -1 : 1)) // oldest first, as read
+    .map((row) => {
+      const meta =
+        row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+          ? (row.metadata as Record<string, Json>)
+          : {};
+      const str = (key: string): string | null =>
+        typeof meta[key] === 'string' && meta[key] ? (meta[key] as string) : null;
+      return {
+        messageId: row.external_id,
+        from: str('from'),
+        to: str('to'),
+        subject: str('subject'),
+        body: row.raw_text ?? '',
+        at: row.captured_at,
+      };
+    });
 }

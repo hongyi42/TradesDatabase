@@ -6,6 +6,8 @@ import {
   listJobEvidenceSince,
   listJobStampedCaptureTimes,
   listL2CitingCapture,
+  listCapturesByThread,
+  appendRawCapture,
 } from './rawCaptures.js';
 import { createCustomer } from './customers.js';
 import { createJob, insertJobCapture } from './jobs.js';
@@ -415,6 +417,41 @@ describe('listL2CitingCapture', () => {
 
     await pg.query(`update jobs set status = 'cancelled' where id = $1`, [job.id]);
     expect(await listL2CitingCapture([cap.id])).toEqual([]);
+  });
+
+  test('listCapturesByThread reads the thread oldest-first, and never a RETRACTED message', async () => {
+    // The fallback when Composio cannot hand us the conversation. A retracted
+    // capture must not come back: the write-path treats it as terminal precisely
+    // so it can never be rebuilt from, and handing its words to the extractor as
+    // context would launder them into L2 against the NEW capture.
+    const thread = `fallback-${Date.now()}`;
+    // Appended WITH their metadata: L1 is append-only, so there is no later
+    // update that could add it — which is the whole reason the thread id had to
+    // be captured at the door in the first place.
+    const onThread = async (text: string) =>
+      await appendRawCapture({
+        tenantId,
+        channel: 'email',
+        technicianRef: 'connector:gmail',
+        rawText: text,
+        metadata: { threadId: thread, from: 'jane@home.test' },
+      });
+    await onThread('my number is 555-0199');
+    await onThread('and my gate code is 4412');
+    const bad = await onThread('personal, recorded in error');
+    await appendRawCapture({
+      tenantId,
+      channel: 'manual_correction',
+      technicianRef: 'tech-a',
+      rawText: 'that one was recorded in error',
+      retractsCaptureId: bad.id,
+    });
+    const rows = await listCapturesByThread(tenantId, thread);
+    expect(rows.map((r) => r.body)).toEqual([
+      'my number is 555-0199',
+      'and my gate code is 4412',
+    ]);
+    expect(rows[0].from).toBe('jane@home.test');
   });
 
   test('a capture ATTACHED TO A TRIP cites through the trip — the other shape a link takes', async () => {

@@ -268,10 +268,10 @@ if the fetch fails, the earlier messages come from our own captures on that thre
 **`src/inbound/webhook.ts`** — after the classifier, when `meta.threadId && meta.threadId !== envelope.externalId && tech?.composio_connected_account_id`: `earlier = (await fetchThreadMessages(tech, meta.threadId)) ?? (await listCapturesByThread(tenantId, meta.threadId))`, minus the current message id; pass as `threadContext`. Injectable via `InboundWebhookDeps.fetchThread`.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `extract.test.ts`: `renderThreadContext` bounds (8 messages, 600 chars, oldest first) and the "LATEST MESSAGE" label; the system sentence pinned.
-- [ ] `webhook.test.ts`: a starter (`thread_id === message_id`) fetches nothing; a reply fetches once and passes `threadContext` (stub returns two messages, current one excluded); a failing fetch falls back to the L1 read; the ingest result is `ingested` either way.
-- [ ] `src/composio/threads.test.ts`: response mapping and the cost record on `successful:false`.
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `extract.test.ts`: `renderThreadContext` bounds (8 messages, 600 chars, oldest first) and the "LATEST MESSAGE" label; the system sentence pinned.
+- [x] `webhook.test.ts`: a starter (`thread_id === message_id`) fetches nothing; a reply fetches once and passes `threadContext` (stub returns two messages, current one excluded); a failing fetch falls back to the L1 read; the ingest result is `ingested` either way.
+- [x] `src/composio/threads.test.ts`: response mapping and the cost record on `successful:false`.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP, `COMPOSIO_API_KEY` on the web service, pilot deployed.

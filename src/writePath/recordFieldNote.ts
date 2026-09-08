@@ -36,6 +36,7 @@ import { resolveVisitForNote } from './attachNote.js';
 // The ONE booking writer. No cycle: booking.ts imports only ../db and
 // ./availability, and nothing under either reaches back here.
 import { bookVisit } from '../schedule/booking.js';
+import type { ThreadMessage } from '../email/format.js';
 import { TEAM_LEAD_REF } from '../teamLead/identity.js';
 
 // Identity resolved during the staged-confirm flow (MCP tool path): commit must
@@ -98,6 +99,13 @@ export interface RecordFieldNoteInput {
     openJob?: { title?: string | null; jobType?: string | null };
     bookVisit?: boolean;
   };
+  // RUNG 10B — THE CONVERSATION this message belongs to, oldest first and
+  // without the message itself. Handed to the extractor as context: a reply's
+  // own words are often useless alone ("Friday afternoon instead?") while the
+  // name and the number sit three messages up. The DOOR assembles it, because
+  // fetching a thread is a connector's job and this file must not know about
+  // Composio. Absent for every channel that has no thread.
+  threadContext?: ThreadMessage[];
   // L1-only switch (default true = structure). When explicitly false, append the
   // verbatim capture to L1 and STOP — no extract, no match, no L2/L3. The phone
   // router uses this for a non-`new_job` call: the transcript is always kept as
@@ -273,7 +281,11 @@ export async function recordFieldNote(
   // The inbound-email webhook and the call worker both call recordFieldNote with
   // no deps.extract, so they fall through to the live model here — instrumenting
   // only the MCP staging call would have missed the highest-volume consumer.
-  const extracted = await extract(rawText, { tenantId, technicianRef });
+  const extracted = await extract(
+    rawText,
+    { tenantId, technicianRef },
+    input.threadContext?.length ? { earlier: input.threadContext } : undefined,
+  );
 
   // Caller-ID fallback: the inbound call's `From` is a strong identity key the
   // transcript often lacks. Apply it only when extraction found no phone, and

@@ -9,7 +9,9 @@ import {
   upsertDroppedAudit,
 } from '../db/index.js';
 import { defaultClassifier } from '../email/classify.js';
-import { emailAddressOf } from '../email/format.js';
+import { emailAddressOf, type ThreadMessage } from '../email/format.js';
+import { fetchThreadMessages } from '../composio/threads.js';
+import { captureHasLinkedL2, getRawCaptureByExternalId, listCapturesByThread } from '../db/index.js';
 import type { WorkClassifier } from '../email/classify.js';
 import { resolveNormalizer as liveResolveNormalizer } from './normalize.js';
 import type { Normalizer } from './normalize.js';
@@ -81,6 +83,15 @@ export interface InboundWebhookDeps {
   recordDrop?: typeof upsertDroppedAudit;
   getTechnician?: typeof liveGetTechnician;
   flagReview?: typeof flagUnknownRefCapture;
+  // RUNG 10B: the conversation this message belongs to, fetched from Gmail.
+  // Injectable so a test never reaches Composio; returns null on any failure,
+  // and the caller falls back to our own captures on that thread.
+  fetchThread?: (
+    tech: Parameters<typeof fetchThreadMessages>[0],
+    threadId: string,
+  ) => Promise<ThreadMessage[] | null>;
+  listThreadCaptures?: typeof listCapturesByThread;
+  alreadyProcessed?: (tenantId: string, externalId: string) => Promise<boolean>;
 }
 
 // The handler classifies every outcome into one status; httpServer maps each status
@@ -140,6 +151,17 @@ export async function handleInboundWebhook(
   const recordDrop = deps.recordDrop ?? upsertDroppedAudit;
   const getTechnician = deps.getTechnician ?? liveGetTechnician;
   const flagReview = deps.flagReview ?? flagUnknownRefCapture;
+  const fetchThread = deps.fetchThread ?? fetchThreadMessages;
+  const listThreadCaptures = deps.listThreadCaptures ?? listCapturesByThread;
+  // Is this delivery one the door will no-op on? The door's own dedup is the
+  // authority; this is the cheap pre-check that keeps a BILLED fetch off the
+  // path when the answer is already known to be "nothing to do".
+  const alreadyProcessed =
+    deps.alreadyProcessed ??
+    (async (tid: string, externalId: string) => {
+      const dup = await getRawCaptureByExternalId(tid, externalId);
+      return !!dup && (await captureHasLinkedL2(dup.id));
+    });
 
   // Deterministic payload failures → bad_payload (400, no retry — same body, same fail).
   let event: InboundEvent;
@@ -262,6 +284,37 @@ export async function handleInboundWebhook(
       }
     }
 
+    // RUNG 10B — THE CONVERSATION, BEFORE THE DOOR. Skipped for a thread STARTER
+    // (its thread id IS its own message id, so there is nothing earlier) and for
+    // a mailbox with no paired account. Composio first, our own captures as the
+    // fallback, and NEITHER may fail the ingest: the email is the thing that
+    // must land, and context is an aid.
+    // …AND NOT ON A REDELIVERY THE DOOR WILL NO-OP ON. The fetch is BILLED, and
+    // a 503 (a model blip, a CAS miss, a DB stall) makes Composio redeliver the
+    // same message: without this the retry pays for the conversation again every
+    // time. Only a fully-processed capture is skipped — a parked or half-built
+    // one genuinely re-runs the door, and context is exactly what it wants.
+    let threadContext: ThreadMessage[] = [];
+    if (
+      meta.threadId &&
+      meta.threadId !== envelope.externalId &&
+      !(envelope.externalId && (await alreadyProcessed(tenantId, envelope.externalId)))
+    ) {
+      try {
+        const fetched = tech?.composio_connected_account_id
+          ? await fetchThread(tech, meta.threadId)
+          : null;
+        const earlier = fetched ?? (await listThreadCaptures(tenantId, meta.threadId));
+        // Never show the model the message it is being asked to read.
+        threadContext = earlier.filter((m) => m.messageId !== envelope.externalId);
+      } catch (err) {
+        console.error(
+          `inbound: thread context unavailable for ${meta.threadId} — ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     const r = await recordFieldNote({
       tenantId,
       technicianRef,
@@ -275,6 +328,7 @@ export async function handleInboundWebhook(
       // bare address. Both are inert on a channel that carries neither.
       fallbackEmail: emailAddressOf(meta.from),
       threadId: meta.threadId ?? null,
+      ...(threadContext.length > 0 ? { threadContext } : {}),
       // L1 metadata carries from/subject only — the body already lives in raw_text,
       // so don't duplicate it into metadata JSONB. Captures landing before the
       // manager confirmed the mailbox are stamped, so if verification later

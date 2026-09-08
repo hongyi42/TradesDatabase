@@ -354,7 +354,12 @@ The router is **multi-label** — one call can be `[new_job, cancel]` and each i
   longer mints a job. For a caller we know, the words are pinned to their open job and kept on it;
   with no open job — or when the firm agreed to come out and no trip carries it — an OBSERVATION is
   raised and a manager is asked. **Nothing reaches the board's unscheduled bucket until somebody
-  says yes.** A new/unknown caller still opens the `unlinked_call` review to link/create (rung 10b).
+  says yes.** **Amended by rung 10b (2026-09-08):** a caller who matches NOBODY no longer opens an
+  `unlinked_call` review — that item was a dead end, since no tool could ever act on it. It raises an
+  `inbound_unmatched` observation instead, which reaches the planner on the same ping loop within
+  seconds; the planner links a known customer at a new number, dismisses a supplier, or asks a
+  manager. Nothing is pushed from the call worker for it. The existing `unlinked_call` rows stay for
+  hand resolution.
   - **KNOWN GAP:** only `new_job` runs the extractor at all, so a committed call about work already
     on file ("we'll come out Tuesday to finish it") is classified `reschedule`/`other`, stops at L1,
     and raises no `inbound_commitment`. Widening which intents structure was deliberately NOT part

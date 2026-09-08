@@ -410,7 +410,9 @@ describe('observations', () => {
 // decides to WAIT has not consumed the ask, and so the focused pass and the
 // half-hourly heartbeat can never both text a manager about one call.
 describe('the ping markers (rung 10)', () => {
-  const mkInbound = async (kind: 'inbound_new_job' | 'inbound_commitment' = 'inbound_new_job') => {
+  const mkInbound = async (
+    kind: 'inbound_new_job' | 'inbound_commitment' | 'inbound_unmatched' = 'inbound_new_job',
+  ) => {
     const row = await createObservation({
       tenantId,
       kind,
@@ -428,7 +430,11 @@ describe('the ping markers (rung 10)', () => {
   const dayAgo = () => new Date(Date.now() - 24 * 3_600_000).toISOString();
 
   test('PINGED_KINDS names the kinds the loop watches — kind-blind helpers, one list', () => {
-    expect(PINGED_KINDS).toEqual(['inbound_new_job', 'inbound_commitment']);
+    expect(PINGED_KINDS).toEqual([
+      'inbound_new_job',
+      'inbound_commitment',
+      'inbound_unmatched',
+    ]);
   });
 
   test('captureHasObservation is the write-path’s processed marker', async () => {
@@ -440,11 +446,14 @@ describe('the ping markers (rung 10)', () => {
   test('the unpinged read finds open, unpinged, unasked rows of these kinds only', async () => {
     const fresh = await mkInbound();
     const committed = await mkInbound('inbound_commitment');
+    // RUNG 10B rode in on the same list with no change to this read.
+    const unmatched = await mkInbound('inbound_unmatched');
     const other = await mkObservation(); // an overdue_visit_gap — not this loop's
     const rows = await listUnpingedObservations(PINGED_KINDS, 1000);
     const ids = rows.map((r) => r.id);
     expect(ids).toContain(fresh.id);
     expect(ids).toContain(committed.id);
+    expect(ids).toContain(unmatched.id);
     expect(ids).not.toContain(other.id);
     // Oldest first — the loop drains in the order the calls arrived.
     const times = rows.map((r) => r.noticed_at);

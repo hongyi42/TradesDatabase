@@ -163,10 +163,10 @@ if (match.status !== 'matched' && !input.resolved) {
 **`src/calls/worker.ts`** — delete branch (a) (`:159-176`), the `openUnlinkedCallReview` dep (`:45-50`, `:73`) and its import (`:5`). Comment at `:125-130` gains: "an unmatched caller raises `inbound_unmatched`". In `worker.test.ts` drop the `openUnlinkedCallReview` stub and the `flagged` recorder from `makeDeps` (`:65-101`) — an excess property fails typecheck.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `recordFieldNote.test.ts`: rewrite (7) at `:1176` — an unmatched committed call writes ONE `inbound_unmatched` row with `visitCommitted: true` and `from` = `fromNumber`; an unmatched email writes one with `from` = the sender; a stranger's `touchesOperations:false` email writes none; a technician note (`:581`) writes none; a redelivery of the unmatched email is `duplicate` (the observation is the marker); two deliveries racing → one row (`createObservation` returns null, no `observationId`).
-- [ ] `worker.test.ts`: `:152` "unmatched caller → ingested AND flagged once" becomes "…ingested, nothing flagged, no push"; `:238` mixed call → only the `call_action` branch, ONE push.
-- [ ] `observations.test.ts:431` pins the three kinds; a new `inbound_unmatched` row is listed by `listUnpingedObservations`.
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `recordFieldNote.test.ts`: rewrite (7) at `:1176` — an unmatched committed call writes ONE `inbound_unmatched` row with `visitCommitted: true` and `from` = `fromNumber`; an unmatched email writes one with `from` = the sender; a stranger's `touchesOperations:false` email writes none; a technician note (`:581`) writes none; a redelivery of the unmatched email is `duplicate` (the observation is the marker); two deliveries racing → one row (`createObservation` returns null, no `observationId`).
+- [x] `worker.test.ts`: `:152` "unmatched caller → ingested AND flagged once" becomes "…ingested, nothing flagged, no push"; `:238` mixed call → only the `call_action` branch, ONE push.
+- [x] `observations.test.ts:431` pins the three kinds; a new `inbound_unmatched` row is listed by `listUnpingedObservations`.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP, pilot deployed, the owner sends an email from an address nobody has on file with a new name and no phone in the body.

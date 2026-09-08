@@ -1173,17 +1173,147 @@ describe('rung 10 — inbound asks before it creates', () => {
     expect(await observationsFor(one.captureId)).toHaveLength(1); // asked once, ever
   });
 
-  test('(7) an UNMATCHED committed call writes no observation — rung 10b owns the new caller', async () => {
-    const before = await pg.query<{ n: string }>('select count(*)::int as n from observations');
+  // ---- RUNG 10B: nobody matched, and that is now its own kind ---------------
+  test('(7) an UNMATCHED committed call raises ONE inbound_unmatched, with the caller-ID on it', async () => {
     const r = await recordFieldNote(
-      inbound('phone_call', 'hi, I need someone out to look at my furnace'),
-      stub({ phone: '555-0000-nobody', visitCommitted: true }),
+      inbound('phone_call', 'hi, I need someone out to look at my furnace', {
+        sourceMeta: { fromNumber: '+15550001111' },
+      }),
+      stub({
+        phone: '555-0000-nobody',
+        visitCommitted: true,
+        customerName: 'Nobody Knownyet',
+        jobTitle: 'furnace not lighting',
+      }),
     );
     expect(r.status).toBe('needs_disambiguation');
-    expect(r.customerId).toBeUndefined();
+    expect(r.customerId).toBeUndefined(); // nothing was created
+    expect(r.observationId).toBeDefined();
+
+    const obs = await observationsFor(r.captureId);
+    expect(obs).toHaveLength(1);
+    expect(obs[0].kind).toBe('inbound_unmatched');
+    expect(obs[0].status).toBe('open');
+    const ctx = obs[0].context as Record<string, unknown>;
+    // NO customer on it — that is the open question this kind exists to ask.
+    expect(ctx.customerId).toBeUndefined();
+    expect(ctx.from).toBe('+15550001111'); // the phone door spells it `fromNumber`
+    expect(ctx.channel).toBe('phone_call');
+    // The commitment is a FIELD here, not something read off the kind's name.
+    expect(ctx.visitCommitted).toBe(true);
+    expect(ctx.matchReason).toEqual(expect.any(String));
+    expect(ctx.words).toContain('furnace');
+    expect(ctx.asked).toMatchObject({
+      customerName: 'Nobody Knownyet',
+      jobTitle: 'furnace not lighting',
+    });
+  });
+
+  test('(7b) an UNMATCHED email raises one too, carrying the sender and the door’s address', async () => {
+    const r = await recordFieldNote(
+      inbound('email', 'hello — my kitchen tap has been dripping for a week', {
+        externalId: 'unmatched-email-1',
+        sourceMeta: { from: 'Stranger Sam <sam@nowhere.test>' },
+        fallbackEmail: 'sam@nowhere.test',
+      }),
+      stub({ customerName: 'Stranger Sam', jobTitle: 'dripping tap' }),
+    );
+    expect(r.status).toBe('needs_disambiguation');
+    const obs = await observationsFor(r.captureId);
+    expect(obs).toHaveLength(1);
+    expect(obs[0].kind).toBe('inbound_unmatched');
+    const ctx = obs[0].context as Record<string, unknown>;
+    expect(ctx.from).toBe('Stranger Sam <sam@nowhere.test>');
+    expect(ctx.visitCommitted).toBeNull(); // not said, and said so
+    // The address is the ENVELOPE's, not something the model read out of the body.
+    expect((ctx.asked as Record<string, unknown>).email).toBe('sam@nowhere.test');
+  });
+
+  test('(7c) a stranger whose message closes itself asks NOTHING — the same `=== false` filter', async () => {
+    const before = await pg.query<{ n: string }>('select count(*)::int as n from observations');
+    const r = await recordFieldNote(
+      inbound('email', 'thanks, got the invoice — have a good weekend', {
+        externalId: 'unmatched-email-quiet',
+        sourceMeta: { from: 'quiet@nowhere.test' },
+      }),
+      stub({ touchesOperations: false }),
+    );
+    expect(r.status).toBe('needs_disambiguation');
+    expect(r.observationId).toBeUndefined();
     expect(await observationsFor(r.captureId)).toHaveLength(0);
     const after = await pg.query<{ n: string }>('select count(*)::int as n from observations');
     expect(Number(after.rows[0].n)).toBe(Number(before.rows[0].n));
+  });
+
+  test('(7d) an unmatched TECHNICIAN note asks nothing — the staged-confirm contract is untouched', async () => {
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'tech-unmatched-10b',
+        channel: 'technician_note',
+        text: 'fixed a leak at the place on the corner',
+      },
+      stub({ workPerformed: 'fixed a leak', address: '77 Nobody Knows Way', visitCommitted: true }),
+    );
+    expect(r.status).toBe('needs_disambiguation');
+    expect(r.observationId).toBeUndefined();
+    expect(await observationsFor(r.captureId)).toHaveLength(0);
+  });
+
+  test('(7e) the ask is the marker: a redelivery of the unmatched email is a DUPLICATE', async () => {
+    // Before rung 10b an unmatched capture left NO L2 trace, so every redelivery
+    // re-ran the extractor — a paid model call that wrote nothing.
+    const first = await recordFieldNote(
+      inbound('email', 'my boiler is making a banging noise', {
+        externalId: 'unmatched-email-redeliver',
+        sourceMeta: { from: 'banging@nowhere.test' },
+      }),
+      stub({ jobTitle: 'banging boiler' }),
+    );
+    expect(first.observationId).toBeDefined();
+    let extractorCalls = 0;
+    const again = await recordFieldNote(
+      inbound('email', 'my boiler is making a banging noise', {
+        externalId: 'unmatched-email-redeliver',
+        sourceMeta: { from: 'banging@nowhere.test' },
+      }),
+      {
+        extract: async () => {
+          extractorCalls += 1;
+          return { jobTitle: 'banging boiler' };
+        },
+      },
+    );
+    expect(again.status).toBe('duplicate');
+    expect(again.captureId).toBe(first.captureId);
+    expect(extractorCalls).toBe(0); // never paid for twice
+    expect(await observationsFor(first.captureId)).toHaveLength(1);
+  });
+
+  test('(7f) two deliveries racing converge on ONE row — the once-ever index decides', async () => {
+    const delivery = () =>
+      recordFieldNote(
+        inbound('email', 'can somebody come and look at the shower', {
+          externalId: 'unmatched-email-race',
+          sourceMeta: { from: 'race@nowhere.test' },
+        }),
+        stub({ jobTitle: 'shower' }),
+      );
+    const [a, b] = await Promise.all([delivery(), delivery()]);
+    const captureIds = new Set([a.captureId, b.captureId]);
+    expect(captureIds.size).toBe(1); // one L1 row — the unique index on externalId
+    const obs = await observationsFor([...captureIds][0]);
+    expect(obs).toHaveLength(1); // and exactly one ask, however the race landed
+    // And only ONE delivery may report having raised it: createObservation
+    // returns null on the once-ever conflict, so the loser reports no
+    // observationId rather than claiming a fresh ask that is really the winner's.
+    const reported = [a.observationId, b.observationId].filter(Boolean);
+    expect(reported.length).toBe(1);
+    const { rows } = await pg.query<{ id: string }>(
+      'select id from observations where subject_ref = $1',
+      [[...captureIds][0]],
+    );
+    expect(reported[0]).toBe(rows[0].id); // and it is the row that actually landed
   });
 
   test('(8) a TECHNICIAN note is untouched by all of it — walk-in still mints a trip, nothing is kept as correspondence', async () => {

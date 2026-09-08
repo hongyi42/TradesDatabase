@@ -231,9 +231,11 @@ export async function setObservationStatus(
 // A planner that reads the item and decides to WAIT has pinged, not asked —
 // which is why `hold` must not consume the ask.
 
-// The kinds the ping loop watches. Kind-blind by construction: rung 10b appends
-// `inbound_unmatched` here and every helper below follows without editing.
-export const PINGED_KINDS: ReviewKind[] = ['inbound_new_job', 'inbound_commitment'];
+// The kinds the ping loop watches. Kind-blind by construction, and rung 10b
+// proved it: `inbound_unmatched` was appended here and every helper below —
+// plus the heartbeat probe, the planner's gap block and the MCP filters —
+// followed with no edit of their own.
+export const PINGED_KINDS: ReviewKind[] = ['inbound_new_job', 'inbound_commitment', 'inbound_unmatched'];
 
 // Has this capture already been noticed? The write-path's dedup arm — an
 // observation is the only L2-side trace a "matched customer, nothing created"

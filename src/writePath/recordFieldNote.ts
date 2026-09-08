@@ -154,8 +154,12 @@ export async function recordFieldNote(
     // every redelivery re-ran the extractor. Rung 10 gives that capture its own
     // links — `job_captures` when it lands on a job, an `observations` row when
     // it asks instead — and captureHasLinkedL2 reads both, so a redelivery is a
-    // real duplicate. What still re-runs is a work-but-UNMATCHED capture, by
-    // design (rung 10b gives that one its own observation).
+    // real duplicate. RUNG 10B CLOSED THE LAST ONE: a work-but-UNMATCHED inbound
+    // capture now raises `inbound_unmatched`, which is an observation like any
+    // other, so its redelivery is a real duplicate too and the extractor is not
+    // paid for twice. (A capture that asks NOTHING — a stranger's thank-you —
+    // still leaves no marker and still re-extracts on redelivery. It writes
+    // nothing, which is the cheaper side of that trade.)
     let landed: RawCapture | null = null;
 
     if (input.externalId) {
@@ -256,10 +260,72 @@ export async function recordFieldNote(
     });
   }
 
-  // (6) Unresolved and nothing resolved → hand back to the caller.
-  // (Inbound: the capture stays L1-only until a later delivery resolves it.)
+  // (6) NOBODY MATCHED. Until rung 10b this was a dead end for inbound: the
+  // capture stayed L1-only, a CALL got a review item no tool could act on, and an
+  // EMAIL got nothing at all — so a new customer's first message reached no
+  // human until somebody happened to read the mailbox. It now becomes an
+  // observation on the planner's list, on the same ping loop rung 10 built, and
+  // the planner forms the second opinion: a supplier to dismiss, somebody we
+  // know at a new number to link, or a real new caller to ask a manager about.
+  //
+  // THREE THINGS DO NOT ASK, each for its own reason:
+  //   * a TECHNICIAN channel — their notes resolve through the staged-confirm
+  //     flow, which hands identity in via `resolved` and never lands here;
+  //   * anything that is not an inbound channel — chat, quotes, corrections and
+  //     the rest have their own doors and no caller to identify;
+  //   * a stranger's message the extractor found no operations content in and no
+  //     commitment in ("thanks, got it") — the same `=== false` filter the
+  //     matched path uses below. Absent and null keep asking.
+  // `structure: false` returned long before this, so a cancel/complaint/question
+  // call never reaches here either — the phone router's human review carries it.
   if (match.status !== 'matched' && !input.resolved) {
-    return { status: match.status, captureId, suggestion: match.suggestion };
+    const inbound = channel === 'email' || channel === 'phone_call' || channel === 'web_form';
+    const closesItself = extracted.touchesOperations === false && extracted.visitCommitted !== true;
+    if (!inbound || closesItself) {
+      return { status: match.status, captureId, suggestion: match.suggestion };
+    }
+    // `null` means the once-ever index already holds this capture — a raced
+    // redelivery — so the FIRST row keeps the ask and there is nothing to report.
+    const obs = await createObservation({
+      tenantId,
+      kind: 'inbound_unmatched',
+      subjectRef: captureId,
+      technicianId: null,
+      context: {
+        captureId,
+        capturedAt,
+        channel,
+        from: fromOf(input.sourceMeta),
+        // WHY code could not decide, in the matcher's own words — the planner is
+        // the second opinion and needs to know what the first one tried.
+        matchReason: match.reason ?? null,
+        // Read from the CONTEXT, not from the kind: this one kind carries both
+        // shapes, so "the firm agreed to come out" is a field here rather than
+        // something the planner infers from the name.
+        visitCommitted: extracted.visitCommitted ?? null,
+        // What the extractor read out of the words, nulls kept — an absent field
+        // and a field the model declined to fill are different things. `email`
+        // is the DOOR's, not the model's: it is the envelope's sender.
+        asked: {
+          customerName: extracted.customerName ?? null,
+          phone: extracted.phone ?? null,
+          email: input.fallbackEmail ?? null,
+          address: extracted.address ?? null,
+          city: extracted.city ?? null,
+          jobTitle: extracted.jobTitle ?? null,
+          jobType: extracted.jobType ?? null,
+          followUp: extracted.followUp ?? null,
+          attributes: objectOrNull(extracted.attributes),
+        },
+        words: rawText.slice(0, 1500),
+      },
+    });
+    return {
+      status: match.status,
+      captureId,
+      suggestion: match.suggestion,
+      ...(obs ? { observationId: obs.id } : {}),
+    };
   }
 
   // (5) Resolve the customer: matched existing, or create-new from the confirmed

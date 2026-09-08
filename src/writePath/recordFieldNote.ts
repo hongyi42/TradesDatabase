@@ -22,7 +22,7 @@ import {
   appendScheduleEvent,
   getTechnician,
   getTenant,
-  ALLOWED_TRANSITIONS,
+  TERMINAL_JOB_STATUSES,
   type CaptureChannel,
   type Job,
   type JobStatus,
@@ -67,6 +67,14 @@ export interface RecordFieldNoteInput {
   // Inert when unset (email / tech notes pass nothing) — the only phone-specific
   // hook in the shared write-path.
   fallbackPhone?: string | null;
+  // RUNG 10B — the email door's two envelope keys: the sender's bare address and
+  // the Gmail thread the message belongs to. They go STRAIGHT to matchIdentity
+  // (not through `extracted`) because they are facts about the delivery, not
+  // something a model read out of the words — and a create-new keeps the address
+  // on the customer, so the same sender is recognised next time. Inert when
+  // unset (calls, technician notes).
+  fallbackEmail?: string | null;
+  threadId?: string | null;
   // L1-only switch (default true = structure). When explicitly false, append the
   // verbatim capture to L1 and STOP — no extract, no match, no L2/L3. The phone
   // router uses this for a non-`new_job` call: the transcript is always kept as
@@ -93,11 +101,9 @@ export interface RecordFieldNoteResult {
 }
 
 // Terminal job states (no outgoing transitions) — never reused for a new note.
-const TERMINAL_STATUSES: ReadonlySet<JobStatus> = new Set(
-  (Object.keys(ALLOWED_TRANSITIONS) as JobStatus[]).filter(
-    (status) => ALLOWED_TRANSITIONS[status].length === 0,
-  ),
-);
+// Derived once, in db/jobs.ts beside the machine it comes from; rung 10b's
+// thread key needs the same set and a second derivation would be free to drift.
+const TERMINAL_STATUSES = TERMINAL_JOB_STATUSES;
 
 // Which statusSignal moves a NOTE may drive. Notes speak about the WORK
 // dimension only — start, finish, reopen. The money tail (invoiced/paid) is
@@ -245,6 +251,8 @@ export async function recordFieldNote(
       technicianRef,
       capturedAt,
       extracted,
+      email: input.fallbackEmail ?? null,
+      threadId: input.threadId ?? null,
     });
   }
 
@@ -267,6 +275,9 @@ export async function recordFieldNote(
       tenantId,
       name: draft?.customerName?.trim() || extracted.customerName?.trim() || 'Unknown customer',
       phone: draft?.phone ?? extracted.phone ?? null,
+      // The address they wrote FROM, not one the model read out of the body:
+      // it is the key the next message will arrive under (rung 10b).
+      email: draft?.email ?? input.fallbackEmail ?? null,
       addressLine1: draft?.addressLine1 ?? extracted.address ?? null,
       city: draft?.city ?? extracted.city ?? null,
       state: draft?.state ?? extracted.state ?? null,

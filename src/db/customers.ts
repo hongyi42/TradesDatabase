@@ -159,6 +159,33 @@ export async function findCustomersByAddress(
   return data ?? [];
 }
 
+// Case-insensitive exact match on email within a tenant — rung 10b's second
+// identity key, for the reply that carries neither a phone number nor an
+// address. Used by deterministic identity matching; the caller decides what a
+// unique (length === 1) result means.
+//
+// `_` and `%` are LIKE wildcards, and `_` is COMMON in real addresses: an
+// unescaped `a_b@x.com` would also match `axb@x.com`, and unique-or-refuse would
+// read that as a confident WRONG customer — worse than no match at all. So the
+// value is escaped for LIKE, and the rows that come back are then compared for
+// exact (case-folded) equality in code. Belt and braces on purpose: the escape
+// depends on how PostgREST passes a backslash through to ILIKE, and the
+// post-filter makes the result correct even if it ever stops doing so — a
+// leaked wildcard can then only widen the candidate set, never the answer.
+const escapeLike = (value: string): string => value.replace(/[\\%_]/g, (c) => `\\${c}`);
+
+export async function findCustomersByEmail(tenantId: string, email: string): Promise<Customer[]> {
+  const wanted = email.trim().toLowerCase();
+  if (!wanted) return [];
+  const { data, error } = await getClient()
+    .from('customers')
+    .select()
+    .eq('tenant_id', tenantId)
+    .ilike('email', escapeLike(wanted));
+  if (error) throw new Error(`findCustomersByEmail failed: ${error.message}`);
+  return (data ?? []).filter((row) => (row.email ?? '').trim().toLowerCase() === wanted);
+}
+
 // Loose search across name/phone/address for the agent's find_customer tool.
 // Commas/parens are stripped because they're PostgREST `.or()` syntax characters.
 export async function searchCustomers(tenantId: string, query: string): Promise<Customer[]> {

@@ -9,6 +9,7 @@ import {
   upsertDroppedAudit,
 } from '../db/index.js';
 import { defaultClassifier } from '../email/classify.js';
+import { emailAddressOf } from '../email/format.js';
 import type { WorkClassifier } from '../email/classify.js';
 import { resolveNormalizer as liveResolveNormalizer } from './normalize.js';
 import type { Normalizer } from './normalize.js';
@@ -269,6 +270,11 @@ export async function handleInboundWebhook(
       blobPath: envelope.blobRef,
       externalId: envelope.externalId,
       occurredAt: envelope.occurredAt,
+      // RUNG 10B — the two envelope keys the matcher now recognises a sender by.
+      // `from` is the header string ("Name <a@b.com>"); the matcher wants the
+      // bare address. Both are inert on a channel that carries neither.
+      fallbackEmail: emailAddressOf(meta.from),
+      threadId: meta.threadId ?? null,
       // L1 metadata carries from/subject only — the body already lives in raw_text,
       // so don't duplicate it into metadata JSONB. Captures landing before the
       // manager confirmed the mailbox are stamped, so if verification later

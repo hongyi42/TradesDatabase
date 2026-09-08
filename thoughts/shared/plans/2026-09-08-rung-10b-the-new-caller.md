@@ -115,10 +115,10 @@ Header comment (`:12-15`) restates the order and why.
 **`src/inbound/webhook.ts`** — at the `recordFieldNote` call (`:264-290`): `fallbackEmail: emailAddressOf(meta.from), threadId: meta.threadId ?? null`.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `src/email/format.test.ts` (new or extend): `emailAddressOf` on `"Name <a@b.com>"`, `"a@b.com"`, `"nobody"`, `null`.
-- [ ] `src/writePath/identityMatch.test.ts`: email unique → matched; two customers sharing an email → falls through; thread whose captures name one customer and one job → matched with `jobId`; thread naming two customers → falls through; phone still wins over email.
-- [ ] `src/writePath/recordFieldNote.test.ts`: an inbound email from a customer's address with no phone in the body → matched, filed on the open job; a reply carrying `threadId` of a capture linked to a job → matched, `job_captures` link on THAT job; the technician staged path unchanged (test at `:581` still passes).
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `src/email/format.test.ts` (new or extend): `emailAddressOf` on `"Name <a@b.com>"`, `"a@b.com"`, `"nobody"`, `null`.
+- [x] `src/writePath/identityMatch.test.ts`: email unique → matched; two customers sharing an email → falls through; thread whose captures name one customer and one job → matched with `jobId`; thread naming two customers → falls through; phone still wins over email.
+- [x] `src/writePath/recordFieldNote.test.ts`: an inbound email from a customer's address with no phone in the body → matched, filed on the open job; a reply carrying `threadId` of a capture linked to a job → matched, `job_captures` link on THAT job; the technician staged path unchanged (test at `:581` still passes).
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP (read-back), the pilot deployed.

@@ -1,7 +1,7 @@
 import type { Database, Json } from './database.types.js';
 import { getClient } from './client.js';
 import { captureHasVisitNote } from './visits.js';
-import { captureHasJobCapture } from './jobs.js';
+import { captureHasJobCapture, TERMINAL_JOB_STATUSES } from './jobs.js';
 // CYCLE, deliberate and safe: observations.ts imports isUniqueViolation from
 // here. Both directions use only hoisted function declarations from inside
 // function bodies — nothing is read at module-evaluation time — so ESM's live
@@ -555,4 +555,221 @@ export async function listL2CitingCapture(captureIds: string[]): Promise<L2Citin
     }
   }
   return out;
+}
+
+// EVERY CUSTOMER (and, when it is unambiguous, the job) AN EMAIL THREAD ALREADY
+// TOUCHES — rung 10b's third identity key.
+//
+// A reply carries the thread id of the message it answers, so a conversation we
+// have already filed identifies its customer even when the reply itself carries
+// no phone number and no address. Not hypothetical: a known customer's
+// reschedule request was parked as a stranger on 2026-09-08 for exactly that
+// reason. The CALLER decides what the answer means — one distinct customer is a
+// match, two is a refusal (identityMatch's unique-or-refuse rule).
+//
+// TWO READS FOR THE CAPTURES, because the two ends of a thread spell the key
+// differently and neither is going to change: a thread STARTER is found by its
+// own message id (Gmail's convention — a starter's thread id IS its message id,
+// and `external_id` is where we store that), while every later message carries
+// the key in `metadata.threadId` (written by the inbound door since PR #213 and
+// by every assistant send).
+//
+// TENANT-CHECKED ON EVERY HOP: `capture_id`, `job_id` and `visit_id` are id-only
+// foreign keys, so a link of ours is no proof the row it points at is ours (the
+// listJobEvidenceSince doctrine). A direct `jobs` read rather than
+// listL2CitingCapture, which is fleet-wide by capture id and hands back no
+// customer — the customer is the whole answer here.
+export interface ThreadIdentity {
+  customerId: string;
+  jobId: string | null;
+}
+
+// BOUNDED, AND IT REFUSES RATHER THAN GUESSING WHEN THE BOUND IS HIT.
+//   * 150 captures — the id list goes into PostgREST `.in()` filters, and a long
+//     enough one builds a URL the server rejects outright with 414. The ceiling
+//     was BISECTED against this code's own widest read (the `visit_notes` embed,
+//     tenant filter and limit included): 215 ids = 8125 bytes passes, 218 = 8236
+//     bytes is a 414, so the wall is the 8192-byte URL limit. 150 leaves ~32%
+//     headroom, because UUIDs are fixed-width and nothing absorbs a later
+//     `.order()`, one more filter, or a wider select.
+//   * 500 rows on every read that fans out from those ids. NOT 1000, and that is
+//     the whole point: PostgREST's `max_rows` is 1000 (supabase/config.toml) and
+//     it CLAMPS a larger limit SILENTLY — no 206, no error — so a cap of 1000
+//     could never be observed to have been hit and the guard below would be
+//     decoration. 501 comes back as 501 rows, which is a fact we can act on.
+// A read that FILLS its cap has been silently truncated, and a truncated page can
+// leave exactly ONE customer standing when the whole thread names three. That is
+// the confident wrong match unique-or-refuse exists to prevent, so a filled cap
+// returns nothing at all and the next key gets its turn.
+const THREAD_CAPTURE_CAP = 150;
+const THREAD_ROW_CAP = 500;
+
+// A refusal is otherwise COMPLETELY SILENT: the caller cannot tell it from
+// "nobody is on this thread", so every reply on such a thread would quietly stop
+// matching with nothing anywhere saying why. One line, carrying no PII beyond
+// the thread id — a Gmail conversation handle that already sits in L1 metadata.
+function refuseThread(threadId: string, why: string): [] {
+  console.error(`findCustomersByThread: refusing thread ${threadId} — ${why}`);
+  return [];
+}
+
+export async function findCustomersByThread(
+  tenantId: string,
+  threadId: string,
+): Promise<ThreadIdentity[]> {
+  if (!threadId) return [];
+  const client = getClient();
+
+  const stamps: { customerId: string | null; jobId: string | null }[] = [];
+  const captureIds = new Set<string>();
+  for (const read of [
+    client
+      .from('raw_captures')
+      .select('id, customer_id, job_id')
+      .eq('tenant_id', tenantId)
+      .eq('external_id', threadId)
+      .limit(THREAD_CAPTURE_CAP + 1),
+    client
+      .from('raw_captures')
+      .select('id, customer_id, job_id')
+      .eq('tenant_id', tenantId)
+      .eq('metadata->>threadId', threadId)
+      .limit(THREAD_CAPTURE_CAP + 1),
+  ]) {
+    const { data, error } = await read;
+    if (error) throw new Error(`findCustomersByThread failed on raw_captures: ${error.message}`);
+    for (const row of data ?? []) {
+      if (captureIds.has(row.id)) continue;
+      captureIds.add(row.id);
+      stamps.push({ customerId: row.customer_id, jobId: row.job_id });
+    }
+  }
+  if (captureIds.size === 0) return [];
+  if (captureIds.size > THREAD_CAPTURE_CAP) {
+    return refuseThread(threadId, `more than ${THREAD_CAPTURE_CAP} captures — too many to answer safely`);
+  }
+  const ids = [...captureIds];
+
+  const jobIds = new Set<string>();
+  const stampedCustomerIds = new Set<string>();
+  // (a) What the capture itself was stamped with at append time (the
+  //     staged-confirm path stamps identity AT the insert). NEITHER id is taken
+  //     as it stands: `customer_id` and `job_id` are id-only foreign keys, so a
+  //     capture of ours can name another firm's row. The customer is re-read
+  //     under this tenant below; the job goes through the same tenant-scoped
+  //     resolution every other arm uses, which is also what applies the
+  //     terminal-job rule to it.
+  for (const stamp of stamps) {
+    if (stamp.customerId) stampedCustomerIds.add(stamp.customerId);
+    if (stamp.jobId) jobIds.add(stamp.jobId);
+  }
+  // (b) The capture LANDED on a job (rung 10's link-less shape).
+  {
+    const { data, error } = await client
+      .from('job_captures')
+      .select('job_id')
+      .eq('tenant_id', tenantId)
+      .in('capture_id', ids)
+      .limit(THREAD_ROW_CAP + 1);
+    if (error) throw new Error(`findCustomersByThread failed on job_captures: ${error.message}`);
+    if ((data?.length ?? 0) > THREAD_ROW_CAP) {
+      return refuseThread(threadId, 'over the job_captures row cap');
+    }
+    for (const row of data ?? []) jobIds.add(row.job_id);
+  }
+  // (c) The capture reported a TRIP — the visit names its job.
+  {
+    const { data, error } = await client
+      .from('visit_notes')
+      .select('visits!inner(id, tenant_id, job_id)')
+      .eq('tenant_id', tenantId)
+      .in('capture_id', ids)
+      .limit(THREAD_ROW_CAP + 1);
+    if (error) throw new Error(`findCustomersByThread failed on visit_notes: ${error.message}`);
+    if ((data?.length ?? 0) > THREAD_ROW_CAP) {
+      return refuseThread(threadId, 'over the visit_notes row cap');
+    }
+    for (const row of (data ?? []) as unknown as {
+      visits: { id: string; tenant_id: string; job_id: string } | null;
+    }[]) {
+      if (row.visits && row.visits.tenant_id === tenantId) jobIds.add(row.visits.job_id);
+    }
+  }
+  // (d) L2 rows CREATED from one of these captures. A customer with no job of
+  //     its own still answers "who is this", which is the question asked.
+  const pairs: ThreadIdentity[] = [];
+  {
+    const { data, error } = await client
+      .from('customers')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .in('source_capture_id', ids)
+      .limit(THREAD_ROW_CAP + 1);
+    if (error) throw new Error(`findCustomersByThread failed on customers: ${error.message}`);
+    if ((data?.length ?? 0) > THREAD_ROW_CAP) {
+      return refuseThread(threadId, 'over the customers row cap');
+    }
+    for (const row of data ?? []) pairs.push({ customerId: row.id, jobId: null });
+  }
+  {
+    const { data, error } = await client
+      .from('jobs')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .in('source_capture_id', ids)
+      .limit(THREAD_ROW_CAP + 1);
+    if (error) throw new Error(`findCustomersByThread failed on jobs: ${error.message}`);
+    if ((data?.length ?? 0) > THREAD_ROW_CAP) {
+      return refuseThread(threadId, 'over the jobs row cap');
+    }
+    for (const row of data ?? []) jobIds.add(row.id);
+  }
+  // The stamped customers, proved to be ours before they can answer anything.
+  if (stampedCustomerIds.size > 0) {
+    const { data, error } = await client
+      .from('customers')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .in('id', [...stampedCustomerIds])
+      .limit(THREAD_ROW_CAP + 1);
+    if (error) throw new Error(`findCustomersByThread failed on customers: ${error.message}`);
+    if ((data?.length ?? 0) > THREAD_ROW_CAP) {
+      return refuseThread(threadId, 'over the customers row cap');
+    }
+    for (const row of data ?? []) pairs.push({ customerId: row.id, jobId: null });
+  }
+
+  // Resolve every job this thread reached to its customer, chunked because the
+  // arms above can name more jobs than one `.in()` may carry. A TERMINAL job
+  // (paid, cancelled, declined) still answers WHO — the customer did not stop
+  // being that customer — but its id is dropped: handing it back as the job to
+  // file a reply on would put new work on a closed job AND swallow rung 10's
+  // ask, which only fires when the door found no job at all.
+  const jobList = [...jobIds];
+  for (let i = 0; i < jobList.length; i += THREAD_CAPTURE_CAP) {
+    const { data, error } = await client
+      .from('jobs')
+      .select('id, customer_id, status')
+      .eq('tenant_id', tenantId)
+      .in('id', jobList.slice(i, i + THREAD_CAPTURE_CAP))
+      .limit(THREAD_ROW_CAP + 1);
+    if (error) throw new Error(`findCustomersByThread failed on jobs: ${error.message}`);
+    if ((data?.length ?? 0) > THREAD_ROW_CAP) {
+      return refuseThread(threadId, 'over the jobs row cap');
+    }
+    for (const row of data ?? []) {
+      pairs.push({
+        customerId: row.customer_id,
+        jobId: TERMINAL_JOB_STATUSES.has(row.status) ? null : row.id,
+      });
+    }
+  }
+
+  const seen = new Set<string>();
+  return pairs.filter((pair) => {
+    const key = `${pair.customerId}|${pair.jobId ?? ''}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

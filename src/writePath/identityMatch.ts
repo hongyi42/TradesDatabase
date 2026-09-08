@@ -1,6 +1,8 @@
 import {
   findCustomersByPhone,
+  findCustomersByEmail,
   findCustomersByAddress,
+  findCustomersByThread,
   getTechnician,
   getTenant,
   listVisitsForTechnician,
@@ -12,7 +14,20 @@ import type { ExtractedFields } from './extract.js';
 // Identity matching is the hardcoded, deterministic core (overview §5): the model
 // only suggests fields; this decides which existing customer/job a capture
 // belongs to. Resolution order: confirmed customer → unique existing customer by
-// phone/address → schedule confirmation → ask.
+// phone, then EMAIL, then the email THREAD, then address → schedule confirmation
+// → ask.
+//
+// WHY THAT ORDER (rung 10b). Every key is unique-or-refuse — two hits mean the
+// key did not identify anybody and the next key gets its turn — so the order is
+// about which key, when it IS unique, is the most trustworthy claim.
+//   phone   — a person. Strongest: a number is dialled by whoever holds it.
+//   email   — a person. Same strength in principle, but shared family/office
+//             addresses are commoner than shared phones, so it sits second.
+//   thread  — a CONVERSATION we already filed. Weaker than a person key: it says
+//             "this reply belongs to that exchange", and the exchange's customer
+//             is inferred. It is also the only key that can name the JOB, which
+//             it does when the thread's captures point at exactly one.
+//   address — a PLACE. Weakest: tenants, landlords and new owners share it.
 export interface MatchInput {
   tenantId: string;
   technicianRef: string;
@@ -20,6 +35,13 @@ export interface MatchInput {
   extracted: ExtractedFields;
   // A prior turn's confirmation (disambiguation/confirmation resume).
   confirmed?: { customerId?: string; address?: string };
+  // Rung 10b, inbound email only: the sender's bare address and the Gmail thread
+  // the message belongs to. The DOOR supplies these — they are envelope facts,
+  // not something the extractor read out of the words — which is why they arrive
+  // beside `extracted` rather than inside it. Inert when unset (calls, tech
+  // notes, and any email whose From had no address in it).
+  email?: string | null;
+  threadId?: string | null;
 }
 
 // Denormalized customer fields used to prefill a new customer when create-new
@@ -30,6 +52,9 @@ export interface MatchInput {
 export interface ScheduledCustomerDraft {
   customerName?: string | null;
   phone?: string | null;
+  // Rung 10b: a customer created from an inbound email keeps the address it
+  // wrote from, so Phase 1's email key recognises them on their NEXT message.
+  email?: string | null;
   addressLine1?: string | null;
   city?: string | null;
   state?: string | null;
@@ -63,6 +88,30 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
   if (phone) {
     const byPhone = await findCustomersByPhone(tenantId, phone);
     if (byPhone.length === 1) return { status: 'matched', customerId: byPhone[0].id };
+  }
+  const email = input.email?.trim();
+  if (email) {
+    const byEmail = await findCustomersByEmail(tenantId, email);
+    if (byEmail.length === 1) return { status: 'matched', customerId: byEmail[0].id };
+  }
+  // THE CONVERSATION KEY. A reply we have already filed one end of identifies its
+  // customer even when the reply itself carries no phone and no address — the
+  // shape that parked a known customer's reschedule request as a stranger on
+  // 2026-09-08. Unique-or-refuse on the CUSTOMER; the job rides along only when
+  // the thread points at exactly one, because filing a reply on the wrong job of
+  // the right customer is a quieter error than it looks.
+  const threadId = input.threadId?.trim();
+  if (threadId) {
+    const byThread = await findCustomersByThread(tenantId, threadId);
+    const customers = new Set(byThread.map((row) => row.customerId));
+    if (customers.size === 1) {
+      const jobs = new Set(byThread.map((row) => row.jobId).filter((id): id is string => !!id));
+      return {
+        status: 'matched',
+        customerId: [...customers][0],
+        ...(jobs.size === 1 ? { jobId: [...jobs][0] } : {}),
+      };
+    }
   }
   const address = (confirmed?.address ?? extracted.address)?.trim();
   if (address) {

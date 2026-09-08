@@ -1456,3 +1456,108 @@ describe('rung 10 — inbound asks before it creates', () => {
     expect((await listJobsForCustomer(customer.id)).length).toBe(1);
   });
 });
+
+// RUNG 10B PHASE 1 — the door hands the matcher two envelope keys it never had.
+// Both arrive beside `extracted`, not inside it: they are facts about the
+// delivery, not something a model read out of the words.
+describe('rung 10b — the email door\'s own identity keys', () => {
+  let seq = 9600;
+
+  test('an email from a customer\'s own address matches them with no phone in the words', async () => {
+    const customer = await createCustomer({
+      tenantId,
+      name: 'Emailing Edna',
+      email: 'edna@example.com',
+    });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Edna work' });
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'connector:gmail',
+        channel: 'email',
+        text: 'any update on the quote?',
+        externalId: `msg-10b-${seq++}`,
+        fallbackEmail: 'edna@example.com',
+      },
+      stub({ followUp: 'wants the quote' }), // no phone, no address anywhere
+    );
+    expect(r).toMatchObject({ status: 'matched', customerId: customer.id, jobId: job.id });
+    expect(await jobCaptureLinks(job.id)).toBe(1);
+    expect(await observationsFor(r.captureId)).toHaveLength(0);
+  });
+
+  test('a reply lands on the job ITS THREAD names, not the customer\'s newest job', async () => {
+    // The shape that parked a live reschedule request on 2026-09-08: a known
+    // customer replies, and the reply carries no phone and no address of its own.
+    const customer = await createCustomer({ tenantId, name: 'Threading Tom' });
+    const older = await createJob({ tenantId, customerId: customer.id, title: 'water heater' });
+    const newer = await createJob({ tenantId, customerId: customer.id, title: 'a later job' });
+    const threadId = `thread-10b-${seq++}`;
+    const starter = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      rawText: 'Friday morning for the water heater',
+      externalId: threadId, // a starter's thread id IS its message id
+    });
+    await pg.query('insert into job_captures (tenant_id, job_id, capture_id) values ($1,$2,$3)', [
+      tenantId,
+      older.id,
+      starter.id,
+    ]);
+
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'connector:gmail',
+        channel: 'email',
+        text: 'Is it possible to do Friday afternoon instead?',
+        externalId: `msg-10b-${seq++}`,
+        threadId,
+      },
+      stub({ followUp: 'wants Friday afternoon' }),
+    );
+    expect(r).toMatchObject({ status: 'matched', customerId: customer.id, jobId: older.id });
+    expect(await jobCaptureLinks(older.id)).toBe(2); // the starter and this reply
+    expect(await jobCaptureLinks(newer.id)).toBe(0);
+  });
+
+  test('a stranger\'s email still resolves to nobody — the keys widen the matcher, they do not soften it', async () => {
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'connector:gmail',
+        channel: 'email',
+        text: 'hello, is this the plumber?',
+        externalId: `msg-10b-${seq++}`,
+        fallbackEmail: 'nobody-on-file@example.com',
+        threadId: `thread-unfiled-${seq++}`,
+      },
+      stub({}),
+    );
+    expect(r.status).toBe('needs_disambiguation');
+    expect(r.customerId).toBeUndefined();
+  });
+
+  test('a customer created from an email keeps the address it wrote from', async () => {
+    // So the SAME sender is recognised by the email key on their next message,
+    // instead of being parked as a stranger a second time.
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'connector:gmail',
+        channel: 'email',
+        text: 'new here — my sink is blocked',
+        externalId: `msg-10b-${seq++}`,
+        fallbackEmail: 'brand.new@example.com',
+        resolved: { createFrom: { customerName: 'Brand New' } },
+      },
+      stub({ jobTitle: 'blocked sink' }),
+    );
+    expect(r.status).toBe('matched');
+    const { rows } = await pg.query<{ email: string | null }>(
+      'select email from customers where id = $1',
+      [r.customerId],
+    );
+    expect(rows[0].email).toBe('brand.new@example.com');
+  });
+});

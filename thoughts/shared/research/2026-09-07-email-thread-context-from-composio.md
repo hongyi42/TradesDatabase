@@ -2,7 +2,7 @@
 date: 2026-09-07
 branch: main
 commit: caad21f
-topic: Can the spine see an email's whole reply chain? What Composio's Gmail trigger delivers (it carries `thread_id` — we drop it), what a thread read returns (proven live on the pilot mailbox), what the extractor is handed today, and where the firm's own replies go missing.
+topic: Can the spine see an email's whole reply chain? What Composio's Gmail trigger delivers (it carries `thread_id` — we dropped it until PR #213), what a thread read returns (proven live on the pilot mailbox), what the extractor is handed today, where the firm's own replies go missing, and the first live reply (captured with its thread id, then parked unmatched).
 supersedes: nothing
 ---
 
@@ -115,6 +115,32 @@ replies (flow 3), and the three existing pilot captures. Partial free backfill: 
 thread-starter's thread id equals its message id, and `external_id` IS the Gmail message id, a
 later reply's `thread_id` can be matched to an already-captured starter by `external_id`.
 
+### 5. The first reply, end to end (live, 2026-09-08, after PR #213 deployed as `262a27a`)
+
+The owner replied from the other test address to the "Friday morning for the water heater" thread:
+*"Is it possible to do Friday afternoon instead?"*
+
+```
+06:42:48Z  reply sent (Composio's provider watermark)
+06:44:05Z  Composio's trigger state lists the new message id 1a07fc177a6ca10a
+06:44:08Z  POST /inbound/composio → 200 in 2758 ms (Render request log)
+06:44:06Z  capture 473a9b35… lands: metadata keys from, labelIds, occurredAt, subject, threadId, to
+           threadId = 1a07e2f8962a4f06  ← the ORIGINAL email's external_id (thread starter == its message id)
+           labelIds = [UNREAD, IMPORTANT, CATEGORY_PERSONAL, INBOX]
+           raw_text 564 chars vs the original's 258: quote lines ("\n>") and an "… wrote:" marker present
+```
+
+What the door then did: **nothing** — 0 observations, 0 `job_captures`, 0 `visit_notes`. The reply
+was parked as unmatched (`needs_disambiguation` → webhook `ingested`, no retry), although it is the
+same sender as the original, in the same thread, about a job that has a booked visit (Fri 09-11,
+crew Hman), and the customer's exact phone string sits in the quoted history. The customer (Tom
+Becker) has a phone and an address on file and **no email**. So: the extractor did not read the
+phone out of the quoted text (it did from the original's fresh body); email matching could not have
+helped here; the thread id is the only key that links this reply to its customer.
+
+Two of the four earlier polls on this mailbox were personal newsletters (03:01Z, 03:18Z), both
+dropped before L1 with content-free receipts — the classifier at work on a real inbox.
+
 ## External Dependencies
 
 - **Composio Gmail toolkit** — 23 tools (`GET /api/v3/tools?toolkit_slug=gmail`, 2026-09-07). Thread-relevant: `GMAIL_FETCH_MESSAGE_BY_THREAD_ID` (input `thread_id` required, `user_id`, `page_token`), `GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID`, `GMAIL_LIST_THREADS` (`query`, `verbose`, `max_results`, `page_token`), `GMAIL_FETCH_EMAILS`, `GMAIL_REPLY_TO_THREAD`. Documented with parameters at <https://docs.composio.dev/toolkits/gmail>.
@@ -144,7 +170,16 @@ later reply's `thread_id` can be matched to an already-captured starter by `exte
 
 ## Open Questions
 
-- **Does a reply's `message_text` carry the quoted history the sender's client appended?** Both test emails were thread-starters (one message each), so this is unobserved. One step settles it: reply to the "Friday morning for the water heater" thread from the other test address and re-run the two reads above; the thread will have two messages and the second's text length will say.
-- **Is `thread_id` present in the delivered webhook `data`, not only in the schema?** The same backend returned `threadId` for the same message by id, and Composio publishes no delivery log to check against; the cheapest proof is to store it and read the next capture.
-- **What do the `payload` and `preview` objects hold?** Both are `additionalProperties: true` in the schema; if `payload` carries the RFC headers (`In-Reply-To`, `References`), thread linkage would not depend on Composio's `thread_id` at all. Unopened.
-- **Does the docs' "up to ~15 min" ever apply to our `interval: 1` instance?** One measurement of 58 s says no; the pilot has carried two emails.
+Three of the four were answered by the live reply above (flow 5):
+- **A reply's `message_text` DOES carry the client's quoted history** — 564 chars against the
+  original's 258, with quote lines and a "wrote:" marker. Quoted history is what the sender's mail
+  client chose to include; it is not the record, and the extractor did not read a phone number out
+  of it.
+- **`thread_id` IS present in the delivered webhook `data`** — the capture carries it, and it
+  equals the thread starter's message id.
+- **Latency held at ~80 s** with `interval: 1` (06:42:48Z sent → 06:44:06Z captured); the docs'
+  "up to ~15 min" was not observed on either day.
+
+Still unopened: what the `payload` and `preview` objects hold (both `additionalProperties: true`);
+if `payload` carries the RFC headers (`In-Reply-To`, `References`), thread linkage would not depend
+on Composio's `thread_id` at all.

@@ -220,61 +220,61 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L4867 · ⚠ THE PHONE DOOR ONLY REACHES THIS RUNG ON A new_job INTENT. _(2026-08-06)_
 - L4873 · findFoldImpact's superset invariant is now load-bearing in a second place.
 - L4879 · THE EMAIL CHANNEL DROPS ITS THREAD ID — verified 2026-09-07, and it is time-sensitive. _(2026-09-07)_
-- L4923 · TRAP — nemoclaw <s> status LIES about the gateway right after a restart.
-- L4955 · A visit carries a CREW, and a crew has no lead
-- L4960 · The double-booking guard MOVED with the person
-- L4974 · A composite PK on a link table makes PostgREST synthesise a junction
-- L4982 · A bare ON CONFLICT DO NOTHING swallows an exclusion constraint
-- L4986 · Moving a filter from SQL into JS meets PostgREST's max_rows
-- L4990 · A derived column needs its trigger on UPDATE too, and a FOR SHARE on the parent
-- L4995 · Order is load-bearing in two different places
-- L5001 · Deploy shape: an additive migration BEFORE the code, the drop AFTER
-- L5117 · ON DELETE SET NULL is an UPDATE.
-- L5119 · Naive-local vs real UTC, again. _(2026-09-08)_
-- L5124 · A once-ever index plus stable ids = a detector that fires once, forever.
-- L5131 · A liveness filter can be bypassed by an id rename.
-- L5135 · A compat view bridges the deploy. _(2026-09-05)_
-- L5149 · schedule_events.assignment_id KEEPS ITS NAME this rung.
-- L5152 · The completed-stamp CHECK was dropped.
-- L5162 · RECORDED, NOT FIXED — a crew edit is three HTTP round trips and is NOT atomic.
-- L5172 · RECORDED, NOT FIXED — the tray became an unbounded full-table read.
-- L5258 · A green suite proves nothing when you mass-edit tests.
-- L5263 · A test can pin the bug.
-- L5266 · Reachability is not a compile error.
-- L5342 · A technician's seat agent has NO scheduling verb at any tier.
-- L5345 · Live specimen in the pilot _(2026-09-01)_
-- L5355 · Counting.
-- L5357 · Detection.
-- L5362 · Booking.
-- L5375 · Build 6 (vocabulary): _(2026-09-01)_
-- L5380 · Build 7 (detectors report): _(2026-09-05)_
-- L5390 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L4930 · TRAP — nemoclaw <s> status LIES about the gateway right after a restart.
+- L4962 · A visit carries a CREW, and a crew has no lead
+- L4967 · The double-booking guard MOVED with the person
+- L4981 · A composite PK on a link table makes PostgREST synthesise a junction
+- L4989 · A bare ON CONFLICT DO NOTHING swallows an exclusion constraint
+- L4993 · Moving a filter from SQL into JS meets PostgREST's max_rows
+- L4997 · A derived column needs its trigger on UPDATE too, and a FOR SHARE on the parent
+- L5002 · Order is load-bearing in two different places
+- L5008 · Deploy shape: an additive migration BEFORE the code, the drop AFTER
+- L5124 · ON DELETE SET NULL is an UPDATE.
+- L5126 · Naive-local vs real UTC, again. _(2026-09-08)_
+- L5131 · A once-ever index plus stable ids = a detector that fires once, forever.
+- L5138 · A liveness filter can be bypassed by an id rename.
+- L5142 · A compat view bridges the deploy. _(2026-09-05)_
+- L5156 · schedule_events.assignment_id KEEPS ITS NAME this rung.
+- L5159 · The completed-stamp CHECK was dropped.
+- L5169 · RECORDED, NOT FIXED — a crew edit is three HTTP round trips and is NOT atomic.
+- L5179 · RECORDED, NOT FIXED — the tray became an unbounded full-table read.
+- L5265 · A green suite proves nothing when you mass-edit tests.
+- L5270 · A test can pin the bug.
+- L5273 · Reachability is not a compile error.
+- L5349 · A technician's seat agent has NO scheduling verb at any tier.
+- L5352 · Live specimen in the pilot _(2026-09-01)_
+- L5362 · Counting.
+- L5364 · Detection.
+- L5369 · Booking.
+- L5382 · Build 6 (vocabulary): _(2026-09-01)_
+- L5387 · Build 7 (detectors report): _(2026-09-05)_
+- L5397 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L5786 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L5809 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L5856 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L5893 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L5925 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L5930 · Every member row stores the FULL grouped message in question.
-- L5934 · The attribution stamp is an audit link, not a gate.
-- L5938 · The derived stamp requires a capture a badge-holder SPOKE
-- L5942 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L5948 · The follow-up loop has two halves and both had to be written down.
-- L5954 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L6028 · Batching works.
-- L6030 · The follow-up leg works, including the half that fails silently.
-- L6034 · Both attribution paths fired, each in its designed case.
-- L6038 · Escalation fired correctly
-- L6039 · The planner's group-aware pacing is the result worth keeping.
+- L5793 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L5816 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L5863 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L5900 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L5932 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L5937 · Every member row stores the FULL grouped message in question.
+- L5941 · The attribution stamp is an audit link, not a gate.
+- L5945 · The derived stamp requires a capture a badge-holder SPOKE
+- L5949 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L5955 · The follow-up loop has two halves and both had to be written down.
+- L5961 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L6035 · Batching works.
+- L6037 · The follow-up leg works, including the half that fails silently.
+- L6041 · Both attribution paths fired, each in its designed case.
+- L6045 · Escalation fired correctly
+- L6046 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L6391 · Evals:
-- L6398 · Runbooks:
-- L6403 · Decision history with citations:
-- L6407 · This file
+- L6398 · Evals:
+- L6405 · Runbooks:
+- L6410 · Decision history with citations:
+- L6414 · This file
 
 <!-- INDEX:END -->
 
@@ -4884,10 +4884,15 @@ stage" (see the §10 remodel paragraph, now marked superseded).
   is blind, and L1 is append-only, so every email landing today is permanently un-chainable.
   Replies a person sends from the Gmail app NEVER arrive (the trigger watches INBOX only).
   Record: `thoughts/shared/research/2026-09-07-email-thread-context-from-composio.md`.
-  **CAPTURED since 2026-09-07:** inbound captures now carry `threadId`, `to` and `labelIds` in
-  metadata, present-only, under the outbound capture's key names (`gmail.ts` → `webhook.ts`).
-  Nothing reads them yet; the 10b plan treats thread membership as an identity key beside email
-  (a reply in a matched thread is not a new caller).
+  **CAPTURED since 2026-09-07 (PR #213, deployed `262a27a`), VERIFIED LIVE 2026-09-08:** inbound
+  captures carry `threadId`, `to` and `labelIds` in metadata, present-only, under the outbound
+  capture's key names (`gmail.ts` → `webhook.ts`). The first live reply landed 80 s after it was
+  sent with `threadId` equal to the original email's `external_id` — and was then PARKED UNMATCHED
+  (0 observations, 0 links) although it was the same sender, the same thread, a job with a booked
+  visit, and the customer's exact phone string sat in the quoted history. The customer has no
+  email on file, so email matching would not have saved it either: the thread id is the only key
+  that links that reply to its customer. Nothing reads the new keys yet; the 10b plan makes thread
+  membership an identity key beside email (a reply in a matched thread is not a new caller).
 
 ### ✅ BUILT **AND DEPLOYED** 2026-09-06 — rung 9c, "a visit carries a crew" (merged as `bd50ab1`, PR #208)
 

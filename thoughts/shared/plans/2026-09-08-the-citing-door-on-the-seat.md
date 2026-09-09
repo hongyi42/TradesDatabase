@@ -274,7 +274,21 @@ Removes the wrong rows, retires the stale item, and re-runs the two live scenari
    the only route. Expect the reply filed against the customer created in Test A.
 
 ### Automated verification
-- [ ] cleanup read-back: the four rows are gone, the L1 capture remains, the item is not `open`
+- [x] cleanup read-back (2026-09-09) — **and the plan was wrong about what could be deleted.**
+      `schedule_events` is append-only, and its FK to `visits` is `ON DELETE SET NULL`, so the
+      trigger refuses the FK's own update: a visit carrying schedule events can never be hard
+      deleted, and `customers → jobs → visits` are all CASCADE, so the whole cluster is pinned by
+      two event rows. Actual result:
+      - visit `e83a233a` (the phantom `completed` trip) — **DELETED** (it had no schedule events)
+      - visit `134a0332` — **cancelled** (undeletable; cancelled visits are dropped by
+        `listL2CitingCapture` and come off the board)
+      - job `212ccc4d` — **cancelled** (same reason)
+      - customer `291921e1` — **PERMANENT.** `address_line1 = 'Ruth Bramley'` stays on the pilot
+        forever. Inert for the re-run (`phone` and `email` both NULL, so no identity key can
+        match it) but it is a real bad row, and a second demonstration of the thing this rung is
+        about: nothing in this system is easy to take back.
+      - L1 captures `79776a0e` and `3d18b1cd` — both still on file, as append-only requires
+      - observation `a25b4906` — **dismissed** with a reason; **0 open inbound items** remain
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP (read-back), the deployed pilot, **the gateway restart + box

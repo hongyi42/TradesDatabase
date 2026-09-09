@@ -109,8 +109,24 @@ outright — the isolation the water-heater thread could never give us.
 
 - **Phase 1:** none — `record_caller` and the door are already deployed.
 - **Phase 2:** none.
-- **Phase 3:** none for the code; the live run needs the deployed pilot (already live) and a
-  sending address that is not on any customer row.
+- **Phase 3:** none for the code; the live run needs the deployed pilot and a sending address that
+  is not on any customer row.
+
+### ⚠ Phase 3 has a DEPLOY STEP the code cannot supply
+
+The manager `tools/list` moves 42 → 43. Gateways cache `tools/list` per process, and rule 7's
+wording is baked into each sandbox's AGENTS.md at `wire` time. So after the Render deploy, and
+BEFORE Test A, every manager sandbox needs:
+
+```
+nemoclaw <seat> gateway restart     # or it serves its cached 42-tool list — no record_caller
+# and a box `wire` re-run so AGENTS.md rule 7 names the tool
+```
+
+Skip these and the seat cannot see the door, answers through `record_field_note` again, and the
+2026-09-08 specimen reproduces exactly — reading as a code failure when it is a missing restart.
+(`docs/nemoclaw-tech-agent.md` carries the same warning; that file's older "the manager side needs
+no restart" line is about the 2026-07-31 change only.)
 
 ---
 
@@ -179,10 +195,11 @@ badge that asked for them instead of the planner.
 - the booked visit's schedule event names the manager, not `spine:team-lead`.
 
 ### Automated verification
-- [ ] `npm run typecheck`
-- [ ] `npm run lint`
-- [ ] `npm test`
-- [ ] new tests above pass
+- [x] `npm run typecheck`
+- [x] `npm run lint`
+- [x] `npm test` — 2842 passed; the one failure
+      (`plannerPass > missing credentials block`) reproduces on stashed main, env-dependent
+- [x] new tests above pass (26 in the `record_caller` describe, 11 in `format`, 4 in `webhook`)
 
 ### Live verification (agent-executable)
 Deferred to Phase 3 — the live run is the same e2e, and running it twice costs a real billed
@@ -223,11 +240,13 @@ fabricated an address.
   "Ruth Bramley" → refused; a real address still mints.
 
 ### Automated verification
-- [ ] `npm run typecheck`
-- [ ] `npm run lint`
-- [ ] `npm test`
-- [ ] new tests above pass
-- [ ] `npm run build`
+- [x] `npm run typecheck`
+- [x] `npm run lint`
+- [x] `npm test` — 2845 passed; the one failure (`plannerPass > missing credentials block`)
+      reproduces on stashed main, env-dependent
+- [x] new tests above pass (4 `book_visit` shapes; the address guard on BOTH doors, with the
+      evasion set and the escape-hatch wording)
+- [x] `npm run build`
 
 ### Manual verification
 None.
@@ -255,10 +274,26 @@ Removes the wrong rows, retires the stale item, and re-runs the two live scenari
    the only route. Expect the reply filed against the customer created in Test A.
 
 ### Automated verification
-- [ ] cleanup read-back: the four rows are gone, the L1 capture remains, the item is not `open`
+- [x] cleanup read-back (2026-09-09) — **and the plan was wrong about what could be deleted.**
+      `schedule_events` is append-only, and its FK to `visits` is `ON DELETE SET NULL`, so the
+      trigger refuses the FK's own update: a visit carrying schedule events can never be hard
+      deleted, and `customers → jobs → visits` are all CASCADE, so the whole cluster is pinned by
+      two event rows. Actual result:
+      - visit `e83a233a` (the phantom `completed` trip) — **DELETED** (it had no schedule events)
+      - visit `134a0332` — **cancelled** (undeletable; cancelled visits are dropped by
+        `listL2CitingCapture` and come off the board)
+      - job `212ccc4d` — **cancelled** (same reason)
+      - customer `291921e1` — **PERMANENT.** `address_line1 = 'Ruth Bramley'` stays on the pilot
+        forever. Inert for the re-run (`phone` and `email` both NULL, so no identity key can
+        match it) but it is a real bad row, and a second demonstration of the thing this rung is
+        about: nothing in this system is easy to take back.
+      - L1 captures `79776a0e` and `3d18b1cd` — both still on file, as append-only requires
+      - observation `a25b4906` — **dismissed** with a reason; **0 open inbound items** remain
 
 ### Live verification (agent-executable)
-- Prerequisites: `supabase-test` MCP (read-back), the deployed pilot, the user sending two emails
+- Prerequisites: `supabase-test` MCP (read-back), the deployed pilot, **the gateway restart + box
+  `wire` above — verify `record_caller` is in the seat's tools/list before sending anything**, and
+  the user sending two emails
 - [ ] Test A: item raised, cited writes, item retires on its own — evidence: observation row +
       `source_capture_id` on all three L2 rows
 - [ ] Test B: the reply lands on Test A's customer — evidence: the citing row, plus the customer

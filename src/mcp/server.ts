@@ -132,7 +132,7 @@ import {
   type ResolvedIdentity,
 } from '../writePath/recordFieldNote.js';
 import { matchIdentity, type MatchResult } from '../writePath/identityMatch.js';
-import { emailAddressOf } from '../email/format.js';
+import { emailAddressOf, isOwnMailbox } from '../email/format.js';
 import { defaultExtractor, type ExtractedFields } from '../writePath/extract.js';
 import {
   requireOutboundCapable,
@@ -908,9 +908,9 @@ const ADMIN_TOOLS = [
       'one step, no confirmation: a job is cancellable, and the manager just asked for it. ' +
       'Use it when the office tells you a customer got in touch and asks whether to open the ' +
       'job, and the manager says yes but nobody is being sent out yet (a quote, an estimate, ' +
-      'work to schedule later). If they ALSO want someone sent, use book_visit instead — with ' +
-      'no date and no times it books an untimed visit AND mints the job in the same call, so ' +
-      'do not call both. REFUSED when the customer already has open work, with the list: pass ' +
+      'work to schedule later). If they ALSO want someone sent, use book_visit instead — it mints ' +
+      'the job in the same call, so do not call both: give it the day and both times if the ' +
+      'manager stated them, or `untimed: true` if the timing genuinely is not settled. REFUSED when the customer already has open work, with the list: pass ' +
       'the matching job to whatever you do next, or forceNewJob:true only if this is genuinely ' +
       'different new work. Returns the job with its id and title — tell the manager the title, ' +
       'in the same breath, because it is your words that reached the permanent record.',
@@ -1119,9 +1119,11 @@ const ADMIN_TOOLS = [
       '(a range like "12-1pm" means startTime 12:00 AND endTime 13:00); if the manager did ' +
       'not say when the visit starts or ends, ASK them — never guess. ONE exception: when the ' +
       'manager says the timing is not settled ("book them in, we will find a slot"), pass ' +
-      'NONE of date/startTime/endTime — the visit books UNTIMED and waits in the unscheduled ' +
-      'queue until someone places it with move_visit. Booking untimed is never your own ' +
-      'choice when a day or time was stated. Omit technicianRef to ' +
+      '`untimed: true` AND none of date/startTime/endTime — the visit books UNTIMED and waits ' +
+      'in the unscheduled queue until someone places it with move_visit. You must SAY untimed; ' +
+      'leaving the day out is refused, because an omission is not a decision. Booking untimed ' +
+      'is never your own choice when a day or a time was stated — if you were given a day but ' +
+      'no times, ask for the times. Omit technicianRef to ' +
       'book WITHOUT a technician (put it on the calendar, assign later — attach someone with ' +
       'move_visit; find these via get_team_schedule unassignedOnly:true). ' +
       'SEVERAL PEOPLE ON ONE TRIP: pass technicianRefs with every ref ("Ben and Joy on the ' +
@@ -1140,9 +1142,17 @@ const ADMIN_TOOLS = [
         technicianRef: { type: 'string', description: 'Roster ref of ONE technician — shorthand for a one-person crew. OPTIONAL — omit to book unassigned ("assign later").' },
         technicianRefs: { type: 'array', items: { type: 'string' }, description: 'Roster refs of EVERY technician going on this trip. Two people on one job at one time is ONE visit with both refs here — never two book_visit calls.' },
         title: { type: 'string', description: 'Job title when booking by customerId (a new job is created).' },
-        date: { type: 'string', description: 'YYYY-MM-DD, firm-local. Required WITH both times — or omit all three to book an untimed visit.' },
+        date: { type: 'string', description: 'YYYY-MM-DD, firm-local. Required WITH both times. Omitting it is NOT how you book without a day — that is `untimed: true`, and an omission is refused.' },
         startTime: { type: 'string', description: 'HH:MM 24h. Required with date and endTime — no default; ask the manager if unstated.' },
         endTime: { type: 'string', description: 'HH:MM 24h. Required with date and startTime — no default length; ask the manager if unstated.' },
+        untimed: {
+          type: 'boolean',
+          description:
+            'true books with NO day and no times, for work the manager said is not scheduled ' +
+            'yet ("book them in, we will find a slot"). It is the ONLY way to book without a ' +
+            'day — omitting date/startTime/endTime is refused. Never pass it when a day was ' +
+            'stated: book that day instead, asking for the times if you were not given them.',
+        },
         priority: { type: 'string', enum: ['emergency', 'urgent', 'routine', 'maintenance'], description: 'Triage tier for the NEW job when booking by customerId (default "routine"). Rejected with jobId — an existing job keeps its recorded priority.' },
         forceNewJob: { type: 'boolean', description: 'customerId path only: override the open-work guard and mint a new job even though the customer has open work on file. ONLY when the work is genuinely different from every listed job — never to skip the jobId lookup.' },
       },
@@ -1743,7 +1753,10 @@ function slugify(displayName: string): string {
 // sidestepped rather than weakened — no `if (… || isTeamLead)` anywhere near the
 // tier gate, which is exactly the sort of exception that later grows.
 //
-// It is NOT listed to anyone: tools/list serves TOOLS or MANAGER_TOOLS, and the
+// Mostly NOT listed to anyone: tools/list serves TOOLS or MANAGER_TOOLS, and the
+// team lead is handed these directly — EXCEPT the names in
+// SEAT_SHARED_TEAM_LEAD_TOOLS, which MANAGER_TOOLS pulls out of this very array
+// (rung 10b.2), so one of these IS listed to managers. The
 // team lead is an in-process caller that is handed its tool schemas directly.
 // Discovery is cosmetic here in the same way it is everywhere else — dispatch is
 // the gate.
@@ -1910,14 +1923,19 @@ const TEAM_LEAD_TOOLS = [
       'a job with `openJob`, and booking a trip with `bookVisit` are asked first, and that goes ' +
       'double for the trip: something on the board is a promise to a person. ' +
       'A booked trip is UNTIMED — on the board with no day and no time — because when it happens ' +
-      'is the manager\'s to say, and you were not given a date. ' +
-      'The item CLOSES ITSELF on the record at your next pass, so do not also close it by hand.',
+      'is the manager\'s to say. If they DID give you a day, book it here anyway and then SAY that ' +
+      'day back in your reply so it can be placed — and if you hold `move_visit`, place it there ' +
+      'yourself. A day you were told must never be dropped. ' +
+      'The item RETIRES ITSELF once the record cites the call — never close it by hand, and ' +
+      'never tell anyone it is closed; what you write is what closes it.',
     inputSchema: {
       type: 'object',
       properties: {
         observationId: {
           type: 'string',
-          description: "The item id, copied exactly from its `gap` line.",
+          description:
+            'The item id, copied exactly — off its `gap` line if you are planning, or out of ' +
+            'the note the office sent you if you were asked about it.',
         },
         customerId: {
           type: 'string',
@@ -1979,14 +1997,30 @@ export const TEAM_LEAD_TOOL_SCHEMAS: ReadonlyArray<{
 // before the switch, so adding an admin tool cannot forget its guard.
 const ADMIN_TOOL_NAMES = new Set(ADMIN_TOOLS.map((t) => t.name));
 
+// RUNG 10B.2 — SHARED WITH THE MANAGER SEAT, not moved to it. The live e2e on
+// 2026-09-08 proved the door works and that nothing reaches it: a manager's
+// answer arrives at the SEAT, which was refused this tool by the gate below, so
+// it answered with `record_field_note` and left a customer whose address was her
+// own name, a `completed` trip nobody took, and an item citing nothing. This is
+// the only door whose every write cites the capture it came from, and the
+// manager's own assistant is where a caller's identity is actually settled.
+// An EXPLICIT exception list, never a predicate: the ceiling stays
+// deny-by-default for everything else, and adding a name here is a deliberate
+// act somebody reviews.
+const SEAT_SHARED_TEAM_LEAD_TOOLS = new Set(['record_caller']);
+
 // The other half of the team-lead design. Keeping spine_read OUT of ADMIN_TOOLS
 // is what lets the team lead reach it — but on its own that would also hand it to
 // every technician badge, since ADMIN_TOOL_NAMES is the only tier gate and
 // tools/list is cosmetic. This set closes that: these names dispatch for the
 // `spine:` namespace and NOTHING else, so the surface SHIFTS rather than
 // expanding. Derived from the array, so a second team-lead tool is gated the day
-// it is added.
-const TEAM_LEAD_ONLY_TOOL_NAMES = new Set(TEAM_LEAD_TOOLS.map((t) => t.name));
+// it is added — MINUS the shared names, which carry their own tier gate below.
+// Exported so a test can pin the SURFACE rather than a behaviour: the set the
+// seat gained is exactly the shared list, and everything else stayed shut.
+export const TEAM_LEAD_ONLY_TOOL_NAMES = new Set(
+  TEAM_LEAD_TOOLS.map((t) => t.name).filter((n) => !SEAT_SHARED_TEAM_LEAD_TOOLS.has(n)),
+);
 
 // The manager surface = base tools MINUS get_schedule, PLUS the admin tools
 // (user decision 2026-07-19). get_schedule is the technician driving-route
@@ -1995,7 +2029,19 @@ const TEAM_LEAD_ONLY_TOOL_NAMES = new Set(TEAM_LEAD_TOOLS.map((t) => t.name));
 // wrong-tool misroute ("your week is completely clear" from the self-only
 // view while an unassigned visit existed, live 2026-07-18) is structurally
 // impossible. Schedule VIEWING for managers lives on the dispatch board.
-const MANAGER_TOOLS = [...TOOLS.filter((t) => t.name !== 'get_schedule'), ...ADMIN_TOOLS];
+// …PLUS the shared team-lead doors (rung 10b.2). Taken FROM `TEAM_LEAD_TOOLS`
+// rather than re-declared: one schema, two catalogs, so a reworded description
+// can never drift between what the planner reads and what the seat reads.
+const MANAGER_TOOLS = [
+  ...TOOLS.filter((t) => t.name !== 'get_schedule'),
+  ...ADMIN_TOOLS,
+  ...TEAM_LEAD_TOOLS.filter((t) => SEAT_SHARED_TEAM_LEAD_TOOLS.has(t.name)),
+];
+
+// What a manager can DISCOVER. Exported for the same reason as the set above:
+// dispatch is the gate, but a door the seat cannot see is a door it will not
+// use — which is exactly how the 2026-09-08 failure happened.
+export const MANAGER_TOOL_NAMES = new Set(MANAGER_TOOLS.map((t) => t.name));
 
 // Chat → board bridge: scheduling results carry the Telegram Mini App link so
 // the agent can end a schedule report with "see it on the board" — one tap
@@ -2135,6 +2181,50 @@ export function oneShotNoteStamp(input: {
 // A confirmed answer that matched no existing customer resolves to create-new;
 // the FULL draft is built here (schedule prefill > extracted/confirmed) so the
 // preview shows exactly the customer commit will create.
+// AN ADDRESS IS WHERE THEY ARE, NOT WHO THEY ARE (rung 10b.2).
+//
+// Two doors mint a customer from a name plus an address — `record_field_note`'s
+// confirm (via resolutionFrom) and `record_caller`'s `newCustomer` — and BOTH
+// need this, which is why it is a function rather than an inline check. The
+// first version guarded only the note door; rung 10b.2 had just finished telling
+// the manager's seat to stop using that one, so the guard was on the door nobody
+// takes and absent from the door everybody now takes (review finding).
+//
+// Why it exists: on the note path `address` does double duty — it both UNLOCKS
+// the mint and becomes `address_line1` unchecked — so a caller with no address
+// to give is pressured to put SOMETHING in the field. Live specimen 2026-09-08:
+// a customer created with `address_line1 = 'Ruth Bramley'`, her own name.
+//
+// REFUSED, not nulled: the caller believes it is recording an address and will
+// go on to tell a manager so. And there is no address updater anywhere in the
+// app (src/db/customers.ts), so a fabrication here is permanent.
+//
+// Normalized past the one-character retry — the refusal quotes the string back,
+// which is exactly the prompt that produces "Ruth Bramley," on the next attempt.
+// Internal whitespace is collapsed and surrounding punctuation stripped, so the
+// evasions are a different STRING rather than a different spelling of the name.
+const addressKey = (value: string | null | undefined): string =>
+  (value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/^[.,;:'"\-\s]+|[.,;:'"\-\s]+$/g, '');
+
+export function refuseNameAsAddress(
+  address: string | null | undefined,
+  customerName: string | null | undefined,
+): void {
+  const claimed = addressKey(address);
+  const name = addressKey(customerName);
+  if (!claimed || !name || claimed !== name) return;
+  throw new Error(
+    `"${address?.trim()}" is the customer's NAME, not an address — an address is where they ` +
+      'are. If you were not given one, leave the address out. If that really IS the address ' +
+      '(a house or farm name), write enough of it to read as a place — add the street, the ' +
+      'town or the postcode — so the record does not just repeat their name.',
+  );
+}
+
 function resolutionFrom(
   match: MatchResult,
   confirmed: { customerId?: string; address?: string } | undefined,
@@ -2145,6 +2235,7 @@ function resolutionFrom(
   }
   if (confirmed && (match.createFrom || confirmed.address)) {
     const draft = match.createFrom;
+    refuseNameAsAddress(confirmed.address, draft?.customerName ?? extracted.customerName);
     return {
       createFrom: {
         // Trim-normalize the name so preview and commit agree: '' / whitespace
@@ -2743,6 +2834,21 @@ async function dispatch(
         ? `${name} is the team lead's own tool — managers use query_spine`
         : `${name} is the team lead's own tool`,
     );
+  }
+  // The SHARED doors' own tier gate (rung 10b.2). These names sit outside
+  // TEAM_LEAD_ONLY_TOOL_NAMES so a seat can reach them, which on its own would
+  // also hand them to every technician badge — ADMIN_TOOL_NAMES is the only other
+  // tier gate and this tool is deliberately not in it (a manager's catalog is
+  // TOOLS + ADMIN_TOOLS, and adding it to ADMIN_TOOLS would put it in the wrong
+  // list to reason about). So: the `spine:` planner, or an ACTIVE MANAGER, and
+  // nobody else. A technician settling who a caller was is the trust boundary
+  // the two seats exist to draw.
+  if (
+    SEAT_SHARED_TEAM_LEAD_TOOLS.has(name) &&
+    !identity.technicianRef.startsWith('spine:') &&
+    !activeManager
+  ) {
+    throw new Error(`${name} is a manager's call — recording who a caller was needs a manager badge`);
   }
   // The real tier gate (the tools/list filter is cosmetic): applied by tool
   // NAME so no admin case can be added without it.
@@ -4793,7 +4899,8 @@ async function dispatch(
         note:
           'The job is open and NOTHING is on the calendar. Tell the manager the title above — ' +
           'your words reached the record. If they want someone sent out, book_visit with the ' +
-          'jobId (no date/times = untimed, in the unscheduled queue).',
+          'jobId — with the day and both times if they gave them, or `untimed: true` if the ' +
+          'timing is not settled.',
       };
     }
     case 'book_visit': {
@@ -4841,13 +4948,35 @@ async function dispatch(
             throw new Error(`${key} must be a string (YYYY-MM-DD or HH:MM), not ${typeof args[key]}`);
           }
         }
-        const untimed = !date && !startTime && !endTime;
+        // UNTIMED IS SOMETHING YOU SAY, NOT SOMETHING YOU OMIT (rung 10b.2).
+        // It used to be `!date && !startTime && !endTime` — so leaving the day
+        // out WAS the instruction to book without one, and a day the manager
+        // actually stated could vanish with nothing to notice it. Live specimen
+        // 2026-09-08: the manager said "Thursday morning", the seat booked
+        // untimed, and its own reply named Thursday 2026-09-10 in the next
+        // breath. The tool's prose already forbade that ("booking untimed is
+        // never your own choice when a day or time was stated") and lost to the
+        // schema, which is the shape this whole rung is about.
+        if (args.untimed !== undefined && typeof args.untimed !== 'boolean') {
+          throw new Error(`untimed must be true or false, not ${typeof args.untimed}`);
+        }
+        const untimed = args.untimed === true;
+        // Contradiction: fail LOUDLY rather than silently preferring one. An
+        // agent that passes both has two different intentions in one call, and
+        // guessing which it meant is how a stated day gets dropped.
+        if (untimed && (date || startTime || endTime)) {
+          throw new Error(
+            'untimed:true means NO day and no times — you passed some. Either book it on the ' +
+              'day you were given (date + startTime + endTime), or drop those and book untimed.',
+          );
+        }
         if (!untimed && (!date || !startTime || !endTime)) {
           throw new Error(
             'date, startTime and endTime are required TOGETHER — the server assumes no default ' +
-              'day or length. If the manager did not say when the visit starts or ends, ask ' +
-              'them, then book. (To book work with no time settled yet, pass none of the ' +
-              'three: the visit lands in the unscheduled queue.)',
+              'day or length. If the manager did not say when the visit starts or ends, ASK ' +
+              'them, then book. Only if they said the timing is not settled at all, pass ' +
+              '`untimed: true` — never leave the day out to mean that, and never drop a day ' +
+              'you were given.',
           );
         }
         const customerId = str('customerId');
@@ -6066,7 +6195,7 @@ async function dispatch(
     case 'record_caller': {
       const observationId = str('observationId');
       if (!observationId) {
-        throw new Error("observationId is required (copy it from the item's `gap` line)");
+        throw new Error("observationId is required — copy it from the item's `gap` line, or from the note the office sent you");
       }
       // UUID-SHAPED FIRST. These ids go straight into uuid-typed PostgREST
       // filters, where a malformed one raises 22P02 — a raw database error the
@@ -6074,13 +6203,13 @@ async function dispatch(
       // below. The planner.ts UUID rail exists for the same trap.
       if (!UUID_RE.test(observationId)) {
         throw new Error(
-          'No such item on this firm — check the id against the gap you are looking at.',
+          'No such item on this firm — check the id against the gap, or the office note, you copied it from.',
         );
       }
       const obs = await getObservationForTenant(observationId, tenantId);
       if (!obs) {
         throw new Error(
-          'No such item on this firm — check the id against the gap you are looking at.',
+          'No such item on this firm — check the id against the gap, or the office note, you copied it from.',
         );
       }
       if (obs.kind !== 'inbound_unmatched') {
@@ -6186,7 +6315,8 @@ async function dispatch(
       if (customerId && !openJob && !onFile.some((j) => j.status !== 'cancelled')) {
         throw new Error(
           'there is nothing to file this call onto — that customer has no job it could land on. ' +
-            'Pass `openJob` as well, or dismiss the item if there is no work in the call.',
+            'Pass `openJob` as well. If there is no work in the call at all, say so to the office ' +
+            'instead of recording it.',
         );
       }
       // A TRIP NEEDS A JOB TO SIT ON — a LIVE one. `openJob` here is the request
@@ -6205,6 +6335,36 @@ async function dispatch(
         capture.metadata && typeof capture.metadata === 'object' && !Array.isArray(capture.metadata)
           ? (capture.metadata as Record<string, unknown>)
           : {};
+      const metaFrom = typeof meta.from === 'string' ? meta.from : null;
+      const metaTo = typeof meta.to === 'string' ? meta.to : null;
+      // NOT THE FIRM'S OWN ADDRESS (rung 10b.2). A message the firm sent to
+      // itself carries our mailbox in `from`, and a live specimen had the
+      // extractor report it as the caller's email. Stored on a customer it
+      // becomes an identity KEY, so every later message from our own mailbox
+      // would match that one person. Refused rather than silently dropped: the
+      // caller of this tool believes it is recording the customer's address, and
+      // quietly writing null would leave them saying so to a manager.
+      // …and the address they gave is not just the caller's name again. Same
+      // guard the note door has, on the door rung 10b.2 tells the seat to use.
+      refuseNameAsAddress(
+        typeof newCustomer?.addressLine1 === 'string' ? newCustomer.addressLine1 : null,
+        newName,
+      );
+      const newEmail = typeof newCustomer?.email === 'string' ? newCustomer.email : null;
+      // The paired mailbox for the person this message was delivered under —
+      // authoritative where the `to` header is ambiguous (several recipients),
+      // and the reason this guard can stay conservative without going blind.
+      // Read UNCONDITIONALLY: the fallback suppression below needs it too, and
+      // that path runs on the name-only answer — which is the one this tool's
+      // own refusal message steers a manager towards.
+      const capturedByTech = await getTechnician(tenantId, capturedBy);
+      if (newEmail && isOwnMailbox(newEmail, metaTo, capturedByTech?.connected_email)) {
+        throw new Error(
+          `${emailAddressOf(newEmail)} is this firm's own mailbox, not the caller's — it is the ` +
+            'address the message ARRIVED at. Record them without an email, or with the address ' +
+            'they actually write from.',
+        );
+      }
       const resolved: ResolvedIdentity = customerId
         ? { customerId }
         : {
@@ -6233,12 +6393,23 @@ async function dispatch(
         // message from them is recognised by code and never becomes a second
         // item on this list.
         fallbackPhone: typeof meta.fromNumber === 'string' ? meta.fromNumber : null,
-        fallbackEmail: emailAddressOf(typeof meta.from === 'string' ? meta.from : null),
+        // …and the same own-mailbox rule the webhook applies (rung 10b.2): this
+        // is a RE-ENTRY on that capture, so it must not resurrect a key the
+        // first pass was right to withhold.
+        fallbackEmail: isOwnMailbox(metaFrom, metaTo, capturedByTech?.connected_email)
+          ? null
+          : emailAddressOf(metaFrom),
         threadId: typeof meta.threadId === 'string' ? meta.threadId : null,
         resolved,
-        ...(openJob || bookVisitArg !== undefined
-          ? { decided: { ...(openJob ? { openJob } : {}), ...(bookVisitArg !== undefined ? { bookVisit: bookVisitArg } : {}) } }
-          : {}),
+        // WHO ASKED FOR THIS. The door books with `actorRef`, and it used to be
+        // hardcoded to the team lead — true while the planner was the only
+        // caller, a lie now that a manager's seat can reach this door. The
+        // schedule event must name whoever actually decided.
+        decided: {
+          ...(openJob ? { openJob } : {}),
+          ...(bookVisitArg !== undefined ? { bookVisit: bookVisitArg } : {}),
+          actorRef: identity.technicianRef,
+        },
       },
       // The injected extractor, like every other door on this surface — the
       // default is the live model, and a test must be able to reach this path
@@ -6251,7 +6422,7 @@ async function dispatch(
       if (r.status === 'duplicate') {
         throw new Error(
           'that call was retracted — somebody marked it recorded in error, so nothing was ' +
-            'written. Dismiss the item instead.',
+            'written. Do not record it: say so to the office instead.',
         );
       }
       // WHAT ACTUALLY LANDED, read back rather than assumed. The door REUSES a
@@ -6285,12 +6456,15 @@ async function dispatch(
         // predicts; this READS. If nothing on the record cites the call, the item
         // cannot become moot however well the write went, and telling the planner
         // to leave it alone would strand it open forever.
+        // Worded for BOTH callers since rung 10b.2: "at your next pass" was true
+        // of the planner and meaningless to a manager's seat, which has no pass.
         note:
           wrote.length > 0
-            ? 'the caller is on the record now — this item closes itself on the record at your ' +
-              'next pass, so leave it alone.'
+            ? 'the caller is on the record now — this item retires itself once the record cites ' +
+              'the call, so leave it alone.'
             : 'the caller is recorded, BUT nothing on the record cites this call, so this item ' +
-              'will not close itself — dismiss it, saying who it turned out to be.',
+              'will not retire itself. Say who it turned out to be: dismiss the item yourself ' +
+              'if that is a decision you make, otherwise tell the office with inform_team_lead.',
       };
     }
     case 'read_memory': {

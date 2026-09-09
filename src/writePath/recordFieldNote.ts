@@ -98,6 +98,14 @@ export interface RecordFieldNoteInput {
   decided?: {
     openJob?: { title?: string | null; jobType?: string | null };
     bookVisit?: boolean;
+    /**
+     * WHO DECIDED — the badge whose call this is, stamped on the schedule event
+     * a booking writes. Optional and defaulted to the team lead, because the
+     * planner was this door's only decider until rung 10b.2 gave the manager's
+     * seat the same tool; a booking attributed to `spine:team-lead` when a
+     * manager made the call is a small, permanent lie in the trip's history.
+     */
+    actorRef?: string;
   };
   // RUNG 10B — THE CONVERSATION this message belongs to, oldest first and
   // without the message itself. Handed to the extractor as context: a reply's
@@ -661,7 +669,7 @@ export async function recordFieldNote(
       tenantId,
       jobId: job.id,
       sourceCaptureId: captureId,
-      actorRef: TEAM_LEAD_REF,
+      actorRef: input.decided?.actorRef ?? TEAM_LEAD_REF,
       reason: 'record_caller',
     });
     bookedVisitId = booked.assignment.id;

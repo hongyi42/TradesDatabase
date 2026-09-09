@@ -878,3 +878,66 @@ describe('thread context (rung 10b)', () => {
     expect(rec.calls[0]).not.toHaveProperty('threadContext');
   });
 });
+
+describe("the firm's own mailbox is not a caller's identity (rung 10b.2)", () => {
+  let prevSecret: string | undefined;
+  beforeAll(() => {
+    prevSecret = process.env.COMPOSIO_WEBHOOK_SECRET;
+    process.env.COMPOSIO_WEBHOOK_SECRET = SECRET;
+  });
+  afterAll(() => {
+    if (prevSecret === undefined) delete process.env.COMPOSIO_WEBHOOK_SECRET;
+    else process.env.COMPOSIO_WEBHOOK_SECRET = prevSecret;
+  });
+
+  const mail = (sender: string, to: string) =>
+    body({
+      data: {
+        message_id: `own-mailbox-${sender}-${to}`,
+        sender,
+        to,
+        subject: 'kitchen tap dripping',
+        message_text: 'my kitchen tap has been dripping for about a week',
+      },
+    });
+
+  // The live specimen, 2026-09-08: the pilot mailbox was mailed FROM the pilot
+  // mailbox, and the sender was offered as the caller's identity key. Stored on
+  // a customer, that address matches every later message the firm sends itself.
+  test('a SELF-SENT message offers no fallbackEmail', async () => {
+    const raw = mail('Hongyi <office@firm.test>', 'Hongyi <office@firm.test>');
+    const rec = recorder();
+    const result = await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
+    expect(result.status).toBe('ingested'); // the mail still LANDS — only the key is withheld
+    expect(rec.calls[0].fallbackEmail).toBeNull();
+  });
+
+  test('…and it is matched on the bare address, not the display name', async () => {
+    // Same mailbox, different display name and case: still ours.
+    const raw = mail('The Office <OFFICE@Firm.test>', 'Hongyi <office@firm.test>');
+    const rec = recorder();
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
+    expect(rec.calls[0].fallbackEmail).toBeNull();
+  });
+
+  test('a REAL sender is unchanged', async () => {
+    const raw = mail('Ruth Bramley <ruth@example.test>', 'Hongyi <office@firm.test>');
+    const rec = recorder();
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
+    expect(rec.calls[0].fallbackEmail).toBe('ruth@example.test');
+  });
+
+  test('no `to` at all leaves the sender as the key', async () => {
+    const raw = body({
+      data: {
+        message_id: 'no-to-header',
+        sender: 'Ruth <ruth@example.test>',
+        subject: 'tap',
+        message_text: 'still dripping',
+      },
+    });
+    const rec = recorder();
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
+    expect(rec.calls[0].fallbackEmail).toBe('ruth@example.test');
+  });
+});

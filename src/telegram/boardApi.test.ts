@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'vitest';
-import { createHmac } from 'node:crypto';
+import { createHmac, generateKeyPairSync, sign as signEd } from 'node:crypto';
 import { Client } from 'pg';
 import type { AddressInfo } from 'node:net';
 import type http from 'node:http';
@@ -12,6 +12,10 @@ import { createJob } from '../db/jobs.js';
 import { appendRawCapture } from '../db/rawCaptures.js';
 import { bookVisit, cancelJob } from '../schedule/booking.js';
 import * as rosterCache from './rosterCache.js';
+import * as botIds from './botIds.js';
+import { createHost } from '../db/hosts.js';
+import { registerSandbox, setSandboxBotId } from '../db/sandboxPool.js';
+import { botIdFromToken, setPublicKeyForTests } from './initData.js';
 
 // Integration: the /board routes over a real HTTP server on an ephemeral port
 // against the local stack (httpServer.test.ts harness). BOARD_BOT_TOKEN is set
@@ -281,6 +285,12 @@ describe('GET /board/api/day', () => {
         'customer',
         'end',
         'jobId',
+        // WIDENED DELIBERATELY for the dispatch console, which has room to say
+        // what the work is and colours cards by triage tier. Both are gated on
+        // the same tenant re-check as jobId — a stranded cross-tenant
+        // assignment discloses neither the id nor the words (asserted below).
+        'jobTitle',
+        'priority',
         'start',
         'status',
         'technicianRefs',
@@ -297,6 +307,8 @@ describe('GET /board/api/day', () => {
       customer: 'Board Casa',
       address: '12 Board St, Springfield, OR, 97477',
       status: 'confirmed',
+      jobTitle: 'AC tune-up',
+      priority: 'routine',
     });
     expect(typeof stop.jobId).toBe('string');
     expect(stop.end.slice(0, 16)).toBe(`${DAY_A}T11:00`);
@@ -1300,6 +1312,11 @@ describe('cross-tenant nested rows never leak through the embedded read', () => 
       // The foreign job's UUID is withheld too — nulling the customer while
       // still emitting the other firm's job id would leak an identifier.
       jobId: null,
+      // Same gate, same reason: the console's card fields are read off the
+      // tenant-checked job, so a stranded cross-tenant assignment discloses
+      // neither the other firm's words nor how urgent they called it.
+      jobTitle: null,
+      priority: null,
     });
   });
 });
@@ -2082,5 +2099,119 @@ describe('route ordering', () => {
     // An unrouted /board/api/* path terminates in the board handler (404), it
     // must not fall through to the MCP catch-all.
     expect((await fetch(`${base}/board/api/nope`)).status).toBe(404);
+  });
+});
+
+// ── The one-bot-per-person merge: slips signed for a person's OWN bot ─────────
+//
+// The console is moving off the single global board bot onto each person's
+// assistant bot. A launch slip from those bots cannot be checked with an HMAC
+// here — this process does not hold their tokens, and by design never will —
+// so it is checked with Telegram's Ed25519 signature against the ids of bots
+// we own. These tests stand in for Telegram with a keypair of their own and
+// exercise the real auth path end to end.
+describe('board auth accepts a slip signed for any bot we own', () => {
+  const { publicKey: TG_PUB, privateKey: TG_PRIV } = generateKeyPairSync('ed25519');
+  const TG_PUB_HEX = TG_PUB.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex');
+  const SEAT_BOT = '7300000042'; // the manager's own assistant bot
+  const STRANGER_BOT = '8900000077'; // a bot nobody here owns
+
+  // Telegram's third-party scheme: bot id, the constant, a line feed, then the
+  // sorted fields — and no HMAC at all.
+  function signedSlip(userId: number, botId: string): string {
+    const params = new URLSearchParams({
+      auth_date: String(Math.floor(Date.now() / 1000)),
+      query_id: 'AAsigned',
+      user: JSON.stringify({ id: userId, first_name: 'Probe' }),
+    });
+    const data = [...params.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, v]) => `${k}=${v}`)
+      .join('\n');
+    params.set(
+      'signature',
+      signEd(null, Buffer.from(`${botId}:WebAppData\n${data}`, 'utf8'), TG_PRIV).toString(
+        'base64url',
+      ),
+    );
+    return params.toString();
+  }
+  const tmaSigned = (userId: number, botId: string): Record<string, string> => ({
+    Authorization: `tma ${signedSlip(userId, botId)}`,
+  });
+
+  beforeAll(async () => {
+    setPublicKeyForTests(TG_PUB_HEX);
+    // A seat on this tenant whose bot is SEAT_BOT — the allowlist reads exactly
+    // these rows, so this is what makes that bot a door rather than a stranger.
+    const host = await createHost(`merge-host-${Date.now()}`, `hash-${Date.now()}`);
+    await registerSandbox({
+      tenantId,
+      hostId: host.id,
+      sandboxRef: 'merge-s1',
+      botUsername: '@merge_s1_bot',
+    });
+    await setSandboxBotId({ tenantId, sandboxRef: 'merge-s1', botId: SEAT_BOT });
+    botIds.clear();
+  });
+
+  afterAll(() => {
+    setPublicKeyForTests(null);
+    botIds.clear();
+  });
+
+  test("a manager's slip from their own assistant bot is accepted", async () => {
+    const resp = await day(`?from=${DAY_A}&to=${DAY_A}`, tmaSigned(900000001, SEAT_BOT));
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { days: unknown[] };
+    expect(Array.isArray(body.days)).toBe(true);
+  });
+
+  test('THE PHISHING CASE: a genuine Telegram slip from a bot we do not own is refused', async () => {
+    // Telegram signed this for real. It carries a real manager's user id — the
+    // shape of a lookalike Mini App harvesting a launch. Only the bot id stops it.
+    const resp = await day(`?from=${DAY_A}&to=${DAY_A}`, tmaSigned(900000001, STRANGER_BOT));
+    expect(resp.status).toBe(401);
+  });
+
+  test('the board bot still works with no pool row at all (its id comes from the token)', async () => {
+    const boardId = botIdFromToken(process.env.BOARD_BOT_TOKEN)!;
+    expect(boardId).toBe('7000000009');
+    const resp = await day(`?from=${DAY_A}&to=${DAY_A}`, tmaSigned(900000001, boardId));
+    expect(resp.status).toBe(200);
+  });
+
+  test('the old HMAC slip keeps working while the changeover runs', async () => {
+    const resp = await day(`?from=${DAY_A}&to=${DAY_A}`, tma(900000001));
+    expect(resp.status).toBe(200);
+  });
+
+  test('a signature is never authorisation: an unknown account is still refused', async () => {
+    const resp = await day(`?from=${DAY_A}&to=${DAY_A}`, tmaSigned(555000999, SEAT_BOT));
+    expect(resp.status).toBe(401);
+  });
+
+  test('a retired seat stops being a door', async () => {
+    const client = getClient();
+    await client
+      .from('sandbox_pool')
+      .update({ retired_at: new Date().toISOString() })
+      .eq('tenant_id', tenantId)
+      .eq('sandbox_ref', 'merge-s1');
+    botIds.clear(); // the TTL would hide this for 5 minutes otherwise
+    const resp = await day(`?from=${DAY_A}&to=${DAY_A}`, tmaSigned(900000001, SEAT_BOT));
+    expect(resp.status).toBe(401);
+    await client
+      .from('sandbox_pool')
+      .update({ retired_at: null })
+      .eq('tenant_id', tenantId)
+      .eq('sandbox_ref', 'merge-s1');
+    botIds.clear();
+  });
+
+  test('a token pasted where an id belongs is refused before it reaches the DB', async () => {
+    await expect(
+      setSandboxBotId({ tenantId, sandboxRef: 'merge-s1', botId: '7300000042:AAHsecret' }),
+    ).rejects.toThrow(/numeric id, not the token/);
   });
 });

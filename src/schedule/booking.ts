@@ -46,6 +46,9 @@ import {
   type Technician,
   type ParticipantRef,
   type WeeklyPattern,
+  untimeVisitRow,
+  getVisitWithRefsForTenant,
+  participantsOf,
 } from '../db/index.js';
 import { isTechnicianAvailableOn } from './availability.js';
 
@@ -1017,6 +1020,93 @@ export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Visi
 // reschedule is cancel + insert), so both directions follow that shape: cancel
 // the old row, insert a fresh unplaced row carrying the range/promise.
 // Placed rows are refused — move_visit owns them (same times).
+// ---- Untime: a placed visit back to "no time set" (console undo, 2026-09-07) ----
+//
+// The inverse of "drag a parked visit onto the calendar". Everything else the
+// console does is reversible by an existing verb; this was the gap. The crew
+// stays — an untimed visit WITH people on it is a legal tray row (rung 9a) —
+// and the caller that wants the old crew back uses attachUnplacedVisit after.
+//
+// Customer-visible like a cancel: the appointment the customer was told about
+// stops existing as a time. So the preview's verdict is the cancel rule —
+// placed → confirm — which, since only a placed row can be untimed, is
+// always true here. Stated through the same function rather than hard-coded,
+// so the two verbs cannot drift.
+
+export interface UntimeVisitInput {
+  tenantId: string;
+  visitId: string;
+  reason: string;
+  actorRef: string;
+}
+
+export interface UntimeVisitPreview {
+  visitId: string;
+  customerName: string | null;
+  day: string;
+  technicianRefs: string[];
+  requiresConfirmation: boolean;
+}
+
+async function resolveUntime(tenantId: string, visitId: string) {
+  const row = await getVisitWithRefsForTenant(visitId, tenantId);
+  if (!row) throw new Error('visit not found');
+  if (row.status !== 'confirmed' && row.status !== 'proposed') {
+    throw new Error(`cannot untime a ${row.status} visit`);
+  }
+  if (!isPlaced(row)) throw new Error('the visit already has no time set');
+  return { row, crew: participantsOf(row, tenantId) };
+}
+
+export async function previewUntimeVisit(
+  tenantId: string,
+  visitId: string,
+): Promise<UntimeVisitPreview> {
+  const { row, crew } = await resolveUntime(tenantId, visitId);
+  const job = await getJob(row.job_id);
+  const customer = job && job.tenant_id === tenantId ? await getCustomer(job.customer_id) : null;
+  return {
+    visitId: row.id,
+    // jobs.customer_id is an ID-only FK, so a migration, restore or manual fix
+    // can point a job at another tenant's customer. Every sibling read
+    // re-checks the customer's own tenant before emitting the name; this one
+    // did not (review finding 2026-09-09).
+    customerName: customer && customer.tenant_id === tenantId ? customer.name : null,
+    day: visitDay(row),
+    technicianRefs: crew.map((p) => p.ref),
+    requiresConfirmation: cancelRequiresConfirmation(row),
+  };
+}
+
+export async function untimeVisit(
+  input: UntimeVisitInput,
+): Promise<{ visit: Visit; technicianRefs: string[] }> {
+  if (!input.reason?.trim()) throw new Error('reason is required for an untime');
+  const { row, crew } = await resolveUntime(input.tenantId, input.visitId);
+  const visit = await untimeVisitRow(row.id, input.reason);
+  // 'moved' with toDay 'no time set': boardNotify's existing copy already says
+  // "Your visit moved: <day> → no time set yet" to everyone still on it.
+  await appendScheduleEvent({
+    tenantId: input.tenantId,
+    visitId: visit.id,
+    kind: 'moved',
+    actorRef: input.actorRef,
+    detail: {
+      fromDay: visitDay(row),
+      toDay: visitDay(visit),
+      untimed: true,
+      // THE ONLY SURVIVING RECORD of when this trip was. untimeVisitRow nulls
+      // both timestamps, so unlike a cancel (which keeps starts_at) the clock
+      // time exists nowhere else afterwards — the client's undo stack is one
+      // tab's memory, not history (review finding 2026-09-09).
+      fromStart: row.starts_at,
+      fromEnd: row.ends_at,
+      previousTechnicianIds: crew.map((p) => p.technicianId),
+    },
+  });
+  return { visit, technicianRefs: crew.map((p) => p.ref) };
+}
+
 export interface AttachUnplacedResult {
   // Same shape and same reason as MoveVisitResult: attaching a person edits the
   // visit, so its id survives and the tray row the manager tapped still exists.
@@ -1309,7 +1399,28 @@ export async function cancelJob(input: CancelJobInput): Promise<CancelJobResult>
   }
   // Guarded transition — a concurrent flip between our read and this write
   // surfaces instead of being overwritten (updateJobStatus's CAS-on-status).
-  const cancelledJob = await updateJobStatus(job.id, 'cancelled');
+  //
+  // If it fails HERE the visits above are already cancelled, and cancelled is
+  // terminal. The bare error would reach the manager as a plain conflict —
+  // 'nothing happened' — while their customer's appointments are gone (review
+  // finding 2026-09-09). Say what actually happened instead. Re-running fixes
+  // the ordinary case: the visits are no longer live, so the loop is a no-op
+  // and only the status flip is retried. The case it cannot fix — the job
+  // having moved to a status that can never reach cancelled — needs a human,
+  // and this message is what tells them.
+  let cancelledJob: Job;
+  try {
+    cancelledJob = await updateJobStatus(job.id, 'cancelled');
+  } catch (err) {
+    if (!cancelledVisits.length) throw err;
+    const why = err instanceof Error ? err.message : String(err);
+    console.error('cancelJob: visits cancelled but the job status did not change', err);
+    throw new Error(
+      `${cancelledVisits.length} visit(s) were cancelled, but the job itself could not be ` +
+        `cancelled (${why}). Those appointments are already off the calendar — re-run to ` +
+        `finish, or fix the job's status.`,
+    );
+  }
   await appendScheduleEvent({
     tenantId,
     kind: 'job_cancelled', // plain-text kind; produces no push (manager-initiated)

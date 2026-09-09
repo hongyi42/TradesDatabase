@@ -1,0 +1,557 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dispatch console — PREVIEW (fixture data)</title>
+  <!-- Same external script the real console loads. Here it is NOT for auth
+       (nothing on this page checks a slip) — it is so that, opened inside a
+       real Telegram webview, the page calls ready()/expand() and picks up the
+       viewport variables, and therefore looks the way /console will. -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="./console.css">
+  <style>
+    .preview-banner {
+      position: fixed; bottom: 0; left: 0; right: 0; z-index: 70;
+      background: #7a3e00; color: #fff; font: 12px/1.4 system-ui, sans-serif;
+      padding: 4px 10px; text-align: center;
+    }
+    body { padding-bottom: 24px; }
+    .shell { height: calc(var(--tg-viewport-stable-height, 100vh) - 24px); }
+  </style>
+</head>
+<body>
+  <!--
+    A LOOK-AT-IT HARNESS, not part of the product.
+
+    It loads the REAL console modules (app.js → grid.js, jobModal.js, palette.js,
+    api.js) and swaps only ONE thing underneath them: window.fetch. Every request
+    the client makes is answered from an in-memory fixture firm, so the whole UI —
+    layout, colours, drag-and-drop, the new-job form, the confirm doctrine — can be
+    driven with no server, no database and no Telegram.
+
+    It is deliberately a SEPARATE page. The console's own index.html is untouched
+    and never loads any of this, so there is no code path where fixture data can
+    reach a real user: this file has to be opened by name.
+
+    Serve it over http (ES modules will not load from file://):
+        python -m http.server 8899 --directory web/console
+        → http://localhost:8899/preview.html
+  -->
+  <script>
+  (function () {
+    'use strict';
+
+    // ── The fixture firm ────────────────────────────────────────────────────
+    const pad = (n) => String(n).padStart(2, '0');
+    const ymd = (d) => d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate());
+    const now = new Date();
+    const TODAY = ymd(new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())));
+    const shift = (base, days) => ymd(new Date(Date.parse(base + 'T00:00:00Z') + days * 86400000));
+    // Monday of this week, so the fixtures land on a realistic working week
+    // wherever "today" happens to fall.
+    const dow = (new Date(Date.parse(TODAY + 'T00:00:00Z')).getUTCDay() + 6) % 7;
+    const MON = shift(TODAY, -dow);
+    const D = (n) => shift(MON, n);
+
+    const roster = [
+      { ref: 'mw', name: 'Marcus Webb' },
+      { ref: 'dh', name: 'Derek Holloway' },
+      { ref: 'lr', name: 'Luis Reyes' },
+      { ref: 'ts', name: 'Tanya Shores' },
+      { ref: 'gs', name: 'Gabe Smith' },
+      { ref: 'pn', name: 'Priya Nair' },
+    ];
+
+    const customers = [
+      { id: 'c1', name: 'James Calloway', phone: '555-0142', email: 'jc@example.com', address: '18 Alder Ct', city: 'Springfield' },
+      { id: 'c2', name: 'Patricia Nguyen', phone: '555-0188', email: null, address: '404 Beech Ave', city: 'Springfield' },
+      { id: 'c3', name: 'Sandra Lane', phone: '555-0119', email: null, address: '7 Cypress Rd', city: 'Shelbyville' },
+      { id: 'c4', name: 'Kevin Marsh', phone: '555-0173', email: null, address: '221 Dogwood Ln', city: 'Springfield' },
+      { id: 'c5', name: 'Darnell Foster', phone: '555-0166', email: null, address: '9 Elm St', city: 'Springfield' },
+      { id: 'c6', name: 'Maggie Thornton', phone: '555-0134', email: null, address: '55 Fir Blvd', city: 'Shelbyville' },
+      { id: 'c7', name: 'Ray Espinoza', phone: '555-0150', email: null, address: '12 Grove Way', city: 'Springfield' },
+      { id: 'c8', name: 'Curtis Bale', phone: '555-0107', email: null, address: '860 Hawthorn Dr', city: 'Springfield' },
+    ];
+    const custById = (id) => customers.find((c) => c.id === id) || null;
+
+    let seq = 100;
+    const uid = (p) => p + ++seq;
+
+    // One row per TRIP. The stop-per-person fan-out happens at read time, the way
+    // the real server does it.
+    const visits = [
+      v('c1', 'No cooling upstairs', 'urgent', D(0), '08:00', '10:00', ['dh']),
+      v('c2', 'Annual maintenance', 'maintenance', D(0), '09:30', '10:30', ['mw']),
+      v('c3', 'Thermostat replacement', 'routine', D(0), '11:00', '12:00', ['lr']),
+      v('c4', 'Condenser fan motor', 'routine', D(0), '13:00', '15:00', ['ts', 'gs']),
+      v('c5', 'Duct inspection', 'routine', D(0), '14:00', '15:30', ['dh']),
+      v('c6', 'Refrigerant leak', 'emergency', D(0), '15:30', '17:30', ['mw']),
+      v('c7', 'Filter swap', 'routine', D(0), '10:00', '10:45', null),
+
+      v('c8', 'Furnace will not ignite', 'emergency', D(1), '07:30', '09:30', ['lr']),
+      v('c1', 'Return follow-up', 'routine', D(1), '11:00', '12:30', ['dh']),
+      v('c3', 'Heat pump service', 'routine', D(1), '13:30', '16:00', ['pn', 'ts']),
+
+      v('c5', 'Coil clean', 'routine', D(2), '08:00', '10:00', ['gs']),
+      v('c2', 'Zone valve stuck', 'urgent', D(2), '10:30', '12:00', ['mw']),
+      v('c6', 'New install walkthrough', 'routine', D(2), '13:00', '17:00', ['lr', 'dh']),
+
+      v('c7', 'Compressor diagnostic', 'urgent', D(3), '09:00', '11:30', ['ts']),
+      v('c4', 'Humidifier fit', 'routine', D(3), '12:00', '14:00', ['pn']),
+      v('c8', 'Quarterly maintenance', 'maintenance', D(3), '15:00', '16:00', ['gs']),
+
+      v('c1', 'Ductwork quote', 'routine', D(4), '08:30', '10:00', ['mw']),
+      v('c3', 'Drain line clog', 'urgent', D(4), '10:30', '11:30', ['dh']),
+      v('c5', 'Two-stage furnace swap', 'routine', D(4), '12:30', '17:00', ['lr', 'gs', 'ts']),
+
+      v('c2', 'Weekend emergency call', 'emergency', D(5), '09:00', '11:00', ['pn']),
+      v('c6', 'Follow-up visit', 'routine', D(8), '09:00', '10:30', ['mw']),
+      v('c4', 'Seasonal changeover', 'maintenance', D(9), '13:00', '15:00', ['dh']),
+      v('c7', 'Airflow balance', 'routine', D(11), '10:00', '12:00', ['ts']),
+
+      // History: completed trips, drawn grey and inert. Dated off TODAY so
+      // they sit in the past whatever weekday the preview is opened on.
+      v('c4', 'Early no-heat call', 'emergency', TODAY, '07:00', '08:00', ['dh'], 'completed'),
+      v('c1', 'Filter change', 'maintenance', shift(TODAY, -1), '08:30', '09:15', ['mw'], 'completed'),
+      v('c5', 'Blower belt', 'routine', shift(TODAY, -1), '10:00', '11:30', ['lr'], 'completed'),
+      v('c3', 'Capacitor swap', 'urgent', shift(TODAY, -1), '13:00', '14:00', ['dh'], 'completed'),
+      v('c7', 'Ignitor replacement', 'urgent', shift(TODAY, -2), '09:00', '10:30', ['ts'], 'completed'),
+      v('c8', 'Heat pump tune-up', 'maintenance', shift(TODAY, -2), '13:00', '15:00', ['gs', 'pn'], 'completed'),
+      v('c2', 'Thermostat wiring', 'routine', shift(TODAY, -3), '11:00', '12:00', ['mw'], 'completed'),
+      v('c6', 'Duct sealing', 'routine', shift(TODAY, -6), '09:00', '13:00', ['lr', 'dh'], 'completed'),
+      v('c1', 'Spring tune-up', 'maintenance', shift(TODAY, -8), '10:00', '11:00', ['gs'], 'completed'),
+      v('c5', 'Condenser coil clean', 'routine', shift(TODAY, -13), '14:00', '15:30', ['ts'], 'completed'),
+      v('c3', 'Gas valve', 'emergency', shift(TODAY, -20), '08:00', '10:00', ['dh'], 'completed'),
+    ];
+
+    function v(customerId, jobTitle, priority, date, start, end, crew, status) {
+      return {
+        id: uid('vis-'),
+        jobId: uid('job-'),
+        customerId: customerId,
+        jobTitle: jobTitle,
+        priority: priority,
+        date: date,
+        start: start,
+        end: end,
+        crew: crew || [],
+        status: status || 'confirmed',
+      };
+    }
+
+    // The tray: jobs with no visit at all, and visits with no time set.
+    // `daysAgo` becomes created_at — the sort inside a tier is oldest-first.
+    const agoISO = (days) => new Date(Date.now() - days * 86400000).toISOString();
+    const unscheduledJobs = [
+      { jobId: uid('job-'), title: 'Blower motor noise', customerId: 'c3', priority: 'urgent', durationMinutes: 90, createdAt: agoISO(2) },
+      { jobId: uid('job-'), title: 'Estimate — mini split', customerId: 'c7', priority: 'routine', durationMinutes: 60, createdAt: agoISO(19) },
+      { jobId: uid('job-'), title: 'Pilot light out', customerId: 'c5', priority: 'emergency', durationMinutes: 45, createdAt: agoISO(0) },
+      { jobId: uid('job-'), title: 'Warranty registration visit', customerId: 'c2', priority: 'routine', durationMinutes: null, createdAt: agoISO(1) },
+      { jobId: uid('job-'), title: 'Capacitor replacement', customerId: 'c4', priority: 'urgent', durationMinutes: 60, createdAt: agoISO(6) },
+      { jobId: uid('job-'), title: 'Spring tune-up', customerId: 'c6', priority: 'maintenance', durationMinutes: 60, createdAt: agoISO(11) },
+      { jobId: uid('job-'), title: 'Attic duct reroute quote', customerId: 'c8', priority: 'routine', durationMinutes: 120, createdAt: agoISO(4) },
+      { jobId: uid('job-'), title: 'Smart thermostat install', customerId: 'c1', priority: 'routine', durationMinutes: 45, createdAt: agoISO(9) },
+      { jobId: uid('job-'), title: 'Odd smell from vents', customerId: 'c2', priority: 'urgent', durationMinutes: null, createdAt: agoISO(1) },
+      { jobId: uid('job-'), title: 'Fall tune-up', customerId: 'c3', priority: 'maintenance', durationMinutes: 60, createdAt: agoISO(24) },
+      { jobId: uid('job-'), title: 'Condensate pump', customerId: 'c5', priority: 'routine', durationMinutes: 30, createdAt: agoISO(3) },
+      { jobId: uid('job-'), title: 'Second opinion on quote', customerId: 'c7', priority: 'routine', durationMinutes: 45, createdAt: agoISO(13) },
+      { jobId: uid('job-'), title: 'UV light add-on', customerId: 'c4', priority: 'maintenance', durationMinutes: 45, createdAt: agoISO(2) },
+      { jobId: uid('job-'), title: 'No heat — tenants on site', customerId: 'c6', priority: 'emergency', durationMinutes: 120, createdAt: agoISO(0) },
+    ];
+    // The tray holds exactly two shapes (rung 9a: a visit HAS a time or it
+    // does not — there is no "date without a time"):
+    //   * UNTIMED: no date, no time; crew or nobody. Only ever in the tray.
+    //     These live here.
+    //   * PLACED WITH NOBODY ON IT: date + time, crew empty. On the calendar
+    //     in the Unassigned column AND in the tray (overdue once the day has
+    //     gone). These live in `visits` with an empty crew — see below — and
+    //     the bucket builder lists them; that is what the server does.
+    // (An earlier fixture had "date, no time, crew" rows; undoing a drag of
+    // one came back without its date, which the server could never produce.)
+    const parkedVisits = [
+      { visitId: uid('vis-'), jobId: uid('job-'), customerId: 'c8', jobTitle: 'Ductless head relocation', date: null, startTime: null, endTime: null, overdue: false, crew: ['pn'] },
+      { visitId: uid('vis-'), jobId: uid('job-'), customerId: 'c6', jobTitle: 'Install day 2', date: null, startTime: null, endTime: null, overdue: false, crew: ['lr', 'dh'] },
+      { visitId: uid('vis-'), jobId: uid('job-'), customerId: 'c2', jobTitle: 'Zone board swap', date: null, startTime: null, endTime: null, overdue: false, crew: [] },
+    ];
+    // Placed, nobody on them: on the grid (Unassigned) and in the tray.
+    visits.push(
+      v('c1', 'Second-floor vent add', 'routine', shift(TODAY, -3), '10:00', '12:00', []),
+      v('c3', 'Return with parts', 'urgent', shift(TODAY, -1), '13:00', '14:00', []),
+      v('c5', 'Warranty inspection', 'routine', shift(TODAY, 4), '09:00', '10:00', []),
+    );
+    // The tray's parked half, the way readLooseBucket builds it.
+    const parkedRows = () =>
+      parkedVisits
+        .map((p) => ({
+          visitId: p.visitId, date: null, weekday: null, startTime: null, endTime: null,
+          customer: (custById(p.customerId) || {}).name || null, jobTitle: p.jobTitle,
+          overdue: false, technicianRefs: p.crew.slice(), technicianNames: p.crew.map(nameOf),
+        }))
+        .concat(
+          visits
+            .filter((t) => t.status === 'confirmed' && t.crew.length === 0)
+            .map((t) => ({
+              visitId: t.id, date: t.date, weekday: null, startTime: t.start, endTime: t.end,
+              customer: (custById(t.customerId) || {}).name || null, jobTitle: t.jobTitle,
+              overdue: t.date < TODAY, technicianRefs: [], technicianNames: [],
+            })),
+        );
+
+    // ── Read model: the payload shape consoleApi.ts returns ─────────────────
+    const iso = (date, hhmm) => date + 'T' + hhmm + ':00';
+    const nameOf = (ref) => (roster.find((t) => t.ref === ref) || {}).name || ref;
+    const addressOf = (c) => (c ? c.address + ', ' + c.city : null);
+
+    function stopsFor(date) {
+      const out = [];
+      for (const trip of visits) {
+        if (trip.date !== date) continue;
+        const c = custById(trip.customerId);
+        const base = {
+          visitId: trip.id,
+          technicianRefs: trip.crew.slice(),
+          technicianNames: trip.crew.map(nameOf),
+          unassigned: trip.crew.length === 0,
+          customer: c ? c.name : null,
+          address: addressOf(c),
+          start: iso(trip.date, trip.start),
+          end: iso(trip.date, trip.end),
+          status: trip.status,
+          jobId: trip.jobId,
+          jobTitle: trip.jobTitle,
+          priority: trip.priority,
+        };
+        // ONE STOP PER PERSON, all sharing the visitId — exactly what
+        // readBoardDays emits for a manager, so the day view's lanes work and
+        // week/month have something real to fold.
+        if (trip.crew.length === 0) {
+          out.push(Object.assign({ technicianRef: null, technicianName: null }, base));
+        } else {
+          for (const ref of trip.crew) {
+            out.push(Object.assign({ technicianRef: ref, technicianName: nameOf(ref) }, base));
+          }
+        }
+      }
+      return out;
+    }
+
+    function calendar(from, to) {
+      const days = [];
+      for (let d = from; d <= to; d = shift(d, 1)) {
+        const stops = stopsFor(d);
+        if (stops.length) days.push({ date: d, stops: stops });
+      }
+      return {
+        from: from,
+        to: to,
+        days: days,
+        today: TODAY,
+        timezone: 'America/Chicago',
+        tier: 'manager',
+        self: 'gs',
+        roster: roster,
+        bucket: {
+          parkedVisits: parkedRows(),
+          unscheduledJobs: unscheduledJobs.map((j) => ({
+            jobId: j.jobId,
+            title: j.title,
+            customer: (custById(j.customerId) || {}).name || null,
+            priority: j.priority,
+            durationMinutes: j.durationMinutes,
+            createdAt: j.createdAt || TODAY + 'T08:00:00Z',
+          })),
+        },
+      };
+    }
+
+    // ── Writes: enough state to make the gestures feel real ─────────────────
+    const findVisit = (id) => visits.find((t) => t.id === id) || null;
+
+    function doUntime(b) {
+      const i = visits.findIndex((t) => t.id === b.visitId);
+      if (i < 0) throw new Error('the visit already has no time set');
+      if (visits[i].status === 'completed') throw new Error('cannot untime a completed visit');
+      const [t] = visits.splice(i, 1);
+      parkedVisits.push({ visitId: t.id, jobId: t.jobId, customerId: t.customerId, jobTitle: t.jobTitle, date: null, startTime: null, endTime: null, overdue: false, crew: t.crew.slice() });
+      return { status: 'untimed', visitId: t.id, technicianRefs: t.crew.slice() };
+    }
+
+    function doMove(b) {
+      if (b.attachUnplaced) {
+        // Crew change on a tray row — the visit stays untimed.
+        const p = parkedVisits.find((x) => x.visitId === b.visitId);
+        if (!p) throw new Error('visit not found');
+        p.crew = b.unassign ? [] : b.technicianRefs ? b.technicianRefs.slice() : b.technicianRef ? [b.technicianRef] : p.crew;
+        return { status: 'moved', attach: !b.unassign, unassigned: !!b.unassign, untimed: true, visitId: p.visitId, technicianRefs: p.crew.slice() };
+      }
+      let trip = findVisit(b.visitId);
+      if (trip && trip.status === 'completed') throw new Error('cannot move a completed visit');
+      if (!trip) {
+        // A parked tray row being placed for the first time.
+        const idx = parkedVisits.findIndex((p) => p.visitId === b.visitId);
+        if (idx < 0) throw new Error('visit not found');
+        const p = parkedVisits.splice(idx, 1)[0];
+        trip = {
+          id: p.visitId, jobId: p.jobId, customerId: p.customerId, jobTitle: p.jobTitle,
+          priority: 'routine', date: b.date, start: b.startTime,
+          end: b.endTime || addMin(b.startTime, 60), crew: p.crew.slice(), status: 'confirmed',
+        };
+        visits.push(trip);
+      }
+      trip.date = b.date;
+      trip.start = b.startTime;
+      trip.end = b.endTime || addMin(b.startTime, span(trip.start, trip.end) || 60);
+      if (b.unassign) trip.crew = [];
+      else if (b.technicianRefs) trip.crew = b.technicianRefs.slice();
+      else if (b.technicianRef) trip.crew = [b.technicianRef];
+      return { status: 'moved', start: iso(trip.date, trip.start), end: iso(trip.date, trip.end) };
+    }
+
+    // Jobs whose only visit was cancelled: still open, bookable again (the
+    // undo-of-cancel path). The server has these for free — cancelled rows
+    // stay in the table; the fixture keeps a side list.
+    const cancelledTrips = [];
+    function doBook(b) {
+      let j = null;
+      const idx = unscheduledJobs.findIndex((x) => x.jobId === b.jobId);
+      if (idx >= 0) {
+        j = unscheduledJobs.splice(idx, 1)[0];
+        jobFacts[j.jobId] = { durationMinutes: j.durationMinutes, createdAt: j.createdAt };
+      } else {
+        const gone = cancelledTrips.find((t) => t.jobId === b.jobId);
+        if (!gone) throw new Error('job not found');
+        j = { jobId: gone.jobId, customerId: gone.customerId, title: gone.jobTitle, priority: gone.priority };
+      }
+      const crew = b.technicianRefs ? b.technicianRefs.slice() : b.technicianRef ? [b.technicianRef] : [];
+      if (!b.date) {
+        const pv = { visitId: uid('vis-'), jobId: j.jobId, customerId: j.customerId, jobTitle: j.title, date: null, startTime: null, endTime: null, overdue: false, crew: crew };
+        parkedVisits.push(pv);
+        return { status: 'booked', visitId: pv.visitId, jobId: j.jobId, date: null, startTime: null, endTime: null };
+      }
+      const trip = {
+        id: uid('vis-'), jobId: j.jobId, customerId: j.customerId, jobTitle: j.title,
+        priority: j.priority, date: b.date, start: b.startTime, end: b.endTime || addMin(b.startTime, 60),
+        crew: crew,
+        status: 'confirmed',
+      };
+      visits.push(trip);
+      return { status: 'booked', visitId: trip.id, jobId: trip.jobId, date: b.date, startTime: b.startTime, endTime: b.endTime };
+    }
+
+    function doNewJob(b) {
+      let customerId = b.customerId;
+      if (b.newCustomer) {
+        customerId = uid('c');
+        customers.push({
+          id: customerId, name: b.newCustomer.name, phone: b.newCustomer.phone || null,
+          email: null, address: b.newCustomer.addressLine1 || '', city: b.newCustomer.city || '',
+        });
+      }
+      // The MINT GUARD, reproduced so the refusal + "create anyway" path can be
+      // seen: it fires on a titleless booking, or a title naming open work.
+      if (!b.forceNewJob && !b.newCustomer) {
+        const open = visits.filter((t) => t.customerId === customerId);
+        const stated = (b.title || '').trim().toLowerCase();
+        const clash = stated ? open.some((t) => t.jobTitle.toLowerCase() === stated) : open.length > 0;
+        if (clash) {
+          const list = open.slice(0, 3).map((t) => "'" + t.jobTitle + "'").join('; ');
+          throw new Error(
+            'NOT booked: this customer already has open work on file — ' + list +
+            '. A customerId call describes a brand-NEW job (one job, many visits — a duplicate job ' +
+            'splits the record), so pass the matching jobId from that list instead. Pass ' +
+            'forceNewJob:true ONLY if this is genuinely different new work.',
+          );
+        }
+      }
+      const trip = {
+        id: uid('vis-'), jobId: uid('job-'), customerId: customerId,
+        jobTitle: b.title || 'New job', priority: b.priority || 'routine',
+        date: b.date || null, start: b.startTime || null, end: b.endTime || null,
+        crew: b.technicianRefs ? b.technicianRefs.slice() : [], status: 'confirmed',
+      };
+      if (trip.date) visits.push(trip);
+      else {
+        parkedVisits.push({
+          visitId: trip.id, jobId: trip.jobId, customerId: customerId, jobTitle: trip.jobTitle,
+          date: null, startTime: null, endTime: null, overdue: false, crew: trip.crew,
+        });
+      }
+      return {
+        status: 'booked', visitId: trip.id, jobId: trip.jobId, customerId: customerId,
+        date: b.date || null, startTime: b.startTime || null, endTime: b.endTime || null,
+      };
+    }
+
+    // What the server does for free (listUnscheduledOpenJobsWithCustomer is an
+    // anti-join on live visits): a job whose LAST live visit is cancelled is
+    // open work with no visit again, and reappears in "Not on the calendar".
+    // The fixture has to put it back by hand. `jobFacts` remembers the tray
+    // row's length/age across a booking so the row comes back as it was.
+    const jobFacts = {};
+    function jobBackToTray(jobId, customerId, title, priority, fallbackDuration) {
+      const stillLive = visits.some((t) => t.jobId === jobId && t.status !== 'completed') ||
+        parkedVisits.some((p) => p.jobId === jobId);
+      if (stillLive || unscheduledJobs.some((j) => j.jobId === jobId)) return;
+      const facts = jobFacts[jobId] || {};
+      unscheduledJobs.push({
+        jobId: jobId, title: title, customerId: customerId, priority: priority || 'routine',
+        durationMinutes: facts.durationMinutes !== undefined ? facts.durationMinutes : fallbackDuration,
+        createdAt: facts.createdAt || new Date().toISOString(),
+      });
+    }
+    function doCancel(b) {
+      const i = visits.findIndex((t) => t.id === b.visitId);
+      if (i < 0) {
+        // A parked (untimed or dated-but-empty) tray row.
+        const pi = parkedVisits.findIndex((p) => p.visitId === b.visitId);
+        if (pi < 0) throw new Error('visit not found');
+        const [p] = parkedVisits.splice(pi, 1);
+        cancelledTrips.push({ jobId: p.jobId, customerId: p.customerId, jobTitle: p.jobTitle, priority: 'routine' });
+        jobBackToTray(p.jobId, p.customerId, p.jobTitle, 'routine', null);
+        return { status: 'cancelled', day: p.date };
+      }
+      if (visits[i].status === 'completed') throw new Error('cannot unschedule a completed visit');
+      const [gone] = visits.splice(i, 1);
+      cancelledTrips.push(gone);
+      jobBackToTray(gone.jobId, gone.customerId, gone.jobTitle, gone.priority, span(gone.start, gone.end));
+      return { status: 'cancelled', day: gone.date };
+    }
+
+    function visitDetail(id) {
+      const trip = findVisit(id) ||
+        (function () {
+          const p = parkedVisits.find((x) => x.visitId === id);
+          return p ? { id: p.visitId, jobId: p.jobId, customerId: p.customerId, jobTitle: p.jobTitle, priority: 'routine', date: null, start: null, end: null, crew: p.crew, status: 'confirmed' } : null;
+        })();
+      if (!trip) throw new Error('visit not found');
+      const c = custById(trip.customerId);
+      return {
+        visitId: trip.id,
+        status: trip.status,
+        start: trip.date ? iso(trip.date, trip.start) : null,
+        end: trip.date ? iso(trip.date, trip.end) : null,
+        completedAt: trip.status === 'completed' && trip.date ? iso(trip.date, trip.end) : null,
+        unassigned: trip.crew.length === 0,
+        technicianRef: trip.crew[0] || null,
+        technicianName: trip.crew[0] ? nameOf(trip.crew[0]) : null,
+        technicianRefs: trip.crew.slice(),
+        technicianNames: trip.crew.map(nameOf),
+        jobId: trip.jobId,
+        jobTitle: trip.jobTitle,
+        jobPriority: trip.priority,
+        jobDurationMinutes: trip.date ? span(trip.start, trip.end) : null,
+        customerNotes: [
+          { key: 'gateCode', value: '4417' },
+          { key: 'dogOnSite', value: 'yes — friendly, keep the side gate shut' },
+        ],
+        customer: c ? { name: c.name, phone: c.phone, email: c.email, address: addressOf(c) } : null,
+      };
+    }
+
+    const mins = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+    const span = (a, b) => (a && b ? mins(b) - mins(a) : null);
+    const addMin = (hhmm, n) => {
+      const m = Math.min(24 * 60 - 1, mins(hhmm) + n);
+      return pad(Math.floor(m / 60)) + ':' + pad(m % 60);
+    };
+
+    // ── The one substitution: window.fetch ──────────────────────────────────
+    const json = (body, status) =>
+      Promise.resolve(new Response(JSON.stringify(body), {
+        status: status || 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+
+    window.fetch = function (path, init) {
+      const url = new URL(String(path), 'http://preview.local');
+      const p = url.pathname;
+      const q = url.searchParams;
+      const method = (init && init.method) || 'GET';
+      let body = {};
+      try { body = init && init.body ? JSON.parse(init.body) : {}; } catch (e) { body = {}; }
+      const preview = q.get('preview') === '1' || body.preview === true;
+
+      try {
+        if (p === '/console/api/calendar') return json(calendar(q.get('from'), q.get('to')));
+        if (p === '/console/api/visit') return json(visitDetail(q.get('visitId')));
+        if (p === '/console/api/customers') {
+          const needle = (q.get('q') || '').toLowerCase();
+          if (needle.length < 2) return json({ customers: [] });
+          return json({
+            customers: customers
+              .filter((c) => (c.name + ' ' + (c.phone || '') + ' ' + c.address).toLowerCase().indexOf(needle) >= 0)
+              .map((c) => ({ id: c.id, name: c.name, phone: c.phone, address: c.address, city: c.city })),
+          });
+        }
+        if (method === 'POST' && p === '/console/api/move') {
+          return preview ? json({ requiresConfirmation: false, toDay: body.date }) : json(doMove(body));
+        }
+        if (method === 'POST' && p === '/console/api/canceljob') {
+          const j = unscheduledJobs.find((x) => x.jobId === body.jobId);
+          const live = visits.filter((t) => t.jobId === body.jobId && t.status === 'confirmed');
+          const parked = parkedVisits.filter((x) => x.jobId === body.jobId);
+          if (!j && !live.length && !parked.length) throw new Error('cannot cancel a cancelled job — only open or in-progress work can be cancelled (it already is)');
+          const title = j ? j.title : (live[0] || parked[0]).jobTitle;
+          const custId = j ? j.customerId : (live[0] || parked[0]).customerId;
+          if (preview) {
+            return json({ status: 'preview', requiresConfirmation: true, jobId: body.jobId, jobTitle: title, customerName: (custById(custId) || {}).name || null,
+              visits: live.map((t) => ({ visitId: t.id, day: t.date, startTime: t.start, technicianRef: t.crew[0] || null, technicianRefs: t.crew.slice() })) });
+          }
+          if (!body.reason) return json({ error: 'reason is required' }, 400);
+          if (j) unscheduledJobs.splice(unscheduledJobs.indexOf(j), 1);
+          for (const t of live) { visits.splice(visits.indexOf(t), 1); }
+          for (const x of parked) { parkedVisits.splice(parkedVisits.indexOf(x), 1); }
+          return json({ status: 'cancelled', jobId: body.jobId, cancelledVisits: live.length });
+        }
+        if (method === 'POST' && p === '/console/api/untime') {
+          const trip = findVisit(body.visitId);
+          if (preview) {
+            if (!trip) throw new Error('the visit already has no time set');
+            return json({ status: 'preview', requiresConfirmation: true, visitId: trip.id, day: trip.date, customerName: (custById(trip.customerId) || {}).name || null, technicianRefs: trip.crew.slice() });
+          }
+          return json(doUntime(body));
+        }
+        if (method === 'POST' && p === '/console/api/book') {
+          return preview ? json({ requiresConfirmation: false }) : json(doBook(body));
+        }
+        if (method === 'POST' && p === '/console/api/cancel') {
+          const trip = findVisit(body.visitId);
+          return preview
+            // A PLACED visit is a customer's appointment — the one gesture the
+            // doctrine still stops to confirm.
+            ? json({ requiresConfirmation: !!(trip && trip.date), customerName: trip ? (custById(trip.customerId) || {}).name : null, day: trip ? trip.date : null })
+            : json(doCancel(body));
+        }
+        if (method === 'POST' && p === '/console/api/newjob') {
+          if (preview) return json({ requiresConfirmation: false });
+          return json(doNewJob(body));
+        }
+        if (method === 'POST' && p === '/console/api/job') {
+          const trip = visits.find((t) => t.jobId === body.jobId);
+          const tray = unscheduledJobs.find((j) => j.jobId === body.jobId);
+          const parked = parkedVisits.find((p) => p.jobId === body.jobId);
+          const target = trip || tray || parked;
+          if (target) {
+            if (body.title !== undefined) { if (tray) tray.title = body.title; else target.jobTitle = body.title; }
+            if (body.priority !== undefined) target.priority = body.priority;
+            if (body.durationMinutes !== undefined && tray) tray.durationMinutes = body.durationMinutes;
+          }
+          return json({ status: 'ok', changes: {} });
+        }
+      } catch (err) {
+        // Verb refusals travel as 409 with the message verbatim, like the server.
+        return json({ error: err.message }, 409);
+      }
+      return json({ error: 'no fixture for ' + method + ' ' + p }, 404);
+    };
+  })();
+  </script>
+
+  <div id="app" class="booting">Loading…</div>
+  <div class="preview-banner">
+    PREVIEW — fixture data in the browser. No server, no database, nothing here is real.
+  </div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

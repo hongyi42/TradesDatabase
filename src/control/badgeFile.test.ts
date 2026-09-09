@@ -45,6 +45,7 @@ function poolRow(over: Partial<SandboxPoolRow>): SandboxPoolRow {
     sandbox_ref: 's1',
     technician_id: null,
     bot_username: null,
+    bot_id: null,
     retire_requested_at: '2026-07-12T00:00:00.000Z',
     retired_at: null,
     retired_technician_id: null,

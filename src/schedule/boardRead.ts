@@ -12,6 +12,7 @@ import {
   isPlaced,
   unwrapAttributes,
   type Visit,
+  type VisitStatus,
   type Json,
   participantIdsOf,
   participantsOf,
@@ -61,6 +62,11 @@ export interface BoardStop {
   // Null when the assignment references another tenant's job — the id is
   // withheld like every other nested field (see the tenant re-check below).
   jobId: string | null;
+  // WHAT THE WORK IS, for surfaces wide enough to say it (the console's grid).
+  // Withheld on the same tenant re-check as jobId: a stranded cross-tenant
+  // assignment discloses neither the other firm's job id nor its words.
+  jobTitle: string | null;
+  priority: string | null;
 }
 
 export interface BoardDays {
@@ -83,10 +89,24 @@ export interface ReadBoardDaysInput {
   // Set for the technician self-view: only that person's stops. null/omitted =
   // manager view (whole team, unassigned included).
   viewerTechnicianId?: string | null;
+  // The widest range this read will serve, in days (default 14). The Telegram
+  // board never passes it and keeps its two-week ceiling verbatim; the console's
+  // month grid needs 42 (six Mon-Sun rows), which is why the number is an input
+  // and not a bigger constant — raising the constant would silently widen every
+  // caller, including the technician-tier path.
+  maxSpanDays?: number;
   // Technician-tier reads clamp at today + tenants.technician_horizon_days.
   // Keyed on TIER by the caller, never on the self-filter — the manager's
   // "Mine" tab uses viewerTechnicianId too and must keep far weeks.
   clampToHorizon?: boolean;
+  // Which visit statuses are drawn. Default `['confirmed']` — the Telegram
+  // board's "what stands" view, unchanged. The console passes
+  // `['confirmed', 'completed']` so a past week reads as history rather than
+  // as an empty grid (user decision 2026-09-07); a completed row still claims
+  // no time and refuses every write, so nothing downstream of the read moves.
+  // Never 'cancelled' (its own view, v_cancelled_visits) and never 'proposed'
+  // (no writer mints it; see listUnscheduledOpenJobsWithCustomer).
+  statuses?: VisitStatus[];
 }
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -111,7 +131,10 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
   const spanDays =
     (Date.parse(`${toDay}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
   if (!Number.isFinite(spanDays)) throw new InvalidRangeError('from/to is not a real calendar date');
-  if (spanDays > 14) throw new InvalidRangeError('range is capped at 14 days');
+  const maxSpan = input.maxSpanDays ?? 14;
+  if (spanDays > maxSpan) {
+    throw new InvalidRangeError(`range is capped at ${maxSpan} days`);
+  }
 
   // Horizon clamp AFTER validation (a garbage range is still a 400, never a
   // quiet clamp). Trim + note, not an error: the payload explains itself.
@@ -142,7 +165,7 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
     tenantId,
     `${from}T00:00:00.000Z`,
     new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
-    ['confirmed'],
+    input.statuses ?? ['confirmed'],
   );
   // MEMBERSHIP, not a column match (rung 9c): a technician's own board must
   // show a trip they are on even when somebody else was named first.
@@ -214,6 +237,8 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
       // UUID even while its customer/technician were correctly withheld.
       // (Pre-existing leak, closed here — security review 2026-07-22.)
       jobId: job ? row.job_id : null,
+      jobTitle: job ? job.title : null,
+      priority: job ? job.priority : null,
     });
     }
     byDay.set(day, bucket);
@@ -399,6 +424,9 @@ export interface VisitDetail {
   // Null on an UNTIMED visit (rung 9a) — nothing records when it should be.
   start: string | null;
   end: string | null;
+  // Naive-local like start/end; set only once the trip is 'completed' (and
+  // even then only when the completer knew the time — a note usually does).
+  completedAt: string | null;
   unassigned: boolean;
   technicianRef: string | null; // first-or-null; the crew is technicianRefs
   technicianName: string | null;
@@ -484,6 +512,7 @@ export async function readVisitDetail(
     status: row.status,
     start: row.starts_at,
     end: row.ends_at,
+    completedAt: row.completed_at,
     unassigned: participantIdsOf(row, tenantId).length === 0, // counted, not named
     technicianRef: crew[0]?.ref ?? null,
     technicianName: crew[0]?.displayName ?? null,

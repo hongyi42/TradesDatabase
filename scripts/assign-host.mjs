@@ -17,6 +17,13 @@
 //         bot handle (the provision phase's getMe prints it) — bind_telegram
 //         returns it so the manager can tell the hire which bot to open;
 //         without it the claim is unusable chat-side ("ask your operator").
+//   SANDBOX_BOT_TOKEN=<token> scripts/assign-host.mjs wire-bot host=<h> sandbox=<s> [tenant=<uuid>]
+//       → THE ONE-BOT-PER-PERSON STEP. Asks Telegram who this bot is (getMe),
+//         stores its NUMERIC ID on the pool row, and points its menu button at
+//         the console. The id is what lets a launch from this bot be verified
+//         without its token ever reaching Render (src/telegram/initData.ts);
+//         the token is read from the environment, never from argv, and is not
+//         stored anywhere. Re-runnable: it re-reads getMe and re-points.
 //   scripts/assign-host.mjs set-badge ref=<ref> hash=<sha256-of-badge> [tenant=<uuid>]
 //       → registers a HAND-MINTED badge's fingerprint so the pull loop ships
 //         it instead of erasing it and minting a competitor (do this for any
@@ -32,7 +39,9 @@ import {
   createHost,
   getHostByName,
   getTechnician,
+  listPoolRows,
   registerSandbox,
+  setSandboxBotId,
   updateTechnician,
 } from '../dist/db/index.js';
 import { sha256hex } from '../dist/control/badges.js';
@@ -53,13 +62,15 @@ const KNOWN_KEYS = {
   'create-host': ['name'],
   assign: ['ref', 'host', 'sandbox', 'tenant'],
   'add-sandbox': ['host', 'sandbox', 'bot', 'tenant'],
+  'wire-bot': ['host', 'sandbox', 'tenant', 'url'],
   'set-badge': ['ref', 'hash', 'tenant'],
   'rotate-badge': ['ref', 'tenant'],
 };
 if (!command || !(command in KNOWN_KEYS)) {
   console.error(
     `Usage: assign-host.mjs create-host name=<n> | assign ref=<r> host=<h> sandbox=<s> ` +
-      `| add-sandbox host=<h> sandbox=<s> | set-badge ref=<r> hash=<sha256> ` +
+      `| add-sandbox host=<h> sandbox=<s> | wire-bot host=<h> sandbox=<s> ` +
+      `| set-badge ref=<r> hash=<sha256> ` +
       `| rotate-badge ref=<r>   (each: [tenant=<uuid>])`,
   );
   process.exit(1);
@@ -127,6 +138,111 @@ if (command === 'create-host') {
     `Registered cold sandbox '${row.sandbox_ref}' on host ${host.name} (tenant ${tenantId}` +
       `${row.bot_username ? `, bot ${row.bot_username}` : ', NO bot handle'}). ` +
       `bind_telegram claims it for the next hire who has no sandbox.`,
+  );
+} else if (command === 'wire-bot') {
+  const tenantId = args.tenant || '82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18'; // Default Tenant (test)
+  const token = process.env.SANDBOX_BOT_TOKEN;
+  if (!token || !/^[0-9]{1,20}:/.test(token)) {
+    console.error(
+      `wire-bot needs the seat's bot token in SANDBOX_BOT_TOKEN (never as an argument — ` +
+        `argv lands in shell history and process listings).`,
+    );
+    process.exit(1);
+  }
+  if (!args.host || !args.sandbox) {
+    console.error('wire-bot requires host=<host-name> sandbox=<sandbox_ref>.');
+    process.exit(1);
+  }
+  const host = await getHostByName(args.host);
+  if (!host) {
+    console.error(`No host named '${args.host}'. Run create-host first.`);
+    process.exit(1);
+  }
+  const row = (await listPoolRows(tenantId)).find(
+    (r) => r.sandbox_ref === args.sandbox && r.host_id === host.id,
+  );
+  if (!row) {
+    console.error(
+      `No sandbox '${args.sandbox}' on host ${host.name} for tenant ${tenantId}. ` +
+        `Run add-sandbox first.`,
+    );
+    process.exit(1);
+  }
+  if (row.retired_at) {
+    console.error(
+      `Sandbox '${args.sandbox}' is retired — wiring its bot would hand a recycled seat ` +
+        `a working door. Re-register it first.`,
+    );
+    process.exit(1);
+  }
+  // Ask Telegram who this token belongs to, rather than trusting the id in it:
+  // getMe also proves the token is live and gives the handle to cross-check.
+  const meResp = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+  const me = await meResp.json().catch(() => null);
+  if (!me?.ok) {
+    console.error(`getMe failed: ${me?.description ?? `HTTP ${meResp.status}`}. Wrong token?`);
+    process.exit(1);
+  }
+  const botId = String(me.result.id);
+  const handle = `@${me.result.username}`;
+  // The dangerous mistake this catches: the operator pastes seat B's token
+  // while wiring seat A, and A's launches would then be verified against B's
+  // bot forever.
+  if (row.bot_username && row.bot_username.toLowerCase() !== handle.toLowerCase()) {
+    console.error(
+      `Token belongs to ${handle} but sandbox '${args.sandbox}' is registered as ` +
+        `${row.bot_username}. Refusing — check which seat this token is for.`,
+    );
+    process.exit(1);
+  }
+  if (!row.bot_username) {
+    // Nothing to cross-check against, which is the case where the wrong token
+    // binds silently (review finding 2026-09-09). Store the handle getMe just
+    // gave us so a re-run CAN be checked, and say out loud that this one was not.
+    console.error(
+      `WARN: sandbox '${args.sandbox}' had no registered handle, so the token could not be ` +
+        `cross-checked. Recording ${handle} from getMe — confirm that is the right bot for ` +
+        `this seat before anyone opens it.`,
+    );
+  }
+  await setSandboxBotId({
+    tenantId,
+    hostId: host.id,
+    sandboxRef: args.sandbox,
+    botId,
+    ...(row.bot_username ? {} : { botUsername: handle }),
+  });
+  const base = args.url || process.env.BOARD_PUBLIC_URL;
+  if (!base) {
+    console.error(
+      `Stored bot id ${botId} for ${handle}, but BOARD_PUBLIC_URL is unset so the menu ` +
+        `button was NOT set. Re-run with url=<https://host> to finish.`,
+    );
+    process.exit(1);
+  }
+  const url = `${base.replace(/\/+$/, '')}/console`;
+  const btnResp = await fetch(`https://api.telegram.org/bot${token}/setChatMenuButton`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      menu_button: { type: 'web_app', text: 'Open console', web_app: { url } },
+    }),
+  });
+  const btn = await btnResp.json().catch(() => null);
+  if (!btn?.ok) {
+    console.error(
+      `Stored bot id ${botId} for ${handle}, but setChatMenuButton failed: ` +
+        `${btn?.description ?? `HTTP ${btnResp.status}`}.`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    `Wired ${handle} (id ${botId}) to sandbox '${args.sandbox}': launches from it now verify, ` +
+      `and its menu button opens ${url}.`,
+  );
+  console.log(
+    `Still manual, once per bot: BotFather → /mybots → ${handle} → Bot Settings → ` +
+      `Configure Mini App → ${url}, which is what puts "Open App" at the top of the chat.`,
   );
 } else {
   const tenantId = args.tenant || '82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18'; // Default Tenant (test)

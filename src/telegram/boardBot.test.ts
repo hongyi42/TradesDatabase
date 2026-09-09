@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { sendBoardMessage, setBoardMenuButton } from './boardBot.js';
+import {
+  consoleMenuChatIds,
+  sendBoardMessage,
+  setBoardMenuButton,
+  setConsoleMenuButtonFor,
+} from './boardBot.js';
 
 // Pure unit tests: global fetch stubbed, no network. Asserts the exact Bot API
 // URL + JSON body each wrapper builds, and that {ok:false} surfaces as a throw.
@@ -51,6 +56,44 @@ describe('setBoardMenuButton', () => {
     process.env.BOARD_PUBLIC_URL = 'https://spine.example.com';
     await expect(setBoardMenuButton()).rejects.toThrow(/BOARD_BOT_TOKEN/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('the console rollout lever', () => {
+  test('the chat list is empty unless the environment names people', () => {
+    delete process.env.CONSOLE_MENU_CHAT_IDS;
+    expect(consoleMenuChatIds()).toEqual([]);
+    process.env.CONSOLE_MENU_CHAT_IDS = ' 111 , 222 ,, ';
+    expect(consoleMenuChatIds()).toEqual(['111', '222']);
+    delete process.env.CONSOLE_MENU_CHAT_IDS;
+  });
+
+  test('a chat-scoped button points at /console and names the chat', async () => {
+    const fetchMock = okFetch();
+    await setConsoleMenuButtonFor(['111', '222']);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`https://api.telegram.org/bot${TOKEN}/setChatMenuButton`);
+    expect(JSON.parse(init.body as string)).toEqual({
+      chat_id: '111',
+      menu_button: {
+        type: 'web_app',
+        text: 'Open console',
+        web_app: { url: 'https://spine.example.com/console' },
+      },
+    });
+  });
+
+  test('one unreachable chat does not stop the rest — the worker must still boot', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: false, description: 'chat not found' }), { status: 400 }),
+      )
+      .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(setConsoleMenuButtonFor(['nope', '222'])).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 

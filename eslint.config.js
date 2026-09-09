@@ -79,4 +79,37 @@ export default tseslint.config(
       'no-unused-vars': 'error',
     },
   },
+  {
+    // The dispatch console is the same kind of build-step-free browser code as
+    // the board, with one difference that has to be declared: it is split into
+    // ES MODULES (loaded with <script type="module">), so the block above —
+    // which parses web/ as a classic script — rejects every `import` in it.
+    // Listed after that block so it wins for these files only; the board stays
+    // a script, because it is one.
+    files: ['web/console/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        fetch: 'readonly',
+        Date: 'readonly',
+        Math: 'readonly',
+        JSON: 'readonly',
+        Number: 'readonly',
+        String: 'readonly',
+        Object: 'readonly',
+        Set: 'readonly',
+        Map: 'readonly',
+        Promise: 'readonly',
+        Error: 'readonly',
+        encodeURIComponent: 'readonly',
+      },
+    },
+    rules: {
+      'no-undef': 'error',
+      'no-unused-vars': 'error',
+    },
+  },
 );

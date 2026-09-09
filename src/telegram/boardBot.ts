@@ -42,6 +42,45 @@ export async function setBoardMenuButton(): Promise<void> {
   });
 }
 
+// PER-CHAT console button — the rollout lever for the new dispatch console
+// (src/console/consoleApi.ts) while the board is still the product.
+//
+// Telegram allows ONE menu button per scope, and the default scope is already
+// spoken for by "Open board". A chat-scoped button overrides the default for
+// exactly the people named in CONSOLE_MENU_CHAT_IDS, so the console can be put
+// in front of one manager on the pilot while every other roster member keeps
+// the board they have been using. Nothing about the board changes; the two
+// UIs are live at the same time, over the same data, and the swap at the end
+// is this list growing to "everyone" and then the default button moving.
+//
+// Failures are per-chat and non-fatal to the caller's loop: one bad id (a
+// person who never started the bot) must not stop the worker from booting.
+export async function setConsoleMenuButtonFor(chatIds: string[]): Promise<void> {
+  const base = process.env.BOARD_PUBLIC_URL;
+  if (!base) throw new Error('BOARD_PUBLIC_URL is not set');
+  const url = `${base.replace(/\/+$/, '')}/console`;
+  for (const chatId of chatIds) {
+    try {
+      await callTelegram('setChatMenuButton', {
+        chat_id: chatId,
+        menu_button: { type: 'web_app', text: 'Open console', web_app: { url } },
+      });
+    } catch (err) {
+      console.error(`board worker: console button not set for ${chatId}:`, err);
+    }
+  }
+}
+
+// The ids the console button is set for, read from the environment as a
+// comma-separated list. Empty/unset = nobody, which is the default: shipping
+// this code must not put a half-finished UI in front of the pilot.
+export function consoleMenuChatIds(): string[] {
+  return (process.env.CONSOLE_MENU_CHAT_IDS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 // chatId = the person's Telegram user id (technicians.telegram_user_id
 // verbatim). "Private-chat id equals user id" is a DE-FACTO Bot API
 // convention, not a stated guarantee: sendMessage documents chat_id only as

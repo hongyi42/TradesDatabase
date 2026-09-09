@@ -72,6 +72,10 @@ export default tseslint.config(
         Date: 'readonly',
         Math: 'readonly',
         JSON: 'readonly',
+        // For the synchronous back-off in `touch`: this process has no event loop to yield to.
+        Atomics: 'readonly',
+        Int32Array: 'readonly',
+        SharedArrayBuffer: 'readonly',
       },
     },
     rules: {

@@ -17,16 +17,20 @@
 //   node scripts/work.mjs claim <id> [--force]
 //   node scripts/work.mjs done|drop <id>
 //   node scripts/work.mjs packet [--cwd <path>] [--json]
+//   node scripts/work.mjs touch            # PostToolUse(Edit|Write): record the touched file
 //   node scripts/work.mjs board
 //
-// Failure policy: verbs a PERSON runs report the problem on stderr and exit non-zero, because a
-// silent no-op would read as success. Verbs a HOOK runs are added in later phases and must never
-// cost the user an edit, so they exit 0 silently — the two policies are deliberate and different.
+// Failure policy, deliberately two-sided: verbs a PERSON runs report the problem on stderr and
+// exit non-zero, because a silent no-op would read as success. Verbs a HOOK runs (`packet`,
+// `touch` — see HOOK_VERBS) must never cost the user an edit, so every failure is a silent
+// exit 0, including "this is not a git repository", which for a hook is an ordinary condition.
 
 import {
-  readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync, renameSync, statSync,
+  readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync, renameSync, rmSync, statSync,
 } from 'node:fs';
-import { join, basename, resolve } from 'node:path';
+import {
+  join, basename, dirname, isAbsolute, relative, resolve,
+} from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { isatty } from 'node:tty';
@@ -77,6 +81,22 @@ function mainCheckout(cwd) {
  */
 function worktreeOf(path) {
   return git(['rev-parse', '--show-toplevel'], path);
+}
+
+/**
+ * The nearest ancestor that exists. A Write creating `src/deep/new/file.ts` names a directory
+ * that is not there yet, and `git -C <missing dir>` fails — so asking git about the file's own
+ * directory would silently give up on precisely the edits that add new modules.
+ */
+function nearestExistingDir(p) {
+  let d = p;
+  for (let i = 0; i < 64; i++) {
+    if (existsSync(d)) return d;
+    const up = dirname(d);
+    if (up === d) return d;
+    d = up;
+  }
+  return d;
 }
 
 // ── the record on disk ────────────────────────────────────────────────────────
@@ -168,6 +188,50 @@ function activeTaskFor(main, worktreePath) {
 function findTask(main, id) {
   const p = taskPath(main, id);
   return existsSync(p) ? readTask(p) : null;
+}
+
+/** How long a lock may sit before it is assumed to belong to a process that died holding it. */
+const STALE_LOCK_MS = 5000;
+
+/**
+ * Hold an exclusive lock on one task file while `fn` reads and rewrites it.
+ *
+ * Read-modify-write on a shared file needs real mutual exclusion, and "write then check it
+ * stuck" is NOT enough: a writer working from a stale read can clobber a write that has
+ * already verified itself, so the earlier one is lost after it reported success. Measured on
+ * eight simultaneous edits: 1 of 8 recorded unguarded, 4 of 8 with verify-after-write, 8 of 8
+ * under this lock. Callers must re-read inside `fn` — that is the point of taking the lock.
+ *
+ * The lock is a `.lock` sibling (never `.md`, so it cannot be mistaken for a task) created
+ * exclusively, with a staleness steal so one killed hook process cannot wedge every later edit.
+ */
+function withTaskLock(file, fn) {
+  const lock = `${file}.lock`;
+  for (let attempt = 0; attempt < 200; attempt++) {
+    try {
+      writeFileSync(lock, String(process.pid), { flag: 'wx' });
+    } catch (e) {
+      if (e.code !== 'EEXIST') return undefined; // unwritable record — give up quietly
+      try {
+        if (Date.now() - statSync(lock).mtimeMs > STALE_LOCK_MS) rmSync(lock, { force: true });
+      } catch { /* another process cleaned it up first */ }
+      sleepMs(2 + (attempt % 8));
+      continue;
+    }
+    try {
+      return fn();
+    } finally {
+      try { rmSync(lock, { force: true }); } catch { /* nothing left to remove */ }
+    }
+  }
+  return undefined;
+}
+
+/** Synchronous sleep — these processes have no event loop to yield to and must not spin hot. */
+function sleepMs(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch { /* without SharedArrayBuffer, retry immediately */ }
 }
 
 /**
@@ -284,29 +348,43 @@ function cmdClaim(main, cwd, { flags, positional }) {
     // worktree makes "the active task" ambiguous, and everything downstream — the packet, the
     // board's task column, the file list a hook appends to — would then write to whichever of
     // them happened to be touched last.
-    held.fm.status = 'open';
-    held.fm.worktree = '';
-    writeTask(held.file, held.fm, held.body);
+    withTaskLock(held.file, () => {
+      const t = findTask(main, held.fm.id);
+      if (!t) return;
+      t.fm.status = 'open';
+      t.fm.worktree = '';
+      writeTask(t.file, t.fm, t.body);
+    });
   }
 
-  task.fm.status = 'active';
-  task.fm.worktree = here;
-  task.fm.branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], here) ?? '';
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], here) ?? '';
   // The commit this work forked from: what a later overlap check measures "changed since" against.
-  task.fm.base = git(['merge-base', 'HEAD', 'origin/main'], here) ?? '';
-  writeTask(task.file, task.fm, task.body);
+  const base = git(['merge-base', 'HEAD', 'origin/main'], here) ?? '';
+  withTaskLock(task.file, () => {
+    const t = findTask(main, id);
+    if (!t) return;
+    t.fm.status = 'active';
+    t.fm.worktree = here;
+    t.fm.branch = branch;
+    t.fm.base = base;
+    writeTask(t.file, t.fm, t.body);
+  });
   process.stdout.write(`${id} active in ${basename(here)}\n`);
 }
 
 function cmdSetStatus(main, { positional }, status) {
   const id = positional[0];
   if (!id) fail(`${status} needs a task id`);
-  const task = findTask(main, id);
-  if (!task) fail(`no task ${id}`);
-  task.fm.status = status;
-  // Release the worktree, or the next claim there would be refused by a task nobody is doing.
-  task.fm.worktree = '';
-  writeTask(task.file, task.fm, task.body);
+  const existing = findTask(main, id);
+  if (!existing) fail(`no task ${id}`);
+  withTaskLock(existing.file, () => {
+    const task = findTask(main, id);
+    if (!task) return;
+    task.fm.status = status;
+    // Release the worktree, or the next claim there would be refused by a task nobody is doing.
+    task.fm.worktree = '';
+    writeTask(task.file, task.fm, task.body);
+  });
   process.stdout.write(`${id} ${status}\n`);
 }
 
@@ -318,6 +396,42 @@ function cmdPacket(main, cwd, { flags }) {
     return;
   }
   process.stdout.write(`${serializeTask(task.fm, task.body)}`);
+}
+
+/**
+ * PostToolUse(Edit|Write): record that this worktree's active task touched a file.
+ *
+ * This is how a task's file list writes itself. Nobody remembers to maintain one by hand, and
+ * the list is what the pre-edit hook uses to warn a sibling session, so a list that depends on
+ * discipline would be empty exactly when it mattered. Silent in every failure case: it runs
+ * after every single edit and must never produce output or a non-zero exit.
+ */
+function cmdTouch(main) {
+  const filePath = hookPayload?.tool_input?.file_path;
+  if (typeof filePath !== 'string' || !filePath) return;
+  const abs = isAbsolute(filePath) ? filePath : resolve(hookPayload.cwd ?? process.cwd(), filePath);
+
+  // The file's OWN worktree, not the session's cwd: an edit can name a path anywhere.
+  const wt = worktreeOf(nearestExistingDir(dirname(abs)));
+  if (!wt) return;
+  const rel = relative(wt, abs);
+  if (!rel || rel.startsWith('..')) return;
+
+  // One assistant turn routinely issues several edits at once and each spawns its own copy of
+  // this process, so the update has to be serialised. Everything that matters is re-read INSIDE
+  // the lock, including the status: a `done` that landed in between must not be undone by a
+  // stale copy resurrecting the task.
+  const found = activeTaskFor(main, wt);
+  if (!found) return;
+  withTaskLock(found.file, () => {
+    const task = findTask(main, found.fm.id);
+    if (!task || task.fm.status !== 'active' || task.fm.worktree !== wt) return;
+    const files = listField(task.fm.files);
+    if (files.includes(rel)) return;
+    files.push(rel);
+    task.fm.files = joinField(files);
+    writeTask(task.file, task.fm, task.body);
+  });
 }
 
 // ── the board ─────────────────────────────────────────────────────────────────
@@ -449,7 +563,10 @@ function cmdBoard(main) {
 // Verbs a HOOK invokes. These run on the critical path of a session and must never cost the
 // user an edit or an error banner, so any failure is a silent exit 0 — including "this is not
 // a git repository", which for a hook is an ordinary condition rather than a mistake.
-const HOOK_VERBS = new Set(['packet']);
+const HOOK_VERBS = new Set(['packet', 'touch']);
+
+/** The hook payload, parsed once by resolveCwd — stdin can only be read to EOF once. */
+let hookPayload = null;
 
 /**
  * Which directory this invocation is about — and it must be settled BEFORE the main checkout is
@@ -466,8 +583,8 @@ function resolveCwd(v, flags) {
   if (typeof flags.cwd === 'string') return flags.cwd;
   if (HOOK_VERBS.has(v) && !isatty(0)) {
     try {
-      const evt = JSON.parse(readStdin());
-      if (evt && typeof evt.cwd === 'string') return evt.cwd;
+      hookPayload = JSON.parse(readStdin());
+      if (hookPayload && typeof hookPayload.cwd === 'string') return hookPayload.cwd;
     } catch { /* no hook payload — fall through to this process's cwd */ }
   }
   return process.cwd();
@@ -488,8 +605,12 @@ switch (verb) {
   case 'done': cmdSetStatus(main, args, 'done'); break;
   case 'drop': cmdSetStatus(main, args, 'dropped'); break;
   case 'packet': cmdPacket(main, cwd, args); break;
+  case 'touch':
+    // Runs after every edit in every session: swallow everything.
+    try { cmdTouch(main); } catch { /* never cost the user an edit */ }
+    break;
   case 'board': cmdBoard(main); break;
   default:
-    process.stderr.write('work: usage: park | claim | done | drop | packet | board\n');
+    process.stderr.write('work: usage: park | claim | done | drop | packet | touch | board\n');
     process.exit(1);
 }

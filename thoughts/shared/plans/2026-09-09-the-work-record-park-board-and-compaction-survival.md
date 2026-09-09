@@ -202,14 +202,25 @@ contains it (today: empty); (c) an open finding listing the file → `OPEN FINDI
 reusing (a)'s `session_id` → empty (marker). All assert the `hookSpecificOutput` shape.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass; the five hook cases pass
-- [ ] `node --check .claude/hooks/decisions-for-file.mjs` passes
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass; the five hook cases pass
+      — 2862 passed, 0 failed; 15 cases across the two work-record files.
+- [x] `node --check .claude/hooks/decisions-for-file.mjs` passes
 
 ### Live verification (agent-executable)
 - Prerequisites: none.
-- [ ] A fresh-context subagent, working in **this implementation worktree**, appends a comment to
+- [x] A fresh-context session, working in **this implementation worktree**, appends a comment to
       `src/db/rawCaptures.ts` and reports verbatim whether it received a "Decisions on record"
-      context block (hooks run inside subagents, docs §Hooks). Expected: yes. Then reverts.
+      context block. Expected: yes. Then reverts.
+      — PASSED. *Method note:* a subagent of the implementing session could NOT verify this, and
+      the reason is worth recording. The hook command names `${CLAUDE_PROJECT_DIR}/.claude/hooks/…`,
+      and that variable stays at the directory a session launched from; this session launched in
+      the main checkout, so it ran the main checkout's OLD hook, which went quiet on a worktree
+      path — the very defect being fixed. Verified instead with a real `claude -p` session
+      launched inside the worktree, which received `Decisions on record for src/db/rawCaptures.ts`
+      with four documents. A new marker directory under `TMPDIR` confirmed independently that the
+      hook ran. **Consequence: the fix only reaches sessions whose project root is the checkout
+      holding it — so it takes effect for worktree-launched sessions now, and for everyone once
+      this lands on `main`.**
 
 ### Manual verification — none
 

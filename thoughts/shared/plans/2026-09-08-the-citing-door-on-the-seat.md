@@ -109,8 +109,24 @@ outright — the isolation the water-heater thread could never give us.
 
 - **Phase 1:** none — `record_caller` and the door are already deployed.
 - **Phase 2:** none.
-- **Phase 3:** none for the code; the live run needs the deployed pilot (already live) and a
-  sending address that is not on any customer row.
+- **Phase 3:** none for the code; the live run needs the deployed pilot and a sending address that
+  is not on any customer row.
+
+### ⚠ Phase 3 has a DEPLOY STEP the code cannot supply
+
+The manager `tools/list` moves 42 → 43. Gateways cache `tools/list` per process, and rule 7's
+wording is baked into each sandbox's AGENTS.md at `wire` time. So after the Render deploy, and
+BEFORE Test A, every manager sandbox needs:
+
+```
+nemoclaw <seat> gateway restart     # or it serves its cached 42-tool list — no record_caller
+# and a box `wire` re-run so AGENTS.md rule 7 names the tool
+```
+
+Skip these and the seat cannot see the door, answers through `record_field_note` again, and the
+2026-09-08 specimen reproduces exactly — reading as a code failure when it is a missing restart.
+(`docs/nemoclaw-tech-agent.md` carries the same warning; that file's older "the manager side needs
+no restart" line is about the 2026-07-31 change only.)
 
 ---
 
@@ -179,10 +195,11 @@ badge that asked for them instead of the planner.
 - the booked visit's schedule event names the manager, not `spine:team-lead`.
 
 ### Automated verification
-- [ ] `npm run typecheck`
-- [ ] `npm run lint`
-- [ ] `npm test`
-- [ ] new tests above pass
+- [x] `npm run typecheck`
+- [x] `npm run lint`
+- [x] `npm test` — 2842 passed; the one failure
+      (`plannerPass > missing credentials block`) reproduces on stashed main, env-dependent
+- [x] new tests above pass (26 in the `record_caller` describe, 11 in `format`, 4 in `webhook`)
 
 ### Live verification (agent-executable)
 Deferred to Phase 3 — the live run is the same e2e, and running it twice costs a real billed
@@ -258,7 +275,9 @@ Removes the wrong rows, retires the stale item, and re-runs the two live scenari
 - [ ] cleanup read-back: the four rows are gone, the L1 capture remains, the item is not `open`
 
 ### Live verification (agent-executable)
-- Prerequisites: `supabase-test` MCP (read-back), the deployed pilot, the user sending two emails
+- Prerequisites: `supabase-test` MCP (read-back), the deployed pilot, **the gateway restart + box
+  `wire` above — verify `record_caller` is in the seat's tools/list before sending anything**, and
+  the user sending two emails
 - [ ] Test A: item raised, cited writes, item retires on its own — evidence: observation row +
       `source_capture_id` on all three L2 rows
 - [ ] Test B: the reply lands on Test A's customer — evidence: the citing row, plus the customer

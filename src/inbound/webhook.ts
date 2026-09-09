@@ -9,7 +9,7 @@ import {
   upsertDroppedAudit,
 } from '../db/index.js';
 import { defaultClassifier } from '../email/classify.js';
-import { emailAddressOf, type ThreadMessage } from '../email/format.js';
+import { emailAddressOf, isOwnMailbox, type ThreadMessage } from '../email/format.js';
 import { fetchThreadMessages } from '../composio/threads.js';
 import { captureHasLinkedL2, getRawCaptureByExternalId, listCapturesByThread } from '../db/index.js';
 import type { WorkClassifier } from '../email/classify.js';
@@ -338,7 +338,10 @@ export async function handleInboundWebhook(
       // RUNG 10B — the two envelope keys the matcher now recognises a sender by.
       // `from` is the header string ("Name <a@b.com>"); the matcher wants the
       // bare address. Both are inert on a channel that carries neither.
-      fallbackEmail: emailAddressOf(meta.from),
+      // …AND NEVER OUR OWN MAILBOX (rung 10b.2): a message the firm sent to
+      // itself would otherwise offer the firm's address as the caller's identity
+      // key. The mail still ingests — only the key is withheld.
+      fallbackEmail: isOwnMailbox(meta.from, meta.to, tech?.connected_email) ? null : emailAddressOf(meta.from),
       threadId: meta.threadId ?? null,
       ...(threadContext.length > 0 ? { threadContext } : {}),
       // L1 metadata carries from/subject only — the body already lives in raw_text,

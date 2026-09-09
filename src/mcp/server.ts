@@ -132,7 +132,7 @@ import {
   type ResolvedIdentity,
 } from '../writePath/recordFieldNote.js';
 import { matchIdentity, type MatchResult } from '../writePath/identityMatch.js';
-import { emailAddressOf } from '../email/format.js';
+import { emailAddressOf, isOwnMailbox } from '../email/format.js';
 import { defaultExtractor, type ExtractedFields } from '../writePath/extract.js';
 import {
   requireOutboundCapable,
@@ -1743,7 +1743,10 @@ function slugify(displayName: string): string {
 // sidestepped rather than weakened — no `if (… || isTeamLead)` anywhere near the
 // tier gate, which is exactly the sort of exception that later grows.
 //
-// It is NOT listed to anyone: tools/list serves TOOLS or MANAGER_TOOLS, and the
+// Mostly NOT listed to anyone: tools/list serves TOOLS or MANAGER_TOOLS, and the
+// team lead is handed these directly — EXCEPT the names in
+// SEAT_SHARED_TEAM_LEAD_TOOLS, which MANAGER_TOOLS pulls out of this very array
+// (rung 10b.2), so one of these IS listed to managers. The
 // team lead is an in-process caller that is handed its tool schemas directly.
 // Discovery is cosmetic here in the same way it is everywhere else — dispatch is
 // the gate.
@@ -1910,14 +1913,19 @@ const TEAM_LEAD_TOOLS = [
       'a job with `openJob`, and booking a trip with `bookVisit` are asked first, and that goes ' +
       'double for the trip: something on the board is a promise to a person. ' +
       'A booked trip is UNTIMED — on the board with no day and no time — because when it happens ' +
-      'is the manager\'s to say, and you were not given a date. ' +
-      'The item CLOSES ITSELF on the record at your next pass, so do not also close it by hand.',
+      'is the manager\'s to say. If they DID give you a day, book it here anyway and then SAY that ' +
+      'day back in your reply so it can be placed — and if you hold `move_visit`, place it there ' +
+      'yourself. A day you were told must never be dropped. ' +
+      'The item RETIRES ITSELF once the record cites the call — never close it by hand, and ' +
+      'never tell anyone it is closed; what you write is what closes it.',
     inputSchema: {
       type: 'object',
       properties: {
         observationId: {
           type: 'string',
-          description: "The item id, copied exactly from its `gap` line.",
+          description:
+            'The item id, copied exactly — off its `gap` line if you are planning, or out of ' +
+            'the note the office sent you if you were asked about it.',
         },
         customerId: {
           type: 'string',
@@ -1979,14 +1987,30 @@ export const TEAM_LEAD_TOOL_SCHEMAS: ReadonlyArray<{
 // before the switch, so adding an admin tool cannot forget its guard.
 const ADMIN_TOOL_NAMES = new Set(ADMIN_TOOLS.map((t) => t.name));
 
+// RUNG 10B.2 — SHARED WITH THE MANAGER SEAT, not moved to it. The live e2e on
+// 2026-09-08 proved the door works and that nothing reaches it: a manager's
+// answer arrives at the SEAT, which was refused this tool by the gate below, so
+// it answered with `record_field_note` and left a customer whose address was her
+// own name, a `completed` trip nobody took, and an item citing nothing. This is
+// the only door whose every write cites the capture it came from, and the
+// manager's own assistant is where a caller's identity is actually settled.
+// An EXPLICIT exception list, never a predicate: the ceiling stays
+// deny-by-default for everything else, and adding a name here is a deliberate
+// act somebody reviews.
+const SEAT_SHARED_TEAM_LEAD_TOOLS = new Set(['record_caller']);
+
 // The other half of the team-lead design. Keeping spine_read OUT of ADMIN_TOOLS
 // is what lets the team lead reach it — but on its own that would also hand it to
 // every technician badge, since ADMIN_TOOL_NAMES is the only tier gate and
 // tools/list is cosmetic. This set closes that: these names dispatch for the
 // `spine:` namespace and NOTHING else, so the surface SHIFTS rather than
 // expanding. Derived from the array, so a second team-lead tool is gated the day
-// it is added.
-const TEAM_LEAD_ONLY_TOOL_NAMES = new Set(TEAM_LEAD_TOOLS.map((t) => t.name));
+// it is added — MINUS the shared names, which carry their own tier gate below.
+// Exported so a test can pin the SURFACE rather than a behaviour: the set the
+// seat gained is exactly the shared list, and everything else stayed shut.
+export const TEAM_LEAD_ONLY_TOOL_NAMES = new Set(
+  TEAM_LEAD_TOOLS.map((t) => t.name).filter((n) => !SEAT_SHARED_TEAM_LEAD_TOOLS.has(n)),
+);
 
 // The manager surface = base tools MINUS get_schedule, PLUS the admin tools
 // (user decision 2026-07-19). get_schedule is the technician driving-route
@@ -1995,7 +2019,19 @@ const TEAM_LEAD_ONLY_TOOL_NAMES = new Set(TEAM_LEAD_TOOLS.map((t) => t.name));
 // wrong-tool misroute ("your week is completely clear" from the self-only
 // view while an unassigned visit existed, live 2026-07-18) is structurally
 // impossible. Schedule VIEWING for managers lives on the dispatch board.
-const MANAGER_TOOLS = [...TOOLS.filter((t) => t.name !== 'get_schedule'), ...ADMIN_TOOLS];
+// …PLUS the shared team-lead doors (rung 10b.2). Taken FROM `TEAM_LEAD_TOOLS`
+// rather than re-declared: one schema, two catalogs, so a reworded description
+// can never drift between what the planner reads and what the seat reads.
+const MANAGER_TOOLS = [
+  ...TOOLS.filter((t) => t.name !== 'get_schedule'),
+  ...ADMIN_TOOLS,
+  ...TEAM_LEAD_TOOLS.filter((t) => SEAT_SHARED_TEAM_LEAD_TOOLS.has(t.name)),
+];
+
+// What a manager can DISCOVER. Exported for the same reason as the set above:
+// dispatch is the gate, but a door the seat cannot see is a door it will not
+// use — which is exactly how the 2026-09-08 failure happened.
+export const MANAGER_TOOL_NAMES = new Set(MANAGER_TOOLS.map((t) => t.name));
 
 // Chat → board bridge: scheduling results carry the Telegram Mini App link so
 // the agent can end a schedule report with "see it on the board" — one tap
@@ -2743,6 +2779,21 @@ async function dispatch(
         ? `${name} is the team lead's own tool — managers use query_spine`
         : `${name} is the team lead's own tool`,
     );
+  }
+  // The SHARED doors' own tier gate (rung 10b.2). These names sit outside
+  // TEAM_LEAD_ONLY_TOOL_NAMES so a seat can reach them, which on its own would
+  // also hand them to every technician badge — ADMIN_TOOL_NAMES is the only other
+  // tier gate and this tool is deliberately not in it (a manager's catalog is
+  // TOOLS + ADMIN_TOOLS, and adding it to ADMIN_TOOLS would put it in the wrong
+  // list to reason about). So: the `spine:` planner, or an ACTIVE MANAGER, and
+  // nobody else. A technician settling who a caller was is the trust boundary
+  // the two seats exist to draw.
+  if (
+    SEAT_SHARED_TEAM_LEAD_TOOLS.has(name) &&
+    !identity.technicianRef.startsWith('spine:') &&
+    !activeManager
+  ) {
+    throw new Error(`${name} is a manager's call — recording who a caller was needs a manager badge`);
   }
   // The real tier gate (the tools/list filter is cosmetic): applied by tool
   // NAME so no admin case can be added without it.
@@ -6066,7 +6117,7 @@ async function dispatch(
     case 'record_caller': {
       const observationId = str('observationId');
       if (!observationId) {
-        throw new Error("observationId is required (copy it from the item's `gap` line)");
+        throw new Error("observationId is required — copy it from the item's `gap` line, or from the note the office sent you");
       }
       // UUID-SHAPED FIRST. These ids go straight into uuid-typed PostgREST
       // filters, where a malformed one raises 22P02 — a raw database error the
@@ -6074,13 +6125,13 @@ async function dispatch(
       // below. The planner.ts UUID rail exists for the same trap.
       if (!UUID_RE.test(observationId)) {
         throw new Error(
-          'No such item on this firm — check the id against the gap you are looking at.',
+          'No such item on this firm — check the id against the gap, or the office note, you copied it from.',
         );
       }
       const obs = await getObservationForTenant(observationId, tenantId);
       if (!obs) {
         throw new Error(
-          'No such item on this firm — check the id against the gap you are looking at.',
+          'No such item on this firm — check the id against the gap, or the office note, you copied it from.',
         );
       }
       if (obs.kind !== 'inbound_unmatched') {
@@ -6186,7 +6237,8 @@ async function dispatch(
       if (customerId && !openJob && !onFile.some((j) => j.status !== 'cancelled')) {
         throw new Error(
           'there is nothing to file this call onto — that customer has no job it could land on. ' +
-            'Pass `openJob` as well, or dismiss the item if there is no work in the call.',
+            'Pass `openJob` as well. If there is no work in the call at all, say so to the office ' +
+            'instead of recording it.',
         );
       }
       // A TRIP NEEDS A JOB TO SIT ON — a LIVE one. `openJob` here is the request
@@ -6205,6 +6257,30 @@ async function dispatch(
         capture.metadata && typeof capture.metadata === 'object' && !Array.isArray(capture.metadata)
           ? (capture.metadata as Record<string, unknown>)
           : {};
+      const metaFrom = typeof meta.from === 'string' ? meta.from : null;
+      const metaTo = typeof meta.to === 'string' ? meta.to : null;
+      // NOT THE FIRM'S OWN ADDRESS (rung 10b.2). A message the firm sent to
+      // itself carries our mailbox in `from`, and a live specimen had the
+      // extractor report it as the caller's email. Stored on a customer it
+      // becomes an identity KEY, so every later message from our own mailbox
+      // would match that one person. Refused rather than silently dropped: the
+      // caller of this tool believes it is recording the customer's address, and
+      // quietly writing null would leave them saying so to a manager.
+      const newEmail = typeof newCustomer?.email === 'string' ? newCustomer.email : null;
+      // The paired mailbox for the person this message was delivered under —
+      // authoritative where the `to` header is ambiguous (several recipients),
+      // and the reason this guard can stay conservative without going blind.
+      // Read UNCONDITIONALLY: the fallback suppression below needs it too, and
+      // that path runs on the name-only answer — which is the one this tool's
+      // own refusal message steers a manager towards.
+      const capturedByTech = await getTechnician(tenantId, capturedBy);
+      if (newEmail && isOwnMailbox(newEmail, metaTo, capturedByTech?.connected_email)) {
+        throw new Error(
+          `${emailAddressOf(newEmail)} is this firm's own mailbox, not the caller's — it is the ` +
+            'address the message ARRIVED at. Record them without an email, or with the address ' +
+            'they actually write from.',
+        );
+      }
       const resolved: ResolvedIdentity = customerId
         ? { customerId }
         : {
@@ -6233,12 +6309,23 @@ async function dispatch(
         // message from them is recognised by code and never becomes a second
         // item on this list.
         fallbackPhone: typeof meta.fromNumber === 'string' ? meta.fromNumber : null,
-        fallbackEmail: emailAddressOf(typeof meta.from === 'string' ? meta.from : null),
+        // …and the same own-mailbox rule the webhook applies (rung 10b.2): this
+        // is a RE-ENTRY on that capture, so it must not resurrect a key the
+        // first pass was right to withhold.
+        fallbackEmail: isOwnMailbox(metaFrom, metaTo, capturedByTech?.connected_email)
+          ? null
+          : emailAddressOf(metaFrom),
         threadId: typeof meta.threadId === 'string' ? meta.threadId : null,
         resolved,
-        ...(openJob || bookVisitArg !== undefined
-          ? { decided: { ...(openJob ? { openJob } : {}), ...(bookVisitArg !== undefined ? { bookVisit: bookVisitArg } : {}) } }
-          : {}),
+        // WHO ASKED FOR THIS. The door books with `actorRef`, and it used to be
+        // hardcoded to the team lead — true while the planner was the only
+        // caller, a lie now that a manager's seat can reach this door. The
+        // schedule event must name whoever actually decided.
+        decided: {
+          ...(openJob ? { openJob } : {}),
+          ...(bookVisitArg !== undefined ? { bookVisit: bookVisitArg } : {}),
+          actorRef: identity.technicianRef,
+        },
       },
       // The injected extractor, like every other door on this surface — the
       // default is the live model, and a test must be able to reach this path
@@ -6251,7 +6338,7 @@ async function dispatch(
       if (r.status === 'duplicate') {
         throw new Error(
           'that call was retracted — somebody marked it recorded in error, so nothing was ' +
-            'written. Dismiss the item instead.',
+            'written. Do not record it: say so to the office instead.',
         );
       }
       // WHAT ACTUALLY LANDED, read back rather than assumed. The door REUSES a
@@ -6285,12 +6372,15 @@ async function dispatch(
         // predicts; this READS. If nothing on the record cites the call, the item
         // cannot become moot however well the write went, and telling the planner
         // to leave it alone would strand it open forever.
+        // Worded for BOTH callers since rung 10b.2: "at your next pass" was true
+        // of the planner and meaningless to a manager's seat, which has no pass.
         note:
           wrote.length > 0
-            ? 'the caller is on the record now — this item closes itself on the record at your ' +
-              'next pass, so leave it alone.'
+            ? 'the caller is on the record now — this item retires itself once the record cites ' +
+              'the call, so leave it alone.'
             : 'the caller is recorded, BUT nothing on the record cites this call, so this item ' +
-              'will not close itself — dismiss it, saying who it turned out to be.',
+              'will not retire itself. Say who it turned out to be: dismiss the item yourself ' +
+              'if that is a decision you make, otherwise tell the office with inform_team_lead.',
       };
     }
     case 'read_memory': {

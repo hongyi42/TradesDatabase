@@ -107,7 +107,7 @@ order means MOVING visits — that is the manager's call through `move_visit`, n
 Gateways cache `tools/list` per process, so technician sandboxes need `nemoclaw <s> gateway
 restart` or the agent keeps describing drive minutes that no longer exist. A full box wire re-run
 is NOT required: nothing bakes this tool's wording into AGENTS.md (verified against
-`bootstrap-box.sh`), and the tool COUNT is unchanged (14), so no allowlist edit either.
+`bootstrap-box.sh`), and the tool COUNT is unchanged (14 then; 17 today), so no allowlist edit either.
 
 **Manager profile (2026-07-02):** an ACTIVE `tier='manager'` roster row (the `technicians`
 table, not the badge, is the tier source of truth) gets the technician surface MINUS
@@ -115,7 +115,12 @@ table, not the badge, is the tier source of truth) gets the technician surface M
 only schedule read is `get_team_schedule`, which includes visits the manager holds; do NOT pin
 get_schedule in the MANAGER profile — and because it is filtered off this surface, the
 2026-07-31 description change above does NOT move the manager `tools/list` at all: the manager
-side needs no deploy step and no restart. **`get_team_schedule` carries NO navigation links**
+side needs no deploy step and no restart. **⚠ That last sentence is about the 2026-07-31 change
+ONLY — rung 10b.2 (2026-09-09) DOES move the manager surface, 42 → 43 tools, by sharing
+`record_caller` from the team lead's array. Same cache rule as the technician side above: every
+manager sandbox needs `nemoclaw <s> gateway restart` after the deploy or it keeps serving its
+cached 42-tool list and cannot see the door at all. And unlike 2026-07-31 this one DOES bake into
+AGENTS.md (rule 7 names the tool), so a box `wire` re-run is required too.** **`get_team_schedule` carries NO navigation links**
 (user decision 2026-08-03, from live evidence): it is a TEAM view by construction, and a manager
 asking "what's on the schedule this week" is dispatching, not driving — a directions link on
 their own couple of stops answered a question nobody asked and was the only noise in an otherwise
@@ -214,12 +219,29 @@ the test is now PLACEMENT:
   visit, re-call `book_visit` with the matching jobId; `open_job` takes no jobId, so act on the
   existing work directly. `forceNewJob:true` only for genuinely different work. On a no: `inform_team_lead` in one
   sentence. **Never create it before they answer** — nothing is on the record yet, deliberately.
-  **Rung 10b (added 2026-09-08): the caller nobody matches.** The office's message may instead say
-  it does not know who got in touch. The agent creates NOTHING there — not even on a yes — because
-  the office records the caller itself with `record_caller`. It puts the question to the manager
-  and relays the answer with `inform_team_lead`, mentioning the id from the office's quiet note
-  (that note lands in the agent's own session and may arrive after the text; with no id yet, the
-  caller's number as the office wrote it). It says it passed the answer on, never that it is done.
+  **Rung 10b.2 (2026-09-09, replaces the 10b relay): the caller nobody matches — the agent
+  records it.** The office's message may instead say it does not know who got in touch. A MANAGER
+  seat now holds `record_caller` itself (shared from the team lead's surface; technicians do NOT
+  get it — dispatch refuses them). **AGENTS.md is written once per sandbox with no tier
+  branching** (`bootstrap-box.sh` writes every doctrine block unconditionally), so rule 7 is
+  phrased around what the agent can SEE in its own tool list: hold it → record; do not hold it →
+  relay with `inform_team_lead`, which is in the technician catalog. Without that branch a
+  technician seat would be told to call a tool it will be refused, with its old fallback deleted.
+  A manager seat puts the question to the manager and, on the answer, calls `record_caller` with
+  the item id from the office's quiet note — **once, carrying `openJob` and `bookVisit` if the
+  manager asked for them.** Splitting it (create the customer, then `open_job`/`book_visit`) looks
+  equivalent and is not: those two cite the capture only through `inboundAskFor`, which matches on
+  `context.customerId`, and an `inbound_unmatched` context has none — so the job and the trip
+  would be filed against nothing while the item still retired on the customer's citation, hiding
+  the loss. A named day still books untimed; the seat then places it with `move_visit`. **Why the tool matters and a relay does not:** everything
+  `record_caller` writes cites the caller's own message, and an item retires only when something
+  cites its capture — so `record_field_note` here files a copy of the agent's words, leaves the
+  original message cited by nothing, and the office goes on asking forever. That is the live
+  2026-09-08 failure this replaces (a customer whose address was her own name, a `completed` trip
+  nobody took, the item still open). With no id yet, it waits for the quiet note rather than
+  reaching for another tool. It names only what the manager said — no invented address, and no
+  email address the manager did not give — and reports what it recorded, never that the item is
+  closed.
 - **Outside accounts go through Composio, first move (AGENTS.md rule 8, added 2026-09-07).**
   Gmail, Sheets, Excel, Drive: the agent calls `get_connect_link` and hands over the URL. No web
   search, no alternative integration, no self-authentication, no hunting the tool list first.

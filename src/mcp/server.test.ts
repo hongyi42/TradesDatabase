@@ -3,7 +3,12 @@ import { Client as PgClient } from 'pg';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { getClient } from '../db/client.js';
-import { appendRawCapture, listL2CitingCapture } from '../db/rawCaptures.js';
+import {
+  appendRawCapture,
+  findCustomersByThread,
+  isAgentWrittenCapture,
+  listL2CitingCapture,
+} from '../db/rawCaptures.js';
 import { createCustomer } from '../db/customers.js';
 import { appendJobCorrespondence, createJob, insertJobCapture } from '../db/jobs.js';
 import { createVisit, insertVisitNote, updateVisitStatus } from '../db/visits.js';
@@ -2630,6 +2635,218 @@ describe('send_email tool (outbound seam stubbed)', () => {
       }
     } finally {
       await techClient.close();
+    }
+  });
+
+  // RUNG 10B.3 — WHOSE RECORD THE SEND LANDS ON. Until now every
+  // assistant-sent email was stamped with nobody, which is exactly why a thread
+  // the FIRM started could not later identify its customer: the conversation
+  // key had nothing to read. Two routes, and neither may fabricate.
+  test('the sent copy is stamped with its job, or its recipient, or nobody', { timeout: 30_000 }, async () => {
+    // This block adds a roster row on top of the ones the send_email test above
+    // left standing, so it makes its own room and gives it back — otherwise the
+    // seat cap fires in whichever suite happens to run next.
+    const seatsBefore = (
+      await pg.query<{ manager_seats: number; technician_seats: number }>(
+        'select manager_seats, technician_seats from tenants where id=$1',
+        [tenantId],
+      )
+    ).rows[0];
+    await setTenantSeats(tenantId, {
+      managerSeats: seatsBefore.manager_seats,
+      technicianSeats: seatsBefore.technician_seats + 1,
+    });
+    const stamped = await insertTechnician({
+      tenantId,
+      ref: 'stamp-sam',
+      displayName: 'Stamp Sam',
+    });
+    await setTechnicianState(stamped.id, 'active');
+    await updateTechnician(stamped.id, {
+      composio_connected_account_id: 'ca_stamp',
+      connected_email: 'stamp.sam@gmail.com',
+    });
+    let n = 0;
+    const stubs: Partial<ServerDeps> = {
+      sendEmail: async () => ({ messageId: `stamp-m-${++n}`, threadId: `stamp-t-${n}` }),
+    };
+    const { client, callWith } = await clientFor(
+      { tenantId, technicianRef: 'stamp-sam' },
+      stubs,
+    );
+    const capRow = (externalId: string) =>
+      pg.query<{ customer_id: string | null; job_id: string | null }>(
+        'select customer_id, job_id from raw_captures where external_id = $1',
+        [externalId],
+      );
+    const capMeta = async (externalId: string) =>
+      (
+        await pg.query<{ metadata: unknown }>(
+          'select metadata from raw_captures where external_id = $1',
+          [externalId],
+        )
+      ).rows[0]?.metadata;
+    try {
+      const cust = await createCustomer({
+        tenantId,
+        name: 'Stamped Customer',
+        email: 'stamped@homeowner.test',
+      });
+      const job = await createJob({ tenantId, customerId: cust.id, title: 'radiator' });
+
+      // (1) THE ARGUMENT. Explicit, and doctrine tells the agent to pass it.
+      const a = await callWith('send_email', {
+        to: 'stamped@homeowner.test',
+        subject: 'Re: radiator',
+        body: 'Thursday works.',
+        jobId: job.id,
+      });
+      await callWith('send_email', { confirmId: a.data.confirmId });
+      expect((await capRow('sent:stamp-m-1')).rows[0]).toEqual({
+        customer_id: cust.id,
+        job_id: job.id,
+      });
+
+      // (2) THE RECIPIENT, when the argument was forgotten and the address is
+      //     on exactly one customer. Customer only — a send names no job by
+      //     itself.
+      const b = await callWith('send_email', {
+        to: 'Stamped <STAMPED@homeowner.test>',
+        subject: 'Re: radiator again',
+        body: 'See you then.',
+      });
+      await callWith('send_email', { confirmId: b.data.confirmId });
+      expect((await capRow('sent:stamp-m-2')).rows[0]).toEqual({
+        customer_id: cust.id,
+        job_id: null,
+      });
+
+      // (3) AMBIGUOUS — two customers share the address. Neither route may
+      //     fabricate: a wrong stamp on an append-only row is permanent, a
+      //     missing one is merely a gap.
+      await createCustomer({ tenantId, name: 'Twin One', email: 'shared@office.test' });
+      await createCustomer({ tenantId, name: 'Twin Two', email: 'shared@office.test' });
+      const c = await callWith('send_email', {
+        to: 'shared@office.test',
+        subject: 'Quote',
+        body: 'Attached.',
+      });
+      const sentC = await callWith('send_email', { confirmId: c.data.confirmId });
+      expect(sentC.data).toMatchObject({ status: 'sent', captured: true });
+      expect((await capRow('sent:stamp-m-3')).rows[0]).toEqual({
+        customer_id: null,
+        job_id: null,
+      });
+
+      // (4) A STRANGER's address stamps nothing, and the send still happens.
+      const d = await callWith('send_email', {
+        to: 'nobody@elsewhere.test',
+        subject: 'Hello',
+        body: 'Introducing ourselves.',
+      });
+      await callWith('send_email', { confirmId: d.data.confirmId });
+      expect((await capRow('sent:stamp-m-4')).rows[0]).toEqual({
+        customer_id: null,
+        job_id: null,
+      });
+
+      // (4b) THE TWO KEYS DISAGREE — a jobId typed by a model reading one screen
+      //      while the mail goes to somebody else. Neither is trusted: the
+      //      stamp is what findCustomersByThread reads, so a wrong one would
+      //      file the RECIPIENT'S later reply onto the wrong customer's job.
+      const other = await createCustomer({
+        tenantId,
+        name: 'Different Person',
+        email: 'different@homeowner.test',
+      });
+      const otherJob = await createJob({
+        tenantId,
+        customerId: other.id,
+        title: "somebody else's work",
+      });
+      const e = await callWith('send_email', {
+        to: 'stamped@homeowner.test', // resolves uniquely to `cust`
+        subject: 'Referral',
+        body: 'Passing this along.',
+        jobId: otherJob.id, // …but the job belongs to `other`
+      });
+      await callWith('send_email', { confirmId: e.data.confirmId });
+      expect((await capRow('sent:stamp-m-5')).rows[0]).toEqual({
+        customer_id: null,
+        job_id: null,
+      });
+
+      // …and when they AGREE, the job still wins (it is the more specific of
+      // the two, and it is the only one that names a job at all).
+      const f = await callWith('send_email', {
+        to: 'different@homeowner.test',
+        subject: 'Yours',
+        body: 'About your job.',
+        jobId: otherJob.id,
+      });
+      await callWith('send_email', { confirmId: f.data.confirmId });
+      expect((await capRow('sent:stamp-m-6')).rows[0]).toEqual({
+        customer_id: other.id,
+        job_id: otherJob.id,
+      });
+
+      // (5) A BAD jobId is refused AT STAGE TIME — the person is about to
+      //     approve a preview, and a refusal arriving after the mail has gone
+      //     would leave a sent email with an error where its record should be.
+      const bad = await callWith('send_email', {
+        to: 'stamped@homeowner.test',
+        subject: 'x',
+        body: 'y',
+        jobId: '00000000-0000-0000-0000-000000000000',
+      });
+      expect(bad.isError).toBe(true);
+      expect(bad.text).toContain('job not found');
+
+      // …and another tenant's job is "not found" too, never borrowed.
+      const foreignTenant = await pg.query<{ id: string }>(
+        "insert into tenants (name) values ('send-email-stamp-foreign') returning id",
+      );
+      const foreignCust = await createCustomer({
+        tenantId: foreignTenant.rows[0].id,
+        name: 'Not Ours',
+      });
+      const foreignJob = await createJob({
+        tenantId: foreignTenant.rows[0].id,
+        customerId: foreignCust.id,
+        title: 'theirs',
+      });
+      const crossed = await callWith('send_email', {
+        to: 'stamped@homeowner.test',
+        subject: 'x',
+        body: 'y',
+        jobId: foreignJob.id,
+      });
+      expect(crossed.isError).toBe(true);
+      expect(crossed.text).toContain('job not found');
+
+      // (6) THE POINT OF ALL THIS: a thread the FIRM started now identifies its
+      //     customer, which is what the conversation key reads.
+      const byThread = await findCustomersByThread(tenantId, 'stamp-t-1');
+      expect(byThread).toContainEqual({ customerId: cust.id, jobId: job.id });
+
+      // (7) THE PRODUCER STAMP, checked against the REAL row rather than a
+      //     hand-written stub. Rung 10b.3 gave the send and the Gmail trigger's
+      //     later delivery of it ONE external_id, so this predicate is the only
+      //     thing keeping the inbound door from running back over the agent's
+      //     own send. Rename the key here and the door silently starts
+      //     re-extracting our own words and asking the planner about promises
+      //     the agent already reported — with every stubbed test still green.
+      expect(isAgentWrittenCapture(await capMeta('sent:stamp-m-1'))).toBe(true);
+    } finally {
+      await client.close();
+      await pg.query('delete from technicians where tenant_id=$1 and ref=$2', [
+        tenantId,
+        'stamp-sam',
+      ]);
+      await setTenantSeats(tenantId, {
+        managerSeats: seatsBefore.manager_seats,
+        technicianSeats: seatsBefore.technician_seats,
+      });
     }
   });
 });
@@ -7598,10 +7815,18 @@ describe("read_memory / write_memory — the planner's own notes", () => {
         extract: async () => ({ jobTitle: 'what the model read' }),
       }) as Promise<Record<string, unknown>>;
 
-    const parked = async (over: { tenantId?: string; text?: string; meta?: Json } = {}) => {
+    const parked = async (
+      over: {
+        tenantId?: string;
+        text?: string;
+        meta?: Json;
+        channel?: 'phone_call' | 'email' | 'outbound_email';
+      } = {},
+    ) => {
+      const channel = over.channel ?? 'phone_call';
       const capture = await appendRawCapture({
         tenantId: over.tenantId ?? tenantId,
-        channel: 'phone_call',
+        channel,
         technicianRef: 'phone-line',
         rawText: over.text ?? 'hi, my heater is dead and nobody has been out',
         metadata: over.meta ?? { fromNumber: '+15557770000' },
@@ -7611,7 +7836,7 @@ describe("read_memory / write_memory — the planner's own notes", () => {
         kind: 'inbound_unmatched',
         subjectRef: capture.id,
         technicianId: null,
-        context: { captureId: capture.id, channel: 'phone_call', from: '+15557770000' },
+        context: { captureId: capture.id, channel, from: '+15557770000' },
       });
       if (!obs) throw new Error('fixture observation was not created');
       return { capture, obs };
@@ -8097,6 +8322,79 @@ describe("read_memory / write_memory — the planner's own notes", () => {
       const res = await callAs('mgr-test', {
         observationId: obs.id,
         newCustomer: { name: `No Email Please ${Date.now()}` },
+      });
+      const { rows } = await pg.query<{ email: string | null }>(
+        'select email from customers where id = $1',
+        [res.customerId],
+      );
+      expect(rows[0].email).toBeNull();
+    });
+
+    // ---- RUNG 10B.3: the same rule, REVERSED, on the firm's own outbound mail --
+    test("on an OUTBOUND capture the caller's email is who it went TO, never From", async () => {
+      // From is US on an outbound row, so the 10b.2 rule inverts: taking the
+      // sender would file the FIRM'S OWN ADDRESS on the customer the planner is
+      // creating — the 10b.2 incident reproduced through the new door, landing
+      // on exactly the name-only answer the refusal message steers towards.
+      const { obs } = await parked({
+        channel: 'outbound_email',
+        text: "Subject: Re\nFrom: office@firm.test\n\nWe'll come Thursday.",
+        meta: { from: 'Office <office@firm.test>', to: 'Iris <iris@homeowner.test>' },
+      });
+      const res = await callAs('mgr-test', {
+        observationId: obs.id,
+        newCustomer: { name: `Promised To ${Date.now()}` },
+      });
+      const { rows } = await pg.query<{ email: string | null }>(
+        'select email from customers where id = $1',
+        [res.customerId],
+      );
+      expect(rows[0].email).toBe('iris@homeowner.test');
+    });
+
+    test('…and it ACCEPTS the recipient the ask itself named', async () => {
+      // The refusal guard was inbound-only too: it reads a sole recipient as
+      // evidence of OUR mailbox, which on outbound is the CUSTOMER. Unscoped it
+      // refuses the right answer — the ask renders "sent to iris@…", the planner
+      // answers with that address, and the tool calls the customer's own address
+      // the firm's mailbox. Untrue, and it blocks the only tool that resolves
+      // an outbound-promise ask.
+      const { obs } = await parked({
+        channel: 'outbound_email',
+        meta: { from: 'Office <office@firm.test>', to: 'Iris <iris@homeowner.test>' },
+      });
+      const res = await callAs('mgr-test', {
+        observationId: obs.id,
+        newCustomer: { name: `Named Recipient ${Date.now()}`, email: 'iris@homeowner.test' },
+      });
+      const { rows } = await pg.query<{ email: string | null }>(
+        'select email from customers where id = $1',
+        [res.customerId],
+      );
+      expect(rows[0].email).toBe('iris@homeowner.test');
+    });
+
+    test("…while the firm's own SENDING address is still refused on an outbound capture", async () => {
+      const { obs } = await parked({
+        channel: 'outbound_email',
+        meta: { from: 'Office <office@firm.test>', to: 'Iris <iris@homeowner.test>' },
+      });
+      await expect(
+        callAs('mgr-test', {
+          observationId: obs.id,
+          newCustomer: { name: 'Wrong Way Round', email: 'OFFICE@firm.test' },
+        }),
+      ).rejects.toThrow(/was SENT FROM/);
+    });
+
+    test('…and TWO recipients name neither — unique-or-nothing', async () => {
+      const { obs } = await parked({
+        channel: 'outbound_email',
+        meta: { from: 'Office <office@firm.test>', to: 'iris@home.test, landlord@example.test' },
+      });
+      const res = await callAs('mgr-test', {
+        observationId: obs.id,
+        newCustomer: { name: `Ambiguous To ${Date.now()}` },
       });
       const { rows } = await pg.query<{ email: string | null }>(
         'select email from customers where id = $1',

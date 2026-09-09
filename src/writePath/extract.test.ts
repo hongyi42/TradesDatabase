@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'vitest';
-import { EXTRACTION_SYSTEM, EXTRACTION_TOOL, renderThreadContext } from './extract.js';
+import {
+  EXTRACTION_SYSTEM,
+  EXTRACTION_TOOL,
+  renderExtractionUser,
+  renderThreadContext,
+} from './extract.js';
 import type { ThreadMessage } from '../email/format.js';
 
 // A SCHEMA PIN, not a model test. `visitCommitted` is the one field that decides
@@ -110,5 +115,58 @@ describe('the extraction system prompt (rung 10b)', () => {
     for (const field of ['jobTitle', 'statusSignal', 'visitCommitted', 'touchesOperations']) {
       expect(EXTRACTION_SYSTEM).toContain(field);
     }
+  });
+
+  // RUNG 10B.3. The firm's own SENT mail now reaches this extractor. The rule
+  // above covers the firm's replies only as EARLIER context; when OUR reply is
+  // the message being judged, it has to be restated or the model reads our
+  // signature block as the customer's identity — the same failure `isOwnMailbox`
+  // exists to prevent, arriving through a new door.
+  test("the prompt tells the model what to do when the LATEST message is the firm's own", () => {
+    expect(EXTRACTION_SYSTEM).toContain("YOUR OWN FIRM'S REPLY");
+    // Identity is refused; what the firm SAYS still counts in full.
+    expect(EXTRACTION_SYSTEM).toContain('signature block');
+    expect(EXTRACTION_SYSTEM).toContain('IS a commitment');
+  });
+});
+
+describe('renderExtractionUser (rung 10b.3)', () => {
+  const earlier: ThreadMessage[] = [
+    {
+      messageId: 'm1',
+      from: 'iris@homeowner.test',
+      to: 'office@firm.test',
+      subject: 'Radiator',
+      body: 'still cold upstairs',
+      at: '2026-09-08T10:00:00.000Z',
+    },
+  ];
+
+  test("the firm's own reply is LABELLED as such — the model cannot tell from the text", () => {
+    const user = renderExtractionUser('Subject: Re\nFrom: office@firm.test\n\nThursday works.', {
+      earlier: [],
+      fromTheFirm: true,
+    });
+    expect(user).toContain("YOUR OWN FIRM'S REPLY");
+    expect(user).toContain('Thursday works.');
+  });
+
+  test('an inbound message with no thread is passed through BARE, exactly as before', () => {
+    // The one shape that must not shift: labelling it would change the prompt
+    // for every ordinary email and call in the system for no gain.
+    expect(renderExtractionUser('unit still noisy')).toBe('unit still noisy');
+    expect(renderExtractionUser('unit still noisy', { earlier: [] })).toBe('unit still noisy');
+  });
+
+  test('with a thread, the latest message is labelled either way and comes LAST', () => {
+    const inbound = renderExtractionUser('the latest words', { earlier });
+    expect(inbound).toContain('EARLIER IN THIS CONVERSATION');
+    expect(inbound.indexOf('still cold upstairs')).toBeLessThan(inbound.indexOf('the latest words'));
+    expect(inbound).toContain('LATEST MESSAGE');
+    expect(inbound).not.toContain("YOUR OWN FIRM'S REPLY");
+
+    const ours = renderExtractionUser('the latest words', { earlier, fromTheFirm: true });
+    expect(ours).toContain("YOUR OWN FIRM'S REPLY");
+    expect(ours.indexOf('still cold upstairs')).toBeLessThan(ours.indexOf('the latest words'));
   });
 });

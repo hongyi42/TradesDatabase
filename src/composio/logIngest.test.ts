@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import type { Technician } from '../db/technicians.js';
 import type { AppendRawCaptureInput, RawCapture } from '../db/rawCaptures.js';
+import { isAgentWrittenCapture } from '../db/index.js';
 import { runLogIngestion, type ExecutionLogItem } from './logIngest.js';
 
 // Pure unit tests â€” fetchers, roster read, and the L1 append all injected.
@@ -97,6 +98,11 @@ describe('runLogIngestion â€” classification', () => {
       sensitivity: null, // business correspondence stays visible to technicians
     });
     expect(h.appended[0].rawText).toBe('Subject: Invoice\nFrom: sam@biz.com\n\nAttached.');
+    // RUNG 10B.3: this row and the Gmail trigger's later delivery of the SAME
+    // message now share one external_id, so the producer stamp is the only
+    // thing that stops the inbound door running back over a send the agent
+    // already made and reported. Pinned against the reader's own predicate.
+    expect(isAgentWrittenCapture(h.appended[0].metadata)).toBe(true);
   });
 
   test('pre-existing sent:<id> â†’ deduped, not an error', async () => {

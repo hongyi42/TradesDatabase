@@ -1,7 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import type { Technician, TechnicianPatch } from '../db/technicians.js';
 import type { ReviewItem, UpsertOpenReviewItemInput } from '../db/index.js';
-import { checkPairing, createConnectLink, unpair, type PairingClient } from './pairing.js';
+import {
+  GMAIL_TRIGGER_CONFIG,
+  checkPairing,
+  createConnectLink,
+  unpair,
+  type PairingClient,
+} from './pairing.js';
 
 // Pure unit tests â€” the Composio client and both db writes are stubbed, so
 // nothing here needs COMPOSIO_API_KEY or the test project.
@@ -90,6 +96,7 @@ function pairingDeps(db: ReturnType<typeof dbStubs>, client: PairingClient) {
 function clientStub(opts: {
   accounts?: Array<Record<string, unknown>>;
   activeTriggers?: Array<Record<string, unknown>>;
+  createThrows?: boolean;
   profileData?: Record<string, unknown>;
   profileThrows?: boolean;
   deleteThrows?: (id: string) => Error | null;
@@ -128,6 +135,7 @@ function clientStub(opts: {
       },
       create: async (userId, slug, o) => {
         rec('triggers.create', userId, slug, o);
+        if (opts.createThrows) throw new Error('upsert refused');
         return { triggerId: 'ti_new123' };
       },
       delete: async (id) => {
@@ -277,15 +285,66 @@ describe('checkPairing', () => {
     expect(db.items).toHaveLength(0); // the item opened once, at the claim
   });
 
-  test('idempotent on an existing trigger: adopts it, never calls create', async () => {
+  test('idempotent on an existing trigger CARRYING THE CURRENT CONFIG: adopts it, never calls create', async () => {
     const db = dbStubs();
     const { client, calls } = clientStub({
       accounts: [ACTIVE_GMAIL],
-      activeTriggers: [{ id: 'ti_existing' }],
+      activeTriggers: [{ id: 'ti_existing', triggerConfig: { ...GMAIL_TRIGGER_CONFIG } }],
     });
     await checkPairing(tech(), pairingDeps(db, client));
     expect(calls.map((c) => c.method)).not.toContain('triggers.create');
     expect(db.patches[0].patch.composio_trigger_id).toBe('ti_existing');
+  });
+
+  // RUNG 10B.3. Watching SENT is a change to the trigger's CONFIG, and every
+  // seat paired before it carries the old one. Without this the phase ships
+  // inert: the code is right and no live mailbox ever delivers the firm's half.
+  test('an existing trigger with a STALE config is reconfigured, not left alone', async () => {
+    const db = dbStubs();
+    const { client, calls } = clientStub({
+      accounts: [ACTIVE_GMAIL],
+      // What every seat paired before this rung actually holds.
+      activeTriggers: [
+        { id: 'ti_existing', trigger_config: { interval: 1, labelIds: 'INBOX', userId: 'me' } },
+      ],
+    });
+    await checkPairing(tech(), pairingDeps(db, client));
+    const create = calls.find((c) => c.method === 'triggers.create');
+    expect(create).toBeDefined();
+    // The UPSERT endpoint, pinned to the same account — never a delete+create,
+    // which would drop the polling watermark and redeliver the whole mailbox.
+    expect(calls.map((c) => c.method)).not.toContain('triggers.delete');
+    expect(create?.args[2]).toMatchObject({
+      connectedAccountId: 'ca_abc123',
+      triggerConfig: { ...GMAIL_TRIGGER_CONFIG },
+    });
+  });
+
+  test('the config that goes out watches SENT through `query`, not a second labelId', async () => {
+    // labelIds takes ONE label (live trigger-type schema, 2026-09-09), and
+    // `query` takes precedence over it — so "INBOX plus SENT" is a query.
+    expect(GMAIL_TRIGGER_CONFIG.query).toBe('label:inbox OR label:sent');
+    expect(GMAIL_TRIGGER_CONFIG.labelIds).toBe('INBOX');
+  });
+
+  test('a reconfigure that FAILS keeps the trigger that already works', async () => {
+    // The mailbox still delivers INBOX. Turning a live pairing into a failed one
+    // over a narrower filter would be the worse trade.
+    const db = dbStubs();
+    const { client } = clientStub({
+      accounts: [ACTIVE_GMAIL],
+      activeTriggers: [{ id: 'ti_existing', trigger_config: { labelIds: 'INBOX' } }],
+      createThrows: true,
+    });
+    const r = await checkPairing(tech(), pairingDeps(db, client));
+    expect(r).toMatchObject({ status: 'paired' });
+    expect(db.patches[0].patch.composio_trigger_id).toBe('ti_existing');
+  });
+
+  test('a create that fails with NO trigger to keep still throws — the sweep heals it', async () => {
+    const db = dbStubs();
+    const { client } = clientStub({ accounts: [ACTIVE_GMAIL], createThrows: true });
+    await expect(checkPairing(tech(), pairingDeps(db, client))).rejects.toThrow();
   });
 
   test('profile fetch failure is advisory: still paired, email null in claim and item', async () => {

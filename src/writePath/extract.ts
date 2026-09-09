@@ -58,10 +58,14 @@ export interface ExtractedFields {
 // RUNG 10B: the third argument is the CONVERSATION this message belongs to,
 // oldest first, excluding the message itself. Optional so every existing 1- and
 // 2-arg stub stays assignable, and absent for every channel that has no thread.
+// RUNG 10B.3: `fromTheFirm` says the LATEST message is our OWN outbound mail,
+// not the customer's. It changes nothing structural — the same fields come back
+// — but the identity rule below reverses on it, and the model cannot know it
+// from the text.
 export type Extractor = (
   rawText: string,
   ctx?: CostContext,
-  context?: { earlier: ThreadMessage[] },
+  context?: { earlier: ThreadMessage[]; fromTheFirm?: boolean },
 ) => Promise<ExtractedFields>;
 
 // HOW MUCH OF THE CONVERSATION THE MODEL SEES. Bounded twice: the last 8
@@ -120,7 +124,18 @@ export const EXTRACTION_SYSTEM =
   'replies: a visit the firm agreed to in an earlier message is already handled, so it must NOT ' +
   'set visitCommitted, and work reported done earlier must NOT set statusSignal. A follow-up or ' +
   'a fact that was stated earlier and is not restated now is not a follow-up or a fact of this ' +
-  'message.';
+  'message. ' +
+  // Rung 10b.3: the firm's own SENT mail now reaches this extractor. The rule
+  // above covers the firm's replies only when they are EARLIER context; when
+  // OUR reply is the message being judged, the same rule has to be restated or
+  // the model reads our signature block as the customer's identity.
+  'THE LATEST MESSAGE IS SOMETIMES YOUR OWN FIRM\'S REPLY, and it is labelled as such when it ' +
+  'is. Then the identity rule applies to IT: its sender address, signature block, letterhead, ' +
+  'phone number and address are the FIRM\'s and must not be reported as the customer\'s — take ' +
+  'identity only from what the customer wrote. What your firm SAYS still counts in full: a ' +
+  'visit your own firm agrees to there IS a commitment (your firm is the one agreeing), and ' +
+  'jobTitle, statusSignal, followUp and attributes are read from it exactly as from any other ' +
+  'latest message.';
 
 // Single forced tool — the model's only move is to return this structured object.
 // EXPORTED so a test pins the schema: `visitCommitted` is what decides whether a
@@ -183,14 +198,36 @@ export const EXTRACTION_TOOL: ForcedToolSpec = {
 //
 // `ctx` only carries the tenant for cost attribution; runForcedTool bills the
 // call against whichever provider is actually active.
-export const defaultExtractor: Extractor = async (rawText, ctx, context) => {
+// WHAT THE MODEL IS ACTUALLY SHOWN. The conversation FIRST and the message
+// LAST, with the latest one labelled: its judgments must come from the bottom of
+// what it is shown, and ending on the message being judged is what makes that
+// the natural reading.
+//
+// The label is also what the system prompt's firm's-own-reply rule keys on
+// (rung 10b.3) — the model cannot tell from the text that a From line is our own
+// mailbox. An ordinary inbound message with no thread keeps the BARE rawText it
+// has always had: the labelling appears only where it says something new, so
+// nothing about the existing prompt shifts under this change.
+//
+// EXPORTED so a test pins it — the labelling is the whole mechanism, and a
+// silent edit to it would leave the firm's own signature block readable as the
+// customer's identity with every test still green.
+export function renderExtractionUser(
+  rawText: string,
+  context?: { earlier?: ThreadMessage[]; fromTheFirm?: boolean },
+): string {
   const thread = context?.earlier?.length ? renderThreadContext(context.earlier) : '';
+  const label = context?.fromTheFirm
+    ? "LATEST MESSAGE \u2014 YOUR OWN FIRM'S REPLY, extract from this:"
+    : 'LATEST MESSAGE \u2014 extract from this:';
+  if (thread) return `${thread}\n\n${label}\n${rawText}`;
+  return context?.fromTheFirm ? `${label}\n${rawText}` : rawText;
+}
+
+export const defaultExtractor: Extractor = async (rawText, ctx, context) => {
   const args = await runForcedTool(EXTRACTION_TOOL, {
     system: EXTRACTION_SYSTEM,
-    // The conversation FIRST and the message LAST, with the latest one labelled.
-    // Its judgments must come from the bottom of what it is shown, and ending on
-    // the message being judged is what makes that the natural reading.
-    user: thread ? `${thread}\n\nLATEST MESSAGE \u2014 extract from this:\n${rawText}` : rawText,
+    user: renderExtractionUser(rawText, context),
     maxTokens: 1024,
     label: 'defaultExtractor',
   }, ctx);

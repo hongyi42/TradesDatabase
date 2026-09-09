@@ -142,6 +142,8 @@ function baseDeps(over: InboundWebhookDeps = {}): InboundWebhookDeps {
     // stubs its world.
     alreadyProcessed: async () => false,
     listThreadCaptures: async () => ({ messages: [], blockedMessageIds: [] }),
+    findCaptureByExternalId: async () => null,
+    hasLinkedL2: async () => false,
     ...over,
   };
 }
@@ -939,5 +941,341 @@ describe("the firm's own mailbox is not a caller's identity (rung 10b.2)", () =>
     const rec = recorder();
     await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
     expect(rec.calls[0].fallbackEmail).toBe('ruth@example.test');
+  });
+});
+
+// RUNG 10B.3 — THE FIRM'S OWN HALF OF THE CONVERSATION. Before this the trigger
+// watched INBOX only, so a manager replying from Gmail directly was never
+// captured: not filtered, not dropped, never delivered. A job's correspondence
+// was one-sided and a promise typed by hand bound the firm with the spine
+// unaware.
+describe("the firm's own replies reach the record, gated (rung 10b.3)", () => {
+  let prevSecret: string | undefined;
+  beforeAll(() => {
+    prevSecret = process.env.COMPOSIO_WEBHOOK_SECRET;
+    process.env.COMPOSIO_WEBHOOK_SECRET = SECRET;
+  });
+  afterAll(() => {
+    if (prevSecret === undefined) delete process.env.COMPOSIO_WEBHOOK_SECRET;
+    else process.env.COMPOSIO_WEBHOOK_SECRET = prevSecret;
+  });
+
+  const sentMail = (over: Record<string, unknown> = {}) =>
+    body({
+      data: {
+        message_id: 'gmail-sent-1',
+        sender: 'Office <office@firm.test>',
+        to: 'Iris Calloway <iris@homeowner.test>',
+        subject: 'Re: Radiator not heating upstairs',
+        message_text: "Thursday works — we'll come out then.",
+        message_timestamp: '2026-09-09T17:00:00.000Z',
+        thread_id: 'thread-radiator',
+        label_ids: ['SENT'],
+        ...over,
+      },
+    });
+
+  test('a SENT message lands as outbound_email, keyed on WHO IT WENT TO', async () => {
+    const raw = sentMail();
+    const rec = recorder();
+    const r = await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
+    expect(r.status).toBe('ingested');
+    expect(rec.calls[0].channel).toBe('outbound_email');
+    // Keyed in the outbound namespace — the same key send_email and logIngest
+    // write under, so one email can only ever be one L1 row.
+    expect(rec.calls[0].externalId).toBe('sent:gmail-sent-1');
+    // The sender is US, so the address worth matching on is the recipient's.
+    expect(rec.calls[0].fallbackEmail).toBe('iris@homeowner.test');
+    expect(rec.calls[0].threadId).toBe('thread-radiator');
+  });
+
+  test('two recipients name neither — unique-or-nothing, like every other key', async () => {
+    const raw = sentMail({
+      message_id: 'gmail-sent-2',
+      to: 'iris@homeowner.test, landlord@example.test',
+    });
+    const rec = recorder();
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
+    expect(rec.calls[0].fallbackEmail).toBeNull();
+  });
+
+  // THE USER'S RULING, 2026-09-09. L1 has no delete, so a manager's dentist
+  // appointment must never be written; the classifier is the only thing standing
+  // between the two. This is NOT the 2026-07-04 agent-send exception, which
+  // covers actions the AGENT performed, not a human's own outbound mail.
+  test('a PERSONAL message from the same mailbox is dropped with a receipt, never written', async () => {
+    const raw = sentMail({
+      message_id: 'gmail-sent-personal',
+      to: 'dentist@clinic.test',
+      subject: 'Appointment Thursday',
+      message_text: 'confirming my 3pm cleaning',
+    });
+    const rec = recorder();
+    const drops = dropRecorder();
+    const r = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({ recordFieldNote: rec.fn, classify: classifyStub(false).fn, recordDrop: drops.fn }),
+    );
+    expect(r.status).toBe('skipped_non_work');
+    expect(rec.calls).toHaveLength(0); // nothing reached L1 — this is the whole point
+    expect(drops.calls[0]).toMatchObject({
+      channel: 'outbound_email',
+      externalId: 'sent:gmail-sent-personal',
+      // The RECIPIENT, not the sender: the receipt keeps a domain only, and on
+      // the firm's own mail the sender's domain is our own on every single drop.
+      from: 'dentist@clinic.test',
+    });
+  });
+
+  test('the classifier is TOLD the direction, and shown who it went to', async () => {
+    // The sender is always the firm on a SENT message, so judging by sender is
+    // judging nothing — and "unsure → not work" would drop the firm's own
+    // short promises, which is the exact case this rung exists for.
+    const raw = sentMail({ message_id: 'gmail-sent-direction' });
+    const cls = classifyStub(true);
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ classify: cls.fn }));
+    expect(cls.calls[0]).toMatchObject({
+      outbound: true,
+      to: 'Iris Calloway <iris@homeowner.test>',
+    });
+    // An ordinary inbound email makes no such claim.
+    const inbound = body();
+    const cls2 = classifyStub(true);
+    await handleInboundWebhook(inbound, sign(inbound), baseDeps({ classify: cls2.fn }));
+    expect(cls2.calls[0].outbound).toBeUndefined();
+  });
+
+  test('the classifier reads the CLEAN body, not the stored header form', async () => {
+    const raw = sentMail({ message_id: 'gmail-sent-3' });
+    const cls = classifyStub(true);
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ classify: cls.fn }));
+    expect(cls.calls[0].body).toBe("Thursday works — we'll come out then.");
+    expect(cls.calls[0].body).not.toContain('Subject:');
+  });
+
+  describe("the assistant's own send, coming back", () => {
+    test("the AGENT's own send row is a duplicate — nothing written, nothing classified", async () => {
+      const raw = sentMail({ message_id: 'gmail-sent-twin' });
+      const rec = recorder();
+      const cls = classifyStub(true);
+      const looked: string[] = [];
+      const r = await handleInboundWebhook(
+        raw,
+        sign(raw),
+        baseDeps({
+          recordFieldNote: rec.fn,
+          classify: cls.fn,
+          findCaptureByExternalId: async (_t: string, externalId: string) => {
+            looked.push(externalId);
+            // `sentVia` is send_email's own stamp — the PRODUCER, which is what
+            // tells this row apart from one an earlier delivery wrote.
+            return { id: 'cap-outbound-1', metadata: { sentVia: 'GMAIL_SEND_EMAIL' } } as never;
+          },
+        }),
+      );
+      expect(r).toEqual({ status: 'duplicate', captureId: 'cap-outbound-1' });
+      expect(rec.calls).toHaveLength(0);
+      // BEFORE the classifier: no model call for a message we already hold.
+      expect(cls.calls).toHaveLength(0);
+      // ONE key, three writers: the normalizer already put this delivery in the
+      // outbound namespace, so the lookup is simply "do we hold this row".
+      expect(looked).toEqual(['sent:gmail-sent-twin']);
+    });
+
+    test("logIngest's row counts too — it stamps toolSlug, not sentVia", async () => {
+      const raw = sentMail({ message_id: 'gmail-sent-logingest' });
+      const rec = recorder();
+      const r = await handleInboundWebhook(
+        raw,
+        sign(raw),
+        baseDeps({
+          recordFieldNote: rec.fn,
+          findCaptureByExternalId: async () =>
+            ({ id: 'cap-log-1', metadata: { toolSlug: 'GMAIL_SEND_EMAIL' } }) as never,
+        }),
+      );
+      expect(r).toEqual({ status: 'duplicate', captureId: 'cap-log-1' });
+      expect(rec.calls).toHaveLength(0);
+    });
+
+    // THE REGRESSION THIS GUARDS. One key for all three writers means the
+    // lookup can return OUR OWN half-finished delivery. Returning 'duplicate'
+    // there would be permanent: an append that landed and then threw before the
+    // job link redelivers as a 503, and the door would never run again — the
+    // promise never reaching the job, with no later delivery able to fix it.
+    test('an ORPHAN of our own earlier delivery falls through and heals', async () => {
+      const raw = sentMail({ message_id: 'gmail-sent-orphan' });
+      const rec = recorder();
+      const r = await handleInboundWebhook(
+        raw,
+        sign(raw),
+        baseDeps({
+          recordFieldNote: rec.fn,
+          // Written by the TRIGGER (headers, no producer stamp) and never
+          // linked to anything.
+          findCaptureByExternalId: async () =>
+            ({ id: 'cap-orphan-1', metadata: { from: 'office@firm.test', subject: 'Re' } }) as never,
+          hasLinkedL2: async () => false,
+        }),
+      );
+      expect(r.status).toBe('ingested');
+      expect(rec.calls).toHaveLength(1);
+    });
+
+    test("A SENT REPLY IS NEVER SHOWN TO ITSELF — the storage key is not Gmail's id", async () => {
+      // THE REGRESSION THIS GUARDS. An outbound delivery is stored as
+      // `sent:<id>` while Composio's thread fetch names the BARE id, so a
+      // comparison against externalId can never match. The firm's own reply
+      // would land in its own "EARLIER IN THIS CONVERSATION" block, where the
+      // extractor is told a commitment "is already handled" — visitCommitted
+      // suppressed, no ask raised, a promise nobody hears.
+      const raw = sentMail({ message_id: 'gmail-sent-self', thread_id: 'thread-radiator' });
+      const rec = recorder();
+      const earlierOnly = [
+        {
+          messageId: 'gmail-msg-1',
+          from: 'iris@homeowner.test',
+          to: 'office@firm.test',
+          subject: 'Radiator',
+          body: 'still cold upstairs',
+          at: '2026-09-08T10:00:00.000Z',
+        },
+      ];
+      const fetchThread = vi.fn(async () => [
+        ...earlierOnly,
+        // The message being read, as Gmail hands it back — bare id.
+        {
+          messageId: 'gmail-sent-self',
+          from: 'office@firm.test',
+          to: null,
+          subject: null,
+          body: "Thursday works — we'll come out then.",
+          at: null,
+        },
+      ]);
+      await handleInboundWebhook(
+        raw,
+        sign(raw),
+        baseDeps({
+          recordFieldNote: rec.fn,
+          getTechnician: async () => techRow({ composio_connected_account_id: 'ca_test' }),
+          fetchThread,
+        }),
+      );
+      expect(rec.calls[0].threadContext).toEqual(earlierOnly);
+    });
+
+    test('a RETRACTED reply of ours is filtered whichever spelling the block holds', async () => {
+      // blockedMessageIds are L1 `external_id`s, so an outbound row contributes
+      // the `sent:` form while the fetched thread names the bare one.
+      const raw = sentMail({ message_id: 'gmail-sent-blocked', thread_id: 'thread-radiator' });
+      const rec = recorder();
+      await handleInboundWebhook(
+        raw,
+        sign(raw),
+        baseDeps({
+          recordFieldNote: rec.fn,
+          getTechnician: async () => techRow({ composio_connected_account_id: 'ca_test' }),
+          fetchThread: async () => [
+            {
+              messageId: 'gmail-retracted',
+              from: 'office@firm.test',
+              to: null,
+              subject: null,
+              body: 'ignore that last one',
+              at: null,
+            },
+          ],
+          listThreadCaptures: async () => ({
+            messages: [],
+            blockedMessageIds: ['sent:gmail-retracted'],
+          }),
+        }),
+      );
+      expect(rec.calls[0]).not.toHaveProperty('threadContext');
+    });
+
+    test('THE L1-FALLBACK PATH excludes the message from itself too', async () => {
+      // The other half of "never show the message to itself", and the one that
+      // runs on the pilot TODAY: with no connected account the Composio fetch is
+      // skipped and our own captures are the thread. `listCapturesByThread`
+      // names a message by its L1 `external_id` — the `sent:` form for an
+      // outbound row — while Gmail names it bare, so one spelling is not enough.
+      // Reached exactly where R2-1's healing redelivery sends us.
+      const raw = sentMail({ message_id: 'gmail-sent-l1self', thread_id: 'thread-radiator' });
+      const rec = recorder();
+      await handleInboundWebhook(
+        raw,
+        sign(raw),
+        baseDeps({
+          recordFieldNote: rec.fn,
+          // No paired account → `fetched` is null → our own captures are used.
+          getTechnician: async () => techRow(),
+          listThreadCaptures: async () => ({
+            messages: [
+              {
+                messageId: 'sent:gmail-sent-l1self', // the row THIS delivery appended
+                from: 'office@firm.test',
+                to: null,
+                subject: null,
+                body: "Thursday works — we'll come out then.",
+                at: null,
+              },
+            ],
+            blockedMessageIds: [],
+          }),
+        }),
+      );
+      // Shown to itself, the extractor is told the commitment is "already
+      // handled" — visitCommitted suppressed, and neither ask ever fires.
+      expect(rec.calls[0]).not.toHaveProperty('threadContext');
+    });
+
+    test('…but once it IS linked, the door does not run again', async () => {
+      const raw = sentMail({ message_id: 'gmail-sent-done' });
+      const rec = recorder();
+      const r = await handleInboundWebhook(
+        raw,
+        sign(raw),
+        baseDeps({
+          recordFieldNote: rec.fn,
+          findCaptureByExternalId: async () => ({ id: 'cap-done-1', metadata: {} }) as never,
+          hasLinkedL2: async () => true,
+        }),
+      );
+      expect(r).toEqual({ status: 'duplicate', captureId: 'cap-done-1' });
+      expect(rec.calls).toHaveLength(0);
+    });
+
+    test('with no twin it ingests normally', async () => {
+      const raw = sentMail({ message_id: 'gmail-sent-notwin' });
+      const rec = recorder();
+      const r = await handleInboundWebhook(
+        raw,
+        sign(raw),
+        baseDeps({ recordFieldNote: rec.fn, findCaptureByExternalId: async () => null }),
+      );
+      expect(r.status).toBe('ingested');
+      expect(rec.calls).toHaveLength(1);
+    });
+
+    test('an INBOUND message never pays for the twin lookup', async () => {
+      // The `sent:` prefix is minted only by outbound paths, so asking on every
+      // inbound email would be a read per message for an answer that is always no.
+      const raw = body();
+      let asked = 0;
+      await handleInboundWebhook(
+        raw,
+        sign(raw),
+        baseDeps({
+          findCaptureByExternalId: async () => {
+            asked += 1;
+            return null;
+          },
+        }),
+      );
+      expect(asked).toBe(0);
+    });
   });
 });

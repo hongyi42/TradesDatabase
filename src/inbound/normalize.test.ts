@@ -26,6 +26,9 @@ describe('gmailNewMessageNormalizer', () => {
       from: 'jane@homeowner.com',
       subject: 'AC repair follow-up',
       body: 'unit still noisy',
+      // GMAIL's own id, kept beside the storage key: for an outbound row the
+      // two differ, and anything comparing against Gmail's view needs this one.
+      messageId: 'gmail-abc-123',
     });
   });
 
@@ -48,6 +51,7 @@ describe('gmailNewMessageNormalizer', () => {
       from: 'jane@homeowner.com',
       subject: 'AC repair follow-up',
       body: 'unit still noisy',
+      messageId: 'gmail-abc-123',
       threadId: 'thread-abc-100',
       to: 'office@firm.example',
       labelIds: ['UNREAD', 'INBOX'], // non-strings dropped, never stored
@@ -74,6 +78,47 @@ describe('gmailNewMessageNormalizer', () => {
     // The boundary itself is kept.
     const atCap = gmailNewMessageNormalizer({ ...gmailPayload, thread_id: 'y'.repeat(255) });
     expect((atCap.sourceMeta as { threadId?: string }).threadId).toBe('y'.repeat(255));
+  });
+
+  // RUNG 10B.3 — DIRECTION, from Gmail's own label. Until the trigger watched
+  // SENT this could not fire; now every reply a manager types by hand arrives
+  // here, and the channel is how every downstream reader tells the firm's voice
+  // from the customer's.
+  describe('direction', () => {
+    test('a SENT message is the firm\'s own — outbound_email', () => {
+      const env = gmailNewMessageNormalizer({
+        ...gmailPayload,
+        sender: 'office@firm.example',
+        to: 'jane@homeowner.com',
+        label_ids: ['SENT'],
+      });
+      expect(env.channel).toBe('outbound_email');
+      // Still classified: a manager's personal mail must never reach L1, which
+      // has no delete (user ruling, 2026-09-09).
+      expect(env.requiresWorkClassifier).toBe(true);
+      // KEYED IN THE OUTBOUND NAMESPACE — the same key send_email and logIngest
+      // write under, so one email can only ever be one L1 row. Gmail's own id
+      // is kept beside it for everything that compares against Gmail's view.
+      expect(env.externalId).toBe('sent:gmail-abc-123');
+      expect((env.sourceMeta as { messageId?: string }).messageId).toBe('gmail-abc-123');
+    });
+
+    test('INBOX stays inbound, and so does a message with no labels at all', () => {
+      expect(
+        gmailNewMessageNormalizer({ ...gmailPayload, label_ids: ['INBOX', 'UNREAD'] }).channel,
+      ).toBe('email');
+      expect(gmailNewMessageNormalizer(gmailPayload).channel).toBe('email');
+    });
+
+    test('a message carrying BOTH labels — mailing yourself — reads as the firm\'s own', () => {
+      // Gmail puts SENT and INBOX on a message you send to your own mailbox.
+      // SENT wins: the firm wrote it, which is the fact every reader is asking.
+      const env = gmailNewMessageNormalizer({
+        ...gmailPayload,
+        label_ids: ['INBOX', 'SENT', 'UNREAD'],
+      });
+      expect(env.channel).toBe('outbound_email');
+    });
   });
 });
 

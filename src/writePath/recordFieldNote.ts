@@ -289,10 +289,17 @@ export async function recordFieldNote(
   // The inbound-email webhook and the call worker both call recordFieldNote with
   // no deps.extract, so they fall through to the live model here — instrumenting
   // only the MCP staging call would have missed the highest-volume consumer.
+  // RUNG 10B.3: on the firm's own outbound mail the extractor is reading OUR
+  // words, so it must be told — otherwise our signature block is a candidate
+  // customer identity. Passed even with no thread, which is why this is not
+  // folded into the threadContext ternary.
+  const fromTheFirm = channel === 'outbound_email';
   const extracted = await extract(
     rawText,
     { tenantId, technicianRef },
-    input.threadContext?.length ? { earlier: input.threadContext } : undefined,
+    input.threadContext?.length || fromTheFirm
+      ? { earlier: input.threadContext ?? [], ...(fromTheFirm ? { fromTheFirm } : {}) }
+      : undefined,
   );
 
   // Caller-ID fallback: the inbound call's `From` is a strong identity key the
@@ -340,14 +347,32 @@ export async function recordFieldNote(
   // call never reaches here either — the phone router's human review carries it.
   if (match.status !== 'matched' && !input.resolved) {
     const inbound = channel === 'email' || channel === 'phone_call' || channel === 'web_form';
+    // RUNG 10B.3 — AND THE FIRM'S OWN PROMISE TO SOMEBODY WE CANNOT PLACE.
+    // A manager types "we'll come Thursday" to a recipient whose address is on
+    // no customer and whose thread we never filed. The firm is bound, the
+    // calendar is empty, and — before this — nobody was told, because the
+    // channel is not inbound and the branch returned above.
+    //
+    // NARROWER THAN THE INBOUND RULE, deliberately. An inbound stranger is
+    // asked about whatever they wrote; outbound asks ONLY on a commitment. The
+    // firm writes to suppliers, accountants and colleagues all day, and every
+    // one of those would otherwise become an item a manager has to dismiss.
+    // A commitment is the one outbound shape with a cost OUTSIDE this database.
+    const outboundPromise = channel === 'outbound_email' && extracted.visitCommitted === true;
     const closesItself = extracted.touchesOperations === false && extracted.visitCommitted !== true;
-    if (!inbound || closesItself) {
+    if ((!inbound && !outboundPromise) || closesItself) {
       return { status: match.status, captureId, suggestion: match.suggestion };
     }
     // `null` means the once-ever index already holds this capture — a raced
     // redelivery — so the FIRST row keeps the ask and there is nothing to report.
     const obs = await createObservation({
       tenantId,
+      // The KIND is reused for the outbound case rather than invented: the ping
+      // loop, the planner's handling and the once-ever index all key on it, and
+      // `channel` below says which direction this was. `outbound: true` is
+      // stated outright so the planner never has to infer it from a channel
+      // name — it is asking a different question ("who did we promise this
+      // to?"), and the answer is a person we wrote to, not one who wrote in.
       kind: 'inbound_unmatched',
       subjectRef: captureId,
       technicianId: null,
@@ -355,6 +380,9 @@ export async function recordFieldNote(
         captureId,
         capturedAt,
         channel,
+        ...(channel === 'outbound_email'
+          ? { outbound: true, sentTo: input.fallbackEmail ?? null }
+          : {}),
         from: fromOf(input.sourceMeta),
         // WHY code could not decide, in the matcher's own words — the planner is
         // the second opinion and needs to know what the first one tried.

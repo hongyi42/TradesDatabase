@@ -22,6 +22,7 @@ import {
   findRetractionsFor,
   foldRetractions,
   getJob,
+  findCustomersByEmail,
   getCustomer,
   getOpenReviewItem,
   listOpenJobsForCustomer,
@@ -132,7 +133,7 @@ import {
   type ResolvedIdentity,
 } from '../writePath/recordFieldNote.js';
 import { matchIdentity, type MatchResult } from '../writePath/identityMatch.js';
-import { emailAddressOf, isOwnMailbox } from '../email/format.js';
+import { emailAddressOf, isOwnMailbox, soleRecipientOf } from '../email/format.js';
 import { defaultExtractor, type ExtractedFields } from '../writePath/extract.js';
 import {
   requireOutboundCapable,
@@ -566,13 +567,22 @@ const TOOLS = [
       'nothing is sent; you get {status:"needs_confirmation", confirmId} back. Show the person ' +
       'EXACTLY what will be sent (to, subject, body). Only when they approve, call again with ' +
       'ONLY confirmId — the STAGED copy is what gets sent, fresh args are ignored. Every sent ' +
-      'email is permanently recorded.',
+      'email is permanently recorded. ALWAYS pass jobId when this email is about a job you ' +
+      'already have on screen: it files the sent copy on that job, so the record shows both ' +
+      'halves of the conversation. Without it the send is filed on the recipient only when ' +
+      'their address is on exactly one customer.',
     inputSchema: {
       type: 'object',
       properties: {
         to: { type: 'string', description: 'Recipient email address (first call only).' },
         subject: { type: 'string', description: 'Subject line (first call only).' },
         body: { type: 'string', description: 'Plain-text body (first call only).' },
+        jobId: {
+          type: 'string',
+          description:
+            'The job this email is about, when you know it (first call only). Files the sent ' +
+            'copy on that job.',
+        },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
       required: [],
@@ -2098,6 +2108,16 @@ function boardMiniAppLink(): string | null {
 // inappropriate), so retracting one requires a manager badge even for its
 // author — logIngest and the send_email capture stamp the acting person's own
 // roster ref, so an author-only rule would allow self-cleanup (review finding).
+// Retraction on these is MANAGER-ONLY, even for their author: the send capture
+// and logIngest stamp the acting person's own roster ref, so an author-only rule
+// would let someone scrub their own audit trail from default views.
+// RUNG 10B.3 WIDENED WHAT `outbound_email` MEANS: it is no longer only what the
+// agent sent on someone's behalf — a manager's own hand-typed Gmail reply now
+// arrives on this channel too. The manager-only rule is kept over it deliberately
+// (the firm's outbound word to a customer is exactly the record a mistake would
+// want removed), with one consequence worth stating: a technician-tier seat
+// cannot retract their own captured reply, including one the classifier passed
+// as work in error. A manager can.
 const AUDIT_CHANNELS = new Set<CaptureChannel>(['outbound_email', 'agent_action']);
 
 // The staged copy of a seat add (review_items.detail, kind pending_seat_add).
@@ -3812,6 +3832,15 @@ async function dispatch(
         if (!to || !subject || !body) {
           throw new Error('to, subject, and body are required to stage a send');
         }
+        // RUNG 10B.3 — WHICH JOB THIS SEND IS ABOUT, checked HERE rather than at
+        // confirm time: the person is about to be shown a preview and approve
+        // it, and a bad id surfacing only after the mail has gone would leave a
+        // sent email with a refusal where its record should be.
+        const sendJobId = str('jobId');
+        if (sendJobId) {
+          const target = await getJob(sendJobId);
+          if (!target || target.tenant_id !== tenantId) throw new Error('job not found');
+        }
         await resolveOpenReviewItemFor(
           tenantId,
           'pending_outbound_send',
@@ -3823,7 +3852,13 @@ async function dispatch(
           tenantId,
           kind: 'pending_outbound_send',
           subjectRef: caller.ref,
-          detail: { to, subject, body, stagedAt: new Date().toISOString() },
+          detail: {
+            to,
+            subject,
+            body,
+            ...(sendJobId ? { jobId: sendJobId } : {}),
+            stagedAt: new Date().toISOString(),
+          },
         });
         // Echo the ITEM's detail, not the local args: two racing stage calls
         // can make the upsert return the other call's open row (partial-unique
@@ -3848,7 +3883,13 @@ async function dispatch(
       if (!item) {
         throw new Error('confirmation not found — call send_email again with to/subject/body to restage');
       }
-      const detail = (item.detail ?? {}) as { to?: string; subject?: string; body?: string; stagedAt?: string };
+      const detail = (item.detail ?? {}) as {
+        to?: string;
+        subject?: string;
+        body?: string;
+        jobId?: string;
+        stagedAt?: string;
+      };
       if (!detail.to || !detail.subject || detail.body === undefined) {
         throw new Error('staged send is malformed — restage with to/subject/body');
       }
@@ -3892,6 +3933,63 @@ async function dispatch(
         }
         throw new Error(`email NOT sent: ${msg} — restage with to/subject/body to try again`);
       }
+      // RUNG 10B.3 — WHOSE RECORD DOES THIS SEND BELONG ON? Until now the answer
+      // was nobody: every assistant-sent email landed in L1 stamped with no
+      // customer and no job, which is exactly why a thread the FIRM started
+      // could not later identify its customer — the conversation key had
+      // nothing to read.
+      //
+      // TWO ROUTES, BECAUSE EITHER ALONE FAILS THE OTHER'S CASE. The argument is
+      // explicit and doctrine tells the agent to pass it, but it is forgettable;
+      // resolving the recipient's address is automatic, but it is wrong exactly
+      // when the address is ambiguous. Together they cover each other, and
+      // NEITHER MAY FABRICATE: an unknown job or a non-unique address stamps
+      // nothing, because a wrong stamp on an append-only row is permanent while
+      // a missing one is merely a gap.
+      //
+      // Advisory throughout: this whole block sits inside the capture's own
+      // try, and a lookup failure must not un-report a send that really happened.
+      let stampCustomerId: string | null = null;
+      let stampJobId: string | null = null;
+      // IN ITS OWN TRY, AHEAD OF THE CAPTURE. Folded into the capture's try, a
+      // PostgREST hiccup on either lookup would skip the append entirely and
+      // leave a real send with NO audit row at all — the one thing the
+      // 2026-07-04 capture-all exception exists to guarantee. Unstamped is a
+      // gap; unrecorded is the failure.
+      try {
+        // Re-read rather than trusting the staged id: the job was checked when
+        // the send was staged, and it could have been deleted since.
+        const stampJob = detail.jobId ? await getJob(detail.jobId) : null;
+        const address = emailAddressOf(detail.to);
+        const byEmail = address ? await findCustomersByEmail(tenantId, address) : [];
+        const recipient = byEmail.length === 1 ? byEmail[0].id : null;
+        if (stampJob && stampJob.tenant_id === tenantId) {
+          // THE TWO KEYS MUST AGREE. A jobId is typed by a model reading a
+          // screen, and the wrong one does more than mis-file this row: the
+          // stamp is what `findCustomersByThread` reads, so the CUSTOMER'S
+          // LATER REPLY on this thread would be filed against whoever the
+          // wrong job belongs to. When the recipient is unambiguous and names
+          // somebody else, the two keys disagree and neither is trusted —
+          // exactly the unique-or-refuse rule every identity key follows.
+          if (recipient !== null && recipient !== stampJob.customer_id) {
+            console.error(
+              `send_email: job ${stampJob.id} and recipient ${address} name different ` +
+                `customers — the sent copy is filed on neither`,
+            );
+          } else {
+            stampJobId = stampJob.id;
+            stampCustomerId = stampJob.customer_id;
+          }
+        } else if (!detail.jobId) {
+          stampCustomerId = recipient;
+        }
+      } catch (err) {
+        // Advisory: the send happened, and an unstamped audit row beats none.
+        console.error(
+          `send_email: could not resolve who this send belongs to — ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       // Advisory L1 capture (capture-all, no classifier — recorded exception):
       // a capture failure never un-reports a real send.
       let captured = false;
@@ -3906,6 +4004,8 @@ async function dispatch(
             body: detail.body,
           }),
           externalId: sent.messageId ? `sent:${sent.messageId}` : `sent:confirm:${confirmId}`,
+          customerId: stampCustomerId,
+          jobId: stampJobId,
           metadata: {
             to: detail.to,
             subject: detail.subject,
@@ -6358,11 +6458,24 @@ async function dispatch(
       // that path runs on the name-only answer — which is the one this tool's
       // own refusal message steers a manager towards.
       const capturedByTech = await getTechnician(tenantId, capturedBy);
-      if (newEmail && isOwnMailbox(newEmail, metaTo, capturedByTech?.connected_email)) {
+      // SCOPED BY DIRECTION (rung 10b.3). The heuristic arm of `isOwnMailbox`
+      // reads a SOLE RECIPIENT as evidence of the mailbox a message arrived at
+      // — true for inbound, and exactly backwards for the firm's own mail,
+      // where the sole recipient is the CUSTOMER. Unscoped, this refuses the
+      // right answer: the ask renders "sent to iris@homeowner.test", the
+      // planner answers with that address, and the tool tells it — untruthfully
+      // — that the customer's own address is the firm's mailbox. On an outbound
+      // capture the firm is the SENDER, so that is what a claimed email must
+      // not be.
+      const outboundCapture = capture.channel === 'outbound_email';
+      const claimsOurMailbox = outboundCapture
+        ? isOwnMailbox(newEmail, metaFrom, capturedByTech?.connected_email)
+        : isOwnMailbox(newEmail, metaTo, capturedByTech?.connected_email);
+      if (newEmail && claimsOurMailbox) {
         throw new Error(
           `${emailAddressOf(newEmail)} is this firm's own mailbox, not the caller's — it is the ` +
-            'address the message ARRIVED at. Record them without an email, or with the address ' +
-            'they actually write from.',
+            `address the message ${outboundCapture ? 'was SENT FROM' : 'ARRIVED at'}. Record them ` +
+            'without an email, or with the address they actually write from.',
         );
       }
       const resolved: ResolvedIdentity = customerId
@@ -6396,9 +6509,20 @@ async function dispatch(
         // …and the same own-mailbox rule the webhook applies (rung 10b.2): this
         // is a RE-ENTRY on that capture, so it must not resurrect a key the
         // first pass was right to withhold.
-        fallbackEmail: isOwnMailbox(metaFrom, metaTo, capturedByTech?.connected_email)
-          ? null
-          : emailAddressOf(metaFrom),
+        // …WHICH REVERSES ON THE FIRM'S OWN MAIL (rung 10b.3), exactly as the
+        // door does. On an `outbound_email` capture `From` is US, so taking it
+        // would file the FIRM'S OWN ADDRESS on the customer the planner is
+        // creating — the 10b.2 incident reproduced through the new door, and it
+        // lands precisely on the name-only answer this tool's refusal message
+        // steers a manager towards (`createFrom.email` is null there, so the
+        // `??` in recordFieldNote falls through to this value). Who it went TO
+        // is the key, unique-or-nothing.
+        fallbackEmail:
+          capture.channel === 'outbound_email'
+            ? soleRecipientOf(metaTo)
+            : isOwnMailbox(metaFrom, metaTo, capturedByTech?.connected_email)
+              ? null
+              : emailAddressOf(metaFrom),
         threadId: typeof meta.threadId === 'string' ? meta.threadId : null,
         resolved,
         // WHO ASKED FOR THIS. The door books with `actorRef`, and it used to be

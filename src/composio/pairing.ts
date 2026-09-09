@@ -223,12 +223,70 @@ export async function checkPairing(
   return { status: 'paired', connectedAccountId: active.id, email };
 }
 
+export const GMAIL_TRIGGER_SLUG = 'GMAIL_NEW_GMAIL_MESSAGE';
+
+// THE MAIL TRIGGER'S CONFIG — one definition, because three places now need it:
+// creation, the staleness comparison below, and the reconciliation script for
+// seats that paired before this shape existed.
+//
+// WHY A QUERY AND NOT A SECOND LABEL (rung 10b.3). The obvious change — put
+// SENT next to INBOX in `labelIds` — is not expressible. Verified against the
+// LIVE trigger-type schema on 2026-09-09,
+// GET https://backend.composio.dev/api/v3/triggers_types/GMAIL_NEW_GMAIL_MESSAGE:
+//   labelIds: "Filter messages by a SINGLE label ID … For complex label
+//              filtering, use the 'query' parameter instead."
+//   query:    "Advanced Gmail search using the same syntax as Gmail's search
+//              box … If specified, this takes precedence over labelIds."
+//              — and its own examples include `label:inbox OR label:sent`.
+// So the firm's own half of a conversation arrives through `query`. `labelIds`
+// is left at 'INBOX' deliberately: the query overrides it, and every live
+// trigger row already carries that value, so dropping it would be a silent
+// shape change on a running trigger for no gain.
+//
+// WHY WATCHING SENT MATTERS: a manager who replies from Gmail directly was
+// never captured — not filtered, not dropped, never delivered — so a job's
+// correspondence was one-sided and a promise typed by hand ("we'll come
+// Thursday") bound the firm with the spine unaware.
+export const GMAIL_TRIGGER_CONFIG: Record<string, string | number> = {
+  interval: 1,
+  labelIds: 'INBOX',
+  query: 'label:inbox OR label:sent',
+  userId: 'me',
+};
+
+// Does a live trigger already carry the config above? The list response spells
+// it BOTH ways (`trigger_config` snake and `triggerConfig` camel — seen on a
+// live read 2026-09-09), so read either. An absent config reads as stale, which
+// is the safe direction: at worst we upsert a trigger that was already correct.
+function triggerConfigIsCurrent(item: Record<string, unknown>): boolean {
+  const cfg = (item.triggerConfig ?? item.trigger_config) as Record<string, unknown> | undefined;
+  if (!cfg) return false;
+  // Compared as STRINGS: the config comes back straight off the API as
+  // `Record<string, unknown>`, and an `interval` returned as "1" rather than 1
+  // would read as stale forever under `===` — re-upserting on every pairing.
+  return Object.entries(GMAIL_TRIGGER_CONFIG).every(
+    ([key, want]) => String(cfg[key]) === String(want),
+  );
+}
+
 // Idempotent trigger provisioning: adopt OUR trigger type if it already exists
-// (triggers.create errors on repeat; the triggerNames filter keeps an
+// AND already carries the config above (the triggerNames filter keeps an
 // unrelated trigger from being adopted as ti_* and later torn down), else
-// create it PINNED to the verified account — without the pin the SDK attaches
+// upsert it PINNED to the verified account — without the pin the SDK attaches
 // to "the first connected account for the user", which can be a stale
 // INITIATED request from an abandoned link (review finding).
+//
+// CREATE IS AN UPSERT, NOT A DUPLICATE. `triggers.create` posts to
+// POST /api/v3/trigger_instances/{slug}/upsert, documented as "Creates a new
+// trigger instance or updates an existing one with the same configuration. If a
+// matching trigger already exists and is disabled, it will be re-enabled"
+// (docs.composio.dev/reference/api-reference/triggers/postTriggerInstancesBySlugUpsert,
+// read 2026-09-09). That is why a stale trigger is RECONFIGURED here rather
+// than deleted and recreated: a recreate would drop the instance's polling
+// watermark, and Composio would redeliver the mailbox's backlog — every one of
+// those deliveries paying for a work/personal classification.
+// (`triggers.update` cannot do it: that endpoint takes only
+// `{status: 'enable'|'disable'}` — checked in the installed SDK typings.)
 async function ensureTrigger(
   client: PairingClient,
   tech: Technician,
@@ -237,18 +295,31 @@ async function ensureTrigger(
   const existing = asItems(
     await client.triggers.listActive({
       connectedAccountIds: [connectedAccountId],
-      triggerNames: ['GMAIL_NEW_GMAIL_MESSAGE'],
+      triggerNames: [GMAIL_TRIGGER_SLUG],
     }),
   );
-  let triggerId = existing[0]?.id as string | undefined;
-  if (!triggerId) {
-    const created = await client.triggers.create(compositeUserId(tech), 'GMAIL_NEW_GMAIL_MESSAGE', {
+  const found = existing[0];
+  const foundId = found?.id as string | undefined;
+  if (foundId && triggerConfigIsCurrent(found)) return foundId;
+  try {
+    const created = await client.triggers.create(compositeUserId(tech), GMAIL_TRIGGER_SLUG, {
       connectedAccountId,
-      triggerConfig: { interval: 1, labelIds: 'INBOX', userId: 'me' },
+      triggerConfig: { ...GMAIL_TRIGGER_CONFIG },
     });
-    triggerId = (created.triggerId ?? created.id) as string | undefined;
+    return ((created.triggerId ?? created.id) as string | undefined) ?? foundId;
+  } catch (err) {
+    // A RECONFIGURE FAILURE MUST NOT UNDO A WORKING PAIRING. With no trigger at
+    // all there is nothing to keep, so the throw stands and checkPairing's
+    // healing branch finishes it on the next sweep. With one already live, the
+    // mailbox still delivers INBOX — narrower than intended, and said out loud
+    // rather than turned into a failed pairing.
+    if (!foundId) throw err;
+    console.error(
+      `[pairing] trigger ${foundId} kept its old config for ${tech.ref} — ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+    return foundId;
   }
-  return triggerId;
 }
 
 // Already-deleted detection: ONLY a real API 404 counts (the Composio client

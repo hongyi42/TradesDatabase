@@ -37,6 +37,29 @@ export interface AppendRawCaptureInput {
   retractsCaptureId?: string | null;
 }
 
+// DID THE AGENT WRITE THIS ROW, or did the Gmail trigger deliver it?
+//
+// Rung 10b.3 gave all three producers of an `outbound_email` capture ONE
+// external_id (`sent:<messageId>`), so the per-tenant unique index collapses a
+// send and its later delivery into a single row. That makes the producer the
+// only thing left that tells them apart — and the inbound door has to, because
+// an agent's own send must never be run back through the door (it would
+// re-extract our own words and ask the planner about a promise the agent itself
+// made and already reported), while OUR OWN half-finished delivery must be, or
+// a capture that landed and then threw could never heal.
+//
+// The two keys are stamped unconditionally by their writers: `sentVia` by the
+// spine's `send_email`, `toolSlug` by the Composio execution sweep
+// (src/composio/logIngest.ts). No trigger-written row can carry either — the
+// webhook's stored metadata is headers only. Kept HERE, beside the insert, so
+// the readers and the writers cannot drift apart silently; tests on both
+// writers assert their real rows satisfy it.
+export function isAgentWrittenCapture(metadata: unknown): boolean {
+  if (!metadata || typeof metadata !== 'object') return false;
+  const m = metadata as Record<string, unknown>;
+  return !!(m.sentVia || m.toolSlug);
+}
+
 // L1 is append-only. This module exposes insert only — no update or delete —
 // mirroring the DB trigger that enforces the same invariant.
 export async function appendRawCapture(input: AppendRawCaptureInput): Promise<RawCapture> {
@@ -655,9 +678,15 @@ export async function listL2CitingCapture(captureIds: string[]): Promise<L2Citin
 // TWO READS FOR THE CAPTURES, because the two ends of a thread spell the key
 // differently and neither is going to change: a thread STARTER is found by its
 // own message id (Gmail's convention — a starter's thread id IS its message id,
-// and `external_id` is where we store that), while every later message carries
-// the key in `metadata.threadId` (written by the inbound door since PR #213 and
-// by every assistant send).
+// and `external_id` is where an INBOUND capture stores that), while every later
+// message carries the key in `metadata.threadId` (written by the inbound door
+// since PR #213 and by every assistant send).
+//
+// THE STARTER READ DOES NOT COVER AN OUTBOUND ROW (rung 10b.3): the firm's own
+// mail is keyed `sent:<messageId>` so the trigger, `send_email` and `logIngest`
+// share one L1 key, and that never equals a bare thread id. It costs nothing —
+// those rows all carry `metadata.threadId`, so the second read finds them — but
+// the first read is inbound-only and should be read as such.
 //
 // TENANT-CHECKED ON EVERY HOP: `capture_id`, `job_id` and `visit_id` are id-only
 // foreign keys, so a link of ours is no proof the row it points at is ours (the

@@ -1412,22 +1412,45 @@ export function buildGapView(
       `  the caller's words (${channel}${from ? `, from ${from}` : ''}` +
         `${ago ? `, ${ago}` : ''}): "${flat(ctxStr(n, 'words') ?? '', QUESTION_SHOWN_CHARS)}"`,
     );
+    // RUNG 10B — the one inbound kind with NO customer on it. Where the other
+    // two say who got in touch, this one says that nobody on file does, and why
+    // the matcher could not decide: the planner is the second opinion and needs
+    // to know what the first one already tried.
+    const unmatched = n.kind === 'inbound_unmatched';
     const customerId = ctxStr(n, 'customerId');
-    if (customerId) {
+    if (unmatched) {
+      lines.push(
+        '  nobody on file matches this sender — why: ' +
+          `${ctxStr(n, 'matchReason') ?? 'no unique match on phone, email, thread or address'}`,
+      );
+    } else if (customerId) {
       lines.push(`  customer: ${ctxStr(n, 'customerName') ?? 'unnamed'} (id ${customerId})`);
     }
     // WHAT THE EXTRACTOR READ, not what it decided: these are the model's own
     // fields from the words above, and the planner weighs them against them.
+    // For an unmatched sender they are not a REQUEST, they are the only
+    // description of who this might be — hence the different label.
     const asked = askedFields(n);
-    if (asked.length > 0) lines.push(`  they asked for: ${asked.join('; ')}`);
-    lines.push(
-      jobId
-        ? `  on file: open job ${ctxStr(n, 'jobTitle') ?? '(untitled)'} (job id ${jobId})`
-        : '  on file: no open job for this customer — a job would have to be opened',
-    );
-    lines.push(
-      `  the firm agreed to come out: ${n.kind === 'inbound_commitment' ? 'yes' : 'not said'}`,
-    );
+    if (asked.length > 0) {
+      lines.push(`  they ${unmatched ? 'gave' : 'asked for'}: ${asked.join('; ')}`);
+    }
+    // No customer, so nothing to have on file. The line would print "no open job
+    // for this customer" about a customer that does not exist.
+    if (!unmatched) {
+      lines.push(
+        jobId
+          ? `  on file: open job ${ctxStr(n, 'jobTitle') ?? '(untitled)'} (job id ${jobId})`
+          : '  on file: no open job for this customer — a job would have to be opened',
+      );
+    }
+    // READ FROM THE CONTEXT, not off the kind's name. `inbound_unmatched` carries
+    // both shapes — a stranger may well have been promised a visit — so deriving
+    // it from the kind would tell the planner "not said" about a call where the
+    // firm agreed to come out, which is the one fact it must not get wrong.
+    const committed =
+      n.kind === 'inbound_commitment' ||
+      ((n.context ?? {}) as Record<string, unknown>).visitCommitted === true;
+    lines.push(`  the firm agreed to come out: ${committed ? 'yes' : 'not said'}`);
     lines.push(
       `  capture id: ${ctxStr(n, 'captureId') ?? n.subject_ref}` +
         '   (spine_read v_captures for the full words)',
@@ -2018,6 +2041,12 @@ export function validateDecisions(
   // Defaulted empty, which makes every `fromMessageId` unknown. That is the
   // right direction: refuse to attribute rather than attribute wrongly.
   unreadFrom: Map<string, string> = new Map(),
+  // RUNG 10B — the item a FOCUSED pass is about, or null. Only one thing depends
+  // on it: in a focused pass a gap-less chat send is rewritten by the caller to
+  // name this item, so the quiet-note pairing below must count it as that item's
+  // text. Nothing else here reads it, and a heartbeat pass passes null (where a
+  // gap-less send really is about nothing in particular).
+  focusObservationId: string | null = null,
 ): { decisions: PlannerDecision[]; dropped: DroppedDecision[]; noteDrops: string[] } {
   const decisions: PlannerDecision[] = [];
   const dropped: DroppedDecision[] = [];
@@ -2105,6 +2134,25 @@ export function validateDecisions(
     ? ((raw as { decisions: unknown[] }).decisions as Record<string, unknown>[])
     : [];
   const seen = new Set<string>();
+  // RUNG 10B — the ONE second decision a gap may take. See the rail below.
+  // A quiet note is HELD BACK until the whole submission has been read, then
+  // kept only if a chat send to the same manager about the same item was
+  // accepted alongside it — the note has no life of its own.
+  const quietNotes = new Set<string>();
+  const heldQuietNotes: {
+    nudgeId: string;
+    decision: PlannerDecision;
+    toTechnicianId: string | null;
+    // Carried so a refusal can NAME the addressee: on "a different person than
+    // the text did", who it was addressed to IS the content of the refusal, and
+    // the gap-less message rail makes the same argument — the addressee is what
+    // makes a refusal legible in the corpus.
+    toRef: string | null;
+    action: string;
+    confidence: 'low' | 'medium' | 'high';
+    reason: string;
+  }[] = [];
+  const textedInThisPlan = new Map<string, string | null>();
 
   for (const entry of list) {
     // Everything below reads model-supplied JSON, so the boundary is fail-closed
@@ -2303,6 +2351,17 @@ export function validateDecisions(
       // messages to several people in one tick is the ordinary case — it is
       // how the planner tells three managers the same thing (user ruling
       // 2026-09-02: "the planner can just send the same message to all three").
+      //
+      // RUNG 10B: in a FOCUSED pass a gap-less chat send is rewritten to name the
+      // one item this pass is about (runPlanner, `boundGapless`) — so as far as
+      // the quiet-note pairing below is concerned it IS the text for that item.
+      // Without this, a planner that named the item on its note but forgot it on
+      // the text would have the text go out and marked as the ask while the note
+      // was dropped, leaving the manager's assistant without the one thing the
+      // note exists to carry, and the item unaskable for a day.
+      if (as === 'chat' && focusObservationId && !textedInThisPlan.has(focusObservationId)) {
+        textedInThisPlan.set(focusObservationId, to.technicianId);
+      }
       decisions.push({
         nudgeId: null,
         action: 'send',
@@ -2349,7 +2408,27 @@ export function validateDecisions(
       push('names a gap that was not in this plan');
       continue;
     }
-    if (seen.has(nudgeId)) {
+    // RUNG 10B — THE QUIET NOTE IS THE ONE EXEMPTION FROM ONE-DECISION-PER-GAP.
+    // The move the user asked for is a PAIR in a single turn, both naming the
+    // same inbound item: the text that reaches a manager's phone, and a note to
+    // that manager's assistant carrying the item's id, so when they answer, the
+    // relay comes back stapled to the right call rather than as a loose "yes".
+    // The rail below exists so one gap cannot be closed AND held in one plan —
+    // two answers to one question. A quiet note is not an answer to anything: it
+    // does not move the item, does not mark it asked, and reaches nobody's phone.
+    // It is deduped on its own set, so two notes about one call are still
+    // refused, and it never enters `seen` — otherwise the ORDER the model happened
+    // to list the pair in would decide which half survived.
+    const isQuietNote =
+      action === 'send' &&
+      d.as === 'assistant' &&
+      (PINGED_KINDS as string[]).includes(view.nudge.kind);
+    if (isQuietNote) {
+      if (quietNotes.has(nudgeId)) {
+        push('a second quiet note about the same call — one note, one text');
+        continue;
+      }
+    } else if (seen.has(nudgeId)) {
       push('a second decision for the same gap');
       continue;
     }
@@ -2476,23 +2555,18 @@ export function validateDecisions(
           continue;
         }
       }
-      // RUNG 10 — A CALL HAS TO BE READ BY A PERSON. Refused HERE and not at
-      // apply time, and that is the whole reason it moved: a refusal at
-      // validate can reach the model through submit_plan, so it can rewrite on
-      // the SAME tick. Refused at apply the message simply never exists, with
-      // no feedback, and the manager first hears about the call half an hour
-      // later. (The executor returns the refusal TEXT only when every decision
-      // in the submission was refused; a mixed plan gets counts. So this buys
-      // the retry in the common single-decision case, not in every case — the
-      // apply-time guard stays as the belt either way.) The 'assistant' leg
-      // injects a silent turn nobody delivers.
-      if (nudgeId && (PINGED_KINDS as string[]).includes(view.nudge.kind) && as !== 'chat') {
-        push(
-          'a call or email needs a person to READ it — send it to a manager with as:"chat". ' +
-            'The assistant leg injects a turn into somebody\'s agent that nobody delivers.',
-        );
-        continue;
-      }
+      // RUNG 10 REFUSED an assistant-leg send that named an inbound item, on the
+      // grounds that the assistant leg injects a silent turn nobody delivers, so
+      // the record would say a manager had been told when nobody had.
+      //
+      // RUNG 10B REPLACED THAT REFUSAL WITH A MARKER RULE (user, 2026-09-08).
+      // The pair is the point: a text to the manager's PHONE, and in the same
+      // turn a quiet note to their assistant carrying this item's id, so when the
+      // manager answers, the assistant relays it stapled to the right call. The
+      // note was never the ask and must not be treated as one — so instead of
+      // refusing it, only the CHAT leg stamps `asked_at` (see the apply path).
+      // What the old refusal was really protecting is intact: a quiet note alone
+      // still leaves the item unasked, and the next pass still texts.
       // IS THIS THE QUESTION OF RECORD? The user's ruling is that the planner
       // says so rather than code deriving it — so the flag is real, and the
       // rail below makes forgetting it loud instead of silent.
@@ -2673,9 +2747,7 @@ export function validateDecisions(
         );
         continue;
       }
-      seen.add(nudgeId);
-      for (const memberId of groupIds ?? []) seen.add(memberId);
-      decisions.push({
+      const built: PlannerDecision = {
         nudgeId,
         action: 'send',
         as,
@@ -2685,7 +2757,26 @@ export function validateDecisions(
         ...(groupIds ? { nudgeIds: groupIds } : {}),
         confidence,
         reason,
-      });
+      };
+      if (isQuietNote) {
+        quietNotes.add(nudgeId);
+        heldQuietNotes.push({
+          nudgeId,
+          decision: built,
+          toTechnicianId: addressee.technicianId,
+          toRef: addressee.ref,
+          action,
+          confidence,
+          reason,
+        });
+        continue;
+      }
+      seen.add(nudgeId);
+      for (const memberId of groupIds ?? []) seen.add(memberId);
+      if (as === 'chat' && (PINGED_KINDS as string[]).includes(view.nudge.kind)) {
+        textedInThisPlan.set(nudgeId, addressee.technicianId);
+      }
+      decisions.push(built);
       continue;
     }
 
@@ -2892,6 +2983,45 @@ export function validateDecisions(
       confidence,
       reason,
     });
+  }
+  // THE NOTE RIDES WITH THE TEXT, OR NOT AT ALL (rung 10b). Resolved after the
+  // whole submission is read, so the ORDER the model listed the pair in cannot
+  // decide the outcome, and so a note cannot ride alongside a decision that
+  // THREW THE ITEM AWAY: `[dismiss, quiet note]` would otherwise tell a
+  // manager's assistant to relay an answer to a question that no longer exists.
+  //
+  // It is also the only bound on the note. The chat leg is rate-limited by the
+  // ask marker (one text per call per day); without this, a note would go out on
+  // every pass for as long as the item stayed open — an injected agent turn every
+  // half hour, billed, forever.
+  for (const held of heldQuietNotes) {
+    if (!textedInThisPlan.has(held.nudgeId)) {
+      dropped.push({
+        nudgeId: held.nudgeId,
+        action: held.action,
+        why:
+          'a quiet note about a call rides WITH the text — put a `send` with as:"chat" to a ' +
+          'manager in the same plan, naming the same item, or leave the note out.',
+        confidence: held.confidence,
+        reason: held.reason,
+        ...(held.toRef ? { toRef: held.toRef } : {}),
+      });
+      continue;
+    }
+    if ((textedInThisPlan.get(held.nudgeId) ?? null) !== held.toTechnicianId) {
+      dropped.push({
+        nudgeId: held.nudgeId,
+        action: held.action,
+        why:
+          'the quiet note goes to a different person than the text did — the note exists so ' +
+          'THAT manager\'s assistant can relay THEIR answer, so both must name the same person.',
+        confidence: held.confidence,
+        reason: held.reason,
+        ...(held.toRef ? { toRef: held.toRef } : {}),
+      });
+      continue;
+    }
+    decisions.push(held.decision);
   }
   return { decisions, dropped, noteDrops };
 }
@@ -3153,6 +3283,11 @@ async function applyDecision(
   // `clearAsked` is its compensation when the delivery write then fails.
   markAsked: typeof markObservationAsked = markObservationAsked,
   clearAsked: typeof clearObservationAsked = clearObservationAsked,
+  // RUNG 10B: the items whose ask actually WENT OUT in this pass. Written by the
+  // chat leg when its guarded stamp lands, read by the quiet note — which is the
+  // only thing that makes the note bounded. Trailing and defaulted, like every
+  // writer above.
+  stampedThisPass: Set<string> = new Set(),
 ): Promise<{
   outcome: 'applied' | 'refused';
   detail?: string;
@@ -3192,29 +3327,40 @@ async function applyDecision(
         };
       }
       // ── RUNG 10: A CALL IS NOT A QUESTION TO THE PERSON WHO CALLED ───────
-      // An inbound observation names a decision only a MANAGER can make, so the
-      // two legs the fork below offers are both wrong for it:
-      //   countsAsTheAsk — would mint a nudge on the gap's own person, and
-      //     these gaps have no person (technician_id is null on every one).
-      //   as:'assistant' — injects a silent turn into somebody's agent that
-      //     nobody delivers. The manager would never see it and the record
-      //     would say they had been told.
+      // An inbound observation names a decision only a MANAGER can make, so
+      // `countsAsTheAsk` is wrong for it: that would mint a nudge on the gap's
+      // own person, and these gaps have no person (technician_id is null on
+      // every one).
+      //
+      // The as:'assistant' refusal that stood beside it is GONE (rung 10b): the
+      // quiet note to the manager's assistant, carrying this item's id, is half
+      // of the intended move. Only the chat leg marks the item asked, below.
       const inboundGap = d.nudgeId ? getGap(d.nudgeId) : null;
       const isInboundAsk =
         !!inboundGap && (PINGED_KINDS as string[]).includes(inboundGap.kind);
-      if (isInboundAsk) {
-        if (d.countsAsTheAsk) {
+      if (isInboundAsk && d.countsAsTheAsk) {
+        return {
+          outcome: 'refused',
+          detail:
+            'this is a call or email, not a question to a technician — send it to a manager ' +
+            'with as:"chat" and no countsAsTheAsk',
+        };
+      }
+      // THE NOTE DIES WITH THE TEXT. Validate guaranteed the pair travels
+      // together in one plan; this is the apply-time half, and it is what makes
+      // the note BOUNDED. The text can still be refused here — a manager was
+      // already told about this call today — and a note that survived that
+      // refusal would be the only thing that ever went out: once every pass, for
+      // as long as the item stayed open, an injected agent turn nobody asked
+      // for. The held notes are applied AFTER the sends they ride with, so by
+      // the time this runs the stamp either landed or it did not.
+      if (isInboundAsk && d.nudgeId && (d.as ?? 'assistant') !== 'chat') {
+        if (!stampedThisPass.has(d.nudgeId)) {
           return {
             outcome: 'refused',
             detail:
-              'this is a call or email, not a question to a technician — send it to a manager ' +
-              'with as:"chat" and no countsAsTheAsk',
-          };
-        }
-        if ((d.as ?? 'assistant') !== 'chat') {
-          return {
-            outcome: 'refused',
-            detail: 'a manager has to READ this — send it with as:"chat"',
+              'the text about this call did not go out, so the quiet note does not either — it ' +
+              'rides with the text, never on its own',
           };
         }
       }
@@ -3255,8 +3401,13 @@ async function applyDecision(
         // can never both text a manager about one call — a structural rail, not
         // a doctrine hope. It is NOT the `hold`: a planner that reads this item
         // and waits has not asked, and its later send still works.
+        //
+        // RUNG 10B: only the CHAT leg. The quiet note to a manager's assistant
+        // rides the same turn and names the same item, but nobody's phone
+        // buzzes for it — stamping the ask on it would block the real text for a
+        // day while the record claimed the manager had been told.
         let askedStamp: string | null = null;
-        if (isInboundAsk && d.nudgeId) {
+        if (isInboundAsk && d.nudgeId && (d.as ?? 'assistant') === 'chat') {
           askedStamp = await markAsked(
             d.nudgeId,
             // ASKABLE AGAIN ONCE THE LAST TEXT IS THIS OLD. Note the MINUS: the
@@ -3313,6 +3464,17 @@ async function applyDecision(
           }
           throw err;
         }
+        // AFTER THE WRITE, NEVER BEFORE. The stamp being TAKEN is not the text
+        // going out: `createOffice` can fail, `clearAsked` rolls the marker back,
+        // and the decision becomes a refusal — but the quiet note riding behind
+        // it in the same plan is applied next, and reading a stamp that was
+        // already rolled back would deliver that note ALONE. Which is the exact
+        // outcome the pair rule exists to make impossible, arriving through the
+        // one path it did not cover: a text accepted, stamped, then failed at the
+        // write. (It covers a `clearAsked` that itself throws too — the DB stamp
+        // survives, but the text still did not go out, so the note still must
+        // not.)
+        if (askedStamp && d.nudgeId) stampedThisPass.add(d.nudgeId);
         return { outcome: 'applied' };
       }
       // The anchor rides along, code-printed: what is stored IS what is sent
@@ -4163,9 +4325,30 @@ export async function runPlanner(
         if ((PINGED_KINDS as string[]).includes(n.kind)) {
           const captureId = ctxStr(n, 'captureId') ?? n.subject_ref;
           const cited = citedByCapture.get(captureId) ?? [];
-          if (cited.length > 0) {
-            const what = cited.some((c) => c.kind === 'visit')
-              ? cited.some((c) => c.kind === 'job')
+          // KIND-AWARE, and it has to be. `inbound_unmatched` asks WHO CALLED,
+          // so a customer created from the capture — or the capture recorded
+          // onto an existing job, which is what LINKING a caller we already knew
+          // leaves behind — answers it. The other two ask whether the WORK was
+          // taken up, and for them a `job_captures` link is no answer at all:
+          // the door writes that link in the same call it raises the ask, so
+          // counting it would close every one of them the moment it was raised.
+          if (n.kind === 'inbound_unmatched') {
+            const said = [
+              cited.some((c) => c.kind === 'customer') ? 'a customer was created from it' : null,
+              cited.some((c) => c.kind === 'job') ? 'a job was opened from it' : null,
+              cited.some((c) => c.kind === 'visit') ? 'a visit was booked from it' : null,
+              cited.some((c) => c.kind === 'link') ? 'it was recorded onto a job' : null,
+              cited.some((c) => c.kind === 'note') ? 'it was attached to a trip' : null,
+            ].filter((line): line is string => line !== null);
+            if (said.length > 0) {
+              return `${said.join(', and ')} — this caller is on the record now`;
+            }
+            return null;
+          }
+          const created = cited.filter((c) => c.kind === 'job' || c.kind === 'visit');
+          if (created.length > 0) {
+            const what = created.some((c) => c.kind === 'visit')
+              ? created.some((c) => c.kind === 'job')
                 ? 'a job AND a visit were'
                 : 'a visit was'
               : 'a job was';
@@ -4542,6 +4725,13 @@ export async function runPlanner(
               // never saw) but the stated rule and the enforced rule must be
               // the same rule.
               new Map(unreadShown.map((m) => [m.id, m.from_ref])),
+              // RUNG 10B: in a focused pass a gap-less chat send is rewritten
+              // below to name this item, so the quiet-note pairing must count it
+              // as that item's text — or a planner that named the item on its
+              // NOTE but forgot it on the TEXT would have the text go out and be
+              // marked as the ask while the note was dropped, leaving the
+              // manager's assistant without the id it exists to carry.
+              focus?.observationId ?? null,
             );
             outcome = checked; // the LAST submission stands, refusals included
             // A dropped note is not a refused decision, so it would otherwise
@@ -4596,10 +4786,19 @@ export async function runPlanner(
       // forgetting is a second text at the next tick, not a lost call.
       const dropped = outcome.dropped;
       // THE FIRST *CHAT* SEND, not the first send of any leg. An inbound ask can
-      // only be made by a message a person READS, and a bound `assistant`-leg
-      // send is refused at apply — so binding one would consume the binding,
-      // leave the real chat message gap-less and unmarked, and the next
-      // heartbeat would text the manager about the same call again.
+      // only be made by a message a person READS, and since rung 10b an
+      // `assistant`-leg send may legitimately name an inbound item — it is the
+      // quiet note. Binding one would consume the binding, leave the real chat
+      // message gap-less and unmarked, and the next heartbeat would text the
+      // manager about the same call again.
+      //
+      // A note that named NO item is a different thing again: it never reaches
+      // the quiet-note rail at all, because the gap-less branch returns before
+      // the view lookup. So it is neither held nor bound — it travels as the
+      // ordinary gap-less message it is, carrying no item id, which is the one
+      // thing a note exists to carry. The doctrine covers that ("both naming the
+      // item in `nudgeId`"); binding it here would consume the binding the real
+      // chat message needs.
       let boundGapless = false;
       const decisions = focus
         ? outcome.decisions.map((d) => {
@@ -4622,6 +4821,9 @@ export async function runPlanner(
       let cappedWarned = false; // one line per tenant per tick, not one per gap
       let applied = 0;
       let refusedAtApply = 0;
+      // RUNG 10B: which items' asks actually went out in this pass — the quiet
+      // note's only bound. One set for both apply sites below.
+      const stampedThisPass = new Set<string>();
       for (const d of decisions) {
         // A MESSAGE ABOUT NOBODY'S GAP (build 6.5 Phase 3). No members, no
         // view, no subject id — one row carrying who it went to. Handled first
@@ -4656,7 +4858,7 @@ export async function runPlanner(
               tenantId, d, nowIso, setSchedule, markOutcome, markQueued, markGroupQueued,
               stampAnswer, '', (id) => views.get(id)?.nudge, setObservation,
               createFromObservation, createOffice, dismissGap, recoverGap, createObservationRow,
-              markAsked, clearAsked,
+              markAsked, clearAsked, stampedThisPass,
             );
           } catch (err) {
             res = {
@@ -4775,6 +4977,7 @@ export async function runPlanner(
             createObservationRow,
             markAsked,
             clearAsked,
+            stampedThisPass,
           );
         } catch (err) {
           // One failed write must not abandon the rest of the firm's plan, and

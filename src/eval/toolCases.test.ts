@@ -34,9 +34,29 @@ function spineToolNames(): string[] {
   return namesBetween('const TOOLS = [', "// The TEAM LEAD's own surface");
 }
 
-/** The team lead's own tools — reachable by no badge, and asserted disjoint. */
+/**
+ * The team lead's own tools. Reachable by no badge EXCEPT the names shared with
+ * the manager seat (rung 10b.2) — `record_caller` is dispatchable by an active
+ * manager, so "no badge can call these" is no longer true of the whole array.
+ */
 function teamLeadToolNames(): string[] {
   return namesBetween('const TEAM_LEAD_TOOLS = [', 'export const TEAM_LEAD_TOOL_SCHEMAS');
+}
+
+/**
+ * Team-lead names an active MANAGER badge may also dispatch (rung 10b.2), read
+ * OUT OF server.ts the way every other surface here is. An earlier version of
+ * this compared a hand-written literal to itself and would have passed while the
+ * real set grew — decorative, and exactly the drift this file exists to catch.
+ */
+function seatSharedToolNames(): string[] {
+  const src = readFileSync('src/mcp/server.ts', 'utf8');
+  const marker = 'const SEAT_SHARED_TEAM_LEAD_TOOLS = new Set([';
+  const start = src.indexOf(marker);
+  if (start < 0) throw new Error(`marker not found in server.ts: ${marker}`);
+  const end = src.indexOf('])', start);
+  if (end <= start) throw new Error(`unterminated ${marker}`);
+  return [...src.slice(start + marker.length, end).matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
 }
 
 describe('tool cases — the corpus covers the surface', () => {
@@ -70,12 +90,21 @@ describe('tool cases — the corpus covers the surface', () => {
       'write_memory',
       'read_job_note',
       'write_job_note',
+      'record_caller',
     ]);
-    // A name in both lists would mean a tool the eval must cover AND a tool no
-    // badge can call — a contradiction, and in practice the sign that spine_read
-    // drifted into TOOLS/ADMIN_TOOLS.
+    // A name in both ARRAYS would mean one tool declared twice — in practice the
+    // sign that spine_read drifted into TOOLS/ADMIN_TOOLS. Still disjoint by
+    // declaration; sharing happens at the GATE, not by re-declaring a schema.
     const badge = new Set(spineToolNames());
     expect(teamLead.filter((n) => badge.has(n))).toEqual([]);
+    // …and what IS shared is pinned by name, because the eval's coverage gate
+    // reads `spineToolNames()` only: a shared tool is badge-reachable but will
+    // never be REQUIRED to have a tier-1 case by the gate above. Any name added
+    // here needs its eval case written by hand until that scrape widens.
+    expect(seatSharedToolNames()).toEqual(['record_caller']);
+    // Every shared name must be a real team-lead tool, or the gate in server.ts
+    // is guarding a name nothing declares.
+    expect(seatSharedToolNames().filter((n) => !teamLead.includes(n))).toEqual([]);
   });
 
   it('has unique case ids', () => {

@@ -32,6 +32,49 @@ describe('gmailNewMessageNormalizer', () => {
   test('throws when the message id is missing (no dedup key)', () => {
     expect(() => gmailNewMessageNormalizer({ sender: 'x@y.com' })).toThrow();
   });
+
+  // The conversation key (2026-09-07). The live payload carries twelve fields;
+  // these three are kept under the OUTBOUND capture's key names so one thread's
+  // inbound and outbound rows share a key. Present-only: the test above pins
+  // that a payload without them yields exactly {from, subject, body}.
+  test('keeps the thread id, the recipient and the labels when the payload carries them', () => {
+    const env = gmailNewMessageNormalizer({
+      ...gmailPayload,
+      thread_id: 'thread-abc-100',
+      to: 'office@firm.example',
+      label_ids: ['UNREAD', 'INBOX', 42, null],
+    });
+    expect(env.sourceMeta).toEqual({
+      from: 'jane@homeowner.com',
+      subject: 'AC repair follow-up',
+      body: 'unit still noisy',
+      threadId: 'thread-abc-100',
+      to: 'office@firm.example',
+      labelIds: ['UNREAD', 'INBOX'], // non-strings dropped, never stored
+    });
+    // An empty thread id or a non-array label list is ABSENT, not null/garbage.
+    const bare = gmailNewMessageNormalizer({ ...gmailPayload, thread_id: '', label_ids: 'INBOX' });
+    expect(bare.sourceMeta).not.toHaveProperty('threadId');
+    expect(bare.sourceMeta).not.toHaveProperty('labelIds');
+  });
+
+  // RUNG 10B: the thread id is INDEXED, and a btree entry caps at ~2704 bytes —
+  // so an absurd id would break the L1 append itself, inside the webhook, which
+  // retries forever. Dropped rather than truncated (a truncated id is a key that
+  // could match the wrong conversation), and the mail still ingests.
+  test('an absurdly long thread id is dropped, and the rest of the email survives', () => {
+    const env = gmailNewMessageNormalizer({
+      ...gmailPayload,
+      thread_id: 'x'.repeat(256),
+      to: 'office@firm.example',
+    });
+    expect(env.sourceMeta).not.toHaveProperty('threadId');
+    expect(env.sourceMeta).toMatchObject({ from: 'jane@homeowner.com', to: 'office@firm.example' });
+    expect(env.externalId).toBe(gmailPayload.message_id);
+    // The boundary itself is kept.
+    const atCap = gmailNewMessageNormalizer({ ...gmailPayload, thread_id: 'y'.repeat(255) });
+    expect((atCap.sourceMeta as { threadId?: string }).threadId).toBe('y'.repeat(255));
+  });
 });
 
 describe('resolveNormalizer', () => {

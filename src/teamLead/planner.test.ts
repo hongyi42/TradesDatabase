@@ -6678,17 +6678,189 @@ describe('rung 10 — inbound requests reach the planner', () => {
     expect(cleared).toEqual([['obs-1', NOW]]);
   });
 
-  test('(14d) the assistant leg is refused AT VALIDATE, so the model can fix it the same tick', async () => {
-    // At apply time the refusal is a dead end: no message, no marker, no
-    // feedback, and the manager first hears about the call half an hour later.
-    // Refused here, it goes back through submit_plan and the model rewrites it.
+  // RUNG 10B REPLACED (14d)'s REFUSAL WITH A MARKER RULE (user, 2026-09-08). The
+  // assistant leg naming an inbound item used to be refused at validate. It is
+  // now half of the intended move — a quiet note carrying the item's id, so the
+  // manager's answer comes back stapled to the right call — and what the refusal
+  // protected is kept by making only the CHAT leg mark the item asked.
+  test('(14d) a quiet note ALONE is refused — it has no life without its text', async () => {
+    // Rung 10 refused the assistant leg outright. Rung 10b allows it as HALF of
+    // a pair; on its own it would be the only thing that ever went out, once
+    // every pass for as long as the item stayed open, and nobody's phone would
+    // ever buzz.
     const seen: { errors?: string[] } = {};
-    const { summary } = await liveSend([sendTo({ as: 'assistant' })], {
+    const { summary, recorded } = await liveSend([sendTo({ as: 'assistant' })], {
       runLoop: loopReturning([sendTo({ as: 'assistant' })], seen),
     });
     expect(summary.applied).toBe(0);
     expect(summary.dropped).toBe(1);
-    expect(seen.errors?.join(' ')).toContain('needs a person to READ it');
+    expect(seen.errors?.join(' ')).toContain('rides WITH the text');
+    expect(JSON.stringify(recorded)).toContain('rides WITH the text');
+  });
+
+  test('(14d-e) in a FOCUSED pass a gap-less text still carries its note', async () => {
+    // The focused pass rewrites a gap-less chat send to name the one item it is
+    // about. Without telling the pairing rule that, a planner that named the item
+    // on its NOTE but forgot it on the TEXT would have the text go out and be
+    // marked as the ask while the note was dropped — the manager's assistant left
+    // without the id, and the item unaskable for a day.
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    const plan = [
+      { action: 'send', as: 'chat', to: 'sam-ortiz', message: 'Someone rang about no heat. Open a job?', confidence: 'high', reason: 'a new caller' },
+      sendTo({ as: 'assistant', message: 'Relay item obs-1 when Sam answers.' }),
+    ];
+    const { summary } = await liveSend(plan, {
+      focus: { observationId: 'obs-1' } as unknown as NonNullable<PlannerDeps['focus']>,
+      runLoop: loopReturning(plan),
+      createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+      markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
+    });
+    expect(summary.applied).toBe(2);
+    const legs = createOffice.mock.calls.map((c) => (c[0] as { via: string }).via);
+    expect([...legs].sort()).toEqual(['assistant', 'chat']);
+  });
+
+  test('(14d-a) a quiet note cannot ride alongside a decision that THREW THE ITEM AWAY', async () => {
+    // `[dismiss, quiet note]` would tell a manager's assistant to relay an
+    // answer to a question that no longer exists.
+    const plan = [
+      { nudgeId: 'obs-1', action: 'dismiss', confidence: 'high', reason: 'a supplier' },
+      sendTo({ as: 'assistant', message: 'When Sam answers, mention item obs-1.' }),
+    ];
+    const seen: { errors?: string[] } = {};
+    const { summary, recorded } = await liveSend(plan, { runLoop: loopReturning(plan, seen) });
+    // The note is refused; the dismiss is the plan's one real decision.
+    expect(summary.dropped).toBe(1);
+    expect(summary.decisions).toBe(1);
+    expect(JSON.stringify(recorded)).toContain('rides WITH the text');
+  });
+
+  test('(14d-b) the note must go to the SAME manager the text went to', async () => {
+    const OTHER = { ...MANAGER, id: 'mgr-2', ref: 'dana-reyes', telegram_user_id: '5502' } as unknown as Technician;
+    const plan = [
+      sendTo({ as: 'chat' }),
+      sendTo({ as: 'assistant', to: 'dana-reyes', message: 'Relay item obs-1 when they answer.' }),
+    ];
+    const seen: { errors?: string[] } = {};
+    const { summary, recorded } = await liveSend(plan, {
+      listTeam: async () => [MANAGER, OTHER],
+      runLoop: loopReturning(plan, seen),
+      createOffice: (async (input: unknown) => input as never) as unknown as NonNullable<
+        PlannerDeps['createOffice']
+      >,
+      markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
+    });
+    expect(summary.applied).toBe(1); // the text
+    expect(summary.dropped).toBe(1); // the note
+    expect(JSON.stringify(recorded)).toContain('a different person than the text did');
+  });
+
+  test('(14d-c) THE NOTE DIES WITH THE TEXT: a call already texted about today sends neither', async () => {
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    const plan = [
+      sendTo({ as: 'chat' }),
+      sendTo({ as: 'assistant', message: 'Relay item obs-1 when Sam answers.' }),
+    ];
+    const { summary, recorded } = await liveSend(plan, {
+      // The item was texted about half an hour ago, and the guarded stamp refuses.
+      listObservations: async () => [inboundObs({ asked_at: NOW } as unknown as Partial<Observation>)],
+      runLoop: loopReturning(plan),
+      createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+      markAsked: (async () => null) as unknown as NonNullable<PlannerDeps['markAsked']>,
+    });
+    expect(summary.applied).toBe(0);
+    expect(summary.refusedAtApply).toBe(2); // the text, then the note that rides with it
+    expect(createOffice).not.toHaveBeenCalled();
+    expect(JSON.stringify(recorded)).toContain('the text about this call did not go out');
+  });
+
+  test('(14d-d) a text that STAMPED and then failed to send takes its note down with it', async () => {
+    // The one path the pair rule did not cover at first: the ask marker is taken,
+    // `createOffice` throws, `clearAsked` rolls the marker back — and the note
+    // riding behind it in the same plan would have been the only thing that went
+    // out, to an assistant told to relay an answer to a question nobody was ever
+    // asked. The stamp is therefore only counted once the message has LANDED.
+    const landed: string[] = [];
+    const cleared: Array<[string, string]> = [];
+    const plan = [
+      sendTo({ as: 'chat' }),
+      sendTo({ as: 'assistant', message: 'Relay item obs-1 when Sam answers.' }),
+    ];
+    const { summary } = await liveSend(plan, {
+      runLoop: loopReturning(plan),
+      markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
+      clearAsked: (async (id: string, stamp: string) => {
+        cleared.push([id, stamp]);
+      }) as unknown as NonNullable<PlannerDeps['clearAsked']>,
+      createOffice: (async (input: unknown) => {
+        const via = (input as { via: string }).via;
+        if (via === 'chat') throw new Error('office write failed');
+        landed.push(via);
+        return input as never;
+      }) as unknown as NonNullable<PlannerDeps['createOffice']>,
+    });
+    expect(summary.applied).toBe(0);
+    expect(summary.refusedAtApply).toBe(2);
+    expect(cleared).toEqual([['obs-1', NOW]]); // the marker was rolled back
+    expect(landed).toEqual([]); // and the note did NOT go out alone
+  });
+
+  test('(14d-ii) THE PAIR: both sends apply, and only the phone text marks it asked', async () => {
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    const asks: string[] = [];
+    const { summary } = await liveSend(
+      [
+        sendTo({ as: 'chat', message: 'Someone rang about no heat. New customer — open a job?' }),
+        sendTo({ as: 'assistant', message: 'When Sam answers, reply with inform_team_lead and mention item obs-1.' }),
+      ],
+      {
+        createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+        markAsked: (async (id: string) => {
+          asks.push(id);
+          return NOW;
+        }) as unknown as NonNullable<PlannerDeps['markAsked']>,
+      },
+    );
+    expect(summary.applied).toBe(2);
+    expect(createOffice).toHaveBeenCalledTimes(2);
+    const legs = createOffice.mock.calls.map((c) => (c[0] as { via: string }).via);
+    expect([...legs].sort()).toEqual(['assistant', 'chat']);
+    // ONE ask, from the leg that reaches a phone.
+    expect(asks).toEqual(['obs-1']);
+  });
+
+  test('(14d-iii) the exemption is ONE note: a second quiet note about the same call is refused', async () => {
+    const seen: { errors?: string[] } = {};
+    const pair = [
+      sendTo({ as: 'chat' }),
+      sendTo({ as: 'assistant', message: 'When Sam answers, mention item obs-1.' }),
+      sendTo({ as: 'assistant', message: 'And again, mention item obs-1.' }),
+    ];
+    const { summary, recorded } = await liveSend(pair, {
+      runLoop: loopReturning(pair, seen),
+      createOffice: (async (input: unknown) => input as never) as unknown as NonNullable<
+        PlannerDeps['createOffice']
+      >,
+      markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
+    });
+    expect(summary.applied).toBe(2); // the text and ONE note
+    expect(summary.dropped).toBe(1);
+    expect(JSON.stringify(recorded)).toContain('a second quiet note about the same call');
+  });
+
+  test('(14d-iv) two CHAT sends about one call are still one decision per gap', async () => {
+    const seen: { errors?: string[] } = {};
+    const pair = [sendTo(), sendTo({ message: 'And another text about the same call.' })];
+    const { summary, recorded } = await liveSend(pair, {
+      runLoop: loopReturning(pair, seen),
+      createOffice: (async (input: unknown) => input as never) as unknown as NonNullable<
+        PlannerDeps['createOffice']
+      >,
+      markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
+    });
+    expect(summary.applied).toBe(1);
+    expect(summary.dropped).toBe(1);
+    expect(JSON.stringify(recorded)).toContain('a second decision for the same gap');
   });
 
   test('(14e) countsAsTheAsk cannot be the ask for a call — the customer is not on the roster', async () => {
@@ -6855,10 +7027,114 @@ describe('rung 10 — inbound requests reach the planner', () => {
   test('(15) the doctrine tells the planner what a call is and what it may do about it', () => {
     expect(PLANNER_SYSTEM).toContain('REQUESTS FROM CALLS AND EMAIL');
     expect(PLANNER_SYSTEM).toContain('NOTHING HAS BEEN CREATED');
-    expect(PLANNER_SYSTEM).toContain('as` set to "chat"');
+    expect(PLANNER_SYSTEM).toContain('`as:"chat"` to a manager');
     expect(PLANNER_SYSTEM).toContain('never');
     expect(PLANNER_SYSTEM).toContain('countsAsTheAsk');
     // The date rail, stated where the planner reads it.
     expect(PLANNER_SYSTEM).toContain("Never name the caller's day or time");
+    // RUNG 10B: the third kind, the second opinion, and the pair.
+    expect(PLANNER_SYSTEM).toContain('`inbound_unmatched`');
+    expect(PLANNER_SYSTEM).toContain('SECOND OPINION');
+    expect(PLANNER_SYSTEM).toContain('`as:"assistant"` to the SAME manager');
+    expect(PLANNER_SYSTEM).toContain('ONLY that one counts as the ask');
+    expect(PLANNER_SYSTEM).toContain('`record_caller`');
+  });
+
+  // ---- RUNG 10B: the kind with no customer on it --------------------------
+  const unmatchedObs = (over: Record<string, unknown> = {}): Observation =>
+    inboundObs({
+      kind: 'inbound_unmatched',
+      context: {
+        captureId: CAP,
+        capturedAt: '2026-08-16T11:50:00.000Z',
+        channel: 'phone_call',
+        from: '+15559998888',
+        matchReason: 'no unique customer match and no single scheduled entry',
+        visitCommitted: true,
+        asked: {
+          customerName: 'Nora Okafor',
+          phone: '555-9999',
+          email: null,
+          address: '12 Elm Row',
+          city: null,
+          jobTitle: 'no heat upstairs',
+          jobType: 'hvac',
+          followUp: 'send someone out',
+          attributes: null,
+        },
+        words: 'hi, nobody has been out yet and we agreed Thursday',
+        ...((over.context as Record<string, unknown>) ?? {}),
+      },
+    } as unknown as Partial<Observation>);
+
+  test('(16) the gap block says nobody matches, why, and what they GAVE — no customer, no date', async () => {
+    const seen: { user?: string } = {};
+    await runPlanner(
+      NOW,
+      'shadow',
+      baseDeps({
+        listNudges: async () => [],
+        listObservations: async () => [unmatchedObs()],
+        runLoop: capturingLoop(seen),
+      }),
+    );
+    const block = seen.user ?? '';
+    expect(block).toContain("the caller's words");
+    expect(block).toContain('nobody on file matches this sender');
+    expect(block).toContain('no unique customer match');
+    expect(block).toContain('they gave:');
+    expect(block).not.toContain('they asked for:');
+    // No customer line, and no "on file" line about a customer that does not exist.
+    expect(block).not.toContain('customer: ');
+    expect(block).not.toContain('on file:');
+    // The commitment is read from the CONTEXT — the kind's name does not say it.
+    expect(block).toContain('the firm agreed to come out: yes');
+    // THE DATE RAIL. The caller's own words are quoted verbatim — that is the
+    // point of the block — but the day inside them never becomes a date the
+    // planner may USE: these kinds add nothing to `dateLabels`, so a message
+    // echoing "Thursday" is dropped whole.
+    const labels = block.slice(block.indexOf('dates you may use'));
+    expect(labels).not.toContain('Thursday');
+  });
+
+  test('(17) THE RECORD closes an unmatched caller on a customer or a link — and never closes a commitment on a link', async () => {
+    const blockFor = async (
+      obs: Observation,
+      citing: { kind: string; id: string; captureId: string; jobId: string | null }[],
+    ): Promise<string> => {
+      const seen: { user?: string } = {};
+      await runPlanner(
+        NOW,
+        'shadow',
+        baseDeps({
+          listNudges: async () => [],
+          listObservations: async () => [obs],
+          listCiting: (async () => citing) as unknown as NonNullable<PlannerDeps['listCiting']>,
+          runLoop: capturingLoop(seen),
+        }),
+      );
+      return seen.user ?? '';
+    };
+
+    // A customer minted from the capture answers "who called".
+    expect(
+      await blockFor(unmatchedObs(), [
+        { kind: 'customer', id: CUST, captureId: CAP, jobId: null },
+      ]),
+    ).toContain('a customer was created from it');
+
+    // So does the LINK a linked existing customer leaves behind.
+    expect(
+      await blockFor(unmatchedObs(), [{ kind: 'link', id: JOB, captureId: CAP, jobId: JOB }]),
+    ).toContain('it was recorded onto a job');
+
+    // BUT a link must NEVER close a commitment: the door writes `job_captures`
+    // in the same call it raises that ask, so counting it would close every one
+    // of them the moment it was raised.
+    const commitment = await blockFor(inboundObs(), [
+      { kind: 'link', id: JOB, captureId: CAP, jobId: JOB },
+    ]);
+    expect(commitment).toContain("the caller's words");
+    expect(commitment).not.toContain('THE RECORD');
   });
 });

@@ -107,7 +107,7 @@ order means MOVING visits — that is the manager's call through `move_visit`, n
 Gateways cache `tools/list` per process, so technician sandboxes need `nemoclaw <s> gateway
 restart` or the agent keeps describing drive minutes that no longer exist. A full box wire re-run
 is NOT required: nothing bakes this tool's wording into AGENTS.md (verified against
-`bootstrap-box.sh`), and the tool COUNT is unchanged (14), so no allowlist edit either.
+`bootstrap-box.sh`), and the tool COUNT is unchanged (14 then; 17 today), so no allowlist edit either.
 
 **Manager profile (2026-07-02):** an ACTIVE `tier='manager'` roster row (the `technicians`
 table, not the badge, is the tier source of truth) gets the technician surface MINUS
@@ -115,7 +115,12 @@ table, not the badge, is the tier source of truth) gets the technician surface M
 only schedule read is `get_team_schedule`, which includes visits the manager holds; do NOT pin
 get_schedule in the MANAGER profile — and because it is filtered off this surface, the
 2026-07-31 description change above does NOT move the manager `tools/list` at all: the manager
-side needs no deploy step and no restart. **`get_team_schedule` carries NO navigation links**
+side needs no deploy step and no restart. **⚠ That last sentence is about the 2026-07-31 change
+ONLY — rung 10b.2 (2026-09-09) DOES move the manager surface, 42 → 43 tools, by sharing
+`record_caller` from the team lead's array. Same cache rule as the technician side above: every
+manager sandbox needs `nemoclaw <s> gateway restart` after the deploy or it keeps serving its
+cached 42-tool list and cannot see the door at all. And unlike 2026-07-31 this one DOES bake into
+AGENTS.md (rule 7 names the tool), so a box `wire` re-run is required too.** **`get_team_schedule` carries NO navigation links**
 (user decision 2026-08-03, from live evidence): it is a TEAM view by construction, and a manager
 asking "what's on the schedule this week" is dispatching, not driving — a directions link on
 their own couple of stops answered a question nobody asked and was the only noise in an otherwise
@@ -208,18 +213,59 @@ the test is now PLACEMENT:
   somebody because the firm agreed to come out — the agent takes the customer and the work from
   that message, `find_customer`s the id, and asks the manager. On a yes: `book_visit` when
   somebody is being sent (jobId if the office named one, else customerId + the work as the title,
-  and NO date or times — it books untimed AND mints the job in one call), or the new `open_job`
+  with the day and both times if the manager gave them, else `untimed: true` — it mints the job in the same call), or the new `open_job`
   when only the job is wanted (a quote, an estimate, work to schedule later). Both refuse when the
   customer already has THAT work on file (a title naming an open job), with the list — for a
   visit, re-call `book_visit` with the matching jobId; `open_job` takes no jobId, so act on the
   existing work directly. `forceNewJob:true` only for genuinely different work. On a no: `inform_team_lead` in one
   sentence. **Never create it before they answer** — nothing is on the record yet, deliberately.
+  **Rung 10b.2 (2026-09-09, replaces the 10b relay): the caller nobody matches — the agent
+  records it.** The office's message may instead say it does not know who got in touch. A MANAGER
+  seat now holds `record_caller` itself (shared from the team lead's surface; technicians do NOT
+  get it — dispatch refuses them). **AGENTS.md is written once per sandbox with no tier
+  branching** (`bootstrap-box.sh` writes every doctrine block unconditionally), so rule 7 is
+  phrased around what the agent can SEE in its own tool list: hold it → record; do not hold it →
+  relay with `inform_team_lead`, which is in the technician catalog. Without that branch a
+  technician seat would be told to call a tool it will be refused, with its old fallback deleted.
+  A manager seat puts the question to the manager and, on the answer, calls `record_caller` with
+  the item id from the office's quiet note — **once, carrying `openJob` and `bookVisit` if the
+  manager asked for them.** Splitting it (create the customer, then `open_job`/`book_visit`) looks
+  equivalent and is not: those two cite the capture only through `inboundAskFor`, which matches on
+  `context.customerId`, and an `inbound_unmatched` context has none — so the job and the trip
+  would be filed against nothing while the item still retired on the customer's citation, hiding
+  the loss. A named day still books untimed; the seat then places it with `move_visit`. **Why the tool matters and a relay does not:** everything
+  `record_caller` writes cites the caller's own message, and an item retires only when something
+  cites its capture — so `record_field_note` here files a copy of the agent's words, leaves the
+  original message cited by nothing, and the office goes on asking forever. That is the live
+  2026-09-08 failure this replaces (a customer whose address was her own name, a `completed` trip
+  nobody took, the item still open). With no id yet, it waits for the quiet note rather than
+  reaching for another tool. It names only what the manager said — no invented address, and no
+  email address the manager did not give — and reports what it recorded, never that the item is
+  closed.
+- **Outside accounts go through Composio, first move (AGENTS.md rule 8, added 2026-09-07).**
+  Gmail, Sheets, Excel, Drive: the agent calls `get_connect_link` and hands over the URL. No web
+  search, no alternative integration, no self-authentication, no hunting the tool list first.
+  Everything after the browser approval is already automatic and is NOT the agent's to do —
+  `checkPairing` (`src/composio/pairing.ts`) adopts the ACTIVE account, opens the
+  `pairing_verification` review for a manager, and calls `ensureTrigger`, which creates
+  `GMAIL_NEW_GMAIL_MESSAGE` **pinned to that connected account** and stores
+  `composio_trigger_id`; a run that dies mid-way is finished by the healing branch on the next
+  sweep. So the agent must not report the connection as finished at approval time, only as being
+  verified. If `get_connect_link` is absent from its list it says so and stops.
+  *Why the rule exists:* on 2026-09-07 an agent asked to connect a mailbox had NO doctrine
+  naming Composio (the string appeared zero times in `bootstrap-box.sh`), improvised with raw
+  toolkit calls, and produced a half-connected account — OAuth ACTIVE, but no trigger, no
+  `composio_trigger_id`, no verification item. It looked connected to everyone and delivered no
+  mail. The recovery took a manual `composio-reconnect.mjs` + `composio-trigger.mjs` pass. Note
+  that the dev script `composio-trigger.mjs` does NOT pin `connectedAccountId` and warns
+  "using the first one" — `ensureTrigger` does pin it, so the automatic path is the correct one
+  and the scripts are recovery tools only.
 
 `book_visit` has NO default times (2026-07-18, user decision — the 2h job-length default was
 removed after it overrode a stated "12–1pm" in the pilot): `date`, `startTime` and `endTime`
 arrive TOGETHER, the agent passes exactly what the manager stated, and asks when one is
 missing. **One recorded exception (2026-07-25, plan 4b-2, re-cut by rung 9a):** when the timing
-genuinely is not settled, the agent passes **none of the three** and the visit books UNTIMED —
+genuinely is not settled, the agent passes **`untimed: true` and none of the three** and the visit books UNTIMED (rung 10b.2: an omission alone is refused — untimed must be SAID) —
 no day, no range, nothing stored about when it should happen. It waits in the unscheduled queue
 until a normal `move_visit` places it. There is no way to record "sometime next week": that is
 a conversation with the manager (and, through the office channel, with the planner that knows
@@ -336,7 +382,12 @@ The router is **multi-label** — one call can be `[new_job, cancel]` and each i
   longer mints a job. For a caller we know, the words are pinned to their open job and kept on it;
   with no open job — or when the firm agreed to come out and no trip carries it — an OBSERVATION is
   raised and a manager is asked. **Nothing reaches the board's unscheduled bucket until somebody
-  says yes.** A new/unknown caller still opens the `unlinked_call` review to link/create (rung 10b).
+  says yes.** **Amended by rung 10b (2026-09-08):** a caller who matches NOBODY no longer opens an
+  `unlinked_call` review — that item was a dead end, since no tool could ever act on it. It raises an
+  `inbound_unmatched` observation instead, which reaches the planner on the same ping loop within
+  seconds; the planner links a known customer at a new number, dismisses a supplier, or asks a
+  manager. Nothing is pushed from the call worker for it. The existing `unlinked_call` rows stay for
+  hand resolution.
   - **KNOWN GAP:** only `new_job` runs the extractor at all, so a committed call about work already
     on file ("we'll come out Tuesday to finish it") is classified `reschedule`/`other`, stops at L1,
     and raises no `inbound_commitment`. Widening which intents structure was deliberately NOT part

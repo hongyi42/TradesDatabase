@@ -267,7 +267,20 @@ so the window is small: check for open rows of those two kinds before deploying,
       against the repo first ([[bootstrap-copy-drift-trap]]), then **s2 first** (the canary seat)
       and confirm `grep -c "promiseLevel" AGENTS.md` → 0 before the fleet
 
-### Manual verification
-- [ ] Book a visit with no time from a manager seat; it appears in the unscheduled tray
-- [ ] Move a visit to another date — goes through in one shot, no confirmation
-- [ ] Unschedule a **placed** visit — still stops and asks
+### Manual verification — ✅ run through the seats 2026-09-05 (agent-driven, maker ≠ checker, DB read-back via `supabase-test`)
+- [x] Book a visit with no time from a manager seat; it appears in the unscheduled tray — s2 17:36Z (row `65ccece3…`)
+      and s8 19:40Z (row `4f4c6656…`): `book_visit {jobId}` → `booked, untimed:true`; row `confirmed`, `starts_at NULL`,
+      `technician_id NULL` — exactly the tray reader's predicate (`listUnassignedAssignmentsWithRefs`); zero `review_items`
+- [x] Move a visit to another date — goes through in one shot, no confirmation — s8 19:41Z untimed → Tue 2026-09-08
+      (`moved`), 19:42Z Tue → Wed 2026-09-09 (`moved`); no ask either time, zero `review_items` minted; each move is
+      cancel + insert with `created_at` carried (`4f4c6656` → `bf38bd5f` → `3dc11192`)
+- [x] Unschedule a **placed** visit — still stops and asks — s2 17:43Z and s8 19:42Z: `needs_confirmation` + an open
+      `pending_visit_cancel` row; on "Yes" (s8 19:43Z) → `unscheduled`, item `resolved` ("unschedule confirmed by
+      manager-joy"), row `cancelled`, job still `open`, tray rows for the job 0
+
+Both seats ran on the gateway path (model `meta/muse-spark-1.3`, no `[agent/embedded]`). Sessions: `verify-s2-book-173550`
+/ `verify-s2-move-retry2-174202` on s2 (fleet-to-OpenRouter session's verifier), `e2e-rung9a-s8-123917` on s8. Customer
+Marcus Ellery / job `9b014ad9…` is the designated verification job — reuse it. The s2 run's confirmation item `64cbc496…`
+(manager-sam) was never confirmed through the seat and sat `open` — visible in `list_review_items` — until a "yes" on
+that s2 session (19:46Z) hit the expired-confirm path: the server dismissed it as `confirmation expired` and the seat
+reported exactly that, then re-checked the schedule. Tenant now has zero open `pending_*` items.

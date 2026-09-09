@@ -38,6 +38,19 @@ export const ALLOWED_TRANSITIONS: Record<JobStatus, JobStatus[]> = {
   declined: [],
 };
 
+// The states with no outgoing edge — DERIVED from the machine above, never hand
+// listed, so a change up there cannot leave a stale copy behind. TWO readers
+// need it and both mean the same thing by it, "you cannot put new work on this
+// job": the write-path never reuses a terminal job for a new note
+// (recordFieldNote), and the thread identity key never hands one back as the job
+// to file a reply on (findCustomersByThread) — doing so would swallow the rung
+// 10 ask, because the door only asks when it found NO job.
+export const TERMINAL_JOB_STATUSES: ReadonlySet<JobStatus> = new Set(
+  (Object.keys(ALLOWED_TRANSITIONS) as JobStatus[]).filter(
+    (status) => ALLOWED_TRANSITIONS[status].length === 0,
+  ),
+);
+
 export interface CreateJobInput {
   tenantId: string;
   customerId: string;

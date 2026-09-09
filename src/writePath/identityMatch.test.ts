@@ -4,7 +4,8 @@ import { getClient } from '../db/client.js';
 import { setTenantSeats } from '../db/tenants.js';
 import { insertTechnician } from '../db/technicians.js';
 import { createCustomer } from '../db/customers.js';
-import { createJob } from '../db/jobs.js';
+import { createJob, insertJobCapture } from '../db/jobs.js';
+import { appendRawCapture } from '../db/rawCaptures.js';
 import { createVisit, updateVisitStatus } from '../db/visits.js';
 import { matchIdentity } from './identityMatch.js';
 import type { ExtractedFields } from './extract.js';
@@ -224,5 +225,257 @@ describe('matchIdentity — schedule branch (confirmed assignments)', () => {
       extracted: note(),
     });
     expect(r.status).toBe('needs_disambiguation');
+  });
+});
+
+// RUNG 10B — the two keys added between phone and address. Both unique-or-refuse:
+// a second hit means the key identified nobody and the next key gets its turn.
+describe('matchIdentity — the email key', () => {
+  test('a unique email match resolves to that customer, case-insensitively', async () => {
+    const cust = await createCustomer({
+      tenantId,
+      name: 'Email Match',
+      email: 'Tom.Becker@Example.com',
+    });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+      email: 'tom.becker@example.com',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: cust.id });
+  });
+
+  test('phone still wins over email', async () => {
+    // The email points at a DIFFERENT customer than the phone. Phone is read
+    // first, so its answer stands and the email is never consulted.
+    await createCustomer({ tenantId, name: 'Wrong By Email', email: 'shared@example.com' });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note({ phone: '555-0142' }),
+      email: 'shared@example.com',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: phoneCustomerId });
+  });
+
+  test('two customers sharing an address fall through instead of guessing', async () => {
+    await createCustomer({ tenantId, name: 'Shared One', email: 'office@example.com' });
+    await createCustomer({ tenantId, name: 'Shared Two', email: 'office@example.com' });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+      email: 'office@example.com',
+    });
+    expect(r.status).toBe('needs_disambiguation');
+  });
+
+  test('an underscore in the address is a literal, not a LIKE wildcard', async () => {
+    // Unescaped, `a_b@…` would ALSO match `axb@…` — two hits, and the key would
+    // refuse. Worse, a lookup for `axb@…` could land on the wrong customer.
+    const underscored = await createCustomer({
+      tenantId,
+      name: 'Underscore',
+      email: 'a_b@wildcard.test',
+    });
+    await createCustomer({ tenantId, name: 'Decoy', email: 'axb@wildcard.test' });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+      email: 'a_b@wildcard.test',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: underscored.id });
+  });
+});
+
+describe('matchIdentity — the thread key', () => {
+  test('a thread whose captures name one customer and one job matches both', async () => {
+    const cust = await createCustomer({ tenantId, name: 'Threaded' });
+    const job = await createJob({ tenantId, customerId: cust.id, title: 'water heater' });
+    // The STARTER: its thread id is its own message id, which is where
+    // external_id holds it (Gmail's convention).
+    const starter = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      rawText: 'Friday morning for the water heater',
+      externalId: 'thread-abc',
+    });
+    await insertJobCapture({ tenantId, jobId: job.id, captureId: starter.id });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+      threadId: 'thread-abc',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: cust.id, jobId: job.id });
+  });
+
+  test('a later message carries the key in metadata, and a stamped capture answers too', async () => {
+    const cust = await createCustomer({ tenantId, name: 'Threaded By Metadata' });
+    await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      rawText: 'reply one',
+      externalId: 'msg-2',
+      metadata: { threadId: 'thread-meta' },
+      customerId: cust.id,
+    });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+      threadId: 'thread-meta',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: cust.id });
+    expect(r.jobId).toBeUndefined(); // nothing named a job
+  });
+
+  test('a thread naming two customers falls through instead of guessing', async () => {
+    const a = await createCustomer({ tenantId, name: 'Thread Cust A' });
+    const b = await createCustomer({ tenantId, name: 'Thread Cust B' });
+    for (const [i, customerId] of [a.id, b.id].entries()) {
+      await appendRawCapture({
+        tenantId,
+        channel: 'email',
+        rawText: `crossed ${i}`,
+        externalId: `msg-crossed-${i}`,
+        metadata: { threadId: 'thread-crossed' },
+        customerId,
+      });
+    }
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+      threadId: 'thread-crossed',
+    });
+    expect(r.status).toBe('needs_disambiguation');
+  });
+
+  test('one customer reached through TWO jobs matches the customer, not a job', async () => {
+    const cust = await createCustomer({ tenantId, name: 'Two Jobs One Thread' });
+    const jobs = [
+      await createJob({ tenantId, customerId: cust.id, title: 'first' }),
+      await createJob({ tenantId, customerId: cust.id, title: 'second' }),
+    ];
+    for (const [i, job] of jobs.entries()) {
+      const capture = await appendRawCapture({
+        tenantId,
+        channel: 'email',
+        rawText: `on job ${i}`,
+        externalId: `msg-twojobs-${i}`,
+        metadata: { threadId: 'thread-twojobs' },
+      });
+      await insertJobCapture({ tenantId, jobId: job.id, captureId: capture.id });
+    }
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+      threadId: 'thread-twojobs',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: cust.id });
+    expect(r.jobId).toBeUndefined();
+  });
+
+  test('a TERMINAL job answers WHO but is never handed back as the job to file on', async () => {
+    // Otherwise a reply about new work would land on a paid job — and, worse,
+    // the door only raises rung 10's ask when it found NO job, so the ask would
+    // be swallowed silently.
+    const cust = await createCustomer({ tenantId, name: 'Paid Up Pat' });
+    const job = await createJob({ tenantId, customerId: cust.id, title: 'settled' });
+    await pg.query('update jobs set status = $1 where id = $2', ['paid', job.id]);
+    const capture = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      rawText: 'about that invoice',
+      externalId: 'thread-terminal',
+    });
+    await insertJobCapture({ tenantId, jobId: job.id, captureId: capture.id });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+      threadId: 'thread-terminal',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: cust.id });
+    expect(r.jobId).toBeUndefined();
+  });
+
+  test('a capture stamped with ANOTHER tenant\'s customer answers nothing', async () => {
+    // customer_id on a capture is an id-only foreign key: nothing in the schema
+    // makes the customer share the capture's tenant, so the stamp is re-read
+    // under this tenant before it is allowed to identify anybody.
+    const { rows } = await pg.query<{ id: string }>(
+      "insert into tenants (name) values ('thread-key-foreign-probe') returning id",
+    );
+    const foreign = await createCustomer({ tenantId: rows[0].id, name: 'Not Ours' });
+    await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      rawText: 'crossed wires',
+      externalId: 'thread-foreign',
+      customerId: foreign.id,
+    });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+      threadId: 'thread-foreign',
+    });
+    expect(r.status).toBe('needs_disambiguation');
+  });
+
+  test('the refusal says WHAT each key found — the planner is the second opinion', async () => {
+    // A generic "no unique match" tells the planner nothing about the NEAR miss
+    // it is being asked to adjudicate.
+    await createCustomer({ tenantId, name: 'Shared A', email: 'twins@example.com' });
+    await createCustomer({ tenantId, name: 'Shared B', email: 'twins@example.com' });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note({ phone: '555-nobody-has-this', address: '999 Nowhere Ave' }),
+      email: 'twins@example.com',
+      threadId: 'thread-crossed',
+    });
+    expect(r.status).toBe('needs_disambiguation');
+    expect(r.reason).toContain('no customer has the phone');
+    expect(r.reason).toContain('2 customers share the address twins@example.com');
+    expect(r.reason).toContain('crosses 2 customers');
+    expect(r.reason).toContain('no customer is at 999 Nowhere Ave');
+  });
+
+  test('a message with nothing to match on says so, rather than blaming the schedule', async () => {
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+    });
+    expect(r.reason).toContain('no phone, email, thread or address');
+  });
+
+  test('a thread nobody has filed leaves the address key its turn', async () => {
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note({ address: '14 smith st' }),
+      threadId: 'thread-unknown',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: addressCustomerId });
   });
 });

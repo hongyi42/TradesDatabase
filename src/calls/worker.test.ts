@@ -52,7 +52,6 @@ interface Recorded {
   ingested: Array<{ id: string; captureId: string; matchStatus: string; audioDeleteAfter: string }>;
   errors: Array<{ id: string; message: string }>;
   record: RecordFieldNoteInput[];
-  flagged: Array<{ tenantId: string; captureId: string; callerPhone?: string | null }>;
   actionReviews: Array<{
     tenantId: string;
     captureId: string;
@@ -68,7 +67,6 @@ function makeDeps(over: Partial<WorkerDeps> = {}): { deps: WorkerDeps; calls: Re
     ingested: [],
     errors: [],
     record: [],
-    flagged: [],
     actionReviews: [],
     notifications: [],
   };
@@ -96,9 +94,6 @@ function makeDeps(over: Partial<WorkerDeps> = {}): { deps: WorkerDeps; calls: Re
     },
     // Default: a plain new-work call, so existing tests keep structuring L2.
     classifyCall: async () => ({ intents: ['new_job'], reason: '' }),
-    openUnlinkedCallReview: async (input) => {
-      calls.flagged.push(input);
-    },
     openCallActionReview: async (input) => {
       calls.actionReviews.push(input);
     },
@@ -133,7 +128,6 @@ describe('processNextCall', () => {
     expect(calls.record[0].text).toContain('[CARD]');
     expect(calls.record[0].text).not.toContain('4242');
     // matched → no review item.
-    expect(calls.flagged).toHaveLength(0);
     // ingested with match status + ~30d retention.
     expect(calls.ingested[0]).toMatchObject({ id: 'ci1', captureId: 'cap1', matchStatus: 'matched' });
     const delta = Date.parse(calls.ingested[0].audioDeleteAfter) - (Date.now() + 30 * 86400000);
@@ -149,18 +143,24 @@ describe('processNextCall', () => {
     expect(Math.abs(Date.parse(calls.ingested[0].audioDeleteAfter) - Date.now())).toBeLessThan(60000);
   });
 
-  test('unmatched caller → ingested AND flagged once', async () => {
+  // RUNG 10B: the worker no longer files anything for an unmatched caller and no
+  // longer pushes. recordFieldNote raises `inbound_unmatched` from inside, the
+  // ping loop shows the planner, and the planner decides whether a manager is
+  // worth interrupting. The call is still ingested and its status still recorded.
+  test('unmatched caller → ingested, nothing filed here, nobody pushed', async () => {
     const { deps, calls } = makeDeps({
       recordFieldNote: async (input) => {
         void input;
-        return { status: 'needs_confirmation', captureId: 'cap9' };
+        return { status: 'needs_disambiguation', captureId: 'cap9' };
       },
     });
     expect(await processNextCall(deps)).toBe('ingested');
-    expect(calls.flagged).toEqual([
-      { tenantId: 'T1', captureId: 'cap9', callerPhone: '+15551234567', snippet: expect.any(String) },
-    ]);
-    expect(calls.ingested[0]).toMatchObject({ captureId: 'cap9', matchStatus: 'needs_confirmation' });
+    expect(calls.actionReviews).toHaveLength(0);
+    expect(calls.notifications).toHaveLength(0);
+    expect(calls.ingested[0]).toMatchObject({
+      captureId: 'cap9',
+      matchStatus: 'needs_disambiguation',
+    });
   });
 
   test('successful ingest logs a heartbeat line — identifiers only, NO PII', async () => {
@@ -200,7 +200,6 @@ describe('processNextCall', () => {
     expect(calls.record[0].structure).toBe(true);
     expect(calls.record[0].sourceMeta).toMatchObject({ callIntents: ['new_job'], reason: 'new work' });
     expect(calls.actionReviews).toHaveLength(0);
-    expect(calls.flagged).toHaveLength(0); // matched → no unlinked review
     expect(calls.notifications).toHaveLength(0);
   });
 
@@ -235,23 +234,20 @@ describe('processNextCall', () => {
     expect(calls.notifications).toHaveLength(1);
   });
 
-  test('mixed [new_job, cancel] on an UNMATCHED caller → BOTH branches fire (unlinked + call_action, two pushes)', async () => {
+  test('mixed [new_job, cancel] on an UNMATCHED caller → ONLY the call_action branch, ONE push', async () => {
     const { deps, calls } = makeDeps({
       classifyCall: async () => ({ intents: ['new_job', 'cancel'], reason: 'new job and a cancel' }),
-      // new_job structures, but the caller matches nothing → needs_confirmation,
-      // which drives the unlinked-review branch alongside the call_action branch.
-      recordFieldNote: async () => ({ status: 'needs_confirmation', captureId: 'capBoth' }),
+      // new_job structures, but the caller matches nothing. Before rung 10b this
+      // ALSO opened an unlinked-call review and pushed a second time; the
+      // unmatched half is now an observation raised inside recordFieldNote.
+      recordFieldNote: async () => ({ status: 'needs_disambiguation', captureId: 'capBoth' }),
     });
     expect(await processNextCall(deps)).toBe('ingested');
-    // Branch (a): unlinked-call review for the unmatched new_job.
-    expect(calls.flagged).toEqual([
-      { tenantId: 'T1', captureId: 'capBoth', callerPhone: '+15551234567', snippet: expect.any(String) },
-    ]);
-    // Branch (b): call_action review for the cancel (new_job excluded).
+    // The cancel still reaches a human (new_job excluded from the intent list).
     expect(calls.actionReviews).toHaveLength(1);
     expect(calls.actionReviews[0]).toMatchObject({ captureId: 'capBoth', intents: ['cancel'] });
-    // Both branches pushed the manager.
-    expect(calls.notifications).toHaveLength(2);
+    // ONE push, not two.
+    expect(calls.notifications).toHaveLength(1);
   });
 
   test('complaint intent → HIGH-priority call_action review', async () => {
@@ -292,7 +288,6 @@ describe('processNextCall', () => {
     expect(await processNextCall(deps)).toBe('ingested');
     expect(calls.record[0].structure).toBe(false);
     expect(calls.actionReviews).toHaveLength(0);
-    expect(calls.flagged).toHaveLength(0);
     expect(calls.notifications).toHaveLength(0);
   });
 

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from '../db/client.js';
 import { appendRawCapture } from '../db/rawCaptures.js';
+import type { Json } from '../db/database.types.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob, listJobsForCustomer } from '../db/jobs.js';
 import { createVisit } from '../db/visits.js';
@@ -1173,17 +1174,147 @@ describe('rung 10 — inbound asks before it creates', () => {
     expect(await observationsFor(one.captureId)).toHaveLength(1); // asked once, ever
   });
 
-  test('(7) an UNMATCHED committed call writes no observation — rung 10b owns the new caller', async () => {
-    const before = await pg.query<{ n: string }>('select count(*)::int as n from observations');
+  // ---- RUNG 10B: nobody matched, and that is now its own kind ---------------
+  test('(7) an UNMATCHED committed call raises ONE inbound_unmatched, with the caller-ID on it', async () => {
     const r = await recordFieldNote(
-      inbound('phone_call', 'hi, I need someone out to look at my furnace'),
-      stub({ phone: '555-0000-nobody', visitCommitted: true }),
+      inbound('phone_call', 'hi, I need someone out to look at my furnace', {
+        sourceMeta: { fromNumber: '+15550001111' },
+      }),
+      stub({
+        phone: '555-0000-nobody',
+        visitCommitted: true,
+        customerName: 'Nobody Knownyet',
+        jobTitle: 'furnace not lighting',
+      }),
     );
     expect(r.status).toBe('needs_disambiguation');
-    expect(r.customerId).toBeUndefined();
+    expect(r.customerId).toBeUndefined(); // nothing was created
+    expect(r.observationId).toBeDefined();
+
+    const obs = await observationsFor(r.captureId);
+    expect(obs).toHaveLength(1);
+    expect(obs[0].kind).toBe('inbound_unmatched');
+    expect(obs[0].status).toBe('open');
+    const ctx = obs[0].context as Record<string, unknown>;
+    // NO customer on it — that is the open question this kind exists to ask.
+    expect(ctx.customerId).toBeUndefined();
+    expect(ctx.from).toBe('+15550001111'); // the phone door spells it `fromNumber`
+    expect(ctx.channel).toBe('phone_call');
+    // The commitment is a FIELD here, not something read off the kind's name.
+    expect(ctx.visitCommitted).toBe(true);
+    expect(ctx.matchReason).toEqual(expect.any(String));
+    expect(ctx.words).toContain('furnace');
+    expect(ctx.asked).toMatchObject({
+      customerName: 'Nobody Knownyet',
+      jobTitle: 'furnace not lighting',
+    });
+  });
+
+  test('(7b) an UNMATCHED email raises one too, carrying the sender and the door’s address', async () => {
+    const r = await recordFieldNote(
+      inbound('email', 'hello — my kitchen tap has been dripping for a week', {
+        externalId: 'unmatched-email-1',
+        sourceMeta: { from: 'Stranger Sam <sam@nowhere.test>' },
+        fallbackEmail: 'sam@nowhere.test',
+      }),
+      stub({ customerName: 'Stranger Sam', jobTitle: 'dripping tap' }),
+    );
+    expect(r.status).toBe('needs_disambiguation');
+    const obs = await observationsFor(r.captureId);
+    expect(obs).toHaveLength(1);
+    expect(obs[0].kind).toBe('inbound_unmatched');
+    const ctx = obs[0].context as Record<string, unknown>;
+    expect(ctx.from).toBe('Stranger Sam <sam@nowhere.test>');
+    expect(ctx.visitCommitted).toBeNull(); // not said, and said so
+    // The address is the ENVELOPE's, not something the model read out of the body.
+    expect((ctx.asked as Record<string, unknown>).email).toBe('sam@nowhere.test');
+  });
+
+  test('(7c) a stranger whose message closes itself asks NOTHING — the same `=== false` filter', async () => {
+    const before = await pg.query<{ n: string }>('select count(*)::int as n from observations');
+    const r = await recordFieldNote(
+      inbound('email', 'thanks, got the invoice — have a good weekend', {
+        externalId: 'unmatched-email-quiet',
+        sourceMeta: { from: 'quiet@nowhere.test' },
+      }),
+      stub({ touchesOperations: false }),
+    );
+    expect(r.status).toBe('needs_disambiguation');
+    expect(r.observationId).toBeUndefined();
     expect(await observationsFor(r.captureId)).toHaveLength(0);
     const after = await pg.query<{ n: string }>('select count(*)::int as n from observations');
     expect(Number(after.rows[0].n)).toBe(Number(before.rows[0].n));
+  });
+
+  test('(7d) an unmatched TECHNICIAN note asks nothing — the staged-confirm contract is untouched', async () => {
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'tech-unmatched-10b',
+        channel: 'technician_note',
+        text: 'fixed a leak at the place on the corner',
+      },
+      stub({ workPerformed: 'fixed a leak', address: '77 Nobody Knows Way', visitCommitted: true }),
+    );
+    expect(r.status).toBe('needs_disambiguation');
+    expect(r.observationId).toBeUndefined();
+    expect(await observationsFor(r.captureId)).toHaveLength(0);
+  });
+
+  test('(7e) the ask is the marker: a redelivery of the unmatched email is a DUPLICATE', async () => {
+    // Before rung 10b an unmatched capture left NO L2 trace, so every redelivery
+    // re-ran the extractor — a paid model call that wrote nothing.
+    const first = await recordFieldNote(
+      inbound('email', 'my boiler is making a banging noise', {
+        externalId: 'unmatched-email-redeliver',
+        sourceMeta: { from: 'banging@nowhere.test' },
+      }),
+      stub({ jobTitle: 'banging boiler' }),
+    );
+    expect(first.observationId).toBeDefined();
+    let extractorCalls = 0;
+    const again = await recordFieldNote(
+      inbound('email', 'my boiler is making a banging noise', {
+        externalId: 'unmatched-email-redeliver',
+        sourceMeta: { from: 'banging@nowhere.test' },
+      }),
+      {
+        extract: async () => {
+          extractorCalls += 1;
+          return { jobTitle: 'banging boiler' };
+        },
+      },
+    );
+    expect(again.status).toBe('duplicate');
+    expect(again.captureId).toBe(first.captureId);
+    expect(extractorCalls).toBe(0); // never paid for twice
+    expect(await observationsFor(first.captureId)).toHaveLength(1);
+  });
+
+  test('(7f) two deliveries racing converge on ONE row — the once-ever index decides', async () => {
+    const delivery = () =>
+      recordFieldNote(
+        inbound('email', 'can somebody come and look at the shower', {
+          externalId: 'unmatched-email-race',
+          sourceMeta: { from: 'race@nowhere.test' },
+        }),
+        stub({ jobTitle: 'shower' }),
+      );
+    const [a, b] = await Promise.all([delivery(), delivery()]);
+    const captureIds = new Set([a.captureId, b.captureId]);
+    expect(captureIds.size).toBe(1); // one L1 row — the unique index on externalId
+    const obs = await observationsFor([...captureIds][0]);
+    expect(obs).toHaveLength(1); // and exactly one ask, however the race landed
+    // And only ONE delivery may report having raised it: createObservation
+    // returns null on the once-ever conflict, so the loser reports no
+    // observationId rather than claiming a fresh ask that is really the winner's.
+    const reported = [a.observationId, b.observationId].filter(Boolean);
+    expect(reported.length).toBe(1);
+    const { rows } = await pg.query<{ id: string }>(
+      'select id from observations where subject_ref = $1',
+      [[...captureIds][0]],
+    );
+    expect(reported[0]).toBe(rows[0].id); // and it is the row that actually landed
   });
 
   test('(8) a TECHNICIAN note is untouched by all of it — walk-in still mints a trip, nothing is kept as correspondence', async () => {
@@ -1333,5 +1464,496 @@ describe('rung 10 — inbound asks before it creates', () => {
     expect(three.jobId).toBe(job.id);
     expect(((await jobAttributes(job.id)).correspondence as unknown[]).length).toBe(2);
     expect(await jobCaptureLinks(job.id)).toBe(3);
+  });
+
+  // ---- THE EXTRACTOR DECIDES (amended 2026-09-07, user) -------------------
+  //
+  // The first version of this rung asked whenever the customer had no
+  // non-terminal job, which woke the planner for a thank-you arriving after the
+  // invoice was paid. The extractor already reads every one of these captures on
+  // inference, so the judgment moved there — and the question it answers is
+  // whether the message carries anything for the OPERATIONS layer (a job, a
+  // visit, a schedule change, parts, money), not whether someone "should care".
+  // These pin BOTH directions of that switch — the skip, and the far more
+  // important refusal to skip.
+
+  test('(10) touchesOperations FALSE with no open job: filed on the last job, nobody asked', async () => {
+    const { customer, phone } = await newCustomer('Grateful Greta');
+    // Terminal on purpose: the old gate is exactly what this status triggered.
+    const paid = await createJob({
+      tenantId,
+      customerId: customer.id,
+      title: 'furnace service',
+      status: 'paid',
+    });
+
+    const r = await recordFieldNote(
+      inbound('email', 'thanks so much, the heat has been perfect all week!'),
+      stub({ phone, touchesOperations: false, followUp: 'none — customer is happy' }),
+    );
+
+    expect(r.status).toBe('matched');
+    expect(r.jobId).toBe(paid.id); // filed on the paid job, not a new one
+    expect(r.observationId).toBeUndefined();
+    expect(await observationsFor(r.captureId)).toHaveLength(0);
+
+    // The words still land on the record: this is the whole reason a filtered
+    // capture is not simply abandoned in L1.
+    const entries = (await jobAttributes(paid.id)).correspondence as Array<Record<string, unknown>>;
+    expect(entries).toHaveLength(1);
+    expect(entries[0].captureId).toBe(r.captureId);
+    expect(await jobCaptureLinks(paid.id)).toBe(1);
+
+    // And NOTHING moved: no second job, no trip, and the paid job is still paid
+    // (NOTE_SIGNAL_TRANSITIONS has no entry for it).
+    expect((await listJobsForCustomer(customer.id)).length).toBe(1);
+    expect((await listJobsForCustomer(customer.id))[0].status).toBe('paid');
+    expect(r.visitId).toBeUndefined();
+  });
+
+  test('(11) touchesOperations FALSE with no job at all: L1 keeps it, nothing else is built', async () => {
+    const { customer, phone } = await newCustomer('Wrongnumber Wally');
+    const before = await rawCaptureCount();
+
+    const r = await recordFieldNote(
+      inbound('email', 'sorry, wrong address — ignore my last message'),
+      stub({ phone, touchesOperations: false }),
+    );
+
+    expect(r.status).toBe('captured');
+    expect(r.captureId).toBeDefined();
+    expect(r.jobId).toBeUndefined();
+    expect(r.observationId).toBeUndefined();
+    expect(await rawCaptureCount()).toBe(before + 1); // the verbatim capture is kept
+    expect(await observationsFor(r.captureId)).toHaveLength(0);
+    expect((await listJobsForCustomer(customer.id)).length).toBe(0);
+  });
+
+  test('(12) ONLY an explicit false skips — absent, null and true all still ask', async () => {
+    // THE SIGN OF THIS COMPARISON IS THE WHOLE SAFETY PROPERTY. A truncated
+    // response, an older stub, or a model that ignores the field must behave as
+    // the code did before the field existed. Written as three cases because
+    // `!touchesOperations` instead of `=== false` passes the first one and silences
+    // the other two — the exact mistake this test exists to catch.
+    for (const [label, fields] of [
+      ['absent', {}],
+      ['null', { touchesOperations: null }],
+      ['true', { touchesOperations: true }],
+    ] as const) {
+      const { customer, phone } = await newCustomer(`Asks ${label}`);
+      const r = await recordFieldNote(
+        inbound('email', 'my water heater is leaking, can someone come out?'),
+        stub({ phone, jobTitle: 'water heater leak', ...fields }),
+      );
+      expect(r.observationId, `${label} must still ask`).toBeDefined();
+      const obs = await observationsFor(r.captureId);
+      expect(obs, `${label} must still ask`).toHaveLength(1);
+      expect(obs[0].kind).toBe('inbound_new_job');
+      expect((await listJobsForCustomer(customer.id)).length).toBe(0);
+    }
+  });
+
+  test('(13) a COMMITMENT outranks the filter — the firm agreeing to come out IS attention', async () => {
+    const { customer, phone } = await newCustomer('Committed Callum');
+    const r = await recordFieldNote(
+      inbound('phone_call', 'great, we will have someone out Thursday morning'),
+      // A model that judged this unimportant must not be able to lose the
+      // promise: `visitCommitted` is checked alongside, not after.
+      stub({ phone, touchesOperations: false, visitCommitted: true, jobTitle: 'no heat' }),
+    );
+    expect(r.observationId).toBeDefined();
+    const obs = await observationsFor(r.captureId);
+    expect(obs).toHaveLength(1);
+    expect(obs[0].kind).toBe('inbound_commitment');
+    expect((await listJobsForCustomer(customer.id)).length).toBe(0);
+  });
+
+  test('(14) the filter is INBOUND-ONLY — a technician note still mints work', async () => {
+    const { customer, phone } = await newCustomer('Fieldnote Fran');
+    const tech = await insertTechnician({
+      tenantId,
+      ref: 'rung10-tech-2',
+      displayName: 'Filter Free Tech',
+      seatExempt: true,
+    });
+    const r = await recordFieldNote(
+      { tenantId, technicianRef: tech.ref, channel: 'technician_note', text: 'swapped the capacitor' },
+      stub({ phone, touchesOperations: false, workPerformed: 'swapped capacitor' }),
+    );
+    // A technician's own note is the firm acting, not a message to judge.
+    expect(r.jobId).toBeDefined();
+    expect(r.visitId).toBeDefined();
+    expect(r.observationId).toBeUndefined();
+    expect((await listJobsForCustomer(customer.id)).length).toBe(1);
+  });
+});
+
+// RUNG 10B PHASE 1 — the door hands the matcher two envelope keys it never had.
+// Both arrive beside `extracted`, not inside it: they are facts about the
+// delivery, not something a model read out of the words.
+describe('rung 10b — the email door\'s own identity keys', () => {
+  let seq = 9600;
+
+  test('an email from a customer\'s own address matches them with no phone in the words', async () => {
+    const customer = await createCustomer({
+      tenantId,
+      name: 'Emailing Edna',
+      email: 'edna@example.com',
+    });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Edna work' });
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'connector:gmail',
+        channel: 'email',
+        text: 'any update on the quote?',
+        externalId: `msg-10b-${seq++}`,
+        fallbackEmail: 'edna@example.com',
+      },
+      stub({ followUp: 'wants the quote' }), // no phone, no address anywhere
+    );
+    expect(r).toMatchObject({ status: 'matched', customerId: customer.id, jobId: job.id });
+    expect(await jobCaptureLinks(job.id)).toBe(1);
+    expect(await observationsFor(r.captureId)).toHaveLength(0);
+  });
+
+  test('a reply lands on the job ITS THREAD names, not the customer\'s newest job', async () => {
+    // The shape that parked a live reschedule request on 2026-09-08: a known
+    // customer replies, and the reply carries no phone and no address of its own.
+    const customer = await createCustomer({ tenantId, name: 'Threading Tom' });
+    const older = await createJob({ tenantId, customerId: customer.id, title: 'water heater' });
+    const newer = await createJob({ tenantId, customerId: customer.id, title: 'a later job' });
+    const threadId = `thread-10b-${seq++}`;
+    const starter = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      rawText: 'Friday morning for the water heater',
+      externalId: threadId, // a starter's thread id IS its message id
+    });
+    await pg.query('insert into job_captures (tenant_id, job_id, capture_id) values ($1,$2,$3)', [
+      tenantId,
+      older.id,
+      starter.id,
+    ]);
+
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'connector:gmail',
+        channel: 'email',
+        text: 'Is it possible to do Friday afternoon instead?',
+        externalId: `msg-10b-${seq++}`,
+        threadId,
+      },
+      stub({ followUp: 'wants Friday afternoon' }),
+    );
+    expect(r).toMatchObject({ status: 'matched', customerId: customer.id, jobId: older.id });
+    expect(await jobCaptureLinks(older.id)).toBe(2); // the starter and this reply
+    expect(await jobCaptureLinks(newer.id)).toBe(0);
+  });
+
+  test('a stranger\'s email still resolves to nobody — the keys widen the matcher, they do not soften it', async () => {
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'connector:gmail',
+        channel: 'email',
+        text: 'hello, is this the plumber?',
+        externalId: `msg-10b-${seq++}`,
+        fallbackEmail: 'nobody-on-file@example.com',
+        threadId: `thread-unfiled-${seq++}`,
+      },
+      stub({}),
+    );
+    expect(r.status).toBe('needs_disambiguation');
+    expect(r.customerId).toBeUndefined();
+  });
+
+  test('a customer created from an email keeps the address it wrote from', async () => {
+    // So the SAME sender is recognised by the email key on their next message,
+    // instead of being parked as a stranger a second time.
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'connector:gmail',
+        channel: 'email',
+        text: 'new here — my sink is blocked',
+        externalId: `msg-10b-${seq++}`,
+        fallbackEmail: 'brand.new@example.com',
+        resolved: { createFrom: { customerName: 'Brand New' } },
+      },
+      stub({ jobTitle: 'blocked sink' }),
+    );
+    expect(r.status).toBe('matched');
+    const { rows } = await pg.query<{ email: string | null }>(
+      'select email from customers where id = $1',
+      [r.customerId],
+    );
+    expect(rows[0].email).toBe('brand.new@example.com');
+  });
+});
+
+// RUNG 10B PHASE 4 — the door, RE-ENTERED. `record_caller` sends the same capture
+// back through with the identity the planner settled and what a manager decided,
+// so nothing here is a new write path: it is this one, run again.
+describe('rung 10b — re-entry by capture id, and what a manager decided', () => {
+  let seq = 9800;
+  const parkedCall = async (text: string, meta: Json = {}) =>
+    await appendRawCapture({
+      tenantId,
+      channel: 'phone_call',
+      technicianRef: 'phone-line',
+      rawText: text,
+      externalId: `re-entry-${seq++}`,
+      metadata: meta,
+    });
+
+  test('re-entry REUSES the L1 row — a second one would be permanent', async () => {
+    const capture = await parkedCall('somebody rang about a broken gate');
+    const customer = await createCustomer({ tenantId, name: 'Re-entered Rita' });
+    const before = await rawCaptureCount();
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'phone-line',
+        channel: 'phone_call',
+        text: capture.raw_text,
+        captureId: capture.id,
+        resolved: { customerId: customer.id },
+        decided: { openJob: { title: 'broken gate' } },
+      },
+      stub({ jobTitle: 'ignored — the decision wins' }),
+    );
+    expect(r.captureId).toBe(capture.id);
+    expect(await rawCaptureCount()).toBe(before);
+  });
+
+  test('decided.openJob MINTS the job, citing the call, and asks nothing', async () => {
+    const capture = await parkedCall('new customer, wants a quote for a new boiler');
+    const customer = await createCustomer({ tenantId, name: 'Minted Mo' });
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'phone-line',
+        channel: 'phone_call',
+        text: capture.raw_text,
+        captureId: capture.id,
+        resolved: { customerId: customer.id },
+        decided: { openJob: { title: 'quote for a new boiler', jobType: 'plumbing' } },
+      },
+      stub({ jobTitle: 'something the model read', jobType: 'hvac' }),
+    );
+    expect(r.jobId).toBeDefined();
+    expect(await observationsFor(capture.id)).toHaveLength(0);
+    const { rows } = await pg.query<{ title: string; job_type: string; source_capture_id: string }>(
+      'select title, job_type, source_capture_id from jobs where id = $1',
+      [r.jobId],
+    );
+    // What the manager said wins over what the model read.
+    expect(rows[0].title).toBe('quote for a new boiler');
+    expect(rows[0].job_type).toBe('plumbing');
+    expect(rows[0].source_capture_id).toBe(capture.id);
+  });
+
+  test('bookVisit:true puts an UNTIMED trip on the board, citing the call', async () => {
+    const capture = await parkedCall('they said someone would come out');
+    const customer = await createCustomer({ tenantId, name: 'Booked Bea' });
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'phone-line',
+        channel: 'phone_call',
+        text: capture.raw_text,
+        captureId: capture.id,
+        resolved: { customerId: customer.id },
+        decided: { openJob: { title: 'no hot water' }, bookVisit: true },
+      },
+      stub({ visitCommitted: true }),
+    );
+    expect(r.visitId).toBeDefined();
+    expect(await observationsFor(capture.id)).toHaveLength(0); // decided, not asked
+    const { rows } = await pg.query<{
+      starts_at: string | null;
+      ends_at: string | null;
+      status: string;
+      source_capture_id: string | null;
+      job_id: string;
+    }>('select starts_at, ends_at, status, source_capture_id, job_id from visits where id = $1', [
+      r.visitId,
+    ]);
+    expect(rows[0].starts_at).toBeNull(); // no day
+    expect(rows[0].ends_at).toBeNull(); // no time
+    expect(rows[0].status).toBe('confirmed');
+    expect(rows[0].source_capture_id).toBe(capture.id);
+    expect(rows[0].job_id).toBe(r.jobId);
+  });
+
+  test('bookVisit:false books nothing AND asks nothing — a manager said no', async () => {
+    const capture = await parkedCall('we told them someone would come');
+    const customer = await createCustomer({ tenantId, name: 'Declined Dee' });
+    const visitsBefore = await visitCount();
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'phone-line',
+        channel: 'phone_call',
+        text: capture.raw_text,
+        captureId: capture.id,
+        resolved: { customerId: customer.id },
+        decided: { openJob: { title: 'have a look sometime' }, bookVisit: false },
+      },
+      stub({ visitCommitted: true }),
+    );
+    expect(r.visitId).toBeUndefined();
+    expect(await visitCount()).toBe(visitsBefore);
+    expect(await observationsFor(capture.id)).toHaveLength(0);
+  });
+
+  test('decided ABSENT on a committed re-run is rung 10 unchanged — it still asks', async () => {
+    const capture = await parkedCall('yes, see you Thursday then');
+    const { customer, job } = await (async () => {
+      const c = await createCustomer({ tenantId, name: 'Still Asking Asha' });
+      const j = await createJob({ tenantId, customerId: c.id, title: 'existing work' });
+      return { customer: c, job: j };
+    })();
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'phone-line',
+        channel: 'phone_call',
+        text: capture.raw_text,
+        captureId: capture.id,
+        resolved: { customerId: customer.id },
+      },
+      stub({ visitCommitted: true }),
+    );
+    expect(r.jobId).toBe(job.id);
+    const obs = await observationsFor(capture.id);
+    expect(obs).toHaveLength(1);
+    expect(obs[0].kind).toBe('inbound_commitment');
+  });
+
+  test('a settled re-entry NEVER raises a second "who is this" — it files the call instead', async () => {
+    // Rung 10's gate would raise `inbound_new_job` here, on a capture whose
+    // `inbound_unmatched` ask is still open — two questions about one call, and
+    // the tool reporting success while nobody had been asked anything.
+    const capture = await parkedCall('it is Tom, from the water heater job');
+    const customer = await createCustomer({ tenantId, name: 'Filed Fiona' });
+    const older = await createJob({ tenantId, customerId: customer.id, title: 'last winter' });
+    await pg.query(`update jobs set status = 'paid' where id = $1`, [older.id]);
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'phone-line',
+        channel: 'phone_call',
+        text: capture.raw_text,
+        captureId: capture.id,
+        resolved: { customerId: customer.id },
+      },
+      stub({ followUp: 'wants a callback' }),
+    );
+    expect(r.observationId).toBeUndefined();
+    expect(await observationsFor(capture.id)).toHaveLength(0);
+    // Filed on their most recent job WHATEVER its status, which is what lets the
+    // original item close on the record.
+    expect(r.jobId).toBe(older.id);
+    expect(await jobCaptureLinks(older.id)).toBe(1);
+  });
+
+  test('a settled re-entry still ASKS about a promise — settling WHO is not deciding WHETHER', async () => {
+    // The one loss with a cost outside this database: the customer was told
+    // somebody is coming. Knowing who they are does not answer that.
+    const capture = await parkedCall('it is Tom — and you said someone would come out Friday');
+    const customer = await createCustomer({ tenantId, name: 'Promised Pia' });
+    const older = await createJob({ tenantId, customerId: customer.id, title: 'last winter' });
+    await pg.query(`update jobs set status = 'paid' where id = $1`, [older.id]);
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'phone-line',
+        channel: 'phone_call',
+        text: capture.raw_text,
+        captureId: capture.id,
+        resolved: { customerId: customer.id },
+      },
+      stub({ visitCommitted: true, touchesOperations: false }), // a commitment outranks the filter
+    );
+    expect(r.observationId).toBeDefined();
+    const obs = await observationsFor(capture.id);
+    expect(obs.map((o) => o.kind)).toEqual(['inbound_commitment']);
+    // …and the call is still filed, so the ORIGINAL item can still close.
+    expect(await jobCaptureLinks(older.id)).toBe(1);
+  });
+
+  test('a decided bookVisit:false silences that question on a re-entry too', async () => {
+    const capture = await parkedCall('we said someone would come, but never mind');
+    const customer = await createCustomer({ tenantId, name: 'Never Mind Nell' });
+    const older = await createJob({ tenantId, customerId: customer.id, title: 'old work' });
+    await pg.query(`update jobs set status = 'paid' where id = $1`, [older.id]);
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'phone-line',
+        channel: 'phone_call',
+        text: capture.raw_text,
+        captureId: capture.id,
+        resolved: { customerId: customer.id },
+        decided: { bookVisit: false },
+      },
+      stub({ visitCommitted: true }),
+    );
+    expect(r.observationId).toBeUndefined();
+    expect(await observationsFor(capture.id)).toHaveLength(0);
+  });
+
+  test('a RETRACTED capture stays terminal, however it is re-entered', async () => {
+    const capture = await parkedCall('recorded in error');
+    await appendRawCapture({
+      tenantId,
+      channel: 'manual_correction',
+      technicianRef: 'tech-retractor',
+      rawText: 'that call was a wrong number',
+      retractsCaptureId: capture.id,
+    });
+    const customer = await createCustomer({ tenantId, name: 'Retracted Rae' });
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'phone-line',
+        channel: 'phone_call',
+        text: capture.raw_text,
+        captureId: capture.id,
+        resolved: { customerId: customer.id },
+        decided: { openJob: { title: 'should never exist' } },
+      },
+      stub({}),
+    );
+    expect(r.status).toBe('duplicate');
+    expect(await listJobsForCustomer(customer.id)).toHaveLength(0);
+  });
+
+  test("another firm's capture is refused, not re-entered", async () => {
+    const { rows } = await pg.query<{ id: string }>(
+      "insert into tenants (name) values ('re-entry-foreign-probe') returning id",
+    );
+    const foreign = await appendRawCapture({
+      tenantId: rows[0].id,
+      channel: 'phone_call',
+      rawText: 'not ours',
+    });
+    const customer = await createCustomer({ tenantId, name: 'Not Theirs' });
+    await expect(
+      recordFieldNote(
+        {
+          tenantId,
+          technicianRef: 'phone-line',
+          channel: 'phone_call',
+          text: 'not ours',
+          captureId: foreign.id,
+          resolved: { customerId: customer.id },
+        },
+        stub({}),
+      ),
+    ).rejects.toThrow(/not this firm/);
   });
 });

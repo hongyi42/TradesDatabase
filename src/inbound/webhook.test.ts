@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import {
   handleInboundWebhook,
@@ -138,6 +138,10 @@ function baseDeps(over: InboundWebhookDeps = {}): InboundWebhookDeps {
     recordDrop: dropRecorder().fn,
     getTechnician: async () => techRow(),
     flagReview: flagRecorder().fn,
+    // Hermetic by default: the live one reads the database, and every test here
+    // stubs its world.
+    alreadyProcessed: async () => false,
+    listThreadCaptures: async () => ({ messages: [], blockedMessageIds: [] }),
     ...over,
   };
 }
@@ -189,6 +193,39 @@ describe('handleInboundWebhook', () => {
       externalId: 'gmail-msg-1',
       occurredAt: '2026-06-02T08:30:00.000Z',
     });
+    // A payload without a thread id lands without the key — never `threadId: null`.
+    expect(rec.calls[0].sourceMeta).not.toHaveProperty('threadId');
+  });
+
+  // The conversation key reaches L1 (2026-09-07): the webhook copies threadId /
+  // to / labelIds from the envelope into the capture's metadata, under the same
+  // `threadId` the outbound capture uses, so a reply can be chained to what it
+  // answers. Without this the field was dropped before an append-only store.
+  test('threadId, to and labelIds ride into the L1 metadata when the payload carries them', async () => {
+    const raw = body({
+      data: {
+        message_id: 'gmail-msg-2',
+        sender: 'jane@homeowner.com',
+        subject: 'Re: AC repair',
+        message_text: 'yes, Friday works',
+        message_timestamp: '2026-06-03T08:30:00.000Z',
+        thread_id: 'gmail-msg-1',
+        to: 'office@firm.example',
+        label_ids: ['UNREAD', 'INBOX'],
+      },
+    });
+    const rec = recorder();
+    const result = await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
+    expect(result.status).toBe('ingested');
+    expect(rec.calls[0].sourceMeta).toMatchObject({
+      from: 'jane@homeowner.com',
+      subject: 'Re: AC repair',
+      threadId: 'gmail-msg-1',
+      to: 'office@firm.example',
+      labelIds: ['UNREAD', 'INBOX'],
+    });
+    // The body is NOT duplicated into metadata — it lives in raw_text.
+    expect(rec.calls[0].sourceMeta).not.toHaveProperty('body');
   });
 
   test('bare-uuid user_id (retired whole-business mode) → bad_payload, nothing called', async () => {
@@ -625,5 +662,282 @@ describe('pending_verification capture stamping', () => {
     const r2 = await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: active.fn }));
     expect(r2.status).toBe('ingested');
     expect(active.calls[0].sourceMeta).not.toHaveProperty('pendingVerification');
+  });
+});
+
+// RUNG 10B — THE CONVERSATION REACHES THE EXTRACTOR. A reply's own words are
+// often useless alone; the name and the number sit three messages up. Composio
+// first, our own captures as the fallback, and NEITHER may fail the ingest.
+describe('thread context (rung 10b)', () => {
+  let prevSecret: string | undefined;
+  beforeAll(() => {
+    prevSecret = process.env.COMPOSIO_WEBHOOK_SECRET;
+    process.env.COMPOSIO_WEBHOOK_SECRET = SECRET;
+  });
+  afterAll(() => {
+    if (prevSecret === undefined) delete process.env.COMPOSIO_WEBHOOK_SECRET;
+    else process.env.COMPOSIO_WEBHOOK_SECRET = prevSecret;
+  });
+
+  const reply = (over: Record<string, unknown> = {}) =>
+    body({
+      data: {
+        message_id: 'gmail-msg-2',
+        thread_id: 'thread-abc',
+        sender: 'jane@homeowner.com',
+        subject: 'Re: AC repair',
+        message_text: 'Friday afternoon instead?',
+        message_timestamp: '2026-06-03T08:30:00.000Z',
+        ...over,
+      },
+    });
+  const earlier = [
+    {
+      messageId: 'gmail-msg-1',
+      from: 'jane@homeowner.com',
+      to: 'office@firm.test',
+      subject: 'AC repair',
+      body: 'my number is 555-0199',
+      at: '2026-06-02T08:30:00.000Z',
+    },
+  ];
+  const fromL1 = { messages: earlier, blockedMessageIds: [] as string[] };
+  const paired = techRow({ composio_connected_account_id: 'ca_test' });
+
+  test('a thread STARTER fetches nothing — its thread id IS its own message id', async () => {
+    const raw = body({
+      data: {
+        message_id: 'gmail-msg-1',
+        thread_id: 'gmail-msg-1',
+        sender: 'jane@homeowner.com',
+        subject: 'AC repair',
+        message_text: 'unit still noisy',
+      },
+    });
+    const rec = recorder();
+    const fetchThread = vi.fn(async () => earlier);
+    const listThreadCaptures = vi.fn(async () => fromL1);
+    const result = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        recordFieldNote: rec.fn,
+        getTechnician: async () => paired,
+        fetchThread,
+        listThreadCaptures,
+      }),
+    );
+    expect(result.status).toBe('ingested');
+    expect(fetchThread).not.toHaveBeenCalled();
+    expect(listThreadCaptures).not.toHaveBeenCalled();
+    expect(rec.calls[0]).not.toHaveProperty('threadContext');
+  });
+
+  test('a REPLY fetches the thread once and hands it to the door, minus itself', async () => {
+    const raw = reply();
+    const rec = recorder();
+    const fetchThread = vi.fn(async () => [
+      ...earlier,
+      // The current message comes back in its own thread — it must not be shown
+      // to the model as context for itself.
+      { messageId: 'gmail-msg-2', from: null, to: null, subject: null, body: 'Friday?', at: null },
+    ]);
+    const result = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({ recordFieldNote: rec.fn, getTechnician: async () => paired, fetchThread }),
+    );
+    expect(result.status).toBe('ingested');
+    expect(fetchThread).toHaveBeenCalledTimes(1);
+    expect(rec.calls[0].threadContext).toEqual(earlier);
+  });
+
+  test('a FAILED fetch falls back to our own captures, and the mail still lands', async () => {
+    const raw = reply();
+    const rec = recorder();
+    const listThreadCaptures = vi.fn(async () => fromL1);
+    const result = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        recordFieldNote: rec.fn,
+        getTechnician: async () => paired,
+        fetchThread: async () => null,
+        listThreadCaptures,
+      }),
+    );
+    expect(result.status).toBe('ingested');
+    expect(listThreadCaptures).toHaveBeenCalledWith(TENANT, 'thread-abc');
+    expect(rec.calls[0].threadContext).toEqual(earlier);
+  });
+
+  test('an unpaired mailbox skips Composio entirely and reads L1', async () => {
+    const raw = reply();
+    const rec = recorder();
+    const fetchThread = vi.fn(async () => earlier);
+    await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        recordFieldNote: rec.fn,
+        getTechnician: async () => techRow(), // no connected account
+        fetchThread,
+        listThreadCaptures: async () => fromL1,
+      }),
+    );
+    expect(fetchThread).not.toHaveBeenCalled();
+    expect(rec.calls[0].threadContext).toEqual(earlier);
+  });
+
+  test('a redelivery the door will NO-OP on pays for no thread fetch', async () => {
+    // The fetch is BILLED, and a 503 makes Composio redeliver: without the
+    // pre-check the retry buys the same conversation again, every time.
+    const raw = reply();
+    const rec = recorder();
+    const fetchThread = vi.fn(async () => earlier);
+    const listThreadCaptures = vi.fn(async () => fromL1);
+    const result = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        recordFieldNote: async () => ({ status: 'duplicate', captureId: 'cap-1' }),
+        getTechnician: async () => paired,
+        alreadyProcessed: async () => true,
+        fetchThread,
+        listThreadCaptures,
+      }),
+    );
+    expect(result.status).toBe('duplicate');
+    expect(fetchThread).not.toHaveBeenCalled();
+    expect(listThreadCaptures).not.toHaveBeenCalled();
+    void rec;
+  });
+
+  test('a RETRACTED message is kept out even when Composio hands it back', async () => {
+    // Gmail knows nothing of our retractions, so the exclusion has to travel from
+    // OUR view of the thread onto the fetched one — otherwise a retraction holds
+    // only while Composio is down.
+    const raw = reply();
+    const rec = recorder();
+    const result = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        recordFieldNote: rec.fn,
+        getTechnician: async () => paired,
+        listThreadCaptures: async () => ({
+          messages: [],
+          blockedMessageIds: ['gmail-msg-1'],
+        }),
+        fetchThread: async () => earlier, // Gmail still returns the retracted one
+      }),
+    );
+    expect(result.status).toBe('ingested');
+    expect(rec.calls[0]).not.toHaveProperty('threadContext');
+  });
+
+  test('a fetched message with NO id is dropped — it cannot be ruled out', async () => {
+    // If it cannot be placed it might BE the message being read, and showing that
+    // as "earlier" would have the model treat a live commitment as one already
+    // handled: a promise nobody at the firm ever hears about.
+    const raw = reply();
+    const rec = recorder();
+    await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        recordFieldNote: rec.fn,
+        getTechnician: async () => paired,
+        fetchThread: async () => [
+          ...earlier,
+          { messageId: null, from: null, to: null, subject: null, body: 'unplaceable', at: null },
+        ],
+      }),
+    );
+    expect(rec.calls[0].threadContext).toEqual(earlier);
+  });
+
+  test('BOTH sources failing still ingests — context is an aid, never a condition', async () => {
+    const raw = reply();
+    const rec = recorder();
+    const result = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        recordFieldNote: rec.fn,
+        getTechnician: async () => paired,
+        fetchThread: async () => {
+          throw new Error('composio down');
+        },
+        listThreadCaptures: async () => {
+          throw new Error('database down');
+        },
+      }),
+    );
+    expect(result).toEqual({ status: 'ingested', captureId: 'cap-1' });
+    expect(rec.calls[0]).not.toHaveProperty('threadContext');
+  });
+});
+
+describe("the firm's own mailbox is not a caller's identity (rung 10b.2)", () => {
+  let prevSecret: string | undefined;
+  beforeAll(() => {
+    prevSecret = process.env.COMPOSIO_WEBHOOK_SECRET;
+    process.env.COMPOSIO_WEBHOOK_SECRET = SECRET;
+  });
+  afterAll(() => {
+    if (prevSecret === undefined) delete process.env.COMPOSIO_WEBHOOK_SECRET;
+    else process.env.COMPOSIO_WEBHOOK_SECRET = prevSecret;
+  });
+
+  const mail = (sender: string, to: string) =>
+    body({
+      data: {
+        message_id: `own-mailbox-${sender}-${to}`,
+        sender,
+        to,
+        subject: 'kitchen tap dripping',
+        message_text: 'my kitchen tap has been dripping for about a week',
+      },
+    });
+
+  // The live specimen, 2026-09-08: the pilot mailbox was mailed FROM the pilot
+  // mailbox, and the sender was offered as the caller's identity key. Stored on
+  // a customer, that address matches every later message the firm sends itself.
+  test('a SELF-SENT message offers no fallbackEmail', async () => {
+    const raw = mail('Hongyi <office@firm.test>', 'Hongyi <office@firm.test>');
+    const rec = recorder();
+    const result = await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
+    expect(result.status).toBe('ingested'); // the mail still LANDS — only the key is withheld
+    expect(rec.calls[0].fallbackEmail).toBeNull();
+  });
+
+  test('…and it is matched on the bare address, not the display name', async () => {
+    // Same mailbox, different display name and case: still ours.
+    const raw = mail('The Office <OFFICE@Firm.test>', 'Hongyi <office@firm.test>');
+    const rec = recorder();
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
+    expect(rec.calls[0].fallbackEmail).toBeNull();
+  });
+
+  test('a REAL sender is unchanged', async () => {
+    const raw = mail('Ruth Bramley <ruth@example.test>', 'Hongyi <office@firm.test>');
+    const rec = recorder();
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
+    expect(rec.calls[0].fallbackEmail).toBe('ruth@example.test');
+  });
+
+  test('no `to` at all leaves the sender as the key', async () => {
+    const raw = body({
+      data: {
+        message_id: 'no-to-header',
+        sender: 'Ruth <ruth@example.test>',
+        subject: 'tap',
+        message_text: 'still dripping',
+      },
+    });
+    const rec = recorder();
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
+    expect(rec.calls[0].fallbackEmail).toBe('ruth@example.test');
   });
 });

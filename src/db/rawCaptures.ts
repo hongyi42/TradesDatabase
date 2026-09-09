@@ -1,13 +1,14 @@
 import type { Database, Json } from './database.types.js';
 import { getClient } from './client.js';
 import { captureHasVisitNote } from './visits.js';
-import { captureHasJobCapture } from './jobs.js';
+import { captureHasJobCapture, TERMINAL_JOB_STATUSES } from './jobs.js';
 // CYCLE, deliberate and safe: observations.ts imports isUniqueViolation from
 // here. Both directions use only hoisted function declarations from inside
 // function bodies — nothing is read at module-evaluation time — so ESM's live
 // bindings resolve either load order. The alternative (a third module for the
 // SQLSTATE helpers) would touch every db importer to buy nothing.
 import { captureHasObservation } from './observations.js';
+import type { ThreadMessage } from '../email/format.js';
 
 export type RawCapture = Database['public']['Tables']['raw_captures']['Row'];
 export type CaptureChannel = Database['public']['Enums']['capture_channel'];
@@ -493,8 +494,29 @@ export async function listRawCapturesForCustomer(customerId: string): Promise<Ra
 //
 // Fleet-wide by capture id, like every other reader keyed on one: the caller
 // holds the ids, and the rows it gets back name the L2 they belong to.
+// RUNG 10B added two more kinds, because "nothing has been created" is not the
+// hole `inbound_unmatched` names. That one asks WHO CALLED, and it is answered
+// by the caller having been identified:
+//   'customer' — a customer row was created from this capture. `jobId` is null;
+//                `id` is the customer's.
+//   'link'     — the capture was recorded ONTO an existing job (`job_captures`),
+//                which is what LINKING a caller we already knew leaves behind.
+//                The link has no row id of its own — its primary key is
+//                (job_id, capture_id) — so `id` carries the job's, same as
+//                `jobId`.
+//   'note'      — the capture was attached to a live TRIP (`visit_notes`). The
+//                OTHER shape a link takes, and it is not interchangeable: when a
+//                job already has a visit the capture attaches to the visit and no
+//                `job_captures` row is written at all, so without this arm a
+//                reply landing on a booked job would cite nothing and its item
+//                could never become moot. `id` is the visit's, `jobId` the trip's
+//                job.
+// The two new kinds are NOT closers for `inbound_new_job` / `inbound_commitment`:
+// the door writes a `job_captures` link in the SAME call it raises those asks, so
+// counting it would close every one of them the moment it was raised. The
+// planner's moot fact is kind-aware for exactly that reason.
 export interface L2CitingCapture {
-  kind: 'job' | 'visit';
+  kind: 'job' | 'visit' | 'customer' | 'link' | 'note';
   id: string;
   captureId: string;
   jobId: string | null;
@@ -553,6 +575,382 @@ export async function listL2CitingCapture(captureIds: string[]): Promise<L2Citin
       }
       if (!data || data.length < PAGE) break;
     }
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('customers')
+        .select('id, source_capture_id')
+        .in('source_capture_id', slice)
+        .order('id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listL2CitingCapture failed on customers: ${error.message}`);
+      for (const row of data ?? []) {
+        if (row.source_capture_id) {
+          out.push({ kind: 'customer', id: row.id, captureId: row.source_capture_id, jobId: null });
+        }
+      }
+      if (!data || data.length < PAGE) break;
+    }
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('job_captures')
+        // The job's status comes through the embed: a link onto a CANCELLED job
+        // is no more an answer than a cancelled job itself is, and the two arms
+        // above drop those for the same reason.
+        .select('job_id, capture_id, jobs!inner(id, status)')
+        .in('capture_id', slice)
+        .order('job_id', { ascending: true })
+        .order('capture_id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listL2CitingCapture failed on job_captures: ${error.message}`);
+      for (const row of (data ?? []) as unknown as {
+        job_id: string;
+        capture_id: string;
+        jobs: { id: string; status: string } | null;
+      }[]) {
+        if (row.jobs && row.jobs.status !== 'cancelled') {
+          out.push({ kind: 'link', id: row.job_id, captureId: row.capture_id, jobId: row.job_id });
+        }
+      }
+      if (!data || data.length < PAGE) break;
+    }
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('visit_notes')
+        .select('capture_id, visits!inner(id, job_id, status)')
+        .in('capture_id', slice)
+        .order('capture_id', { ascending: true })
+        .order('visit_id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listL2CitingCapture failed on visit_notes: ${error.message}`);
+      for (const row of (data ?? []) as unknown as {
+        capture_id: string;
+        visits: { id: string; job_id: string; status: string } | null;
+      }[]) {
+        // Same rule as every arm above: a cancelled trip is not an answer.
+        if (row.visits && row.visits.status !== 'cancelled') {
+          out.push({
+            kind: 'note',
+            id: row.visits.id,
+            captureId: row.capture_id,
+            jobId: row.visits.job_id,
+          });
+        }
+      }
+      if (!data || data.length < PAGE) break;
+    }
   }
   return out;
+}
+
+// EVERY CUSTOMER (and, when it is unambiguous, the job) AN EMAIL THREAD ALREADY
+// TOUCHES — rung 10b's third identity key.
+//
+// A reply carries the thread id of the message it answers, so a conversation we
+// have already filed identifies its customer even when the reply itself carries
+// no phone number and no address. Not hypothetical: a known customer's
+// reschedule request was parked as a stranger on 2026-09-08 for exactly that
+// reason. The CALLER decides what the answer means — one distinct customer is a
+// match, two is a refusal (identityMatch's unique-or-refuse rule).
+//
+// TWO READS FOR THE CAPTURES, because the two ends of a thread spell the key
+// differently and neither is going to change: a thread STARTER is found by its
+// own message id (Gmail's convention — a starter's thread id IS its message id,
+// and `external_id` is where we store that), while every later message carries
+// the key in `metadata.threadId` (written by the inbound door since PR #213 and
+// by every assistant send).
+//
+// TENANT-CHECKED ON EVERY HOP: `capture_id`, `job_id` and `visit_id` are id-only
+// foreign keys, so a link of ours is no proof the row it points at is ours (the
+// listJobEvidenceSince doctrine). A direct `jobs` read rather than
+// listL2CitingCapture, which is fleet-wide by capture id and hands back no
+// customer — the customer is the whole answer here.
+export interface ThreadIdentity {
+  customerId: string;
+  jobId: string | null;
+}
+
+// BOUNDED, AND IT REFUSES RATHER THAN GUESSING WHEN THE BOUND IS HIT.
+//   * 150 captures — the id list goes into PostgREST `.in()` filters, and a long
+//     enough one builds a URL the server rejects outright with 414. The ceiling
+//     was BISECTED against this code's own widest read (the `visit_notes` embed,
+//     tenant filter and limit included): 215 ids = 8125 bytes passes, 218 = 8236
+//     bytes is a 414, so the wall is the 8192-byte URL limit. 150 leaves ~32%
+//     headroom, because UUIDs are fixed-width and nothing absorbs a later
+//     `.order()`, one more filter, or a wider select.
+//   * 500 rows on every read that fans out from those ids. NOT 1000, and that is
+//     the whole point: PostgREST's `max_rows` is 1000 (supabase/config.toml) and
+//     it CLAMPS a larger limit SILENTLY — no 206, no error — so a cap of 1000
+//     could never be observed to have been hit and the guard below would be
+//     decoration. 501 comes back as 501 rows, which is a fact we can act on.
+// A read that FILLS its cap has been silently truncated, and a truncated page can
+// leave exactly ONE customer standing when the whole thread names three. That is
+// the confident wrong match unique-or-refuse exists to prevent, so a filled cap
+// returns nothing at all and the next key gets its turn.
+const THREAD_CAPTURE_CAP = 150;
+const THREAD_ROW_CAP = 500;
+
+// A refusal is otherwise COMPLETELY SILENT: the caller cannot tell it from
+// "nobody is on this thread", so every reply on such a thread would quietly stop
+// matching with nothing anywhere saying why. One line, carrying no PII beyond
+// the thread id — a Gmail conversation handle that already sits in L1 metadata.
+function refuseThread(threadId: string, why: string): [] {
+  console.error(`findCustomersByThread: refusing thread ${threadId} — ${why}`);
+  return [];
+}
+
+export async function findCustomersByThread(
+  tenantId: string,
+  threadId: string,
+): Promise<ThreadIdentity[]> {
+  if (!threadId) return [];
+  const client = getClient();
+
+  const stamps: { customerId: string | null; jobId: string | null }[] = [];
+  const captureIds = new Set<string>();
+  for (const read of [
+    client
+      .from('raw_captures')
+      .select('id, customer_id, job_id')
+      .eq('tenant_id', tenantId)
+      .eq('external_id', threadId)
+      .limit(THREAD_CAPTURE_CAP + 1),
+    client
+      .from('raw_captures')
+      .select('id, customer_id, job_id')
+      .eq('tenant_id', tenantId)
+      .eq('metadata->>threadId', threadId)
+      .limit(THREAD_CAPTURE_CAP + 1),
+  ]) {
+    const { data, error } = await read;
+    if (error) throw new Error(`findCustomersByThread failed on raw_captures: ${error.message}`);
+    for (const row of data ?? []) {
+      if (captureIds.has(row.id)) continue;
+      captureIds.add(row.id);
+      stamps.push({ customerId: row.customer_id, jobId: row.job_id });
+    }
+  }
+  if (captureIds.size === 0) return [];
+  if (captureIds.size > THREAD_CAPTURE_CAP) {
+    return refuseThread(threadId, `more than ${THREAD_CAPTURE_CAP} captures — too many to answer safely`);
+  }
+  const ids = [...captureIds];
+
+  const jobIds = new Set<string>();
+  const stampedCustomerIds = new Set<string>();
+  // (a) What the capture itself was stamped with at append time (the
+  //     staged-confirm path stamps identity AT the insert). NEITHER id is taken
+  //     as it stands: `customer_id` and `job_id` are id-only foreign keys, so a
+  //     capture of ours can name another firm's row. The customer is re-read
+  //     under this tenant below; the job goes through the same tenant-scoped
+  //     resolution every other arm uses, which is also what applies the
+  //     terminal-job rule to it.
+  for (const stamp of stamps) {
+    if (stamp.customerId) stampedCustomerIds.add(stamp.customerId);
+    if (stamp.jobId) jobIds.add(stamp.jobId);
+  }
+  // (b) The capture LANDED on a job (rung 10's link-less shape).
+  {
+    const { data, error } = await client
+      .from('job_captures')
+      .select('job_id')
+      .eq('tenant_id', tenantId)
+      .in('capture_id', ids)
+      .limit(THREAD_ROW_CAP + 1);
+    if (error) throw new Error(`findCustomersByThread failed on job_captures: ${error.message}`);
+    if ((data?.length ?? 0) > THREAD_ROW_CAP) {
+      return refuseThread(threadId, 'over the job_captures row cap');
+    }
+    for (const row of data ?? []) jobIds.add(row.job_id);
+  }
+  // (c) The capture reported a TRIP — the visit names its job.
+  {
+    const { data, error } = await client
+      .from('visit_notes')
+      .select('visits!inner(id, tenant_id, job_id)')
+      .eq('tenant_id', tenantId)
+      .in('capture_id', ids)
+      .limit(THREAD_ROW_CAP + 1);
+    if (error) throw new Error(`findCustomersByThread failed on visit_notes: ${error.message}`);
+    if ((data?.length ?? 0) > THREAD_ROW_CAP) {
+      return refuseThread(threadId, 'over the visit_notes row cap');
+    }
+    for (const row of (data ?? []) as unknown as {
+      visits: { id: string; tenant_id: string; job_id: string } | null;
+    }[]) {
+      if (row.visits && row.visits.tenant_id === tenantId) jobIds.add(row.visits.job_id);
+    }
+  }
+  // (d) L2 rows CREATED from one of these captures. A customer with no job of
+  //     its own still answers "who is this", which is the question asked.
+  const pairs: ThreadIdentity[] = [];
+  {
+    const { data, error } = await client
+      .from('customers')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .in('source_capture_id', ids)
+      .limit(THREAD_ROW_CAP + 1);
+    if (error) throw new Error(`findCustomersByThread failed on customers: ${error.message}`);
+    if ((data?.length ?? 0) > THREAD_ROW_CAP) {
+      return refuseThread(threadId, 'over the customers row cap');
+    }
+    for (const row of data ?? []) pairs.push({ customerId: row.id, jobId: null });
+  }
+  {
+    const { data, error } = await client
+      .from('jobs')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .in('source_capture_id', ids)
+      .limit(THREAD_ROW_CAP + 1);
+    if (error) throw new Error(`findCustomersByThread failed on jobs: ${error.message}`);
+    if ((data?.length ?? 0) > THREAD_ROW_CAP) {
+      return refuseThread(threadId, 'over the jobs row cap');
+    }
+    for (const row of data ?? []) jobIds.add(row.id);
+  }
+  // The stamped customers, proved to be ours before they can answer anything.
+  if (stampedCustomerIds.size > 0) {
+    const { data, error } = await client
+      .from('customers')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .in('id', [...stampedCustomerIds])
+      .limit(THREAD_ROW_CAP + 1);
+    if (error) throw new Error(`findCustomersByThread failed on customers: ${error.message}`);
+    if ((data?.length ?? 0) > THREAD_ROW_CAP) {
+      return refuseThread(threadId, 'over the customers row cap');
+    }
+    for (const row of data ?? []) pairs.push({ customerId: row.id, jobId: null });
+  }
+
+  // Resolve every job this thread reached to its customer, chunked because the
+  // arms above can name more jobs than one `.in()` may carry. A TERMINAL job
+  // (paid, cancelled, declined) still answers WHO — the customer did not stop
+  // being that customer — but its id is dropped: handing it back as the job to
+  // file a reply on would put new work on a closed job AND swallow rung 10's
+  // ask, which only fires when the door found no job at all.
+  const jobList = [...jobIds];
+  for (let i = 0; i < jobList.length; i += THREAD_CAPTURE_CAP) {
+    const { data, error } = await client
+      .from('jobs')
+      .select('id, customer_id, status')
+      .eq('tenant_id', tenantId)
+      .in('id', jobList.slice(i, i + THREAD_CAPTURE_CAP))
+      .limit(THREAD_ROW_CAP + 1);
+    if (error) throw new Error(`findCustomersByThread failed on jobs: ${error.message}`);
+    if ((data?.length ?? 0) > THREAD_ROW_CAP) {
+      return refuseThread(threadId, 'over the jobs row cap');
+    }
+    for (const row of data ?? []) {
+      pairs.push({
+        customerId: row.customer_id,
+        jobId: TERMINAL_JOB_STATUSES.has(row.status) ? null : row.id,
+      });
+    }
+  }
+
+  const seen = new Set<string>();
+  return pairs.filter((pair) => {
+    const key = `${pair.customerId}|${pair.jobId ?? ''}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+// OUR OWN CAPTURES ON A THREAD, as messages — the FALLBACK when Composio cannot
+// hand us the conversation (a blip, a revoked account, a mailbox that never
+// paired). It is strictly weaker than the real thread: it holds only what
+// reached US, so a message the customer sent to somebody else, or one that
+// predates the pairing, is simply not there. That is still better than nothing,
+// and it costs no billed execution.
+//
+// The same two reads and the same caps as findCustomersByThread, for the same
+// reasons — see its header. `raw_text` is the STORAGE form (headers prepended by
+// formatEmailRawText), which is what the extractor already reads elsewhere.
+export interface ThreadFromL1 {
+  messages: ThreadMessage[];
+  // The Gmail message ids of captures on this thread that must NEVER be shown to
+  // the extractor — retracted, or manager_only. Returned SEPARATELY because the
+  // preferred source is Gmail itself, which knows nothing of either: without
+  // this, a retraction would hold only while Composio was down.
+  blockedMessageIds: string[];
+}
+
+export async function listCapturesByThread(
+  tenantId: string,
+  threadId: string,
+): Promise<ThreadFromL1> {
+  if (!threadId) return { messages: [], blockedMessageIds: [] };
+  const client = getClient();
+  // A READER, NOT A MATCHER — so it does NOT refuse on a full page. Truncation
+  // here costs context, not correctness (findCustomersByThread refuses because a
+  // truncated page there can leave one customer standing out of three). It asks
+  // for the NEWEST few directly instead of paging a busy thread's full text into
+  // memory on the ingest path: the renderer shows at most eight, and the caller
+  // drops the current message, so a handful of spares is the whole need.
+  const WANT = 16;
+  const seen = new Set<string>();
+  const rows: RawCapture[] = [];
+  for (const read of [
+    client
+      .from('raw_captures')
+      .select()
+      .eq('tenant_id', tenantId)
+      .eq('external_id', threadId)
+      .order('captured_at', { ascending: false })
+      .limit(WANT),
+    client
+      .from('raw_captures')
+      .select()
+      .eq('tenant_id', tenantId)
+      .eq('metadata->>threadId', threadId)
+      .order('captured_at', { ascending: false })
+      .limit(WANT),
+  ]) {
+    const { data, error } = await read;
+    if (error) throw new Error(`listCapturesByThread failed: ${error.message}`);
+    for (const row of (data ?? []) as RawCapture[]) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      rows.push(row);
+    }
+  }
+  if (rows.length === 0) return { messages: [], blockedMessageIds: [] };
+
+  // WHAT MUST NEVER BE SHOWN, the same two exclusions every other capture reader
+  // applies (listJobEvidenceSince):
+  //   * a RETRACTED capture — somebody marked it recorded in error, and the
+  //     write-path treats it as terminal precisely so it can never be rebuilt
+  //     from. Handing its words to the extractor as context would launder them
+  //     back into L2/L3 against the NEW capture, which is the same resurrection
+  //     by another road.
+  //   * `manager_only` — the extractor's output reaches technician-facing rows.
+  const visible = rows.filter((row) => row.sensitivity !== 'manager_only');
+  const kept = foldRetractions(visible, await findRetractionsFor(rows.map((row) => row.id)));
+  const keptIds = new Set(kept.map((row) => row.id));
+  const blockedMessageIds = rows
+    .filter((row) => !keptIds.has(row.id))
+    .map((row) => row.external_id)
+    .filter((id): id is string => !!id);
+  const messages = kept
+    .sort((a, b) => (a.captured_at < b.captured_at ? -1 : 1)) // oldest first, as read
+    .map((row) => {
+      const meta =
+        row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+          ? (row.metadata as Record<string, Json>)
+          : {};
+      const str = (key: string): string | null =>
+        typeof meta[key] === 'string' && meta[key] ? (meta[key] as string) : null;
+      return {
+        messageId: row.external_id,
+        from: str('from'),
+        to: str('to'),
+        subject: str('subject'),
+        body: row.raw_text ?? '',
+        at: row.captured_at,
+      };
+    });
+  return { messages, blockedMessageIds };
 }

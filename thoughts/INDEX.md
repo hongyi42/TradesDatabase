@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 220 documents · 209 live · 11 superseded.
+Regenerate with `npm run decisions:index`. 221 documents · 210 live · 11 superseded.
 
 ## Superseded — do not build on these
 
@@ -51,6 +51,7 @@ Regenerate with `npm run decisions:index`. 220 documents · 209 live · 11 super
 ## Live
 
 - `2026-09-08` `plan` [2026-09-08-rung-10b-the-new-caller](shared/plans/2026-09-08-rung-10b-the-new-caller.md) — Rung 10b — the new caller, built the 10d way. Two more identity keys (sender email, Gmail thread) so known cu…
+- `2026-09-08` `plan` [2026-09-08-the-citing-door-on-the-seat](shared/plans/2026-09-08-the-citing-door-on-the-seat.md) · _draft_ — give the manager seat a door that can cite the caller's own email, and close the two tool defects the live te…
 - `2026-09-08` `research` [2026-09-08-rung-10b-the-new-caller](shared/research/2026-09-08-rung-10b-the-new-caller.md) `landed` — Rung 10b — the new caller (and the mis-recognised known one). What happens today when a call or an email matc…
 - `2026-09-07` `research` [2026-09-07-email-thread-context-from-composio](shared/research/2026-09-07-email-thread-context-from-composio.md) `landed` — Can the spine see an email's whole reply chain? What Composio's Gmail trigger delivers (it carries `thread_id…
 - `2026-09-06` `plan` [2026-09-06-a-visit-carries-a-crew](shared/plans/2026-09-06-a-visit-carries-a-crew.md) — Rung 9c — a visit carries a crew: move the person off the visit row into visit_participants, relocate the dou…

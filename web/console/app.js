@@ -796,11 +796,9 @@ function toolbarHtml() {
     '<button type="button" class="icon-btn" data-step="-1" aria-label="Previous">‹</button>' +
     '<button type="button" class="icon-btn" data-step="1" aria-label="Next">›</button>' +
     '<h1 class="range-title">' + esc(title()) + '</h1>' +
-    // Always in the row, hidden when idle: a spinner that appears only while
-    // loading changes the toolbar's width, wraps it on a phone, and shoves
-    // the calendar down for the length of the fetch (user, 2026-09-08).
-    '<span class="spinner' + (state.loading ? '' : ' is-idle') + '" aria-label="Loading"' +
-    (state.loading ? '' : ' aria-hidden="true"') + '></span>' +
+    // NO loading spinner in the toolbar (user, 2026-09-09: "don't need the
+    // upper-right circle next to the maximize button"). A fetch takes long
+    // enough to notice only on a pull-to-refresh, which draws its own ring.
     (isManager()
       ? '<button type="button" class="icon-btn undo-btn" data-undo' +
         (state.undo.length ? '' : ' disabled') + '>' +
@@ -1726,7 +1724,7 @@ function turnPage(dir) {
 // reload's repaint cannot take it away mid-spin.
 const PULL_MAX = 72; // px the ring travels at most
 const PULL_ARM = 56; // px of travel that arms the reload
-const PULL_MIN_SHOW = 500; // ms the spin is shown even when the data is instant
+const PULL_MIN_SHOW = 260; // ms the spin is shown even when the data is instant
 let pullRing = null;
 function pullShow(canvas) {
   if (pullRing) pullRing.remove();
@@ -1768,10 +1766,12 @@ async function pullRelease(armed) {
     if (left > 0) await new Promise((res) => window.setTimeout(res, left));
     ring.classList.remove('is-loading');
   }
-  ring.style.transition = 'transform 200ms ease-in, opacity 200ms ease-in';
+  // Leaves fast (user, 2026-09-09: "disappear quicker") — the ring has said
+  // what it had to say by the time the data is back.
+  ring.style.transition = 'transform 130ms ease-in, opacity 130ms ease-in';
   ring.style.transform = 'translate(-50%,-40px)';
   ring.style.opacity = '0';
-  window.setTimeout(() => ring.remove(), 240);
+  window.setTimeout(() => ring.remove(), 160);
 }
 
 // The pinch pivots on the hour under the fingers: that hour stays where it

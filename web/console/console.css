@@ -1,0 +1,639 @@
+/* Dispatch console.
+   Colour lives in tokens on :root, redefined once for dark. The Telegram
+   webview supplies its own theme variables too, but they describe a chat, not
+   a dense grid — the console defines its own and only borrows the webview's
+   background so it does not sit on a mismatched ground. */
+
+:root {
+  --bg: #ffffff;
+  --bg-sunken: #f6f7f9;
+  --bg-raised: #ffffff;
+  --line: #e3e6ea;
+  --line-strong: #c9cfd6;
+  --ink: #1c2430;
+  --ink-soft: #5b6673;
+  --ink-faint: #8b95a1;
+  --accent: #1a73e8;
+  --accent-ink: #ffffff;
+  --danger: #c0392b;
+  --unassigned: #8b95a1;
+  --unassigned-tint: rgba(139, 149, 161, 0.16);
+  --today: rgba(26, 115, 232, 0.06);
+  --radius: 6px;
+  --gutter-w: 60px;
+  --rail-w: 268px;
+  --head-h: 46px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16191d;
+    --bg-sunken: #1c2026;
+    --bg-raised: #22272e;
+    --line: #2c333b;
+    --line-strong: #3a424c;
+    --ink: #e6eaef;
+    --ink-soft: #9aa5b1;
+    --ink-faint: #6d7783;
+    --accent: #5b9dff;
+    --accent-ink: #10161d;
+    --danger: #ef6c5a;
+    --unassigned: #6d7783;
+    --unassigned-tint: rgba(109, 119, 131, 0.22);
+    --today: rgba(91, 157, 255, 0.08);
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Height comes from Telegram's own viewport variable when the page runs inside
+   its webview: on a phone the Mini App opens as a sheet whose height is NOT the
+   window's, and 100vh there puts the toolbar under the sheet's top edge. Plain
+   browsers ignore the variable and fall back. */
+.booting {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--tg-viewport-stable-height, 100vh);
+  color: var(--ink-soft);
+}
+
+#app:focus { outline: none; }
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: var(--tg-viewport-stable-height, 100vh);
+  /* In FULLSCREEN (Bot API 8.0) Telegram draws its own close/back controls over
+     the top of the page; these two variables say how much of the top edge they
+     occupy. Zero everywhere else, so the padding costs nothing in a browser. */
+  padding-top: calc(var(--tg-safe-area-inset-top, 0px) + var(--tg-content-safe-area-inset-top, 0px));
+}
+.shell.rail-hidden .rail { display: none; }
+/* The tray toggle is always there: a hidden rail must have a way back at every
+   width, not only on the phone where it starts hidden. */
+.rail-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; }
+.rail-toggle.active { background: var(--bg-sunken); }
+/* The three bars, drawn in CSS so they take the button's text colour in both
+   themes and need no icon asset. */
+.bars {
+  display: inline-block; width: 16px; height: 12px;
+  background:
+    linear-gradient(currentColor, currentColor) 0 0 / 100% 2px no-repeat,
+    linear-gradient(currentColor, currentColor) 0 50% / 100% 2px no-repeat,
+    linear-gradient(currentColor, currentColor) 0 100% / 100% 2px no-repeat;
+}
+.rail-toggle .count { margin-left: 0; }
+
+/* ── Toolbar ───────────────────────────────────────────────────────────── */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-raised);
+  flex: none;
+}
+.range-title { font-size: 15px; font-weight: 600; margin: 0 4px; white-space: nowrap; }
+.toolbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.lbl-inline { color: var(--ink-soft); font-size: 12px; }
+
+.btn, .icon-btn, .seg {
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.icon-btn { padding: 4px 9px; font-size: 15px; line-height: 1; }
+.btn:hover, .icon-btn:hover, .seg:hover { background: var(--bg-sunken); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn:disabled, .icon-btn:disabled { opacity: 0.5; cursor: default; }
+
+.segmented { display: flex; }
+.segmented .seg { border-radius: 0; text-transform: capitalize; }
+.segmented .seg:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+.segmented .seg:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+.segmented .seg + .seg { border-left: none; }
+.segmented .seg.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+select, input[type="search"], input[type="text"], input[type="date"], input[type="time"],
+input[type="number"], input:not([type]) {
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 5px 8px;
+}
+select { text-transform: capitalize; }
+
+.spinner {
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid var(--line-strong); border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+/* Idle: keeps its slot in the toolbar so a fetch never shifts the layout. */
+.spinner.is-idle { visibility: hidden; animation: none; }
+
+/* ── Frame ─────────────────────────────────────────────────────────────── */
+.body { display: flex; flex: 1; min-height: 0; }
+
+.rail {
+  width: var(--rail-w);
+  flex: none;
+  border-right: 1px solid var(--line);
+  background: var(--bg-sunken);
+  overflow-y: auto;
+  padding: 10px;
+}
+.rail.is-over { outline: 2px dashed var(--accent); outline-offset: -6px; }
+.rail-section + .rail-section { margin-top: 18px; }
+.rail h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-soft); margin: 0 0 4px; }
+.rail-sub { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-faint); margin: 12px 0 4px; }
+.count { background: var(--line); border-radius: 9px; padding: 0 6px; margin-left: 4px; color: var(--ink); }
+.hint { color: var(--ink-faint); font-size: 11.5px; margin: 4px 0; }
+.empty { color: var(--ink-faint); font-size: 12px; padding: 8px 0; }
+
+/* Tray rows: one line each — glyph · customer/title · one fact. Priority is
+   the left border and the glyph, not a pill; the kind is the border colour on
+   parked visits (accent) vs jobs (their tier). Everything else is in the
+   tooltip and the right-click menu. */
+.tray-filter { width: 100%; margin: 2px 0 8px; }
+.rail-fold {
+  display: flex; align-items: center; gap: 4px;
+  cursor: pointer; user-select: none;
+}
+.rail-fold .count { margin-left: auto; }
+.fold-arrow { display: inline-block; width: 10px; color: var(--ink-faint); }
+.tray-item {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 4px 6px 4px 4px;
+  margin-bottom: 4px;
+  min-height: 38px;
+}
+.tray-visit { border-left-color: var(--accent); }
+.tray-job { border-left-color: var(--unassigned); }
+.tray-job.prio-emergency { border-left-color: #c0392b; }
+.tray-job.prio-urgent { border-left-color: #d97706; }
+.tray-job.prio-maintenance { border-left-color: #2e8b57; }
+.tray-glyph {
+  width: 10px; flex: none; text-align: center;
+  font-weight: 700; color: var(--ink-soft); font-size: 12px;
+}
+.glyph-late { color: var(--danger); }
+.tray-main { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.tray-who { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tray-what { color: var(--ink-soft); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tray-side { flex: none; display: flex; align-items: center; gap: 3px; }
+.fact { font-size: 11px; color: var(--ink-faint); white-space: nowrap; }
+.fact-late { color: var(--danger); font-weight: 600; }
+.chip-xs { width: 16px; height: 16px; font-size: 8px; }
+.count-alert { background: var(--danger); color: #fff; }
+.link-btn {
+  background: none; border: none; padding: 0;
+  color: var(--accent); cursor: pointer; font: inherit; font-size: 11.5px;
+}
+.show-more { display: block; margin: 0 0 8px 16px; }
+
+.roster { margin-top: 6px; }
+.roster-row, .crew-option {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 0; cursor: pointer;
+}
+
+.chip {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 50%;
+  color: #fff; font-size: 9.5px; font-weight: 700; letter-spacing: 0.02em;
+  flex: none;
+}
+.chip-none { background: var(--unassigned); }
+.chip-head { width: 22px; height: 22px; font-size: 10px; }
+
+.canvas {
+  flex: 1; overflow: auto; position: relative;
+  /* Touch: the browser keeps one-finger scrolling; a two-finger pinch is
+     OURS (the hour height), and a horizontal overscroll must not become the
+     webview's back gesture. */
+  touch-action: pan-x pan-y;
+  overscroll-behavior: contain;
+}
+.canvas-month { overflow: hidden; display: flex; }
+.horizon { padding: 8px 12px; }
+
+/* Pull to refresh: the ring drawn down from the top of the calendar. */
+.pull-ring {
+  position: fixed; z-index: 35;
+  width: 36px; height: 36px;
+  transform: translate(-50%, -40px); opacity: 0;
+  pointer-events: none;
+}
+.pull-ring-arc {
+  width: 32px; height: 32px; margin: 2px; box-sizing: border-box;
+  border-radius: 50%;
+  border: 3px solid var(--line-strong); border-top-color: var(--accent);
+  background: var(--bg-raised);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.pull-ring.is-armed .pull-ring-arc { border-color: var(--accent); border-top-color: var(--bg-raised); }
+.pull-ring.is-loading .pull-ring-arc {
+  border-color: var(--line-strong); border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+}
+
+/* The phone's line filler; nothing anywhere else. */
+.toolbar-fill { display: none; }
+
+/* ── Time grid (day + week) ────────────────────────────────────────────── */
+.grid-head {
+  display: flex;
+  position: sticky; top: 0; z-index: 3;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--line);
+  height: var(--head-h);
+}
+.gutter-head { width: var(--gutter-w); flex: none; }
+.col-head {
+  flex: 1 1 0; min-width: 96px;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  border-left: 1px solid var(--line);
+  font-weight: 600;
+}
+.col-head.is-today { background: var(--today); }
+.col-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.grid-body { display: flex; position: relative; }
+.gutter { width: var(--gutter-w); flex: none; position: relative; height: var(--band-height); }
+.hour-label {
+  position: absolute; right: 6px; transform: translateY(-50%);
+  color: var(--ink-faint); font-size: 11px; white-space: nowrap;
+}
+.hour-label:first-child { transform: none; }
+.col {
+  flex: 1 1 0; min-width: 96px;
+  position: relative;
+  border-left: 1px solid var(--line);
+}
+.col.is-today { background: var(--today); }
+.col.is-over { background: rgba(26, 115, 232, 0.07); }
+.hour-line { position: absolute; left: 0; right: 0; border-top: 1px solid var(--line); }
+
+.card {
+  position: absolute;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--unassigned);
+  border-radius: 4px;
+  padding: 2px 5px;
+  overflow: hidden;
+  font-size: 11.5px;
+  cursor: default;
+}
+.card.draggable { cursor: grab; }
+.card.is-dragging, .month-chip.is-dragging, .tray-item.is-dragging { opacity: 0.4; }
+/* History: a completed trip keeps its colour (so "who did it" still reads)
+   but fades and desaturates so it cannot pass for work still to do. */
+.card.is-done, .month-chip.is-done {
+  opacity: 0.55;
+  filter: grayscale(0.7);
+  cursor: default;
+}
+.done-mark { font-weight: 700; margin-right: 3px; color: var(--ink); }
+.card-time { color: var(--ink-soft); font-size: 10.5px; }
+.card-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-sub { color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-crew { display: flex; gap: 2px; margin-top: 2px; }
+.card-crew .chip { width: 16px; height: 16px; font-size: 8px; }
+
+.drop-hint {
+  position: absolute; left: 2px; right: 2px;
+  border: 2px dashed var(--accent);
+  border-radius: 4px;
+  background: rgba(26, 115, 232, 0.1);
+  color: var(--accent);
+  font-size: 10.5px;
+  padding: 1px 4px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* ── Month ─────────────────────────────────────────────────────────────── */
+.grid-month { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.month-head { display: grid; grid-template-columns: repeat(7, 1fr); border-bottom: 1px solid var(--line); }
+.month-dow { padding: 6px; text-align: center; font-size: 11px; text-transform: uppercase; color: var(--ink-soft); }
+.month-body {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  grid-auto-rows: 1fr;
+  flex: 1;
+  min-height: 0;
+}
+.month-cell {
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 3px;
+  overflow: hidden;
+  min-height: 0;
+}
+.month-cell.is-outside { background: var(--bg-sunken); color: var(--ink-faint); }
+.month-cell.is-today { background: var(--today); }
+.month-cell.is-over { background: rgba(26, 115, 232, 0.1); }
+.month-date { font-size: 11px; color: var(--ink-soft); text-align: right; padding-right: 2px; }
+.month-chip {
+  border-left: 3px solid var(--unassigned);
+  border-radius: 3px;
+  padding: 1px 4px;
+  margin-bottom: 2px;
+  font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.month-chip.draggable { cursor: grab; }
+.month-chip-time { color: var(--ink-soft); }
+.month-more { font-size: 10.5px; color: var(--ink-faint); padding-left: 4px; }
+
+/* ── The small tree: a day as a list, a month as dots ──────────────────── */
+.canvas-list { overflow: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y; }
+.list-day { padding: 8px 10px 28px; }
+.list-head { display: flex; align-items: center; gap: 8px; margin: 4px 0 10px; }
+.list-count { color: var(--ink-soft); font-size: 12px; flex: 1; }
+.list-group { margin-bottom: 14px; }
+.list-who { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 0 0 6px; }
+.list-empty { padding: 20px 4px; }
+.card.list-card {
+  position: static;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; margin-bottom: 6px;
+  font-size: 13px; min-height: 52px;
+  border-left-width: 4px;
+}
+.list-time { font-weight: 600; white-space: nowrap; min-width: 96px; }
+.list-main { flex: 1; min-width: 0; }
+.list-card .card-crew { margin-top: 0; flex: none; }
+.list-card .card-crew .chip { width: 22px; height: 22px; font-size: 10px; }
+.mini-month { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; padding: 8px; }
+.mini-dow { text-align: center; font-size: 11px; text-transform: uppercase; color: var(--ink-soft); padding: 4px 0; }
+.mini-cell {
+  font: inherit; color: inherit; text-align: left;
+  aspect-ratio: 1 / 1.15;
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 4px; display: flex; flex-direction: column;
+  cursor: pointer; background: var(--bg-raised);
+}
+.mini-cell.is-outside { background: var(--bg-sunken); color: var(--ink-faint); }
+.mini-cell.is-today { background: var(--today); border-color: var(--accent); }
+.mini-date { font-size: 12px; align-self: flex-end; }
+.mini-dots { display: flex; gap: 3px; flex-wrap: wrap; margin-top: auto; align-items: center; }
+.mini-dot { width: 7px; height: 7px; border-radius: 50%; }
+.mini-more { font-size: 10px; color: var(--ink-faint); }
+
+/* ── Modal ─────────────────────────────────────────────────────────────── */
+.modal-host { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; }
+.modal-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.42); }
+.modal {
+  position: relative;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  width: min(520px, calc(100vw - 24px));
+  max-height: calc(100vh - 48px);
+  display: flex; flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+}
+.modal-head { display: flex; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.modal-head h2 { font-size: 15px; margin: 0; flex: 1; }
+.modal-body { padding: 14px; overflow-y: auto; }
+.modal-foot { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 14px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.modal.confirm { max-width: 420px; }
+/* Every centred window grows out of the centre and shrinks back into it
+   (user, 2026-09-08). The host is marked is-closing by retireHost() and
+   removed when the shrink ends. */
+.modal-host .modal { animation: modal-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+.modal-host .modal-backdrop { animation: scrim-in 200ms ease-out; }
+.modal-host.is-closing { pointer-events: none; }
+.modal-host.is-closing .modal { animation: modal-out 150ms ease-in forwards; }
+.modal-host.is-closing .modal-backdrop { animation: scrim-out 150ms ease-in forwards; }
+.confirm-text { margin: 0; line-height: 1.4; }
+.modal-error {
+  background: rgba(192, 57, 43, 0.12);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  white-space: pre-wrap;
+}
+.field-group + .field-group { margin-top: 16px; }
+.field-group h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-soft); margin: 0 0 6px; }
+.field-group input, .field-group select { width: 100%; margin-bottom: 6px; }
+.field-group .row { display: flex; gap: 6px; }
+.field-group .row input { width: auto; flex: 1; }
+/* The crew tick list in the Move… / Book… form. */
+.crew-pick {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 240px; overflow-y: auto;
+  border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 4px;
+}
+.crew-opt {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 6px; min-height: 34px;
+  border-radius: var(--radius); cursor: pointer;
+}
+.crew-opt:hover { background: var(--bg-sunken); }
+.field-group .crew-opt input { width: 18px; height: 18px; margin: 0; flex: none; accent-color: var(--accent); }
+.crew-opt .chip { width: 22px; height: 22px; font-size: 10px; flex: none; }
+.crew-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crew-hint { margin: 6px 0 0; }
+.lbl { display: block; font-size: 11.5px; color: var(--ink-soft); margin: 6px 0 2px; }
+.check { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.check input { width: auto; margin: 0; }
+.tabs-inline { display: flex; gap: 4px; margin-bottom: 8px; }
+.tab-inline {
+  font: inherit; padding: 4px 10px; cursor: pointer;
+  background: var(--bg-sunken); border: 1px solid var(--line-strong);
+  border-radius: 999px; color: var(--ink);
+}
+.tab-inline.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.results { max-height: 190px; overflow-y: auto; }
+.result {
+  display: block; width: 100%; text-align: left;
+  background: var(--bg-raised); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 6px 8px; margin-bottom: 4px;
+  font: inherit; color: var(--ink); cursor: pointer;
+}
+.result:hover { background: var(--bg-sunken); }
+.result-sub { display: block; color: var(--ink-soft); font-size: 11.5px; }
+.chosen { background: var(--bg-sunken); border-radius: var(--radius); padding: 6px 8px; font-weight: 600; }
+.crew-picker { display: flex; flex-direction: column; gap: 2px; }
+.crew-option input { width: auto; margin: 0; }
+.detail { display: grid; grid-template-columns: 88px 1fr; gap: 4px 10px; margin: 0; }
+.detail dt { color: var(--ink-soft); }
+.detail dd { margin: 0; }
+
+/* ── Context menu + toast ──────────────────────────────────────────────── */
+.ctx-menu {
+  position: fixed; z-index: 50;
+  background: var(--bg-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  padding: 4px;
+  min-width: 190px;
+}
+.ctx-menu button {
+  display: block; width: 100%; text-align: left;
+  font: inherit; color: var(--ink); background: none; border: none;
+  padding: 6px 10px; border-radius: 4px; cursor: pointer;
+}
+.ctx-menu button:hover:not(:disabled) { background: var(--bg-sunken); }
+/* :disabled must win over .danger — same specificity, so the danger rule is
+   narrowed instead of relying on order (a disabled Cancel read as live). */
+.ctx-menu button:disabled { color: var(--ink-faint); cursor: default; }
+.ctx-menu button.danger:not(:disabled) { color: var(--danger); }
+
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  /* Clear the phone's home bar / Telegram's bottom inset. */
+  bottom: calc(20px + var(--tg-safe-area-inset-bottom, 0px));
+  z-index: 60;
+  background: var(--ink); color: var(--bg);
+  border-radius: 999px; padding: 8px 16px;
+  max-width: min(560px, calc(100vw - 32px));
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+.toast-error { background: var(--danger); color: #fff; border-radius: 10px; }
+.toast-action {
+  font: inherit; font-weight: 600;
+  margin-left: 14px; padding: 2px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.45); border-radius: 999px;
+  background: transparent; color: inherit; cursor: pointer;
+}
+.toast-action:hover { background: rgba(255, 255, 255, 0.15); }
+.undo-btn { display: inline-flex; align-items: center; gap: 4px; }
+.undo-btn .count { font-size: 10.5px; color: var(--ink-soft); }
+.undo-btn .count:empty { display: none; }
+[hidden] { display: none !important; }
+
+/* THREE WIDTHS, because "narrow" is two different things here:
+   - a Telegram Desktop popup that has not gone fullscreen (~420-900px): still
+     a desk, still a mouse. Keep the rail BESIDE the grid, just slimmer.
+   - a phone (<600px): the rail and the grid cannot share the height, so the
+     tray becomes a drawer (the toolbar's Tray button) and the grid gets the
+     screen. The console is a manager's wide-screen tool — this keeps it
+     usable on a phone, not equivalent. */
+@media (max-width: 900px) {
+  :root { --rail-w: 212px; --gutter-w: 48px; }
+  .col-head, .col { min-width: 84px; }
+  .lbl-inline { display: none; }
+  .toolbar { gap: 6px; padding: 6px 8px; }
+}
+.rail-scrim { display: none; }
+@media (max-width: 600px) {
+  .body { flex-direction: column; }
+  /* On a phone the tray is a BOTTOM SHEET: it slides up over the day rather
+     than pushing it down from the top (user, 2026-09-08). The list keeps its
+     full height; a tap on the scrim, or the ≡ button, puts the sheet away. */
+  .rail {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    width: auto; max-height: 62vh;
+    border-right: none; border-top: 1px solid var(--line-strong);
+    border-radius: 14px 14px 0 0;
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.25);
+    padding-bottom: calc(12px + var(--tg-safe-area-inset-bottom, 0px));
+    z-index: 30;
+  }
+  .rail::before {
+    content: ''; display: block; width: 36px; height: 4px; border-radius: 2px;
+    background: var(--line-strong); margin: 2px auto 10px;
+  }
+  .rail-scrim { display: block; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.28); z-index: 29; }
+  /* The sheet SLIDES (user, 2026-09-08): up on the paint that opens it; down
+     as a detached clone on the paint that closes it, because that paint has
+     already rebuilt the DOM. */
+  .rail.sheet-enter { animation: sheet-up 260ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+  .rail-scrim.scrim-enter { animation: scrim-in 260ms ease-out; }
+  .rail.sheet-leave { animation: sheet-down 220ms ease-in forwards; pointer-events: none; }
+  .rail-scrim.scrim-leave { animation: scrim-out 220ms ease-in forwards; pointer-events: none; }
+  /* THREE rows (user, 2026-09-08: "all of them on the same line", then
+     "the filter on a new line below"): the date, with the spinner and the
+     fullscreen toggle at its right; tray, Today, ‹, ›, ↶ and Day|Month on
+     ONE line, each stretched so the row fills the width; colour-by alone,
+     full width, below. The pseudo-elements are the forced breaks. */
+  .toolbar { flex-wrap: wrap; gap: 4px; row-gap: 6px; padding: 6px 8px; }
+  .toolbar::before, .toolbar::after { content: ''; display: block; width: 100%; height: 0; }
+  .toolbar::before { order: -1; }
+  .toolbar::after { order: 7; }
+  .range-title, .toolbar > .spinner, .toolbar [data-fullscreen] { order: -2; }
+  .range-title { flex: 1 1 auto; min-width: 0; font-size: 14px; margin: 0; overflow: hidden; text-overflow: ellipsis; }
+  .toolbar > .spinner { margin: 0 0 0 4px; }
+  .toolbar-right { display: contents; }
+  /* Same size (user, 2026-09-08): Today, ‹, ›, ↶, Day and Month are six
+     equal units of the row — flex-basis 0 with the SAME padding and border,
+     because flex grows content boxes and a unit's padding sits on top (a
+     segment with grow 2 and no padding came out 20px short of two units).
+     So the segment dissolves (display: contents) and Day and Month stand
+     as two rounded buttons like the rest. All 34px tall; the tray keeps
+     its natural width for the badge. */
+  .toolbar > .btn, .toolbar > .icon-btn:not([data-fullscreen]), .segmented .seg {
+    height: 34px; box-sizing: border-box;
+    padding: 0 4px; min-width: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px;
+  }
+  .toolbar > .btn, .toolbar > .icon-btn:not([data-fullscreen]):not(.rail-toggle):not([data-step]):not([data-undo]), .segmented .seg { flex: 1 1 0; }
+  .toolbar-right > .segmented { display: contents; }
+  .toolbar .segmented .seg:first-child, .toolbar .segmented .seg:last-child { border-radius: var(--radius); }
+  /* The base `border-left: none` also reset the colour to currentcolor. */
+  .toolbar .segmented .seg + .seg { border-left: 1px solid var(--line-strong); }
+  .toolbar .segmented .seg + .seg.active { border-left-color: var(--accent); }
+  .toolbar > .rail-toggle { flex: 0 0 auto; gap: 4px; padding: 0 6px; }
+  /* The filter line a little tighter (user, 2026-09-08): 30px tall, less
+     side padding; ↶ matches so the line stays level. */
+  .toolbar-right > select { order: 8; flex: 1 1 auto; min-width: 0; font-size: 12.5px; height: 30px; padding-top: 0; padding-bottom: 0; padding-left: 6px; }
+  /* ‹ Today ›, then ↶, then a breath, then Day Month (user, 2026-09-08). */
+  /* ‹ and › at a THIRD of a unit (user, 2026-09-08: half, then "more
+     tight"): a third of the grow, no padding, and a basis standing in for
+     a third of a unit's 10px of padding and border. */
+  .toolbar > .icon-btn[data-step] { flex: 0.34 1 3px; padding: 0; }
+  .toolbar > [data-step="-1"] { order: 1; }
+  .toolbar > [data-today] { order: 2; }
+  .toolbar > [data-step="1"] { order: 3; }
+  /* ↶ lives on the filter's line, at its right, 40px wide (two thirds of a
+     unit on a 411px phone) with a breath between (user, 2026-09-08). */
+  .toolbar > .icon-btn[data-undo] { order: 9; flex: 0 0 40px; margin-left: 8px; height: 30px; }
+  /* Day and Month at HALF a unit, in place (user, 2026-09-08: "shrink to
+     half, don't move or resize anything else"): half the grow, no padding,
+     a 5px basis for half of a unit's padding and border — and the spacer
+     after them takes exactly the grow they gave up, so Today and the
+     arrows keep their width and the slack sits at the right end. */
+  /* ...and (user, next) Day and Month sit at the RIGHT end: the spacer goes
+     before them, so the slack is between › and Day. */
+  .segmented .seg { order: 6; flex: 0.5 1 5px; padding: 0; font-size: 11.5px; }
+  .toolbar .segmented .seg:first-child { margin-left: 8px; }
+  .toolbar-fill { display: block; order: 5; flex: 1 1 10px; min-width: 0; height: 0; }
+}
+@keyframes sheet-up { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes sheet-down { from { transform: none; } to { transform: translateY(100%); } }
+@keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes scrim-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes modal-in { from { transform: scale(0.6); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes modal-out { from { transform: none; opacity: 1; } to { transform: scale(0.6); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .sheet-enter, .scrim-enter, .sheet-leave, .scrim-leave,
+  .modal-host .modal, .modal-host .modal-backdrop { animation: none; }
+}

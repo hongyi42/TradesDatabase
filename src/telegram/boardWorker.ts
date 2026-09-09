@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { recordHeartbeat } from '../db/workerHeartbeats.js';
-import { setBoardMenuButton } from './boardBot.js';
+import { consoleMenuChatIds, setBoardMenuButton, setConsoleMenuButtonFor } from './boardBot.js';
 import { pollOnce } from './boardNotify.js';
 
 // The board worker — a SEPARATE long-lived process (`npm run board:worker`,
@@ -14,6 +14,14 @@ import { pollOnce } from './boardNotify.js';
 export async function startBoardWorker(): Promise<void> {
   await setBoardMenuButton();
   console.error('board worker: menu button set — board launchable from every started chat');
+  // Then, for the named few only, override that button with the console. Order
+  // matters: the default is set first, so a chat dropped from the list falls
+  // back to the board on the next restart rather than to nothing.
+  const consoleChats = consoleMenuChatIds();
+  if (consoleChats.length) {
+    await setConsoleMenuButtonFor(consoleChats);
+    console.error(`board worker: console button set for ${consoleChats.length} chat(s)`);
+  }
   // Garbage/empty BOARD_POLL_MS must not become setTimeout(0) — a Render env
   // typo would otherwise turn the 30s poll into a hot loop against the DB.
   const rawMs = Number(process.env.BOARD_POLL_MS);

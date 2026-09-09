@@ -24,6 +24,7 @@ import { recordHostMetrics } from '../db/hostMetrics.js';
 import { notifyOpsTransition } from '../telegram/opsNotify.js';
 import { handleComposioRelay, isRelayPath } from '../composio/relayHandler.js';
 import { handleBoardRequest, isBoardPath } from '../telegram/boardApi.js';
+import { handleConsoleRequest, isConsolePath } from '../console/consoleApi.js';
 import { handleAdminRequest, isAdminPath } from '../admin/adminApi.js';
 
 // Central HTTP entrypoint (Architecture A). Every NemoClaw bot reaches this one
@@ -796,6 +797,40 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         }
       }
       await handleBoardRequest(req, res, boardBody);
+      return;
+    }
+    // Dispatch CONSOLE — the wide desktop schedule surface, standing beside the
+    // board while it is built (src/console/consoleApi.ts). Same pre-allowlist
+    // placement and same body cap for the same reasons: it is another Mini App
+    // authenticating itself with initData, so its traffic is public-browser
+    // traffic and its POST bodies are read before auth runs. It is
+    // DEFAULT-OFF — without CONSOLE_ENABLED the handler 404s every path — so
+    // mounting it here does not expose it.
+    if (isConsolePath(req.url)) {
+      let consoleBody = '';
+      if (req.method === 'POST') {
+        const CONSOLE_BODY_CAP = 64 * 1024;
+        const declared = Number(req.headers['content-length']);
+        if (Number.isFinite(declared) && declared > CONSOLE_BODY_CAP) {
+          res.writeHead(413);
+          res.end();
+          req.destroy();
+          return;
+        }
+        try {
+          consoleBody = await readRawBody(req, CONSOLE_BODY_CAP);
+        } catch (err) {
+          if ((err as { code?: string }).code === 'BODY_TOO_LARGE') {
+            if (!res.headersSent) {
+              res.writeHead(413);
+              res.end();
+            }
+            return;
+          }
+          throw err;
+        }
+      }
+      await handleConsoleRequest(req, res, consoleBody);
       return;
     }
     // Operator cost dashboard — routed BEFORE the IP allowlist for the same

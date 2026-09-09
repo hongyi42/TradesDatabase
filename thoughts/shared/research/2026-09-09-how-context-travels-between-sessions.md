@@ -202,7 +202,7 @@ area:
 |---|---|---|---|---|
 | `SessionStart` | session begins or resumes | `startup` / `resume` / `clear` / `compact` / `fork` | no | yes, under `hookSpecificOutput` |
 | `UserPromptSubmit` | before Claude processes a prompt | none | yes | yes; plain stdout is also added as context |
-| `PreCompact` | before compaction | `manual` / `auto` | yes (prevents compaction) | yes |
+| `PreCompact` | before compaction | `manual` / `auto` | yes (prevents compaction; `decision: "block"` or exit 2) | **no** — corrected 2026-09-09 after plan review: the docs give `PreCompact` only `decision`/`reason`; `systemMessage` is discarded |
 | `PostCompact` | after compaction | `manual` / `auto` | no | output and exit code discarded |
 | `Stop` | Claude finishes responding | none | yes (keeps going) | yes; input carries `last_assistant_message`, `turn_count` |
 | `SessionEnd` | session terminates | `clear` / `resume` / `logout` / `prompt_input_exit` / `other` | no | output ignored; 1.5 s shared budget |
@@ -331,9 +331,9 @@ branches and objects are visible from every worktree, which is what lets
    Questions, plan prose, session memory, engineering memory), none with status or file links
    the generator reads. The fork is whether such items become a new document kind the generator
    walks, a section it learns to parse, or stay prose.
-5. **Which event carries state across compaction.** `PreCompact` (can inject `additionalContext`
-   and can block), `SessionStart` with matcher `compact` (can inject, cannot block), `PostCompact`
-   (output discarded), or none, as today. Any of them would be the repo's first hook on those
+5. **Which event carries state across compaction.** `PreCompact` (can block only; it cannot
+   inject context — corrected 2026-09-09), `SessionStart` with matcher `compact` (can inject,
+   cannot block), `PostCompact` (output discarded), or none, as today. Any of them would be the repo's first hook on those
    events; the user-level hooks already occupy `SessionStart` for pixel-agents and run in
    parallel with repo hooks.
 6. **How a worktree session gets memory.** cwd-keyed memory means a worktree session starts

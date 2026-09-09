@@ -49,6 +49,8 @@ verbs. Spawn and symbol overlap are the second plan.
 - **Worktree sessions get a memory pointer, not the file** — `MEMORY.md` is 17,550 chars and hook
   output caps at 10,000 (docs; reviewer catch): packet + path + titles-only trim under 9,000 chars.
 - **Task id** — `YYYYMMDD-<slug>` (collision appends `-2`).
+- **Live probes run in the implementation worktree, never a sibling** — the first draft probed
+  `rung-9b`, which a live session occupies; dirtying a sibling is the collision this plan ends.
 
 ## Plain-language walkthrough
 
@@ -144,9 +146,9 @@ that task and nothing for the main checkout; `board` shows both with `behind/ahe
 
 ### Live verification (agent-executable)
 - Prerequisites: none beyond the repo. Use the main checkout's script by absolute path.
-- [ ] A fresh-context subagent runs `node /Users/hongyihe/GitHub/TradesDatabase/scripts/work.mjs park --title "probe" --files src/db/jobs.ts`
-      from inside `.claude/worktrees/rung-9b`, then `npm run board` from the main checkout, and
-      reports the `rung-9b` board row and the task row verbatim; then `drop`s the task.
+- [ ] A fresh-context subagent runs `node <main>/scripts/work.mjs park --title "probe" --files src/db/jobs.ts`
+      from inside **this implementation worktree**, then `npm run board`, and reports that
+      worktree's board row and the task row verbatim; then `drop`s the task.
 
 ### Manual verification — none
 
@@ -195,7 +197,7 @@ reusing (a)'s `session_id` → empty (marker). All assert the `hookSpecificOutpu
 
 ### Live verification (agent-executable)
 - Prerequisites: none.
-- [ ] A fresh-context subagent, working in `.claude/worktrees/rung-9b`, appends a comment to
+- [ ] A fresh-context subagent, working in **this implementation worktree**, appends a comment to
       `src/db/rawCaptures.ts` and reports verbatim whether it received a "Decisions on record"
       context block (hooks run inside subagents, docs §Hooks). Expected: yes. Then reverts.
 
@@ -247,8 +249,8 @@ nothing; `handoff` appends a section and bumps `updated`.
 
 ### Live verification (agent-executable)
 - Prerequisites: none.
-- [ ] A fresh-context subagent claims a probe task in `.claude/worktrees/rung-9b` (absolute script
-      path), writes a handoff via `handoff --body -`, runs `packet --for-session --cwd <that worktree>`,
+- [ ] A fresh-context subagent claims a probe task in **this implementation worktree** (absolute
+      script path), writes a handoff via `handoff --body -`, runs `packet --for-session --cwd <it>`,
       and reports that the output contains the handoff text and the memory path; then drops it.
 
 ### Manual verification

@@ -530,6 +530,13 @@ export async function untimeVisitRow(id: string, reason: string): Promise<Visit>
     .update({ starts_at: null, ends_at: null, reason }) // updated_at: DB trigger
     .eq('id', id)
     .eq('status', old.status) // the jobs.ts CAS: a concurrent flip surfaces
+    // ...and on the TIME too, which the house CAS does not do. Every other
+    // verb overwrites a time with another time, so a lost update is
+    // recoverable; this one overwrites it with NULL and the clock time then
+    // exists nowhere. Without it, A's untime of a 10:00 visit silently erases
+    // B's concurrent move to 14:00, and the ledger records the wrong day
+    // (review finding 2026-09-09).
+    .eq('starts_at', old.starts_at)
     .select()
     .maybeSingle();
   if (error) {
@@ -537,7 +544,8 @@ export async function untimeVisitRow(id: string, reason: string): Promise<Visit>
   }
   if (!data) {
     throw new Error(
-      `untimeVisitRow: visit ${id} changed concurrently (was '${old.status}'); not applied`,
+      `untimeVisitRow: visit ${id} changed concurrently (was '${old.status}' at ` +
+        `${old.starts_at ?? 'no time'}); not applied`,
     );
   }
   return data;

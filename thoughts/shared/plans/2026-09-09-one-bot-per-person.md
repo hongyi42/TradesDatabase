@@ -114,6 +114,43 @@ Wire every seat, configure each Main Mini App, watch for a week, then retire `@D
 drop the HMAC fallback from `verifySlip`. `CONSOLE_MENU_CHAT_IDS` and `setConsoleMenuButtonFor` in
 `boardBot.ts` become dead code at that point.
 
+## Review pass (2026-09-09, before the branch was pushed)
+
+An adversarial read of the commit found the cryptography correct — the
+data-check-string, the base64url decode, the 64-byte guard and both pinned keys
+all match Telegram's spec byte for byte — and no path that reaches a trusted
+state without a verified stamp. Four findings in the plumbing around it, all
+fixed here:
+
+- **The pinned key was env-overridable.** `TELEGRAM_INITDATA_PUBLIC_KEY` fed
+  straight into the live check, so one environment variable could replace the
+  trust anchor for every identity on the service: generate a keypair, set the
+  public half, sign a slip for any user id, and be that manager. Worse than the
+  bot token this scheme exists to avoid holding, because a swapped key is silent
+  and revokes nothing. The override is gone; a suite swaps the key through
+  `setPublicKeyForTests()`, which the environment cannot reach. `TELEGRAM_ENV`
+  still selects between Telegram's own two keys, which forges nothing — a slip
+  must still be signed for a bot id on our allowlist.
+- **`wire-bot` skipped its own cross-check for handle-less seats.** A seat
+  registered without `bot=` had nothing to compare `getMe` against, so the wrong
+  token bound silently: that seat's real bot would never be allowlisted, and the
+  wrongly-recorded bot would outlive its own retirement through the other seat's
+  live row. It now records the handle `getMe` returns, so a re-run can be
+  checked, and says out loud that this one could not be.
+- **`setSandboxBotId` wrote by `(tenant, sandbox_ref)` while the table is unique
+  on `(host_id, sandbox_ref)`.** Two hosts on one tenant can both own an `s1`, so
+  the row validated and the row written were not necessarily the same. It takes
+  `hostId` now, and `wire-bot` passes it.
+- **The allowlist had no staleness ceiling.** A bot revoked during a database
+  outage stayed a door for the whole outage. Past 30 minutes without a good read
+  the list falls back to the board bot alone — the pre-merge posture.
+
+Two findings recorded rather than fixed: the Ed25519 fan-out is linear in the
+number of seats on an unrated public route (negligible at pilot scale, and
+inherent, since Telegram does not carry the bot id in initData), and
+`verifySlip`'s catch swallows every signature-path refusal including staleness,
+so the two schemes' replay windows must move together — noted at the call site.
+
 ## Open questions
 - **Offboarding hygiene.** Clearing `bot_id` (or retiring the seat) is now the thing that closes a
   door. The recycle path already nulls `technician_id`; confirm it also retires the row in every

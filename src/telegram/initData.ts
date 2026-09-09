@@ -71,13 +71,24 @@ function publicKeyFor(hex: string): ReturnType<typeof createPublicKey> {
   return key;
 }
 
-// The key THIS process verifies with. Production by default; Telegram's test
-// environment has its own key, and a suite that stands in for Telegram needs
-// its own too. An override is accepted only if it is 32 bytes of hex, so a
-// truncated or empty value falls back to production rather than to nothing.
+// A suite that stands in for Telegram signs with its own key, so it needs to
+// swap the trust anchor. That swap is deliberately NOT reachable from the
+// environment (review finding 2026-09-09): an env var holding an arbitrary
+// public key would let anyone who can edit the service's configuration mint
+// slips for any user id — silently, revoking nothing, which is strictly worse
+// than the bot token this whole scheme exists to keep off the server. A
+// module-level setter can only be called by code running in this process.
+let testPublicKeyHex: string | null = null;
+export function setPublicKeyForTests(hex: string | null): void {
+  testPublicKeyHex = hex;
+}
+
+// The key THIS process verifies with: Telegram's production key, or its test
+// environment's if we are pointed there. Both are Telegram's own — selecting
+// the wrong one forges nothing, because a slip still has to be signed for a
+// bot id on our allowlist.
 export function configuredPublicKeyHex(): string {
-  const override = process.env.TELEGRAM_INITDATA_PUBLIC_KEY;
-  if (override && /^[0-9a-fA-F]{64}$/.test(override)) return override.toLowerCase();
+  if (testPublicKeyHex) return testPublicKeyHex;
   return process.env.TELEGRAM_ENV === 'test'
     ? TELEGRAM_PUBLIC_KEYS.test
     : TELEGRAM_PUBLIC_KEYS.production;

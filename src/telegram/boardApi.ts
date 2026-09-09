@@ -89,6 +89,10 @@ async function verifySlip(raw: string): Promise<{ userId: string }> {
     } catch {
       // Fall through: a slip signed for a bot we do not (yet) know is still
       // worth the board-token check, and a genuinely bad slip fails twice.
+      // NOTE: this swallows EVERY signature-path refusal, staleness included,
+      // so the two schemes' replay windows must move together — tightening
+      // maxAgeSec on the signature path alone would leave 24h reachable via
+      // the fallback for any slip that also carries a valid board-bot hash.
     }
   }
   return verifyInitData(raw, process.env.BOARD_BOT_TOKEN ?? '');

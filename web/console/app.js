@@ -70,6 +70,10 @@ const state = {
   // drags it wide or goes fullscreen — a boot-time answer left the rail hidden
   // on a 1900px window (2026-09-07 preview finding).
   railOpen: null,
+  // The range `data` was fetched for. Any mismatch with what render() is about
+  // to draw means the load for THIS page failed — say so instead of drawing an
+  // empty day.
+  dataRange: null,
   // The undo stack: one entry per write this tab made, newest last. Each entry
   // knows how to reverse ITS write and what the visit should look like now if
   // nobody else has touched it since. Lives in memory only — a reload forgets
@@ -113,6 +117,10 @@ function dragBits() {
 }
 
 function railVisible() {
+  // The tray is a manager's surface: the toggle and the scrim that close it are
+  // both manager-only, so a technician showing one at exactly 600px would get a
+  // bottom sheet with no way out (review finding 2026-09-09).
+  if (!isManager()) return false;
   return state.railOpen === null ? window.innerWidth >= RAIL_MIN_WIDTH : state.railOpen;
 }
 // Where the CSS makes the rail a bottom sheet: @media (max-width: 600px).
@@ -242,7 +250,11 @@ async function expectVisit(visitId, expect) {
   try {
     d = await api.visit(visitId);
   } catch (err) {
-    return 'Cannot undo — ' + err.message;
+    // COULD NOT CHECK is not the same fact as "somebody changed it", and the
+    // difference decides whether the undo survives: a dropped packet used to
+    // eat the entry, so the manager's natural second press reached for an
+    // OLDER write on a different visit (review finding 2026-09-09).
+    return { retry: true, why: 'Could not check the visit — ' + err.message };
   }
   if (expect.status && d.status !== expect.status) {
     return 'Cannot undo — the visit is now ' + d.status;
@@ -281,6 +293,14 @@ async function undoLast() {
     if (!entry) return;
     if (entry.guard) {
       const why = await entry.guard();
+      if (why && why.retry) {
+        // Put it back: nothing was applied and nothing was learned.
+        state.undo.push(entry);
+        syncUndoButton();
+        toast(why.why, 'error', { label: 'Undo', fn: undoLast });
+        undoQueued = false;
+        return;
+      }
       if (why) {
         toast(why, 'error');
         return;
@@ -411,6 +431,10 @@ function undoCancelEntry(prior) {
   );
   return {
     label: 'Undo cancel (book it again)',
+    // Same rule as the other entries: if the visit we cancelled is no longer
+    // cancelled, somebody else has dealt with this job and booking again would
+    // make a SECOND appointment for one customer (review finding 2026-09-09).
+    guard: prior.visitId ? () => expectVisit(prior.visitId, { status: 'cancelled' }) : undefined,
     apply: () => write(() => api.previewBook(body), () => api.book(body), 'Booked again'),
   };
 }
@@ -425,6 +449,23 @@ function undoEditEntry(ctx) {
   if (Object.keys(revert).length === 1) return null;
   return {
     label: 'Undo job edit',
+    // Only checkable when the job is on the calendar — a tray job has no visit
+    // to read. Where it IS checkable, it stops an undo from silently reverting
+    // a colleague's later edit as well as ours (review finding 2026-09-09).
+    guard: ctx.visitId
+      ? async () => {
+          let d;
+          try {
+            d = await api.visit(ctx.visitId);
+          } catch (err) {
+            return { retry: true, why: 'Could not check the job — ' + err.message };
+          }
+          const changed =
+            ('title' in ctx.patch && (d.jobTitle ?? null) !== (ctx.patch.title ?? null)) ||
+            ('priority' in ctx.patch && d.priority !== ctx.patch.priority);
+          return changed ? 'Cannot undo — the job has been edited since' : null;
+        }
+      : undefined,
     apply: async () => {
       try {
         await api.editJob(revert);
@@ -495,12 +536,26 @@ function confirmAsk(text) {
 }
 
 // ── Load ─────────────────────────────────────────────────────────────────────
+// SEQUENCED, because an empty calendar and a calendar we could not load look
+// identical on screen and mean opposite things (review finding 2026-09-09).
+// Two ways the old code drew a lie: a slow reply for Tuesday landing after a
+// fast one for Wednesday overwrote Wednesday's data, and any failed load left
+// the previous day's payload under the new day's heading. Both showed the
+// manager an empty day for a day that had work on it.
+//
+// So: only the NEWEST load may touch state, and what is on screen carries the
+// range it was fetched for. render() compares that range with the one being
+// drawn and refuses to paint a mismatch.
+let loadSeq = 0;
 async function load() {
   const r = range();
+  const seq = ++loadSeq;
   state.loading = true;
   render();
   try {
     const data = await api.calendar(r.from, r.to);
+    if (seq !== loadSeq) return; // a newer load owns the screen now
+    state.dataRange = r;
     state.data = data;
     state.today = data.today;
     state.tier = data.tier;
@@ -511,10 +566,13 @@ async function load() {
       (data.roster || []).map((t) => t.ref).filter((ref) => !state.hiddenRefs.has(ref)),
     );
   } catch (err) {
+    if (seq !== loadSeq) return;
     toast(err.message, 'error');
   } finally {
-    state.loading = false;
-    render();
+    if (seq === loadSeq) {
+      state.loading = false;
+      render();
+    }
   }
 }
 
@@ -784,7 +842,31 @@ function toolbarHtml() {
 function render() {
   if (!state.data) {
     root.className = 'booting';
-    root.textContent = state.loading ? 'Loading…' : 'Could not load the schedule.';
+    // A dead end otherwise: no toolbar, no Today, and pull-to-refresh needs a
+    // canvas that does not exist — the only way back was to close the Mini App
+    // (review finding 2026-09-09).
+    root.innerHTML = state.loading
+      ? 'Loading…'
+      : '<p>Could not load the schedule.</p>' +
+        '<button type="button" class="btn btn-primary" data-retry>Try again</button>';
+    const retry = root.querySelector('[data-retry]');
+    if (retry) retry.addEventListener('click', () => load());
+    return;
+  }
+  // The data on hand is for another page: the load for this one failed. Drawing
+  // it would say "nothing scheduled" about a day we simply have not read.
+  const want = range();
+  const have = state.dataRange;
+  if (!state.loading && have && (have.from !== want.from || have.to !== want.to)) {
+    root.className = 'shell layout-' + layout();
+    root.innerHTML =
+      toolbarHtml() +
+      '<div class="body"><main class="canvas"><p class="hint">' +
+      esc('Could not load ' + title() + '.') +
+      ' <button type="button" class="btn" data-retry>Try again</button></p></main></div>';
+    wire();
+    const retry = root.querySelector('[data-retry]');
+    if (retry) retry.addEventListener('click', () => load());
     return;
   }
   const mode = layout();
@@ -1002,7 +1084,6 @@ function wire() {
       render();
       const again = root.querySelector('#roster-filter');
       again.focus();
-      again.setSelectionRange(again.value.length, again.value.length);
     });
   }
   root.querySelectorAll('.roster-row input[type=checkbox]').forEach((cb) =>
@@ -1026,7 +1107,6 @@ function wire() {
       render();
       const again = root.querySelector('#tray-filter');
       again.focus();
-      again.setSelectionRange(again.value.length, again.value.length);
     });
   }
   root.querySelectorAll('[data-fold]').forEach((h) => {
@@ -1056,10 +1136,16 @@ function wire() {
   // right-click menu.
   root.querySelectorAll('.card, .month-chip').forEach((card) =>
     card.addEventListener('click', async () => {
+      // Impatient taps on a slow link used to stack sheets, each needing its own
+      // dismissal (review finding 2026-09-09).
+      if (detailBusy || document.querySelector('.modal-host:not(.is-closing)')) return;
+      detailBusy = true;
       try {
         showDetail(await api.visit(card.getAttribute('data-visit-id')));
       } catch (err) {
         toast(err.message, 'error');
+      } finally {
+        detailBusy = false;
       }
     }),
   );
@@ -1097,7 +1183,7 @@ async function editJobOfVisit(visitId) {
       title: detail.jobTitle,
       priority: detail.jobPriority || 'routine',
       durationMinutes: detail.jobDurationMinutes,
-      onDone: afterEdit,
+      onDone: (msg, ctx) => afterEdit(msg, { ...ctx, visitId: visitId }),
     });
   } catch (err) {
     toast(err.message, 'error');
@@ -1111,6 +1197,7 @@ async function editJobOfVisit(visitId) {
 //   kind 'parked' — a tray row that is a visit with no time
 //   kind 'job'    — a tray row with no visit at all
 let dragging = null;
+let detailBusy = false; // one visit sheet in flight at a time
 
 function payloadFrom(el) {
   const kind = el.getAttribute('data-kind') || 'visit';
@@ -1314,7 +1401,16 @@ async function dropOnto(col, clientY, payload) {
 // pushed and offered on the toast. Undo's own writes pass nothing here.
 // Returns true (committed), 'declined' (the manager said no at the confirm),
 // or false (refused or failed — already toasted).
+// ONE WRITE AT A TIME. Two in flight can stack two confirm dialogs, and a
+// single Enter answers both — the manager reads one sentence and commits two
+// changes (review finding 2026-09-09).
+let writeBusy = false;
 async function write(preview, commit, okMessage, confirmText, undoOf) {
+  if (writeBusy) {
+    toast('One change at a time — wait for the last one to finish', 'error');
+    return false;
+  }
+  writeBusy = true;
   try {
     const p = await preview();
     // The preview carries a VERDICT (`requiresConfirmation`), not a sentence.
@@ -1340,6 +1436,7 @@ async function write(preview, commit, okMessage, confirmText, undoOf) {
     toast(err instanceof ApiError ? err.message : String(err), 'error');
     return false;
   } finally {
+    writeBusy = false;
     load();
   }
 }
@@ -1459,12 +1556,28 @@ function wireTouchNav() {
     return t.closest('.canvas');
   };
 
+  // Dropping a gesture without finishing it must leave nothing behind: a page
+  // still translated sideways, or a half-drawn refresh ring, would sit there
+  // until the next paint (review finding 2026-09-09) — and a pinch does not
+  // repaint, so on an iPad that is "until something else happens".
+  const abandonSwipe = () => {
+    if (swipe && swipe.locked === 'pull') pullRelease(false);
+    if (swipe && swipe.locked === 'swipe') {
+      const p = page();
+      if (p) {
+        p.style.transition = 'transform 160ms ease-out';
+        p.style.transform = '';
+      }
+    }
+    swipe = null;
+  };
+
   document.addEventListener(
     'touchstart',
     (e) => {
       const c = canvasOf(e);
       if (!c) {
-        swipe = null;
+        abandonSwipe();
         pinch = null;
         return;
       }
@@ -1474,7 +1587,7 @@ function wireTouchNav() {
         swipe = { x0: t.clientX, y0: t.clientY, t0: Date.now(), dx: 0, locked: null, atTop: canvas.scrollTop <= 0 };
         pinch = null;
       } else if (e.touches.length === 2) {
-        swipe = null;
+        abandonSwipe();
         pinch = startPinch(canvas, e.touches);
       }
     },
@@ -1491,7 +1604,7 @@ function wireTouchNav() {
         return;
       }
       if (!swipe || e.touches.length !== 1 || dragging) {
-        swipe = null;
+        abandonSwipe();
         return;
       }
       const t = e.touches[0];
@@ -1516,8 +1629,15 @@ function wireTouchNav() {
           }
         }
         if (!(Math.abs(dx) > 12 && Math.abs(dx) > 1.5 * Math.abs(dy))) return;
+        // Measure the page's OWN width, not the canvas's scrollWidth: a page
+        // still sliding in carries a translateX, and a transformed child
+        // inflates its scroller's scrollWidth. Reading that mid-slide invented
+        // hundreds of pixels of room, so the next swipe scrolled instead of
+        // turning the page (found while re-running touch.cjs, 2026-09-09).
+        const p = page();
+        const content = p ? p.scrollWidth : canvas.scrollWidth;
         const room =
-          dx < 0 ? canvas.scrollWidth - canvas.clientWidth - canvas.scrollLeft : canvas.scrollLeft;
+          dx < 0 ? content - canvas.clientWidth - canvas.scrollLeft : canvas.scrollLeft;
         swipe.locked = room > 40 ? 'scroll' : 'swipe';
       }
       if (swipe.locked === 'pull') {
@@ -1539,6 +1659,19 @@ function wireTouchNav() {
 
   const end = (e) => {
     if (!canvas) return;
+    // A paint during the gesture replaces the canvas: the captured reference is
+    // then detached, its clientWidth is 0, and the commit threshold collapses to
+    // a fifth of a pixel — any release would turn the page (review finding
+    // 2026-09-09).
+    if (!canvas.isConnected) {
+      const live = root.querySelector('.canvas');
+      if (!live) {
+        swipe = null;
+        pinch = null;
+        return;
+      }
+      canvas = live;
+    }
     if (pinch) {
       if (e.touches.length < 2) {
         saveZoom();
@@ -1686,6 +1819,10 @@ function longPress(el, fire) {
       if (e.touches.length !== 1) return;
       const touch = e.touches[0];
       timer = window.setTimeout(() => {
+        // A repaint during the hold detaches this element; its geometry is then
+        // all zeros, and "new job here" would read a start time off the raw
+        // screen position (review finding 2026-09-09).
+        if (!el.isConnected) return;
         fired = true;
         fire(touch);
       }, 550);
@@ -2047,7 +2184,7 @@ async function cancelVisit(visitId, reason, confirmText) {
     () => api.cancel(body),
     'Cancelled',
     confirmText,
-    () => undoCancelEntry(prior),
+    () => undoCancelEntry(prior && { ...prior, visitId: visitId }),
   );
 }
 

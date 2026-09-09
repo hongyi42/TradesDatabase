@@ -15,7 +15,7 @@ import * as rosterCache from './rosterCache.js';
 import * as botIds from './botIds.js';
 import { createHost } from '../db/hosts.js';
 import { registerSandbox, setSandboxBotId } from '../db/sandboxPool.js';
-import { botIdFromToken } from './initData.js';
+import { botIdFromToken, setPublicKeyForTests } from './initData.js';
 
 // Integration: the /board routes over a real HTTP server on an ephemeral port
 // against the local stack (httpServer.test.ts harness). BOARD_BOT_TOKEN is set
@@ -2115,7 +2115,6 @@ describe('board auth accepts a slip signed for any bot we own', () => {
   const TG_PUB_HEX = TG_PUB.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex');
   const SEAT_BOT = '7300000042'; // the manager's own assistant bot
   const STRANGER_BOT = '8900000077'; // a bot nobody here owns
-  let prevKey: string | undefined;
 
   // Telegram's third-party scheme: bot id, the constant, a line feed, then the
   // sorted fields — and no HMAC at all.
@@ -2142,8 +2141,7 @@ describe('board auth accepts a slip signed for any bot we own', () => {
   });
 
   beforeAll(async () => {
-    prevKey = process.env.TELEGRAM_INITDATA_PUBLIC_KEY;
-    process.env.TELEGRAM_INITDATA_PUBLIC_KEY = TG_PUB_HEX;
+    setPublicKeyForTests(TG_PUB_HEX);
     // A seat on this tenant whose bot is SEAT_BOT — the allowlist reads exactly
     // these rows, so this is what makes that bot a door rather than a stranger.
     const host = await createHost(`merge-host-${Date.now()}`, `hash-${Date.now()}`);
@@ -2158,8 +2156,7 @@ describe('board auth accepts a slip signed for any bot we own', () => {
   });
 
   afterAll(() => {
-    if (prevKey === undefined) delete process.env.TELEGRAM_INITDATA_PUBLIC_KEY;
-    else process.env.TELEGRAM_INITDATA_PUBLIC_KEY = prevKey;
+    setPublicKeyForTests(null);
     botIds.clear();
   });
 

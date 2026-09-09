@@ -425,6 +425,60 @@ phases as history.
   › button leaves a clone at −44px heading off and the new day at +374px
   heading in. All five suites pass.
 
+## Review pass (2026-09-09, before the branch was pushed)
+
+Two adversarial reads, one of the server and one of the browser client. Tenant
+isolation came back clean — `tenantId` is never read from a request body, every
+sink is tenant-filtered, every write is manager-gated, the kill switch is total,
+and a technician's calendar is self-filtered and horizon-clamped. So did the
+client's listener hygiene (every per-paint listener dies with the DOM it was
+bound to; every document-level one is either boot-time or paired with its
+removal), the detached animation clones (each has an unconditional reaper), and
+XSS (every server string reaching innerHTML passes through `esc`; toasts and
+dialog text use `textContent`).
+
+What was wrong, and is now fixed:
+
+- **A page could draw empty when loads raced.** `load()` had no sequencing, so a
+  slow reply for Tuesday landing after a fast one for Wednesday overwrote
+  Wednesday's data, and any failed load left the previous day's payload under the
+  new day's heading. Both drew an empty day for a day with work on it — the one
+  wrong picture a dispatch surface must never show. Loads are sequenced now, and
+  the payload carries the range it was fetched for; a mismatch draws "could not
+  load this day" with a retry, never an empty grid.
+- **`cancelJob` reported "nothing happened" after cancelling appointments.** The
+  cascade cancels visits first and flips the job last; a failure at that last
+  step surfaced as a plain conflict while the customer's confirmed visits were
+  already terminally cancelled. It now says what actually happened and how to
+  finish.
+- **Untiming destroyed the only record of the appointment time.** The row's
+  timestamps are nulled and the ledger kept only the day, so a reload left
+  nobody able to say the trip had been at two o'clock. The clock times go into
+  the ledger event. Its guard also covers the time now, not just the status, so
+  a concurrent move can no longer be silently erased.
+- **A retried booking minted duplicate customers.** The new-customer path
+  created the row before the booking, and the refusal a manager retries after
+  left one behind each time. An exact match on tenant, name and phone is reused.
+- **A network blip ate an undo.** The guard turned a failed READ into the same
+  answer as "somebody changed it", consuming the entry — so the natural second
+  press reached for an older write on a different visit. A failed check now puts
+  the entry back.
+- **Two writes could stack two confirm dialogs**, and one Enter answered both.
+  One write at a time.
+- **Undo after a cancel, and after a job edit, had no guard**, against the rule
+  every other entry follows. Both check now, where there is a visit to read.
+- Smaller ones, same pass: a malformed id reached PostgREST and became a logged
+  500 (now a 404); a bug thrown inside a write reached the manager as a conflict
+  with no log line; an abandoned swipe left the page translated sideways and an
+  orphaned refresh ring; a repaint mid-swipe left the gesture holding a detached
+  canvas, collapsing the page-turn threshold to a fifth of a pixel; a page still
+  sliding in inflated its scroller's width, so the next swipe scrolled instead of
+  turning; the "create anyway" button could be double-clicked into two jobs; a
+  failed first load left a dead end with no retry; the filters dragged the caret
+  to the end on every keystroke; a long-press timer surviving a repaint read a
+  detached column and invented a start time; card taps stacked detail sheets; and
+  a technician at exactly 600px got a bottom sheet with no way to close it.
+
 ## Phases (as built)
 
 ### Phase 1 — the seam ✅

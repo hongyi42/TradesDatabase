@@ -329,17 +329,34 @@ async function handleNewJob(
     // booking then fails. A customer with no work on file is an ordinary,
     // useful record — unlike the orphaned JOB shell bookVisit takes care to
     // avoid, which would sit in the scheduler queue pretending to be work.
-    const created = await createCustomer({
-      tenantId: auth.tenantId,
-      name,
-      phone: str(c, 'phone') ?? null,
-      email: str(c, 'email') ?? null,
-      addressLine1: str(c, 'addressLine1') ?? null,
-      city: str(c, 'city') ?? null,
-      state: str(c, 'state') ?? null,
-      postalCode: str(c, 'postalCode') ?? null,
-    });
-    customerId = created.id;
+    //
+    // But a REFUSED booking is normally retried with a different time, and
+    // each retry would mint another identical customer (review finding
+    // 2026-09-09) — the picker fills with duplicates of one person and
+    // nothing ever cleans them up. So reuse an EXACT match: same tenant, same
+    // name, same phone. Anything less exact stays a new record, because two
+    // households really can share a name.
+    const phone = str(c, 'phone') ?? null;
+    const twin = (await searchCustomers(auth.tenantId, name)).find(
+      (existing) =>
+        existing.name.trim().toLowerCase() === name.trim().toLowerCase() &&
+        (existing.phone ?? null) === phone,
+    );
+    if (twin) {
+      customerId = twin.id;
+    } else {
+      const created = await createCustomer({
+        tenantId: auth.tenantId,
+        name,
+        phone,
+        email: str(c, 'email') ?? null,
+        addressLine1: str(c, 'addressLine1') ?? null,
+        city: str(c, 'city') ?? null,
+        state: str(c, 'state') ?? null,
+        postalCode: str(c, 'postalCode') ?? null,
+      });
+      customerId = created.id;
+    }
   }
 
   const input = {
@@ -379,6 +396,10 @@ async function handleNewJob(
 // surface has no gesture that needs it. Same tier gate, same preview/confirm
 // doctrine (the preview's verdict is the cancel rule: placed → confirm), same
 // error triage as the new-job path.
+// The shape PostgREST will accept as a uuid. Not a strict RFC check — the DB
+// does that — only enough that garbage becomes a 404 instead of a 500.
+const UUID_SHAPE = /^[0-9a-fA-F-]{36}$/;
+
 async function handleUntime(
   res: http.ServerResponse,
   auth: BoardAuth & { ok: true },
@@ -388,6 +409,13 @@ async function handleUntime(
   const visitId = str(body, 'visitId');
   if (!visitId) {
     json(res, 400, { error: 'visitId is required' });
+    return;
+  }
+  // Non-UUID garbage must not reach PostgREST: its 22P02 throws through as a
+  // logged 500, which any authenticated caller could then spam on demand — the
+  // guard /board/api/visit already carries (review finding 2026-09-09).
+  if (!UUID_SHAPE.test(visitId)) {
+    json(res, 404, { error: 'visit not found' });
     return;
   }
   if (preview) {
@@ -424,6 +452,10 @@ async function handleCancelJob(
   const jobId = str(body, 'jobId');
   if (!jobId) {
     json(res, 400, { error: 'jobId is required' });
+    return;
+  }
+  if (!UUID_SHAPE.test(jobId)) {
+    json(res, 404, { error: 'job not found' });
     return;
   }
   if (preview) {
@@ -559,6 +591,13 @@ export async function handleConsoleRequest(
           console.error('console write failed:', err);
           json(res, 500, { error: 'server error — try again shortly' });
           return;
+        }
+        // A verb refusal is written by us and is an Error named 'Error'. A
+        // TypeError, or a non-Error throw, is a BUG wearing a conflict's
+        // clothes: it would reach the manager as an internal JS string and
+        // leave nothing in the logs (review finding 2026-09-09).
+        if (!(err instanceof Error) || err.name !== 'Error') {
+          console.error('console write threw an unexpected error type:', err);
         }
         json(res, 409, { error: message });
       }

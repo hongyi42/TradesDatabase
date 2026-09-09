@@ -82,6 +82,9 @@ function openModal(title, bodyHtml, footerHtml) {
 
 function setError(msg) {
   if (!host) return;
+  // NOTE: resolves the CURRENT dialog. A caller whose own dialog may have been
+  // closed meanwhile must check `el.isConnected` before calling this, or its
+  // error lands in whatever window is open now (review finding 2026-09-09).
   const box = host.querySelector('.modal-error');
   if (!box) return;
   box.textContent = msg || '';

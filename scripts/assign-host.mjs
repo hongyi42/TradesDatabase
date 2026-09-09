@@ -195,7 +195,23 @@ if (command === 'create-host') {
     );
     process.exit(1);
   }
-  await setSandboxBotId({ tenantId, sandboxRef: args.sandbox, botId });
+  if (!row.bot_username) {
+    // Nothing to cross-check against, which is the case where the wrong token
+    // binds silently (review finding 2026-09-09). Store the handle getMe just
+    // gave us so a re-run CAN be checked, and say out loud that this one was not.
+    console.error(
+      `WARN: sandbox '${args.sandbox}' had no registered handle, so the token could not be ` +
+        `cross-checked. Recording ${handle} from getMe — confirm that is the right bot for ` +
+        `this seat before anyone opens it.`,
+    );
+  }
+  await setSandboxBotId({
+    tenantId,
+    hostId: host.id,
+    sandboxRef: args.sandbox,
+    botId,
+    ...(row.bot_username ? {} : { botUsername: handle }),
+  });
   const base = args.url || process.env.BOARD_PUBLIC_URL;
   if (!base) {
     console.error(

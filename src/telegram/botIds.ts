@@ -25,9 +25,15 @@ import { botIdFromToken } from './initData.js';
 // behaviour. Nothing here ever returns "allow everything".
 export const TTL_MS = 300_000; // 5 min: a new seat can open the app that soon
 export const FAILURE_BACKOFF_MS = 5_000; // don't re-query on every request
+// ...but the last good list is not served forever. A bot revoked during a long
+// outage would otherwise stay a door for the whole outage (review finding
+// 2026-09-09). Past this, fall back to the board bot alone — the pre-merge
+// posture, which refuses assistants rather than admitting a stale one.
+export const STALE_CEILING_MS = 1_800_000; // 30 min
 
 let cached: string[] | null = null;
 let expiresAt = 0;
+let lastGoodAt = 0;
 let inFlight: Promise<void> | null = null;
 
 // The global board bot's id, from the token this process already has. Public
@@ -39,7 +45,8 @@ export function boardBotId(): string | null {
 async function refresh(): Promise<void> {
   try {
     cached = await listLiveBotIds();
-    expiresAt = Date.now() + TTL_MS;
+    lastGoodAt = Date.now();
+    expiresAt = lastGoodAt + TTL_MS;
   } catch {
     // Keep whatever we had and try again shortly. Swallowed on purpose: the
     // caller's job is to answer an auth question, not to surface DB health,
@@ -60,7 +67,8 @@ export async function allowed(now = Date.now()): Promise<string[]> {
     await inFlight;
   }
   const board = boardBotId();
-  const ids = cached ?? [];
+  const fresh = cached && Date.now() - lastGoodAt <= STALE_CEILING_MS;
+  const ids = fresh ? (cached ?? []) : [];
   return board && !ids.includes(board) ? [board, ...ids] : ids;
 }
 
@@ -69,5 +77,6 @@ export async function allowed(now = Date.now()): Promise<string[]> {
 export function clear(): void {
   cached = null;
   expiresAt = 0;
+  lastGoodAt = 0;
   inFlight = null;
 }

@@ -1067,7 +1067,11 @@ export async function previewUntimeVisit(
   const customer = job && job.tenant_id === tenantId ? await getCustomer(job.customer_id) : null;
   return {
     visitId: row.id,
-    customerName: customer?.name ?? null,
+    // jobs.customer_id is an ID-only FK, so a migration, restore or manual fix
+    // can point a job at another tenant's customer. Every sibling read
+    // re-checks the customer's own tenant before emitting the name; this one
+    // did not (review finding 2026-09-09).
+    customerName: customer && customer.tenant_id === tenantId ? customer.name : null,
     day: visitDay(row),
     technicianRefs: crew.map((p) => p.ref),
     requiresConfirmation: cancelRequiresConfirmation(row),
@@ -1091,6 +1095,12 @@ export async function untimeVisit(
       fromDay: visitDay(row),
       toDay: visitDay(visit),
       untimed: true,
+      // THE ONLY SURVIVING RECORD of when this trip was. untimeVisitRow nulls
+      // both timestamps, so unlike a cancel (which keeps starts_at) the clock
+      // time exists nowhere else afterwards — the client's undo stack is one
+      // tab's memory, not history (review finding 2026-09-09).
+      fromStart: row.starts_at,
+      fromEnd: row.ends_at,
       previousTechnicianIds: crew.map((p) => p.technicianId),
     },
   });
@@ -1389,7 +1399,28 @@ export async function cancelJob(input: CancelJobInput): Promise<CancelJobResult>
   }
   // Guarded transition — a concurrent flip between our read and this write
   // surfaces instead of being overwritten (updateJobStatus's CAS-on-status).
-  const cancelledJob = await updateJobStatus(job.id, 'cancelled');
+  //
+  // If it fails HERE the visits above are already cancelled, and cancelled is
+  // terminal. The bare error would reach the manager as a plain conflict —
+  // 'nothing happened' — while their customer's appointments are gone (review
+  // finding 2026-09-09). Say what actually happened instead. Re-running fixes
+  // the ordinary case: the visits are no longer live, so the loop is a no-op
+  // and only the status flip is retried. The case it cannot fix — the job
+  // having moved to a status that can never reach cancelled — needs a human,
+  // and this message is what tells them.
+  let cancelledJob: Job;
+  try {
+    cancelledJob = await updateJobStatus(job.id, 'cancelled');
+  } catch (err) {
+    if (!cancelledVisits.length) throw err;
+    const why = err instanceof Error ? err.message : String(err);
+    console.error('cancelJob: visits cancelled but the job status did not change', err);
+    throw new Error(
+      `${cancelledVisits.length} visit(s) were cancelled, but the job itself could not be ` +
+        `cancelled (${why}). Those appointments are already off the calendar — re-run to ` +
+        `finish, or fix the job's status.`,
+    );
+  }
   await appendScheduleEvent({
     tenantId,
     kind: 'job_cancelled', // plain-text kind; produces no push (manager-initiated)

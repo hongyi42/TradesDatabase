@@ -277,24 +277,36 @@ export async function completeSandboxRecycle(input: {
 }
 
 // Backfill for seats registered before bot_id existed, and the repair path when
-// a bot is re-inspected. Idempotent by (tenant, sandbox_ref). Digits only —
-// the DB check constraint says the same thing, but a caller that pastes a whole
-// token deserves a clear error rather than a 23514.
+// a bot is re-inspected. Digits only — the DB check constraint says the same
+// thing, but a caller that pastes a whole token deserves a clear error rather
+// than a 23514.
+//
+// PASS hostId. The table's uniqueness is (host_id, sandbox_ref), NOT tenant-
+// scoped, so two hosts on one tenant can both own an 's1' — and a caller that
+// validated one host's row would otherwise write to both (review finding
+// 2026-09-09). Omitting it is allowed for single-host tenants and for tests,
+// where maybeSingle() turns any collision into a loud failure rather than a
+// silent cross-write.
 export async function setSandboxBotId(input: {
   tenantId: string;
+  hostId?: string;
   sandboxRef: string;
   botId: string;
+  botUsername?: string;
 }): Promise<SandboxPoolRow> {
   if (!/^[0-9]{1,20}$/.test(input.botId)) {
     throw new Error('setSandboxBotId: botId must be the numeric id, not the token');
   }
-  const { data, error } = await getClient()
+  let q = getClient()
     .from('sandbox_pool')
-    .update({ bot_id: input.botId })
+    .update({
+      bot_id: input.botId,
+      ...(input.botUsername ? { bot_username: input.botUsername } : {}),
+    })
     .eq('tenant_id', input.tenantId)
-    .eq('sandbox_ref', input.sandboxRef)
-    .select()
-    .maybeSingle();
+    .eq('sandbox_ref', input.sandboxRef);
+  if (input.hostId) q = q.eq('host_id', input.hostId);
+  const { data, error } = await q.select().maybeSingle();
   if (error) throw new Error(`setSandboxBotId failed: ${error.message}`);
   if (!data) throw new Error(`setSandboxBotId: no sandbox ${input.sandboxRef} for this tenant`);
   return data;

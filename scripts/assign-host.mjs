@@ -17,6 +17,9 @@
 //         bot handle (the provision phase's getMe prints it) — bind_telegram
 //         returns it so the manager can tell the hire which bot to open;
 //         without it the claim is unusable chat-side ("ask your operator").
+//         tech=<ref> BACKFILLS a seat somebody already occupies: the row is
+//         registered AND claimed for that person in one go, so the pool never
+//         offers an in-use sandbox to the next hire. Omit it only for a spare.
 //   SANDBOX_BOT_TOKEN=<token> scripts/assign-host.mjs wire-bot host=<h> sandbox=<s> [tenant=<uuid>]
 //       → THE ONE-BOT-PER-PERSON STEP. Asks Telegram who this bot is (getMe),
 //         stores its NUMERIC ID on the pool row, and points its menu button at
@@ -36,6 +39,7 @@
 
 import { randomBytes } from 'node:crypto';
 import {
+  claimSandbox,
   createHost,
   getHostByName,
   getTechnician,
@@ -61,7 +65,7 @@ const [command, ...rest] = process.argv.slice(2);
 const KNOWN_KEYS = {
   'create-host': ['name'],
   assign: ['ref', 'host', 'sandbox', 'tenant'],
-  'add-sandbox': ['host', 'sandbox', 'bot', 'tenant'],
+  'add-sandbox': ['host', 'sandbox', 'bot', 'tenant', 'tech'],
   'wire-bot': ['host', 'sandbox', 'tenant', 'url'],
   'set-badge': ['ref', 'hash', 'tenant'],
   'rotate-badge': ['ref', 'tenant'],
@@ -128,17 +132,66 @@ if (command === 'create-host') {
         `and the manager must ask the operator. Pass it (provision's getMe prints it).`,
     );
   }
-  const row = await registerSandbox({
-    tenantId,
-    hostId: host.id,
-    sandboxRef: args.sandbox,
-    botUsername,
-  });
-  console.log(
-    `Registered cold sandbox '${row.sandbox_ref}' on host ${host.name} (tenant ${tenantId}` +
-      `${row.bot_username ? `, bot ${row.bot_username}` : ', NO bot handle'}). ` +
-      `bind_telegram claims it for the next hire who has no sandbox.`,
-  );
+  // 23505 = this host already has that sandbox_ref. Re-running the command is
+  // the normal way an operator recovers from a half-finished wiring, so say what
+  // is already there instead of dumping a constraint name.
+  let row;
+  try {
+    row = await registerSandbox({
+      tenantId,
+      hostId: host.id,
+      sandboxRef: args.sandbox,
+      botUsername,
+    });
+  } catch (err) {
+    if (err?.code !== '23505') throw err;
+    const existing = (await listPoolRows(tenantId)).find(
+      (r) => r.sandbox_ref === args.sandbox && r.host_id === host.id,
+    );
+    console.error(
+      `Sandbox '${args.sandbox}' is already registered on host ${host.name}` +
+        `${existing?.technician_id ? ` and claimed (technician ${existing.technician_id})` : ' and COLD'}` +
+        `${existing?.bot_id ? `, bot id ${existing.bot_id}` : ', no bot id yet'}. ` +
+        `Nothing to do here — wire-bot is the next step.`,
+    );
+    process.exit(existing ? 0 : 1);
+  }
+  // A seat somebody already occupies must NOT be registered cold: the pool
+  // would hand an in-use sandbox to the next hire and two people would share one
+  // agent. tech=<ref> claims it in the same breath as registering it.
+  if (args.tech) {
+    const tech = await getTechnician(tenantId, args.tech);
+    if (!tech) {
+      console.error(
+        `Registered '${row.sandbox_ref}' but no technician ref='${args.tech}' in this tenant — ` +
+          `the row is COLD and claimable. Claim it or delete it.`,
+      );
+      process.exit(1);
+    }
+    if (tech.sandbox_ref && tech.sandbox_ref !== args.sandbox) {
+      console.error(
+        `Registered '${row.sandbox_ref}' but ${args.tech} is on sandbox '${tech.sandbox_ref}'. ` +
+          `Refusing to claim — the row is COLD and claimable. Check which seat is which.`,
+      );
+      process.exit(1);
+    }
+    const claimed = await claimSandbox(row.id, tech.id);
+    if (!claimed) {
+      console.error(`Registered '${row.sandbox_ref}' but the claim lost a race. Re-run.`);
+      process.exit(1);
+    }
+    console.log(
+      `Registered sandbox '${row.sandbox_ref}' on host ${host.name} and claimed it for ` +
+        `${tech.display_name ?? args.tech} (tenant ${tenantId}` +
+        `${row.bot_username ? `, bot ${row.bot_username}` : ', NO bot handle'}).`,
+    );
+  } else {
+    console.log(
+      `Registered cold sandbox '${row.sandbox_ref}' on host ${host.name} (tenant ${tenantId}` +
+        `${row.bot_username ? `, bot ${row.bot_username}` : ', NO bot handle'}). ` +
+        `bind_telegram claims it for the next hire who has no sandbox.`,
+    );
+  }
 } else if (command === 'wire-bot') {
   const tenantId = args.tenant || '82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18'; // Default Tenant (test)
   const token = process.env.SANDBOX_BOT_TOKEN;

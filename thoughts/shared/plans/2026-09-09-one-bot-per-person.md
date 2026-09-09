@@ -114,6 +114,25 @@ Wire every seat, configure each Main Mini App, watch for a week, then retire `@D
 drop the HMAC fallback from `verifySlip`. `CONSOLE_MENU_CHAT_IDS` and `setConsoleMenuButtonFor` in
 `boardBot.ts` become dead code at that point.
 
+**Found on first contact (2026-09-09): the seats people actually use have no pool rows.**
+`sandbox_pool` on the pilot holds four rows, all cold spares (s1/s4 retired, s5/s6 live) — while the
+occupied seats s2 (Sam), s3 (Judy), s7 (Yutao) and s8 (Joy) are recorded only on the roster row.
+They were assigned before the pool existed, so `wire-bot` refuses them: there is no row to hang
+`bot_id` on. Backfilling them cold would be worse than the gap — `bind_telegram` would then hand an
+occupied sandbox to the next hire and two people would share one agent. So `add-sandbox` grew
+`tech=<ref>`, which registers and claims in one step and refuses when the roster row names a
+different sandbox. Every occupied seat needs that backfill before it can be wired.
+
+**Retiring the board bot is gated on more than the doors.** `opsNotify` sends through
+`BOARD_BOT_TOKEN`, so deleting `@DashboardMan_bot` silences operator alerts as well as the Mini App
+button. Phase 2 has to land first, or the alerts move somewhere else first.
+
+**The menu button is not free.** `setChatMenuButton` with a `web_app` replaces that bot's commands
+menu — on an assistant people actually chat with, that costs the `/` list. The Main Mini App setting
+in BotFather adds an "Open App" button at the top of the chat and leaves the menu alone, which is the
+better shape for a seat bot; the menu button stays the fallback for anyone not yet configured.
+Whether the box's gateway re-sets a seat bot's menu button on restart is unverified — watch it.
+
 ## Review pass (2026-09-09, before the branch was pushed)
 
 An adversarial read of the commit found the cryptography correct — the

@@ -42,6 +42,16 @@ inbound halves, so "earlier in this conversation" is missing the firm's side.
 - **A human's own sent mail enters L1 GATED** by the work/personal classifier (user, 2026-09-09).
   L1 has no delete, so a manager's dentist appointment must never be written; the classifier is the
   only thing standing between the two.
+  - *Implementation, and it needs a ruling.* The classifier was written for inbound: it sees the
+    sender only and its standing rule is "when unsure, prefer isWork=false". On a SENT message the
+    sender is always the firm, so *"Thursday works — we'll come out then."* — nine words, `Re:`
+    subject, no trade vocabulary — reads as unsure and is DROPPED. That is this rung's headline
+    case failing its own gate. **What shipped:** the prompt names the direction and shows `To:`
+    (the only real signal on outbound mail), and says brevity is not evidence of personal.
+    **What did NOT ship:** inverting the tie-break to "prefer isWork=TRUE for outbound". It
+    contradicts the standing sentence in the same prompt, and it softens exactly the safeguard this
+    ruling is about. **OPEN — for the user:** if live verification shows real replies still being
+    dropped, the inversion is the next lever, and it is a change to the terms of this ruling.
 - **The 2026-07-04 agent-send exception STANDS.** Sends made by the agent (spine `send_email`,
   Composio executions via `logIngest`) remain classifier-free, because an audit record matters most
   exactly when the action was inappropriate. The ruling above is about a HUMAN's own outbound mail,
@@ -138,10 +148,12 @@ Lets a person-key match keep deciding who, while the thread supplies the job it 
   OLDER job (this is the actual defect, and it fails on `main`).
 
 ### Automated verification
-- [ ] `npm run typecheck`
-- [ ] `npm run lint`
-- [ ] `npm test`
-- [ ] the two-open-jobs test fails on `main` and passes here
+- [x] `npm run typecheck`
+- [x] `npm run lint`
+- [x] `npm test` — 114 files / 2886 tests
+- [x] the two-open-jobs test fails on `main` and passes here — verified by stashing
+      `identityMatch.ts` alone: 4 of the 8 new tests go red (`expected undefined`),
+      the 4 negative ones stay green
 
 ### Manual verification
 None.
@@ -157,14 +169,27 @@ work/personal classifier, without duplicating the assistant's own sends.
 ### Changes required
 
 **`src/composio/pairing.ts`**
-- `ensureTrigger`'s `triggerConfig` gains `SENT` alongside `INBOX`. Confirm the exact multi-label
-  syntax against Composio's live trigger-type schema before writing it — CLAUDE.md's external-doc
-  rule applies, and `labelIds` is a comma string today, not an array.
-- **Existing triggers do not pick this up.** `ensureTrigger` returns an existing trigger's id
-  without reconfiguring it, so every already-paired seat keeps the INBOX-only trigger. Either the
-  trigger is recreated for those seats, or this phase ships inert. Decide in implementation and
-  record which; the pilot has exactly one paired account and it is on the wrong roster row (rung
-  13), so this interacts with that.
+- ~~`triggerConfig` gains `SENT` alongside `INBOX`~~ — **NOT EXPRESSIBLE; corrected in
+  implementation.** The live trigger-type schema
+  (`GET https://backend.composio.dev/api/v3/triggers_types/GMAIL_NEW_GMAIL_MESSAGE`, read
+  2026-09-09) says `labelIds` "Filter messages by a **single** label ID … For complex label
+  filtering, use the 'query' parameter instead", and `query` "…**takes precedence over
+  labelIds**", with `label:inbox OR label:sent` as its own first example. So the config is
+  `{ interval: 1, labelIds: 'INBOX', query: 'label:inbox OR label:sent', userId: 'me' }`.
+- **Existing triggers: BOTH, and it is recorded here.** (a) `ensureTrigger` now compares the live
+  config and re-upserts a stale one — `triggers.create` posts to
+  `POST /api/v3/trigger_instances/{slug}/upsert`, "creates a new trigger instance or updates an
+  existing one"
+  (docs.composio.dev/reference/api-reference/triggers/postTriggerInstancesBySlugUpsert), so it is
+  a reconfigure, never a delete+create (a recreate drops the polling watermark and Composio
+  redelivers the backlog,every delivery paying for a classification). `triggers.update` cannot do it —
+  that endpoint takes only `{status: 'enable'|'disable'}`. (b) `ensureTrigger` is nevertheless
+  UNREACHABLE for a live seat: `checkPairing` returns `no_op` for any state but `invited`, and its
+  healing branch requires a missing trigger id. So `scripts/composio-retrigger.mjs`
+  (`npm run composio:retrigger -- user=<tenant>:<ref> account=<ca_…>`) reconciles one paired seat,
+  dry-run by default. **Whether the upsert updates IN PLACE or mints a second instance is not
+  settled by the docs** — the script re-lists after applying and hard-fails with instructions if a
+  second instance appears or the id changes.
 
 **`src/inbound/gmail.ts`**
 - The normalizer already keeps `label_ids`. Derive the direction from it: a message carrying `SENT`
@@ -190,6 +215,66 @@ work/personal classifier, without duplicating the assistant's own sends.
 - This is what makes a thread the firm STARTED identify its customer — today that capture is
   stamped with nobody, which is why the thread key is narrow.
 
+**Found in implementation, beyond the plan's list** (each opened by this phase's own new door):
+
+- **`src/inbound/gmail.ts` keys an outbound delivery `sent:<messageId>`, not the bare id.** The
+  plan's dedup joined `sent:<id>` to `<id>`, which only covers the SPINE's own sends. A manager
+  acting Composio-direct is captured by `logIngest` up to 15 minutes *after* the trigger fires, so
+  the two writes would land under two different keys — one email, TWO undeletable L1 rows. One key
+  for all three writers collapses them, and makes a plain redelivery free.
+- **`src/email/classify.ts` is direction-aware.** Its standing rule is "when unsure, prefer
+  isWork=false", and its user message showed the sender only. On a SENT message the sender is
+  always the firm, so *"Thursday works — we'll come out then."* — nine words, `Re:` subject, no
+  trade vocabulary — reads as unsure and gets DROPPED. That is this rung's headline case failing
+  its own gate. The prompt now names the direction, shows `To:` (the only real signal on outbound
+  mail), and prefers isWork=TRUE when unsure about the firm's own reply.
+- **`src/writePath/extract.ts` is told when the words are ours.** Its identity rule ("never take
+  them from your own firm's replies") covered the firm's replies only as EARLIER context. With our
+  own reply as the message being judged, our signature block was a candidate customer identity —
+  the same failure `isOwnMailbox` exists to prevent, through a new door.
+- **An unmatched outbound promise asks.** `recordFieldNote`'s ask gate was inbound-only, so a
+  manager promising a visit to somebody not on file bound the firm silently. Outbound now asks —
+  but ONLY on `visitCommitted === true`, because the firm writes to suppliers and accountants all
+  day and every one of those would be an item to dismiss.
+- **The drop receipt keeps the RECIPIENT domain on outbound.** `dropped_audit` stores a domain
+  only, and on the firm's own mail the sender's domain is our own on every single row.
+- **The pre-check must not swallow OUR OWN half-finished delivery.** One shared key makes the
+  lookup self-referential, so an append that landed and then threw before the job link would
+  redeliver as a 503 and be answered `duplicate` forever — the promise never reaching the job, with
+  no later delivery able to fix it. `captureHasLinkedL2` cannot tell the two apart (an agent's send
+  row has no L2 link either), so the PRODUCER is the discriminator: `metadata.sentVia`
+  (`send_email`) or `metadata.toolSlug` (`logIngest`).
+- **`sent:<id>` is not Gmail's id, and two comparisons needed Gmail's.** The normalizer keeps the
+  bare `messageId` on `sourceMeta`. Without it the firm's own reply lands in its OWN "earlier in
+  this conversation" block — where the extractor is told a commitment "is already handled", so
+  `visitCommitted` is suppressed and neither ask fires. A promise nobody hears, caused by the line
+  written to prevent it.
+- **`record_caller`'s own-mailbox rule reverses too.** On an `outbound_email` capture `From` is US,
+  so the 10b.2 guard would file the FIRM'S OWN ADDRESS on the customer the planner is creating —
+  that incident reproduced through the new door, landing on exactly the name-only answer the
+  refusal message steers a manager towards.
+- **The planner is told the direction.** Reusing `inbound_unmatched` keeps the ping loop and the
+  once-ever index working, but the gap renderer said "nobody on file matches this sender" about a
+  message the firm itself wrote. It now renders "YOUR FIRM'S OWN reply, sent to …", and the prompt
+  has a paragraph for it.
+- **Two spellings on BOTH sides of "never show the message to itself".** The thread shown to the
+  model comes from Composio (Gmail's bare id) or from our own L1 (the `sent:` storage key), so one
+  spelling excludes the message on one path and not the other. The L1 path is the one the pilot
+  runs today, and it is exactly where a healing redelivery lands.
+- **`record_caller`'s own-mailbox REFUSAL is direction-scoped too**, not just its fallback. Its
+  heuristic reads a sole recipient as evidence of our mailbox — the customer, on outbound — so
+  unscoped it refuses the very address the ask itself printed, and tells a manager something untrue
+  about their own customer.
+- **The producer stamp is pinned by the writers' own tests.** One shared `external_id` makes
+  `metadata.sentVia` / `metadata.toolSlug` the only thing keeping the door off the agent's own
+  sends; `isAgentWrittenCapture` (src/db/rawCaptures.ts) is now the single definition, and the
+  `send_email` and `logIngest` tests assert their REAL rows satisfy it — a stubbed test would stay
+  green through a rename.
+- **`emailAddressOf` shape-checks.** An '@' anywhere used to be enough, so a header the parser
+  cannot handle (`Team: jane@x.com;`) came back as a long "address" matching nothing — the message
+  silently losing its key rather than saying it has none. `soleRecipientOf` counts DISTINCT
+  addresses, so a reply-all listing one person twice still names them.
+
 **tests**
 - a SENT message whose `sent:` twin exists → `duplicate`, nothing written;
 - a SENT message with no twin, classified WORK → captured as `outbound_email`, filed on the job;
@@ -199,8 +284,8 @@ work/personal classifier, without duplicating the assistant's own sends.
 - `findCustomersByThread` now identifies a customer from a firm-started thread.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] the new tests above pass
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] the new tests above pass
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP, the deployed pilot, the trigger reconfigured for at least one

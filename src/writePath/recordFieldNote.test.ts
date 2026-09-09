@@ -1693,6 +1693,160 @@ describe('rung 10b — the email door\'s own identity keys', () => {
   });
 });
 
+// RUNG 10B.3 — THE FIRM'S OWN HALF. A manager replying from Gmail directly now
+// comes through this same door on the `outbound_email` channel. It is the FIRM
+// speaking, which changes three things and must change nothing else.
+describe("rung 10b.3 — the firm's own reply through the door", () => {
+  let seq = 9700;
+
+  test('a manager\'s reply lands on the customer it was SENT to, with correspondence', async () => {
+    const customer = await createCustomer({
+      tenantId,
+      name: 'Replied-To Rita',
+      email: 'rita@example.com',
+    });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Rita work' });
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'connector:gmail',
+        channel: 'outbound_email',
+        text: "Subject: Re: quote\nFrom: office@firm.test\n\nSending it over today.",
+        externalId: `msg-10b3-${seq++}`,
+        // The DOOR's key on an outbound message: who it went TO.
+        fallbackEmail: 'rita@example.com',
+      },
+      stub({ followUp: 'send the quote' }),
+    );
+    expect(r).toMatchObject({ status: 'matched', customerId: customer.id, jobId: job.id });
+    expect(await jobCaptureLinks(job.id)).toBe(1);
+  });
+
+  test('A PROMISE TYPED BY HAND RAISES THE ASK — this is what rung 10 exists for', async () => {
+    // "we'll come Thursday", typed into Gmail by a manager, binds the firm. It
+    // used to bind it invisibly: the trigger watched INBOX only, so the spine
+    // never saw the message at all.
+    const customer = await createCustomer({
+      tenantId,
+      name: 'Promised Pia',
+      email: 'pia@example.com',
+    });
+    await createJob({ tenantId, customerId: customer.id, title: 'Pia work' });
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'connector:gmail',
+        channel: 'outbound_email',
+        text: "Subject: Re: boiler\nFrom: office@firm.test\n\nWe'll come Thursday.",
+        externalId: `msg-10b3-${seq++}`,
+        fallbackEmail: 'pia@example.com',
+      },
+      stub({ visitCommitted: true }),
+    );
+    expect(r.status).toBe('matched');
+    const obs = await observationsFor(r.captureId);
+    expect(obs).toHaveLength(1);
+    expect(obs[0].kind).toBe('inbound_commitment');
+  });
+
+  test('it never mints a visit — only a technician\'s own note may do that', async () => {
+    const customer = await createCustomer({
+      tenantId,
+      name: 'No Trip Nora',
+      email: 'nora@example.com',
+    });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Nora work' });
+    await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'connector:gmail',
+        channel: 'outbound_email',
+        text: 'Subject: Re\nFrom: office@firm.test\n\nAll done on our side.',
+        externalId: `msg-10b3-${seq++}`,
+        fallbackEmail: 'nora@example.com',
+      },
+      stub({ statusSignal: 'completed', laborHours: 3 }),
+    );
+    const { rows } = await pg.query<{ n: string }>(
+      'select count(*)::text as n from visits where job_id = $1',
+      [job.id],
+    );
+    expect(rows[0].n).toBe('0');
+  });
+
+  test('a PROMISE to somebody we cannot place still raises the ask', async () => {
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'connector:gmail',
+        channel: 'outbound_email',
+        text: "Subject: Re\nFrom: office@firm.test\n\nWe'll come Thursday.",
+        externalId: `msg-10b3-${seq++}`,
+        fallbackEmail: 'stranger-10b3@example.com',
+      },
+      stub({ visitCommitted: true }),
+    );
+    expect(r.status).not.toBe('matched');
+    const obs = await observationsFor(r.captureId);
+    expect(obs).toHaveLength(1);
+    expect(obs[0].kind).toBe('inbound_unmatched');
+    // The planner is asked a DIFFERENT question here — who did we promise this
+    // to — so the direction is stated rather than inferred from the channel.
+    expect(obs[0].context).toMatchObject({
+      outbound: true,
+      sentTo: 'stranger-10b3@example.com',
+      channel: 'outbound_email',
+    });
+  });
+
+  test('ordinary outbound mail to somebody we cannot place asks NOTHING', async () => {
+    // The firm writes to suppliers, accountants and colleagues all day. Only a
+    // commitment has a cost outside this database; the rest would be items a
+    // manager has to dismiss.
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'connector:gmail',
+        channel: 'outbound_email',
+        text: 'Subject: parts\nFrom: office@firm.test\n\nCan you quote 3 flanges?',
+        externalId: `msg-10b3-${seq++}`,
+        fallbackEmail: 'supplier-10b3@example.com',
+      },
+      stub({ jobTitle: 'parts enquiry' }),
+    );
+    expect(r.status).not.toBe('matched');
+    expect(await observationsFor(r.captureId)).toHaveLength(0);
+  });
+
+  test("the extractor is TOLD the words are the firm's own", async () => {
+    // Otherwise it reads our signature block as the customer's identity — the
+    // same failure isOwnMailbox exists to prevent, arriving through a new door.
+    const seen: Array<{ fromTheFirm?: boolean } | undefined> = [];
+    const spy: Extractor = async (_text, _ctx, context) => {
+      seen.push(context);
+      return {};
+    };
+    const base = {
+      tenantId,
+      technicianRef: 'connector:gmail',
+      text: 'Subject: Re\nFrom: office@firm.test\n\nthanks',
+      fallbackEmail: 'nobody-10b3@example.com',
+    };
+    await recordFieldNote(
+      { ...base, channel: 'outbound_email', externalId: `msg-10b3-${seq++}` },
+      { extract: spy },
+    );
+    expect(seen[0]?.fromTheFirm).toBe(true);
+    // …and an ordinary inbound email is passed through with no such claim, so
+    // the prompt for every existing channel is untouched.
+    await recordFieldNote(
+      { ...base, channel: 'email', externalId: `msg-10b3-${seq++}` },
+      { extract: spy },
+    );
+    expect(seen[1]).toBeUndefined();
+  });
+});
+
 // RUNG 10B PHASE 4 — the door, RE-ENTERED. `record_caller` sends the same capture
 // back through with the identity the planner settled and what a manager decided,
 // so nothing here is a new write path: it is this one, run again.

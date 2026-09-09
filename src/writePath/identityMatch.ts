@@ -7,6 +7,7 @@ import {
   getTenant,
   listVisitsForTechnician,
   listJobsWithCustomerByIds,
+  type ThreadIdentity,
 } from '../db/index.js';
 import { localDateISO } from '../schedule/availability.js';
 import type { ExtractedFields } from './extract.js';
@@ -25,8 +26,10 @@ import type { ExtractedFields } from './extract.js';
 //             addresses are commoner than shared phones, so it sits second.
 //   thread  — a CONVERSATION we already filed. Weaker than a person key: it says
 //             "this reply belongs to that exchange", and the exchange's customer
-//             is inferred. It is also the only key that can name the JOB, which
-//             it does when the thread's captures point at exactly one.
+//             is inferred. It is also the only key that can name the JOB.
+//             SO IT IS ASKED EVEN WHEN IT LOST (rung 10b.3): the ORDER decides
+//             WHO, and whichever key won, the thread is then consulted purely
+//             for WHICH job — see `withThreadJob` below.
 //   address — a PLACE. Weakest: tenants, landlords and new owners share it.
 export interface MatchInput {
   tenantId: string;
@@ -90,10 +93,64 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
   // it the gap block prints the generic tail and never says what the first
   // opinion saw (rung 10b review finding).
   const tried: string[] = [];
+
+  // THE CONVERSATION KNOWS THE JOB; A PERSON KEY ONLY EVER KNEW THE PERSON.
+  // Read once, lazily: a message with no thread id never pays for it, and the
+  // arms below (three of which can each want it) share the one answer.
+  let threadRowsOnce: Promise<ThreadIdentity[]> | null = null;
+  const threadRows = (): Promise<ThreadIdentity[]> => {
+    const id = input.threadId?.trim();
+    if (!id) return Promise.resolve([]);
+    threadRowsOnce ??= findCustomersByThread(tenantId, id);
+    return threadRowsOnce;
+  };
+
+  // A PERSON KEY DECIDED WHO; ASK THE THREAD PURELY FOR WHICH (rung 10b.3).
+  // Before this, phone/email/address returned the moment they were unique, so
+  // the thread's answer was never computed and the door fell back to guessing —
+  // the customer's most recently created non-terminal job. A customer with a
+  // quote outstanding AND a repair booked, replying about the older one, was
+  // filed against the newer: cited, on the right person, looking correct.
+  //
+  // ADOPTED ONLY WHEN THE JOB SITS ON THE CUSTOMER WE JUST MATCHED. A thread
+  // that drifted to somebody else (forwarded, re-used, a landlord looped in)
+  // would otherwise file this message against another customer's work, which is
+  // worse than the guess being fixed. Unique-or-nothing on the job too, for the
+  // same reason the thread arm refuses: two jobs is not an answer.
+  // `findCustomersByThread` has already dropped TERMINAL jobs and proved every
+  // row belongs to this tenant, so neither needs re-checking here.
+  //
+  // A FAILED "WHICH" MUST NOT COST US THE "WHO". `findCustomersByThread` throws
+  // on any PostgREST error, and before this rung a unique person key returned
+  // without ever reading the thread — so letting that throw out of here would
+  // turn a resolved identity into a 503, and Composio's redelivery would pay for
+  // the extractor a SECOND time (the capture has no L2 link yet, so the door's
+  // already-processed short-circuit does not catch it). We keep the match and
+  // fall back to the door's own job choice, which is what ran until today. The
+  // THREAD ARM below still propagates: there, the read is the answer, not an
+  // aid, and a retry is the only thing that gets it right.
+  const withThreadJob = async (customerId: string): Promise<MatchResult> => {
+    let jobId: string | undefined;
+    try {
+      const jobs = new Set(
+        (await threadRows())
+          .filter((row) => row.customerId === customerId && row.jobId)
+          .map((row) => row.jobId as string),
+      );
+      if (jobs.size === 1) jobId = [...jobs][0];
+    } catch (err) {
+      console.error(
+        `matchIdentity: thread ${input.threadId} could not name a job for ${customerId} — ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return { status: 'matched', customerId, ...(jobId ? { jobId } : {}) };
+  };
+
   const phone = extracted.phone?.trim();
   if (phone) {
     const byPhone = await findCustomersByPhone(tenantId, phone);
-    if (byPhone.length === 1) return { status: 'matched', customerId: byPhone[0].id };
+    if (byPhone.length === 1) return withThreadJob(byPhone[0].id);
     tried.push(
       byPhone.length === 0
         ? `no customer has the phone ${phone}`
@@ -103,7 +160,7 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
   const email = input.email?.trim();
   if (email) {
     const byEmail = await findCustomersByEmail(tenantId, email);
-    if (byEmail.length === 1) return { status: 'matched', customerId: byEmail[0].id };
+    if (byEmail.length === 1) return withThreadJob(byEmail[0].id);
     tried.push(
       byEmail.length === 0
         ? `no customer has the address ${email}`
@@ -118,15 +175,10 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
   // the right customer is a quieter error than it looks.
   const threadId = input.threadId?.trim();
   if (threadId) {
-    const byThread = await findCustomersByThread(tenantId, threadId);
+    const byThread = await threadRows();
     const customers = new Set(byThread.map((row) => row.customerId));
     if (customers.size === 1) {
-      const jobs = new Set(byThread.map((row) => row.jobId).filter((id): id is string => !!id));
-      return {
-        status: 'matched',
-        customerId: [...customers][0],
-        ...(jobs.size === 1 ? { jobId: [...jobs][0] } : {}),
-      };
+      return withThreadJob([...customers][0]);
     }
     tried.push(
       customers.size === 0
@@ -137,7 +189,7 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
   const address = (confirmed?.address ?? extracted.address)?.trim();
   if (address) {
     const byAddress = await findCustomersByAddress(tenantId, address);
-    if (byAddress.length === 1) return { status: 'matched', customerId: byAddress[0].id };
+    if (byAddress.length === 1) return withThreadJob(byAddress[0].id);
     tried.push(
       byAddress.length === 0
         ? `no customer is at ${address}`

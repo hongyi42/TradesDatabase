@@ -78,8 +78,13 @@ describe('focusedPassBlockedBy', () => {
   });
 
   test('missing credentials block', () => {
+    // ALL THREE, or the test passes only where the developer happens to have no
+    // `.env`: hasModelCredentials accepts OPENROUTER_API_KEY as well, so leaving
+    // it set made this red in the main repo (which loads `.env`) and green in a
+    // fresh worktree (which has none) — an environment-dependent gate.
     delete process.env.INFERENCE_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
     expect(focusedPassBlockedBy()).toBe('no inference credentials');
   });
 

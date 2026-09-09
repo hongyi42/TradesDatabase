@@ -26,7 +26,12 @@ export function emailAddressOf(from: string | null | undefined): string | null {
   if (!from) return null;
   const angled = from.match(/<([^>]*)>/);
   const candidate = (angled ? angled[1] : from).trim().toLowerCase();
-  return candidate.includes('@') ? candidate : null;
+  // AN ADDRESS, NOT MERELY A STRING WITH AN '@' IN IT. Without the shape check
+  // a header the parser cannot handle — `Team: jane@x.com;` (group syntax),
+  // `a@x.com; b@y.com` (semicolons) — comes back as one long "address" that
+  // matches nothing, so the message silently loses its identity key instead of
+  // saying it has none. Local@domain, no whitespace either side.
+  return /^[^\s@]+@[^\s@]+$/.test(candidate) ? candidate : null;
 }
 
 // IS THIS THE FIRM MAILING ITSELF? Rung 10b.2, from a live specimen: the pilot
@@ -76,11 +81,31 @@ export function isOwnMailbox(
   const sender = emailAddressOf(from);
   if (sender === null) return false;
   if (pairedMailbox && emailAddressOf(pairedMailbox) === sender) return true;
-  const recipients = (to ?? '')
-    .split(',')
-    .map((one) => emailAddressOf(one))
-    .filter((one): one is string => one !== null);
-  return recipients.length === 1 && recipients[0] === sender;
+  return soleRecipientOf(to) === sender;
+}
+
+// THE ONE ADDRESS A MESSAGE WENT TO, or null if it did not go to exactly one.
+// Gmail's `to` is a comma list (src/inbound/gmail.ts), and this is the same
+// unique-or-refuse rule every identity key follows: with two recipients we
+// cannot say which of them the message is ABOUT, and guessing one would file a
+// reply on whichever name came first. Semicolon and group-syntax headers are
+// deliberately not parsed — unreachable from our only producer.
+//
+// Used two ways, and they are the same question asked from either end: the
+// firm's own OUTBOUND mail (rung 10b.3) identifies the customer by who it was
+// SENT to, and `isOwnMailbox` above reads a single recipient as evidence of
+// which mailbox an inbound message ARRIVED at.
+export function soleRecipientOf(to: string | null | undefined): string | null {
+  // DISTINCT addresses: a reply-all that lists the same person twice, or the
+  // same address under two display names, still went to exactly one person, and
+  // counting it as two would withhold a key we plainly have.
+  const recipients = new Set(
+    (to ?? '')
+      .split(',')
+      .map((one) => emailAddressOf(one))
+      .filter((one): one is string => one !== null),
+  );
+  return recipients.size === 1 ? [...recipients][0] : null;
 }
 
 // ONE MESSAGE IN A CONVERSATION, as the extractor is shown it. Lives here rather

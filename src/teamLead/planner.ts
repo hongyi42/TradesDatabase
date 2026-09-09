@@ -1408,9 +1408,21 @@ export function buildGapView(
     const channel = ctxStr(n, 'channel') ?? 'a message';
     const from = ctxStr(n, 'from');
     const ago = elapsedLabel(n.created_at, nowMs);
+    // RUNG 10B.3 — SOMETIMES THESE ARE OUR OWN WORDS. A manager who typed a
+    // promise into Gmail ("we'll come Thursday") to somebody not on file raises
+    // this same kind, because the ping loop and the once-ever index key on it.
+    // The direction is stated on the context, never inferred from the channel
+    // name — printed as "the caller's words … from office@firm.test" it would
+    // read as a stranger getting in touch, and the planner would go and ask a
+    // manager who this person is about a message that manager wrote.
+    const outbound = n.context !== null && (n.context as { outbound?: boolean }).outbound === true;
+    const sentTo = ctxStr(n, 'sentTo');
     lines.push(
-      `  the caller's words (${channel}${from ? `, from ${from}` : ''}` +
-        `${ago ? `, ${ago}` : ''}): "${flat(ctxStr(n, 'words') ?? '', QUESTION_SHOWN_CHARS)}"`,
+      outbound
+        ? `  YOUR FIRM'S OWN reply${sentTo ? `, sent to ${sentTo}` : ''}` +
+          `${ago ? `, ${ago}` : ''}: "${flat(ctxStr(n, 'words') ?? '', QUESTION_SHOWN_CHARS)}"`
+        : `  the caller's words (${channel}${from ? `, from ${from}` : ''}` +
+          `${ago ? `, ${ago}` : ''}): "${flat(ctxStr(n, 'words') ?? '', QUESTION_SHOWN_CHARS)}"`,
     );
     // RUNG 10B — the one inbound kind with NO customer on it. Where the other
     // two say who got in touch, this one says that nobody on file does, and why
@@ -1418,7 +1430,12 @@ export function buildGapView(
     // to know what the first one already tried.
     const unmatched = n.kind === 'inbound_unmatched';
     const customerId = ctxStr(n, 'customerId');
-    if (unmatched) {
+    if (unmatched && outbound) {
+      lines.push(
+        '  the firm promised this and nobody on file is the person it went to — why: ' +
+          `${ctxStr(n, 'matchReason') ?? 'no unique match on phone, email, thread or address'}`,
+      );
+    } else if (unmatched) {
       lines.push(
         '  nobody on file matches this sender — why: ' +
           `${ctxStr(n, 'matchReason') ?? 'no unique match on phone, email, thread or address'}`,

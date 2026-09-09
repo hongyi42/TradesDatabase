@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from '../db/client.js';
 import { setTenantSeats } from '../db/tenants.js';
@@ -9,6 +9,13 @@ import { appendRawCapture } from '../db/rawCaptures.js';
 import { createVisit, updateVisitStatus } from '../db/visits.js';
 import { matchIdentity } from './identityMatch.js';
 import type { ExtractedFields } from './extract.js';
+
+// Spy-wrap the db barrel matchIdentity imports from (originals still run) so one
+// test can inject a TRANSIENT thread-read failure — the "a failed WHICH must not
+// cost us the WHO" contract is unreachable otherwise. The fixtures below reach
+// the db through the concrete modules, not the barrel, so they are untouched.
+vi.mock('../db/index.js', { spy: true });
+import { findCustomersByThread } from '../db/index.js';
 
 // matchIdentity reads customers + the DB-owned schedule (assignments), so this
 // is a DB-backed test against the local stack: we seed rows, then assert.
@@ -477,5 +484,275 @@ describe('matchIdentity — the thread key', () => {
       threadId: 'thread-unknown',
     });
     expect(r).toMatchObject({ status: 'matched', customerId: addressCustomerId });
+  });
+});
+
+// RUNG 10B.3. Two different questions used to share one answer: the key that
+// found the PERSON also decided the JOB, by returning the moment it was unique
+// and leaving the door to guess (the customer's newest non-terminal job). The
+// thread is the only key that ever knew the job, so it is now asked whichever
+// key won — for the job alone, and only when the job is that customer's.
+describe('matchIdentity — a person key decides WHO, the thread decides WHICH', () => {
+  test('the thread names ONE job for the matched customer → it rides along', async () => {
+    const cust = await createCustomer({
+      tenantId,
+      name: 'Which Job',
+      email: 'which@example.com',
+    });
+    const job = await createJob({ tenantId, customerId: cust.id, title: 'radiator' });
+    const capture = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      rawText: 'the radiator again',
+      externalId: 'msg-which-1',
+      metadata: { threadId: 'thread-which' },
+    });
+    await insertJobCapture({ tenantId, jobId: job.id, captureId: capture.id });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+      email: 'which@example.com',
+      threadId: 'thread-which',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: cust.id, jobId: job.id });
+  });
+
+  test('THE DEFECT: two open jobs, a reply on the older thread lands on the OLDER', async () => {
+    // Fails on main: the email key returned before the thread was consulted, so
+    // the door fell through to "newest non-terminal job" and filed the reply
+    // against work the customer was not writing about.
+    const cust = await createCustomer({
+      tenantId,
+      name: 'Two Open Jobs',
+      email: 'twoopen@example.com',
+    });
+    const older = await createJob({ tenantId, customerId: cust.id, title: 'quote: repipe' });
+    const newer = await createJob({ tenantId, customerId: cust.id, title: 'booked: radiator' });
+    const capture = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      rawText: 'about the repipe quote',
+      externalId: 'msg-twoopen-1',
+      metadata: { threadId: 'thread-twoopen' },
+    });
+    await insertJobCapture({ tenantId, jobId: older.id, captureId: capture.id });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+      email: 'twoopen@example.com',
+      threadId: 'thread-twoopen',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: cust.id, jobId: older.id });
+    expect(r.jobId).not.toBe(newer.id);
+  });
+
+  test("THE HAZARD: the thread's job belongs to ANOTHER customer → no jobId", async () => {
+    // Adopting it blindly would file this message against somebody else's work,
+    // which is worse than the guess this rung replaces.
+    const writer = await createCustomer({
+      tenantId,
+      name: 'The Writer',
+      email: 'writer@example.com',
+    });
+    const other = await createCustomer({ tenantId, name: 'Somebody Else' });
+    const theirJob = await createJob({ tenantId, customerId: other.id, title: 'not yours' });
+    const capture = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      rawText: 'forwarded along',
+      externalId: 'msg-drift-1',
+      metadata: { threadId: 'thread-drift' },
+    });
+    await insertJobCapture({ tenantId, jobId: theirJob.id, captureId: capture.id });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+      email: 'writer@example.com',
+      threadId: 'thread-drift',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: writer.id });
+    expect(r.jobId).toBeUndefined();
+  });
+
+  test('the thread names TWO jobs for the matched customer → no jobId', async () => {
+    const cust = await createCustomer({
+      tenantId,
+      name: 'Ambiguous Thread',
+      email: 'ambiguous@example.com',
+    });
+    for (const [i, title] of ['first', 'second'].entries()) {
+      const job = await createJob({ tenantId, customerId: cust.id, title });
+      const capture = await appendRawCapture({
+        tenantId,
+        channel: 'email',
+        rawText: `about ${title}`,
+        externalId: `msg-ambig-${i}`,
+        metadata: { threadId: 'thread-ambig' },
+      });
+      await insertJobCapture({ tenantId, jobId: job.id, captureId: capture.id });
+    }
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+      email: 'ambiguous@example.com',
+      threadId: 'thread-ambig',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: cust.id });
+    expect(r.jobId).toBeUndefined();
+  });
+
+  test('a TERMINAL job on the thread is never adopted', async () => {
+    const cust = await createCustomer({
+      tenantId,
+      name: 'Settled Sam',
+      email: 'settled@example.com',
+    });
+    const job = await createJob({ tenantId, customerId: cust.id, title: 'invoiced' });
+    const capture = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      rawText: 'thanks, paid',
+      externalId: 'msg-settled-1',
+      metadata: { threadId: 'thread-settled' },
+    });
+    await insertJobCapture({ tenantId, jobId: job.id, captureId: capture.id });
+    await pg.query('update jobs set status = $1 where id = $2', ['paid', job.id]);
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+      email: 'settled@example.com',
+      threadId: 'thread-settled',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: cust.id });
+    expect(r.jobId).toBeUndefined();
+  });
+
+  test('no threadId at all → the email key answers exactly as it did', async () => {
+    const cust = await createCustomer({
+      tenantId,
+      name: 'No Thread',
+      email: 'nothread@example.com',
+    });
+    await createJob({ tenantId, customerId: cust.id, title: 'open work' });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+      email: 'nothread@example.com',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: cust.id });
+    expect(r.jobId).toBeUndefined();
+  });
+
+  test('the PHONE key gets the thread’s job too, not just email', async () => {
+    const cust = await createCustomer({
+      tenantId,
+      name: 'Phoned In',
+      phone: '555-0777',
+    });
+    const job = await createJob({ tenantId, customerId: cust.id, title: 'boiler' });
+    const capture = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      rawText: 'the boiler',
+      externalId: 'msg-phoned-1',
+      metadata: { threadId: 'thread-phoned' },
+    });
+    await insertJobCapture({ tenantId, jobId: job.id, captureId: capture.id });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note({ phone: '555-0777' }),
+      threadId: 'thread-phoned',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: cust.id, jobId: job.id });
+  });
+
+  test('the ADDRESS key gets the thread’s job too — even on a thread that REFUSED', async () => {
+    // The address arm sits BELOW the thread arm, so reaching it needs a thread
+    // the thread arm itself would not answer: this one crosses two customers.
+    // It still knows exactly one job for the customer the ADDRESS named, and
+    // that is the whole split — the key decides who, the conversation which.
+    const cust = await createCustomer({
+      tenantId,
+      name: 'Addressed',
+      addressLine1: '77 Thread Lane',
+    });
+    const stranger = await createCustomer({ tenantId, name: 'Also On This Thread' });
+    const job = await createJob({ tenantId, customerId: cust.id, title: 'gutters' });
+    const capture = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      rawText: 'the gutters',
+      externalId: 'msg-addr-1',
+      metadata: { threadId: 'thread-addr' },
+    });
+    await insertJobCapture({ tenantId, jobId: job.id, captureId: capture.id });
+    await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      rawText: 'looping in the landlord',
+      externalId: 'msg-addr-2',
+      metadata: { threadId: 'thread-addr' },
+      customerId: stranger.id,
+    });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note({ address: '77 Thread Lane' }),
+      threadId: 'thread-addr',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: cust.id, jobId: job.id });
+  });
+
+  test('a thread read that FAILS keeps the match — WHO is answered, WHICH is an aid', async () => {
+    // Before this rung a unique email key returned without reading the thread at
+    // all. If the read's failure escaped, an otherwise-resolved identity would
+    // become a 503 and Composio's redelivery would pay for the extractor a
+    // SECOND time — the capture has no L2 link yet, so the door's
+    // already-processed short-circuit does not catch it.
+    const cust = await createCustomer({
+      tenantId,
+      name: 'Blipped',
+      email: 'blipped@example.com',
+    });
+    // THE THREAD IS SEEDED ON PURPOSE. Without a job on it, this test passes
+    // whether the read threw or merely found nothing — a guard that stays green
+    // if a later refactor stops the person arms calling the thread at all.
+    // Seeded, `jobId` would ride along on a SUCCESSFUL read, so the assertion
+    // below can only hold if the failure was swallowed.
+    const job = await createJob({ tenantId, customerId: cust.id, title: 'would ride along' });
+    const capture = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      rawText: 'the blip',
+      externalId: 'msg-blip-1',
+      metadata: { threadId: 'thread-blip' },
+    });
+    await insertJobCapture({ tenantId, jobId: job.id, captureId: capture.id });
+    vi.mocked(findCustomersByThread).mockRejectedValueOnce(new Error('PostgREST blip'));
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-no-sched',
+      capturedAt: today,
+      extracted: note(),
+      email: 'blipped@example.com',
+      threadId: 'thread-blip',
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: cust.id });
+    expect(r.jobId).toBeUndefined();
   });
 });

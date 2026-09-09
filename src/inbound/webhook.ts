@@ -9,9 +9,14 @@ import {
   upsertDroppedAudit,
 } from '../db/index.js';
 import { defaultClassifier } from '../email/classify.js';
-import { emailAddressOf, isOwnMailbox, type ThreadMessage } from '../email/format.js';
+import { emailAddressOf, isOwnMailbox, soleRecipientOf, type ThreadMessage } from '../email/format.js';
 import { fetchThreadMessages } from '../composio/threads.js';
-import { captureHasLinkedL2, getRawCaptureByExternalId, listCapturesByThread } from '../db/index.js';
+import {
+  captureHasLinkedL2,
+  getRawCaptureByExternalId,
+  isAgentWrittenCapture,
+  listCapturesByThread,
+} from '../db/index.js';
 import type { WorkClassifier } from '../email/classify.js';
 import { resolveNormalizer as liveResolveNormalizer } from './normalize.js';
 import type { Normalizer } from './normalize.js';
@@ -92,6 +97,11 @@ export interface InboundWebhookDeps {
   ) => Promise<ThreadMessage[] | null>;
   listThreadCaptures?: typeof listCapturesByThread;
   alreadyProcessed?: (tenantId: string, externalId: string) => Promise<boolean>;
+  // RUNG 10B.3: the lookup that recognises the assistant's OWN send coming back
+  // to us through the SENT label a minute later. Injected for the same reason
+  // everything else here is — a test must not need a DB.
+  findCaptureByExternalId?: typeof getRawCaptureByExternalId;
+  hasLinkedL2?: typeof captureHasLinkedL2;
 }
 
 // The handler classifies every outcome into one status; httpServer maps each status
@@ -156,6 +166,8 @@ export async function handleInboundWebhook(
   // Is this delivery one the door will no-op on? The door's own dedup is the
   // authority; this is the cheap pre-check that keeps a BILLED fetch off the
   // path when the answer is already known to be "nothing to do".
+  const findCaptureByExternalId = deps.findCaptureByExternalId ?? getRawCaptureByExternalId;
+  const hasLinkedL2 = deps.hasLinkedL2 ?? captureHasLinkedL2;
   const alreadyProcessed =
     deps.alreadyProcessed ??
     (async (tid: string, externalId: string) => {
@@ -210,10 +222,30 @@ export async function handleInboundWebhook(
     from?: string;
     subject?: string;
     body?: string;
+    messageId?: string;
     threadId?: string;
     to?: string;
     labelIds?: string[];
   };
+  // GMAIL'S OWN ID FOR THIS MESSAGE. Not the same thing as `externalId` any
+  // more: an outbound delivery is keyed `sent:<messageId>` so that the trigger,
+  // `send_email` and `logIngest` share one L1 key. Anything comparing against
+  // GMAIL's view of the thread must use this, not the storage key.
+  const selfMessageId = meta.messageId ?? envelope.externalId;
+  // …AND BOTH SPELLINGS WHERE THE OTHER SIDE COULD BE EITHER. The thread we
+  // show the model comes from one of two places and they name a message
+  // differently: Composio hands back GMAIL's bare id, our own L1 fallback hands
+  // back the STORAGE key (`listCapturesByThread` reads `external_id`). Compare
+  // against one spelling and the firm's own reply survives its own filter on
+  // the other path — landing in its own "earlier in this conversation" block,
+  // where the extractor is told a commitment is already handled. Same reason
+  // the blocked list below carries both.
+  const selfIds = new Set(
+    [selfMessageId, envelope.externalId].filter((id): id is string => !!id),
+  );
+  // WHOSE VOICE IS THIS? The normalizer already decided, from Gmail's own SENT
+  // label (src/inbound/gmail.ts); the door only reads its answer.
+  const outbound = envelope.channel === 'outbound_email';
 
   // From here on, any THROW is a transient fault (DB/model blip) → transient_error
   // (503, retried), except an FK violation (unknown/deleted tenant) → unknown_tenant
@@ -243,6 +275,52 @@ export async function handleInboundWebhook(
       return { status: 'skipped_offboarded' };
     }
 
+    // RUNG 10B.3 — THE ASSISTANT'S OWN SEND, COMING BACK. Now that SENT is
+    // watched, every email the spine sends is delivered to us about a minute
+    // later as an ordinary trigger message. The synchronous capture
+    // `send_email` already wrote is the one of record — it is guaranteed, it
+    // carries the staged copy, and it is already stamped — so the trigger's
+    // copy is dropped rather than appended. L1 CANNOT BE REWRITTEN, which is
+    // what makes the order non-negotiable: this runs BEFORE the classifier (no
+    // model call for a message we already hold) and before any insert.
+    //
+    // No join is needed: the normalizer already keys an outbound delivery as
+    // `sent:<messageId>`, the same key `send_email` and `logIngest` write under
+    // (src/inbound/gmail.ts explains why). So this is simply "do we already hold
+    // this row" — which also makes a plain REDELIVERY free, since our own
+    // earlier capture answers it.
+    //
+    // ONE GAP, NAMED, AND IT COSTS MORE THAN A ROW. When the Gmail id cannot be
+    // parsed out of the response, `send_email` falls back to
+    // `sent:confirm:<confirmId>` and `logIngest` to `composio-exec:<logId>` —
+    // keys no delivery can ever match, because there is genuinely nothing to
+    // join on. The trigger's copy of that message then runs the WHOLE door: a
+    // classifier call, an extractor call, a job link, correspondence, and an ask
+    // to the planner about a commitment the agent itself made and already
+    // reported to the person who approved it. Rare (the send seam returns an id
+    // in every observed case) and not fixable from this side.
+    if (outbound && envelope.externalId) {
+      const twin = await findCaptureByExternalId(tenantId, envelope.externalId);
+      if (twin) {
+        // WHO WROTE THE ROW WE FOUND? Sharing one key means this lookup can
+        // return OUR OWN half-finished delivery, and returning 'duplicate' on
+        // that would be permanent: an append that landed and then threw before
+        // the job link (three CAS misses on the correspondence append is the
+        // named case) redelivers as a 503, and the door would never run again.
+        // The promise would never reach the job and no later delivery could fix
+        // it. `captureHasLinkedL2` alone cannot tell the two apart — an agent's
+        // send row has no L2 link either — so the PRODUCER is the discriminator:
+        // the agent's writers stamp `sentVia` (send_email) or `toolSlug`
+        // (logIngest), the trigger stamps the headers.
+        if (isAgentWrittenCapture(twin.metadata) || (await hasLinkedL2(twin.id))) {
+          return { status: 'duplicate', captureId: twin.id };
+        }
+        // Otherwise fall through and finish the job this delivery started. The
+        // unique index makes re-entry safe: recordFieldNote adopts the existing
+        // row rather than appending a second one.
+      }
+    }
+
     // classify-before-L1: gate the append, since L1 is append-only and a misrouted
     // (non-work) row could never be removed (CLAUDE.md). Feed the CLEAN body (sourceMeta),
     // NOT the header-prefixed rawText — the one classifier both email doors share.
@@ -252,6 +330,9 @@ export async function handleInboundWebhook(
           from: meta.from ?? '',
           subject: meta.subject ?? '',
           body: meta.body ?? '',
+          // RUNG 10B.3: on the firm's own mail the sender is always us, so the
+          // recipient is the whole signal — customer, or the manager's dentist.
+          ...(outbound ? { outbound: true, to: meta.to ?? '' } : {}),
         },
         // Billed even when the verdict is "personal" and the mail is dropped —
         // we paid for the triage either way.
@@ -266,7 +347,13 @@ export async function handleInboundWebhook(
           tenantId,
           channel: envelope.channel,
           externalId: envelope.externalId,
-          from: meta.from,
+          // WHICH END IS WORTH KEEPING. The receipt stores a DOMAIN only
+          // (db/droppedAudit.ts), and on the firm's own outbound mail the
+          // sender's domain is our own — the same string on every drop, saying
+          // nothing. The recipient's domain is the one that tells an operator
+          // what was dropped, and it is no more identifying than the inbound
+          // case it mirrors.
+          from: outbound ? (meta.to ?? meta.from) : meta.from,
           reason,
           technicianRef,
         });
@@ -297,7 +384,7 @@ export async function handleInboundWebhook(
     let threadContext: ThreadMessage[] = [];
     if (
       meta.threadId &&
-      meta.threadId !== envelope.externalId &&
+      meta.threadId !== selfMessageId &&
       !(envelope.externalId && (await alreadyProcessed(tenantId, envelope.externalId)))
     ) {
       try {
@@ -306,7 +393,15 @@ export async function handleInboundWebhook(
         // or marked manager_only. Gmail knows neither, so without this a
         // retraction would hold only while Composio happened to be down.
         const ours = await listThreadCaptures(tenantId, meta.threadId);
-        const blocked = new Set(ours.blockedMessageIds);
+        // Blocked ids are L1 `external_id`s, so an outbound row contributes the
+        // `sent:` form while a Composio-fetched thread names the bare one. Both
+        // spellings go in the set or a RETRACTED reply of ours would still be
+        // shown to the model.
+        const blocked = new Set(
+          ours.blockedMessageIds.flatMap((id) =>
+            id.startsWith('sent:') ? [id, id.slice('sent:'.length)] : [id],
+          ),
+        );
         const fetched = tech?.composio_connected_account_id
           ? await fetchThread(tech, meta.threadId)
           : null;
@@ -316,7 +411,13 @@ export async function handleInboundWebhook(
           // the same reason: if it cannot be placed, it cannot be ruled out, and
           // showing the current message as "earlier" would have the model treat
           // a live commitment as one already handled — a promise nobody hears.
-          if (!m.messageId || m.messageId === envelope.externalId) return false;
+          // GMAIL's id on both sides — `externalId` carries the `sent:` prefix on
+          // an outbound delivery, so comparing against it would never match and
+          // the firm's own reply would be shown to the model as EARLIER
+          // context. The extractor is told an earlier commitment "is already
+          // handled", so `visitCommitted` would be suppressed and the ask never
+          // raised: a promise nobody hears, which is what this line prevents.
+          if (!m.messageId || selfIds.has(m.messageId)) return false;
           return !blocked.has(m.messageId);
         });
       } catch (err) {
@@ -341,7 +442,15 @@ export async function handleInboundWebhook(
       // …AND NEVER OUR OWN MAILBOX (rung 10b.2): a message the firm sent to
       // itself would otherwise offer the firm's address as the caller's identity
       // key. The mail still ingests — only the key is withheld.
-      fallbackEmail: isOwnMailbox(meta.from, meta.to, tech?.connected_email) ? null : emailAddressOf(meta.from),
+      // …AND THE OTHER END ENTIRELY ON THE FIRM'S OWN MAIL (rung 10b.3): on a
+      // SENT message the sender IS us, so the address worth matching on is who
+      // it went TO. Unique-or-nothing, like every other key: a reply copied to
+      // two people names neither of them.
+      fallbackEmail: outbound
+        ? soleRecipientOf(meta.to)
+        : isOwnMailbox(meta.from, meta.to, tech?.connected_email)
+          ? null
+          : emailAddressOf(meta.from),
       threadId: meta.threadId ?? null,
       ...(threadContext.length > 0 ? { threadContext } : {}),
       // L1 metadata carries from/subject only — the body already lives in raw_text,

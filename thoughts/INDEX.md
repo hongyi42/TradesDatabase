@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 226 documents · 215 live · 11 superseded.
+Regenerate with `npm run decisions:index`. 227 documents · 216 live · 11 superseded.
 
 ## Superseded — do not build on these
 
@@ -50,6 +50,7 @@ Regenerate with `npm run decisions:index`. 226 documents · 215 live · 11 super
 
 ## Live
 
+- `2026-09-09` `plan` [2026-09-09-the-conversation-decides-which](shared/plans/2026-09-09-the-conversation-decides-which.md) · _draft_ — the thread supplies the JOB when a person key found the customer; and the firm's own half of an email convers…
 - `2026-09-09` `plan` [2026-09-09-the-work-record-park-board-and-compaction-survival](shared/plans/2026-09-09-the-work-record-park-board-and-compaction-survival.md) · _draft_ — The shared work record — one place every session reads and writes (tasks and parked findings), a board of wor…
 - `2026-09-09` `research` [2026-09-09-code-graph-as-source-of-truth](shared/research/2026-09-09-code-graph-as-source-of-truth.md) `landed` — The code graph as a source of truth for parallel implementation — the 2026 landscape of code-knowledge-graph…
 - `2026-09-09` `research` [2026-09-09-graph-engineering-for-parallel-implementation](shared/research/2026-09-09-graph-engineering-for-parallel-implementation.md) `landed` — "Graph engineering" — what the term means in September 2026 (it is three different graphs), which of the thre…

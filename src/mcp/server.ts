@@ -908,9 +908,9 @@ const ADMIN_TOOLS = [
       'one step, no confirmation: a job is cancellable, and the manager just asked for it. ' +
       'Use it when the office tells you a customer got in touch and asks whether to open the ' +
       'job, and the manager says yes but nobody is being sent out yet (a quote, an estimate, ' +
-      'work to schedule later). If they ALSO want someone sent, use book_visit instead — with ' +
-      'no date and no times it books an untimed visit AND mints the job in the same call, so ' +
-      'do not call both. REFUSED when the customer already has open work, with the list: pass ' +
+      'work to schedule later). If they ALSO want someone sent, use book_visit instead — it mints ' +
+      'the job in the same call, so do not call both: give it the day and both times if the ' +
+      'manager stated them, or `untimed: true` if the timing genuinely is not settled. REFUSED when the customer already has open work, with the list: pass ' +
       'the matching job to whatever you do next, or forceNewJob:true only if this is genuinely ' +
       'different new work. Returns the job with its id and title — tell the manager the title, ' +
       'in the same breath, because it is your words that reached the permanent record.',
@@ -1119,9 +1119,11 @@ const ADMIN_TOOLS = [
       '(a range like "12-1pm" means startTime 12:00 AND endTime 13:00); if the manager did ' +
       'not say when the visit starts or ends, ASK them — never guess. ONE exception: when the ' +
       'manager says the timing is not settled ("book them in, we will find a slot"), pass ' +
-      'NONE of date/startTime/endTime — the visit books UNTIMED and waits in the unscheduled ' +
-      'queue until someone places it with move_visit. Booking untimed is never your own ' +
-      'choice when a day or time was stated. Omit technicianRef to ' +
+      '`untimed: true` AND none of date/startTime/endTime — the visit books UNTIMED and waits ' +
+      'in the unscheduled queue until someone places it with move_visit. You must SAY untimed; ' +
+      'leaving the day out is refused, because an omission is not a decision. Booking untimed ' +
+      'is never your own choice when a day or a time was stated — if you were given a day but ' +
+      'no times, ask for the times. Omit technicianRef to ' +
       'book WITHOUT a technician (put it on the calendar, assign later — attach someone with ' +
       'move_visit; find these via get_team_schedule unassignedOnly:true). ' +
       'SEVERAL PEOPLE ON ONE TRIP: pass technicianRefs with every ref ("Ben and Joy on the ' +
@@ -1140,9 +1142,17 @@ const ADMIN_TOOLS = [
         technicianRef: { type: 'string', description: 'Roster ref of ONE technician — shorthand for a one-person crew. OPTIONAL — omit to book unassigned ("assign later").' },
         technicianRefs: { type: 'array', items: { type: 'string' }, description: 'Roster refs of EVERY technician going on this trip. Two people on one job at one time is ONE visit with both refs here — never two book_visit calls.' },
         title: { type: 'string', description: 'Job title when booking by customerId (a new job is created).' },
-        date: { type: 'string', description: 'YYYY-MM-DD, firm-local. Required WITH both times — or omit all three to book an untimed visit.' },
+        date: { type: 'string', description: 'YYYY-MM-DD, firm-local. Required WITH both times. Omitting it is NOT how you book without a day — that is `untimed: true`, and an omission is refused.' },
         startTime: { type: 'string', description: 'HH:MM 24h. Required with date and endTime — no default; ask the manager if unstated.' },
         endTime: { type: 'string', description: 'HH:MM 24h. Required with date and startTime — no default length; ask the manager if unstated.' },
+        untimed: {
+          type: 'boolean',
+          description:
+            'true books with NO day and no times, for work the manager said is not scheduled ' +
+            'yet ("book them in, we will find a slot"). It is the ONLY way to book without a ' +
+            'day — omitting date/startTime/endTime is refused. Never pass it when a day was ' +
+            'stated: book that day instead, asking for the times if you were not given them.',
+        },
         priority: { type: 'string', enum: ['emergency', 'urgent', 'routine', 'maintenance'], description: 'Triage tier for the NEW job when booking by customerId (default "routine"). Rejected with jobId — an existing job keeps its recorded priority.' },
         forceNewJob: { type: 'boolean', description: 'customerId path only: override the open-work guard and mint a new job even though the customer has open work on file. ONLY when the work is genuinely different from every listed job — never to skip the jobId lookup.' },
       },
@@ -2171,6 +2181,50 @@ export function oneShotNoteStamp(input: {
 // A confirmed answer that matched no existing customer resolves to create-new;
 // the FULL draft is built here (schedule prefill > extracted/confirmed) so the
 // preview shows exactly the customer commit will create.
+// AN ADDRESS IS WHERE THEY ARE, NOT WHO THEY ARE (rung 10b.2).
+//
+// Two doors mint a customer from a name plus an address — `record_field_note`'s
+// confirm (via resolutionFrom) and `record_caller`'s `newCustomer` — and BOTH
+// need this, which is why it is a function rather than an inline check. The
+// first version guarded only the note door; rung 10b.2 had just finished telling
+// the manager's seat to stop using that one, so the guard was on the door nobody
+// takes and absent from the door everybody now takes (review finding).
+//
+// Why it exists: on the note path `address` does double duty — it both UNLOCKS
+// the mint and becomes `address_line1` unchecked — so a caller with no address
+// to give is pressured to put SOMETHING in the field. Live specimen 2026-09-08:
+// a customer created with `address_line1 = 'Ruth Bramley'`, her own name.
+//
+// REFUSED, not nulled: the caller believes it is recording an address and will
+// go on to tell a manager so. And there is no address updater anywhere in the
+// app (src/db/customers.ts), so a fabrication here is permanent.
+//
+// Normalized past the one-character retry — the refusal quotes the string back,
+// which is exactly the prompt that produces "Ruth Bramley," on the next attempt.
+// Internal whitespace is collapsed and surrounding punctuation stripped, so the
+// evasions are a different STRING rather than a different spelling of the name.
+const addressKey = (value: string | null | undefined): string =>
+  (value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/^[.,;:'"\-\s]+|[.,;:'"\-\s]+$/g, '');
+
+export function refuseNameAsAddress(
+  address: string | null | undefined,
+  customerName: string | null | undefined,
+): void {
+  const claimed = addressKey(address);
+  const name = addressKey(customerName);
+  if (!claimed || !name || claimed !== name) return;
+  throw new Error(
+    `"${address?.trim()}" is the customer's NAME, not an address — an address is where they ` +
+      'are. If you were not given one, leave the address out. If that really IS the address ' +
+      '(a house or farm name), write enough of it to read as a place — add the street, the ' +
+      'town or the postcode — so the record does not just repeat their name.',
+  );
+}
+
 function resolutionFrom(
   match: MatchResult,
   confirmed: { customerId?: string; address?: string } | undefined,
@@ -2181,6 +2235,7 @@ function resolutionFrom(
   }
   if (confirmed && (match.createFrom || confirmed.address)) {
     const draft = match.createFrom;
+    refuseNameAsAddress(confirmed.address, draft?.customerName ?? extracted.customerName);
     return {
       createFrom: {
         // Trim-normalize the name so preview and commit agree: '' / whitespace
@@ -4844,7 +4899,8 @@ async function dispatch(
         note:
           'The job is open and NOTHING is on the calendar. Tell the manager the title above — ' +
           'your words reached the record. If they want someone sent out, book_visit with the ' +
-          'jobId (no date/times = untimed, in the unscheduled queue).',
+          'jobId — with the day and both times if they gave them, or `untimed: true` if the ' +
+          'timing is not settled.',
       };
     }
     case 'book_visit': {
@@ -4892,13 +4948,35 @@ async function dispatch(
             throw new Error(`${key} must be a string (YYYY-MM-DD or HH:MM), not ${typeof args[key]}`);
           }
         }
-        const untimed = !date && !startTime && !endTime;
+        // UNTIMED IS SOMETHING YOU SAY, NOT SOMETHING YOU OMIT (rung 10b.2).
+        // It used to be `!date && !startTime && !endTime` — so leaving the day
+        // out WAS the instruction to book without one, and a day the manager
+        // actually stated could vanish with nothing to notice it. Live specimen
+        // 2026-09-08: the manager said "Thursday morning", the seat booked
+        // untimed, and its own reply named Thursday 2026-09-10 in the next
+        // breath. The tool's prose already forbade that ("booking untimed is
+        // never your own choice when a day or time was stated") and lost to the
+        // schema, which is the shape this whole rung is about.
+        if (args.untimed !== undefined && typeof args.untimed !== 'boolean') {
+          throw new Error(`untimed must be true or false, not ${typeof args.untimed}`);
+        }
+        const untimed = args.untimed === true;
+        // Contradiction: fail LOUDLY rather than silently preferring one. An
+        // agent that passes both has two different intentions in one call, and
+        // guessing which it meant is how a stated day gets dropped.
+        if (untimed && (date || startTime || endTime)) {
+          throw new Error(
+            'untimed:true means NO day and no times — you passed some. Either book it on the ' +
+              'day you were given (date + startTime + endTime), or drop those and book untimed.',
+          );
+        }
         if (!untimed && (!date || !startTime || !endTime)) {
           throw new Error(
             'date, startTime and endTime are required TOGETHER — the server assumes no default ' +
-              'day or length. If the manager did not say when the visit starts or ends, ask ' +
-              'them, then book. (To book work with no time settled yet, pass none of the ' +
-              'three: the visit lands in the unscheduled queue.)',
+              'day or length. If the manager did not say when the visit starts or ends, ASK ' +
+              'them, then book. Only if they said the timing is not settled at all, pass ' +
+              '`untimed: true` — never leave the day out to mean that, and never drop a day ' +
+              'you were given.',
           );
         }
         const customerId = str('customerId');
@@ -6266,6 +6344,12 @@ async function dispatch(
       // would match that one person. Refused rather than silently dropped: the
       // caller of this tool believes it is recording the customer's address, and
       // quietly writing null would leave them saying so to a manager.
+      // …and the address they gave is not just the caller's name again. Same
+      // guard the note door has, on the door rung 10b.2 tells the seat to use.
+      refuseNameAsAddress(
+        typeof newCustomer?.addressLine1 === 'string' ? newCustomer.addressLine1 : null,
+        newName,
+      );
       const newEmail = typeof newCustomer?.email === 'string' ? newCustomer.email : null;
       // The paired mailbox for the person this message was delivered under —
       // authoritative where the `to` header is ambiguous (several recipients),

@@ -213,7 +213,7 @@ the test is now PLACEMENT:
   somebody because the firm agreed to come out — the agent takes the customer and the work from
   that message, `find_customer`s the id, and asks the manager. On a yes: `book_visit` when
   somebody is being sent (jobId if the office named one, else customerId + the work as the title,
-  and NO date or times — it books untimed AND mints the job in one call), or the new `open_job`
+  with the day and both times if the manager gave them, else `untimed: true` — it mints the job in the same call), or the new `open_job`
   when only the job is wanted (a quote, an estimate, work to schedule later). Both refuse when the
   customer already has THAT work on file (a title naming an open job), with the list — for a
   visit, re-call `book_visit` with the matching jobId; `open_job` takes no jobId, so act on the
@@ -265,7 +265,7 @@ the test is now PLACEMENT:
 removed after it overrode a stated "12–1pm" in the pilot): `date`, `startTime` and `endTime`
 arrive TOGETHER, the agent passes exactly what the manager stated, and asks when one is
 missing. **One recorded exception (2026-07-25, plan 4b-2, re-cut by rung 9a):** when the timing
-genuinely is not settled, the agent passes **none of the three** and the visit books UNTIMED —
+genuinely is not settled, the agent passes **`untimed: true` and none of the three** and the visit books UNTIMED (rung 10b.2: an omission alone is refused — untimed must be SAID) —
 no day, no range, nothing stored about when it should happen. It waits in the unscheduled queue
 until a normal `move_visit` places it. There is no way to record "sometime next week": that is
 a conversation with the manager (and, through the office channel, with the planner that knows

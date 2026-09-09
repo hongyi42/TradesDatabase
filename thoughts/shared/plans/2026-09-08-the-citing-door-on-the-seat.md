@@ -240,11 +240,13 @@ fabricated an address.
   "Ruth Bramley" → refused; a real address still mints.
 
 ### Automated verification
-- [ ] `npm run typecheck`
-- [ ] `npm run lint`
-- [ ] `npm test`
-- [ ] new tests above pass
-- [ ] `npm run build`
+- [x] `npm run typecheck`
+- [x] `npm run lint`
+- [x] `npm test` — 2845 passed; the one failure (`plannerPass > missing credentials block`)
+      reproduces on stashed main, env-dependent
+- [x] new tests above pass (4 `book_visit` shapes; the address guard on BOTH doors, with the
+      evasion set and the escape-hatch wording)
+- [x] `npm run build`
 
 ### Manual verification
 None.

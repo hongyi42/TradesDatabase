@@ -511,6 +511,38 @@ export async function moveVisitRow(id: string, input: MoveVisitRowInput): Promis
 // undefined = "leave the crew alone"; an array = REPLACE it with exactly these
 // people. `technicianId: null` is the old spelling of "detach everybody" and
 // still means that.
+// THE UNTIME PRIMITIVE (dispatch console undo, 2026-09-07): a placed visit
+// goes back to "no time set" — both timestamps null, crew and status kept.
+// The participant sync trigger carries the nulls onto every person's copy,
+// and both exclusion guards skip null ranges, so the people are FREED without
+// being REMOVED. It is the inverse of placing a parked visit, which is the one
+// console gesture that had no way back. Terminal rows refuse, like moveVisitRow;
+// an already-untimed row refuses too, so a double undo cannot pretend to work.
+export async function untimeVisitRow(id: string, reason: string): Promise<Visit> {
+  const old = await getVisit(id);
+  if (!old) throw new Error(`untimeVisitRow: visit ${id} not found`);
+  if (old.status === 'cancelled' || old.status === 'completed') {
+    throw new Error(`cannot untime a ${old.status} visit`);
+  }
+  if (!isPlaced(old)) throw new Error('the visit already has no time set');
+  const { data, error } = await getClient()
+    .from('visits')
+    .update({ starts_at: null, ends_at: null, reason }) // updated_at: DB trigger
+    .eq('id', id)
+    .eq('status', old.status) // the jobs.ts CAS: a concurrent flip surfaces
+    .select()
+    .maybeSingle();
+  if (error) {
+    throw Object.assign(new Error(`untimeVisitRow failed: ${error.message}`), { code: error.code });
+  }
+  if (!data) {
+    throw new Error(
+      `untimeVisitRow: visit ${id} changed concurrently (was '${old.status}'); not applied`,
+    );
+  }
+  return data;
+}
+
 function crewChangeOf(input: {
   technicianId?: string | null;
   technicianIds?: string[];
@@ -843,8 +875,12 @@ export async function getVisitWithRefsForTenant(
 // manual fixes — can violate it, and no app-level validation can catch those.
 // So the day view now re-checks the customer directly, matching readVisitDetail.
 export type VisitDayRow = Visit & {
+  // `title` and `priority` ride along for the CONSOLE's cards: a wide grid has
+  // room to say what the work is, and colour-by-priority needs the tier on the
+  // stop rather than a second read per visit. Two scalar columns on a join the
+  // query already makes — the Telegram board simply ignores them.
   jobs:
-    | (Pick<Job, 'id' | 'tenant_id' | 'customer_id'> & {
+    | (Pick<Job, 'id' | 'tenant_id' | 'customer_id' | 'title' | 'priority'> & {
         customers: (JobCustomerAddress & { tenant_id: string }) | null;
       })
     | null;
@@ -853,7 +889,7 @@ export type VisitDayRow = Visit & {
 
 // Single string literal — see the DETAIL_SELECT note above.
 const DAY_SELECT =
-  '*, jobs(id,tenant_id,customer_id,customers(name,address_line1,address_line2,city,state,postal_code,tenant_id)), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
+  '*, jobs(id,tenant_id,customer_id,title,priority,customers(name,address_line1,address_line2,city,state,postal_code,tenant_id)), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
 
 // Same filters as listVisitsForTenant, plus the embedded graph.
 export type PlacedVisitDayRow = VisitDayRow & { starts_at: string; ends_at: string };

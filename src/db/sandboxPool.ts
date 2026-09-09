@@ -15,11 +15,15 @@ export type SandboxPoolRow = Database['public']['Tables']['sandbox_pool']['Row']
 // insertTechnician. botUsername is the sandbox's Telegram bot handle (@...): the
 // only way a technician can open the chat (bots cannot message first), known at
 // provisioning time and nowhere later — so it is captured here or never.
+// botId is the same story for the machine-readable half: the numeric id from
+// the provision phase's getMe, which is what lets this bot's Mini App launches
+// be verified WITHOUT its token ever leaving the box (initData.ts).
 export async function registerSandbox(input: {
   tenantId: string;
   hostId: string;
   sandboxRef: string;
   botUsername?: string;
+  botId?: string;
 }): Promise<SandboxPoolRow> {
   const { data, error } = await getClient()
     .from('sandbox_pool')
@@ -28,6 +32,7 @@ export async function registerSandbox(input: {
       host_id: input.hostId,
       sandbox_ref: input.sandboxRef,
       bot_username: input.botUsername ?? null,
+      bot_id: input.botId ?? null,
     })
     .select()
     .single();
@@ -269,4 +274,58 @@ export async function completeSandboxRecycle(input: {
     }
   }
   return { retired, registered, tenantId: row.tenant_id, retiredTechnicianId };
+}
+
+// Backfill for seats registered before bot_id existed, and the repair path when
+// a bot is re-inspected. Idempotent by (tenant, sandbox_ref). Digits only —
+// the DB check constraint says the same thing, but a caller that pastes a whole
+// token deserves a clear error rather than a 23514.
+export async function setSandboxBotId(input: {
+  tenantId: string;
+  sandboxRef: string;
+  botId: string;
+}): Promise<SandboxPoolRow> {
+  if (!/^[0-9]{1,20}$/.test(input.botId)) {
+    throw new Error('setSandboxBotId: botId must be the numeric id, not the token');
+  }
+  const { data, error } = await getClient()
+    .from('sandbox_pool')
+    .update({ bot_id: input.botId })
+    .eq('tenant_id', input.tenantId)
+    .eq('sandbox_ref', input.sandboxRef)
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`setSandboxBotId failed: ${error.message}`);
+  if (!data) throw new Error(`setSandboxBotId: no sandbox ${input.sandboxRef} for this tenant`);
+  return data;
+}
+
+// THE ALLOWLIST behind Mini App signature checks: the numeric ids of every bot
+// we own that can currently open the app. Cross-tenant on purpose — the same
+// reasoning as findRosterByTelegramUserIdGlobal, because a launch slip proves
+// which ACCOUNT and which BOT, never which firm; the roster decides the firm
+// afterwards. Membership here is not authorisation, only "this came through a
+// door we control".
+//
+// RETIRED SEATS ARE EXCLUDED. A recycled sandbox's bot is reassigned to the
+// next hire, and until it is re-registered its id must not admit anyone.
+export async function listLiveBotIds(): Promise<string[]> {
+  const { data, error } = await getClient()
+    .from('sandbox_pool')
+    .select('bot_id')
+    .not('bot_id', 'is', null)
+    .is('retired_at', null);
+  if (error) {
+    // SCHEMA-BEHIND-CODE is a normal deploy order, not a fault: the column
+    // arrives with a migration, and a service that shipped first would
+    // otherwise fail this query behind every launch. "No column" means "no
+    // bot has been wired yet", which is an empty allowlist — the caller still
+    // has the board bot and the HMAC fallback, so the board keeps working and
+    // nothing is let in. Any OTHER error is real and propagates.
+    if (error.code === '42703' || /column .*bot_id.* does not exist/i.test(error.message)) {
+      return [];
+    }
+    throw new Error(`listLiveBotIds failed: ${error.message}`);
+  }
+  return [...new Set((data ?? []).map((r) => r.bot_id).filter((id): id is string => !!id))];
 }

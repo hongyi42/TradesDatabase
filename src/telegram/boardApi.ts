@@ -1,8 +1,9 @@
 import type http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { verifyInitData } from './initData.js';
+import { configuredPublicKeyHex, verifyInitData, verifyInitDataSigned } from './initData.js';
 import * as rosterCache from './rosterCache.js';
+import * as botIds from './botIds.js';
 import { findRosterByTelegramUserIdGlobal, type Technician } from '../db/index.js';
 import {
   InvalidRangeError,
@@ -36,7 +37,7 @@ import { localDateISO } from '../schedule/availability.js';
 // webview), not the gateway, so the allowlist must not gate it. It is
 // self-authenticated instead — every /board/api/* request carries the Mini
 // App's signed initData in `Authorization: tma <raw>`, verified against
-// BOARD_BOT_TOKEN and resolved to a roster row (which supplies the tenant).
+// Telegram's stamp and resolved to a roster row (which supplies the tenant).
 // The page shell + assets are served unauthenticated (no secrets in them).
 
 export function isBoardPath(url: string | undefined): boolean {
@@ -57,7 +58,7 @@ const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
 };
 
-type BoardAuth =
+export type BoardAuth =
   | { ok: true; tenantId: string; technician: Technician }
   | { ok: false; code: 401 | 409; error?: string };
 
@@ -68,12 +69,37 @@ type BoardAuth =
 // failure: the roster lookup sits OUTSIDE the catch so an outage propagates
 // to the outer handler's logged 500 instead of masquerading as "bad slip"
 // (telling a manager to "reopen the board" during a DB outage helps nobody).
-async function authBoard(req: http.IncomingMessage): Promise<BoardAuth> {
+// WHICH STAMP WE TRUST. A slip carries two: an HMAC keyed by the bot's token,
+// and (Bot API 7.10) an Ed25519 signature anyone can check with Telegram's
+// public key and the bot's numeric id. We prefer the SIGNATURE, because it
+// works for every person's own assistant bot without this process holding
+// their tokens — the whole point of the one-bot-per-person merge. The HMAC
+// stays as the fallback for the global board bot, which is the only token we
+// do hold, and is what every slip minted before the merge carries.
+//
+// Order matters for cost, not for safety: a slip with no `signature` field
+// (an older Telegram client) never touches the allowlist, so the DB-backed
+// read stays off the path it cannot serve.
+async function verifySlip(raw: string): Promise<{ userId: string }> {
+  if (new URLSearchParams(raw).get('signature')) {
+    try {
+      return verifyInitDataSigned(raw, await botIds.allowed(), {
+        publicKeyHex: configuredPublicKeyHex(),
+      });
+    } catch {
+      // Fall through: a slip signed for a bot we do not (yet) know is still
+      // worth the board-token check, and a genuinely bad slip fails twice.
+    }
+  }
+  return verifyInitData(raw, process.env.BOARD_BOT_TOKEN ?? '');
+}
+
+export async function authBoard(req: http.IncomingMessage): Promise<BoardAuth> {
   let userId: string;
   try {
     const m = /^tma\s+(.+)$/i.exec(req.headers.authorization ?? '');
     if (!m) return { ok: false, code: 401 };
-    userId = verifyInitData(m[1], process.env.BOARD_BOT_TOKEN ?? '').userId;
+    userId = (await verifySlip(m[1])).userId;
   } catch {
     return { ok: false, code: 401 };
   }
@@ -187,14 +213,22 @@ async function boardDateAllowed(tenantId: string, date: string): Promise<boolean
   return date >= localDateISO(new Date().toISOString(), tz);
 }
 
+// `pathname` overrides the route this request is matched on, and NOTHING else:
+// the query string (?preview=1) still comes from the real req.url. It exists so
+// the console (src/console/consoleApi.ts) can expose its own /console/api/*
+// URLs while the write verbs stay ONE implementation here — every guard the
+// board enforces (manager tier, past-date floor, preview doctrine, crew
+// replacement rules) fires identically for both UIs, by construction rather
+// than by a second copy kept in step by hand.
 export async function handleBoardRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   rawBody: string,
+  opts?: { pathname?: string },
 ): Promise<void> {
   try {
     const url = new URL(req.url ?? '/board', 'http://board.local');
-    const pathname = url.pathname;
+    const pathname = opts?.pathname ?? url.pathname;
 
     // Page shell + assets — unauthenticated (the page itself acquires initData
     // from the Telegram webview and presents it to the API).

@@ -123,7 +123,9 @@ Creates `scripts/work.mjs` with `park`, `claim`, `done`, `drop`, `packet`, `boar
   `…--claude-worktrees-multi-tech-assignment` directory). Table 2: tasks by `updated`: id, kind,
   status, title (60 chars), worktree basename, file count, origin.
 - Stdin is read only by `touch`, `snapshot`, `packet` without `--cwd` (hook JSON, `cwd` field),
-  and by `--body -`; every other verb never touches stdin. Every failure path exits 0 silently.
+  and by `--body -`; every other verb never touches stdin. **Hook verbs** exit 0 silently on any
+  failure (an error banner on the critical path of a session is the tool's own fault); **person
+  verbs** print `work: <problem>` and exit 1, because a silent no-op there reads as success.
 
 **`package.json`** — add `"work": "node scripts/work.mjs"` and `"board": "node scripts/work.mjs board"`.
 
@@ -141,14 +143,22 @@ canonical `worktree`, `branch`, `base`, and a second claim refuses; `packet --cw
 that task and nothing for the main checkout; `board` shows both with `behind/ahead` and the active task; `done` clears `worktree`.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint` (new block matches `scripts/work.mjs`), `npm test` pass
-- [ ] `npm run board` in this repo prints one row per `git worktree list` entry, the prunable one marked, three rows with `behind ≥ 100`
+- [x] `npm run typecheck`, `npm run lint` (new block matches `scripts/work.mjs`), `npm test` pass
+      — 2849 passed, 12 skipped, 0 failed; lint block confirmed non-vacuous under mutation.
+- [x] `npm run board` in this repo prints one row per `git worktree list` entry, the prunable one
+      marked, and the rows far behind main. *(Corrected on implementation: **seven** rows are
+      `behind ≥ 100`, not three — the draft counted only the unmerged ones.)*
 
 ### Live verification (agent-executable)
 - Prerequisites: none beyond the repo. Use the main checkout's script by absolute path.
-- [ ] A fresh-context subagent runs `node <main>/scripts/work.mjs park --title "probe" --files src/db/jobs.ts`
+- [x] A fresh-context subagent runs `node <main>/scripts/work.mjs park --title "probe" --files src/db/jobs.ts`
       from inside **this implementation worktree**, then `npm run board`, and reports that
       worktree's board row and the task row verbatim; then `drop`s the task.
+      — PASSED 5/5. Evidence: `park` → `20260909-probe`; the file appeared at
+      `<main>/.claude/work/tasks/20260909-probe.md` while no `.claude/work` was created in the
+      worktree (cross-channel: plain `ls`/`cat`, not the tool); `git check-ignore -v` attributed
+      the ignore to `.gitignore:40`; `drop` moved it to `status: dropped` with a bumped
+      `updated:` on disk, so the state change was real rather than a display effect.
 
 ### Manual verification — none
 

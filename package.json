@@ -31,6 +31,8 @@
     "spine-eval:gateway": "npm run build && node scripts/spine-eval/run-gateway.mjs",
     "spine-eval:gate": "npm run build && node scripts/spine-eval/gate.mjs",
     "decisions:index": "node scripts/decision-index.mjs",
+    "work": "node scripts/work.mjs",
+    "board": "node scripts/work.mjs board",
     "ticks": "npm run build && node -r dotenv/config scripts/ticks/report.mjs",
     "metrics:planner": "node -r dotenv/config scripts/planner-metrics/report.mjs",
     "memory:planner": "node -r dotenv/config scripts/planner-metrics/memory.mjs"

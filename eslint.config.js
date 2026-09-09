@@ -50,6 +50,36 @@ export default tseslint.config(
     },
   },
   {
+    // scripts/work.mjs is the work record's CLI. It is plain Node ESM rather than TypeScript
+    // for one hard reason: hooks invoke it from worktrees that may have no `dist/` and no
+    // `npm ci` yet, so it cannot depend on a build step. Same bargain as spine-eval above —
+    // it sits outside typecheck, so lint is the only gate it has, and must not be vacuous.
+    files: ['scripts/work.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        URL: 'readonly',
+        Buffer: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        AbortController: 'readonly',
+        TextDecoder: 'readonly',
+        performance: 'readonly',
+        Date: 'readonly',
+        Math: 'readonly',
+        JSON: 'readonly',
+      },
+    },
+    rules: {
+      'no-undef': 'error',
+      'no-unused-vars': 'error',
+    },
+  },
+  {
     // The board Mini App is plain browser JS served as a static file (no build
     // step, so it can't be TypeScript without introducing one) — without this
     // block it would pass `eslint .` vacuously (zero rules matched) and sit

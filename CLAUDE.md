@@ -24,6 +24,21 @@ rule governing the file you are changing, that rule outranks your plan.
 Regenerate all three with `npm run decisions:index` whenever you add or amend a document under
 `thoughts/`, and commit the regenerated files with it.
 
+**The work record — what is in flight right now.** `thoughts/` is the durable half; the live half
+is `.claude/work/` in the **main checkout**, shared by every worktree through the common `.git`
+directory, so a write is visible to sibling sessions instantly with no commit. `npm run board`
+shows every worktree, its branch, how far behind `main` it is, and its active task. Rules: **one
+active task per worktree, and every code-editing session in its own worktree** — so "who is
+touching this file" always has an answer. Hooks and commands run the **main checkout's**
+`scripts/work.mjs`, and Claude Code reads hooks from the directory the session was *launched* in,
+so launch a session inside the worktree it will work in or none of this fires.
+
+Find something out of scope mid-task? **`/park` it** — that is what lets it be picked up in
+parallel instead of serialized behind the current work. Finishing a task? **`/handoff`** records
+what a diff cannot: what was decided, what you assumed, what is still open. Then `work.mjs done
+<id>` and `work.mjs promote <id>` writes it to `thoughts/shared/findings/` and archives it out of
+the live record. Never promote a task that is not `done` or `dropped`.
+
 New to the repo? [docs/onboarding.md](docs/onboarding.md) is the map — what the project is, how the
 pieces fit, day-1 local setup, and the rules that cost us incidents.
 

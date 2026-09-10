@@ -33,4 +33,9 @@ date-eval-runs/
 
 # Spine-eval run artifacts (world manifest, trajectories, reports) — regenerate with npm run spine-eval:world
 spine-eval-runs/
+
+# The live work record (scripts/work.mjs): tasks and parked findings in flight, shared across
+# every worktree of this clone. Deliberately untracked — it is live coordination state, not
+# history. What survives lands in thoughts/shared/findings/ when a task is promoted.
+.claude/work/
 .scratch/

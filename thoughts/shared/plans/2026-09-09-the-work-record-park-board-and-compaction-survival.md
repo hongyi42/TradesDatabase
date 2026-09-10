@@ -2,7 +2,7 @@
 date: 2026-09-09
 task: The shared work record — one place every session reads and writes (tasks and parked findings), a board of worktrees and sessions, the pre-edit hook made worktree-aware and finding-aware, and the task packet re-injected at session start and after compaction. First of two builds; spawn, the code-graph overlap check and the integrate verb are the second.
 research: thoughts/shared/research/2026-09-09-how-context-travels-between-sessions.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -49,6 +49,8 @@ verbs. Spawn and symbol overlap are the second plan.
 - **Worktree sessions get a memory pointer, not the file** — `MEMORY.md` is 17,550 chars and hook
   output caps at 10,000 (docs; reviewer catch): packet + path + titles-only trim under 9,000 chars.
 - **Task id** — `YYYYMMDD-<slug>` (collision appends `-2`).
+- **Live probes run in the implementation worktree, never a sibling** — the first draft probed
+  `rung-9b`, which a live session occupies; dirtying a sibling is the collision this plan ends.
 
 ## Plain-language walkthrough
 
@@ -121,7 +123,9 @@ Creates `scripts/work.mjs` with `park`, `claim`, `done`, `drop`, `packet`, `boar
   `…--claude-worktrees-multi-tech-assignment` directory). Table 2: tasks by `updated`: id, kind,
   status, title (60 chars), worktree basename, file count, origin.
 - Stdin is read only by `touch`, `snapshot`, `packet` without `--cwd` (hook JSON, `cwd` field),
-  and by `--body -`; every other verb never touches stdin. Every failure path exits 0 silently.
+  and by `--body -`; every other verb never touches stdin. **Hook verbs** exit 0 silently on any
+  failure (an error banner on the critical path of a session is the tool's own fault); **person
+  verbs** print `work: <problem>` and exit 1, because a silent no-op there reads as success.
 
 **`package.json`** — add `"work": "node scripts/work.mjs"` and `"board": "node scripts/work.mjs board"`.
 
@@ -139,14 +143,22 @@ canonical `worktree`, `branch`, `base`, and a second claim refuses; `packet --cw
 that task and nothing for the main checkout; `board` shows both with `behind/ahead` and the active task; `done` clears `worktree`.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint` (new block matches `scripts/work.mjs`), `npm test` pass
-- [ ] `npm run board` in this repo prints one row per `git worktree list` entry, the prunable one marked, three rows with `behind ≥ 100`
+- [x] `npm run typecheck`, `npm run lint` (new block matches `scripts/work.mjs`), `npm test` pass
+      — 2849 passed, 12 skipped, 0 failed; lint block confirmed non-vacuous under mutation.
+- [x] `npm run board` in this repo prints one row per `git worktree list` entry, the prunable one
+      marked, and the rows far behind main. *(Corrected on implementation: **seven** rows are
+      `behind ≥ 100`, not three — the draft counted only the unmerged ones.)*
 
 ### Live verification (agent-executable)
 - Prerequisites: none beyond the repo. Use the main checkout's script by absolute path.
-- [ ] A fresh-context subagent runs `node /Users/hongyihe/GitHub/TradesDatabase/scripts/work.mjs park --title "probe" --files src/db/jobs.ts`
-      from inside `.claude/worktrees/rung-9b`, then `npm run board` from the main checkout, and
-      reports the `rung-9b` board row and the task row verbatim; then `drop`s the task.
+- [x] A fresh-context subagent runs `node <main>/scripts/work.mjs park --title "probe" --files src/db/jobs.ts`
+      from inside **this implementation worktree**, then `npm run board`, and reports that
+      worktree's board row and the task row verbatim; then `drop`s the task.
+      — PASSED 5/5. Evidence: `park` → `20260909-probe`; the file appeared at
+      `<main>/.claude/work/tasks/20260909-probe.md` while no `.claude/work` was created in the
+      worktree (cross-channel: plain `ls`/`cat`, not the tool); `git check-ignore -v` attributed
+      the ignore to `.gitignore:40`; `drop` moved it to `status: dropped` with a bumped
+      `updated:` on disk, so the state change was real rather than a display effect.
 
 ### Manual verification — none
 
@@ -190,14 +202,25 @@ contains it (today: empty); (c) an open finding listing the file → `OPEN FINDI
 reusing (a)'s `session_id` → empty (marker). All assert the `hookSpecificOutput` shape.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass; the five hook cases pass
-- [ ] `node --check .claude/hooks/decisions-for-file.mjs` passes
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass; the five hook cases pass
+      — 2862 passed, 0 failed; 15 cases across the two work-record files.
+- [x] `node --check .claude/hooks/decisions-for-file.mjs` passes
 
 ### Live verification (agent-executable)
 - Prerequisites: none.
-- [ ] A fresh-context subagent, working in `.claude/worktrees/rung-9b`, appends a comment to
+- [x] A fresh-context session, working in **this implementation worktree**, appends a comment to
       `src/db/rawCaptures.ts` and reports verbatim whether it received a "Decisions on record"
-      context block (hooks run inside subagents, docs §Hooks). Expected: yes. Then reverts.
+      context block. Expected: yes. Then reverts.
+      — PASSED. *Method note:* a subagent of the implementing session could NOT verify this, and
+      the reason is worth recording. The hook command names `${CLAUDE_PROJECT_DIR}/.claude/hooks/…`,
+      and that variable stays at the directory a session launched from; this session launched in
+      the main checkout, so it ran the main checkout's OLD hook, which went quiet on a worktree
+      path — the very defect being fixed. Verified instead with a real `claude -p` session
+      launched inside the worktree, which received `Decisions on record for src/db/rawCaptures.ts`
+      with four documents. A new marker directory under `TMPDIR` confirmed independently that the
+      hook ran. **Consequence: the fix only reaches sessions whose project root is the checkout
+      holding it — so it takes effect for worktree-launched sessions now, and for everyone once
+      this lands on `main`.**
 
 ### Manual verification — none
 
@@ -241,15 +264,24 @@ MEMORY.md path and at least one title from a fixture `HOME`, and its total lengt
 nothing; `handoff` appends a section and bumps `updated`.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass; new cases pass
-- [ ] `echo '{"cwd":"'$PWD'","hook_event_name":"SessionStart"}' | node scripts/work.mjs packet --for-session`
-      prints valid JSON or nothing
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass; new cases pass — 2866 passed, 0 failed.
+- [x] `echo '{"cwd":"…","hook_event_name":"SessionStart"}' | node scripts/work.mjs packet --for-session`
+      prints valid JSON or nothing — valid JSON, `hookEventName: SessionStart`, 4,159 chars.
 
 ### Live verification (agent-executable)
 - Prerequisites: none.
-- [ ] A fresh-context subagent claims a probe task in `.claude/worktrees/rung-9b` (absolute script
-      path), writes a handoff via `handoff --body -`, runs `packet --for-session --cwd <that worktree>`,
+- [x] A fresh-context subagent claims a probe task in **this implementation worktree** (absolute
+      script path), writes a handoff via `handoff --body -`, runs `packet --for-session --cwd <it>`,
       and reports that the output contains the handoff text and the memory path; then drops it.
+      — PASSED. The packet carried the title, the file list, the newest handoff (and not the
+      superseded one), and the memory path, at 4,562 characters. The handoff was confirmed on
+      disk by `cat`, independently of the tool, and `snapshot` printed nothing.
+      **The probe found a real defect, since fixed:** `changedFiles[0]` lost its first character
+      (`.claude/…` → `claude/…`). Cause: the git helper trimmed whole-command output, eating the
+      leading space `git status --porcelain` writes for a modified tracked file, after which a
+      fixed `slice(3)` ate one character too many — in exactly one entry per snapshot. Now read
+      untrimmed, with a regression test that uses a modified TRACKED file (untracked entries
+      begin `??` and never showed the bug).
 
 ### Manual verification
 - [ ] In an interactive session with an active task: run `/compact`, then ask "what is my task
@@ -284,15 +316,26 @@ frontmatter and `## Files`, and moves the task to `archive/`; a `dropped` task p
 `status: dropped`.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass
-- [ ] `npm run decisions:index` lists a promoted probe finding as `` `finding` `` in
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass — 2877 passed, 12 skipped, 0 failed;
+      typecheck, lint and `npm run build` all silent.
+- [x] `npm run decisions:index` lists a promoted probe finding as `` `finding` `` in
       `thoughts/INDEX.md` and attaches it to its file in `by-file.json`; then the probe is removed
-      and the index regenerated
+      and the index regenerated — INDEX row:
+      ``- `2026-09-10` `finding` [2026-09-10-probe-finding-for-the-index](…) — probe finding for the index``;
+      `by-file.json` for `src/db/jobs.ts` gained the probe at position 0 with `"kind": "finding"`.
+      Both probes deleted and the index regenerated back to 226 documents.
+- [x] the round trip is codified, not only probed: `src/work/decision-index.test.ts` runs the real
+      `work.mjs park → done → promote` and feeds ITS output to `decision-index.mjs`, so a change to
+      either side's shape fails the suite. Four mutations were checked and each one bites.
 
 ### Live verification (agent-executable)
 - Prerequisites: none.
-- [ ] A fresh-context subagent runs `park --files src/db/jobs.ts` → `done` → `promote` on a probe,
+- [x] A fresh-context subagent runs `park --files src/db/jobs.ts` → `done` → `promote` on a probe,
       runs `npm run decisions:index`, reports the INDEX row and the `by-file.json` entry for
-      `src/db/jobs.ts`; then deletes the probe finding and regenerates.
+      `src/db/jobs.ts`; then deletes the probe finding and regenerates — done on task
+      `20260910-verification-probe`. Reported: INDEX line 53 carrying `` `finding` ``; the
+      `by-file.json` entry at position 0 with `"kind": "finding"`; frontmatter carrying `date`,
+      `task`, `status: complete`, `origin`, `files`, `supersedes`. Cleanup verified: both
+      directories empty and `git status` unchanged.
 
 ### Manual verification — none

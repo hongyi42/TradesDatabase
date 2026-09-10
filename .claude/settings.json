@@ -30,6 +30,11 @@
             "type": "command",
             "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in */node_modules/*) ;; *.js|*.mjs|*.cjs) node --check \"$f\" || exit 2;; esac",
             "statusMessage": "Checking JS syntax"
+          },
+          {
+            "type": "command",
+            "command": "W=\"$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../scripts/work.mjs\"; [ -f \"$W\" ] || W=\"$CLAUDE_PROJECT_DIR/scripts/work.mjs\"; [ -f \"$W\" ] || W=\"./scripts/work.mjs\"; [ -f \"$W\" ] && node \"$W\" touch; true",
+            "statusMessage": "Recording touched file"
           }
         ]
       }
@@ -42,6 +47,40 @@
             "type": "command",
             "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/decisions-for-file.mjs\"",
             "statusMessage": "Checking decisions on record"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "W=\"$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../scripts/work.mjs\"; [ -f \"$W\" ] || W=\"$CLAUDE_PROJECT_DIR/scripts/work.mjs\"; [ -f \"$W\" ] || W=\"./scripts/work.mjs\"; [ -f \"$W\" ] && node \"$W\" packet --for-session; true",
+            "statusMessage": "Restoring the work packet"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "W=\"$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../scripts/work.mjs\"; [ -f \"$W\" ] || W=\"$CLAUDE_PROJECT_DIR/scripts/work.mjs\"; [ -f \"$W\" ] || W=\"./scripts/work.mjs\"; [ -f \"$W\" ] && node \"$W\" snapshot; true",
+            "statusMessage": "Snapshotting the task"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "W=\"$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../scripts/work.mjs\"; [ -f \"$W\" ] || W=\"$CLAUDE_PROJECT_DIR/scripts/work.mjs\"; [ -f \"$W\" ] || W=\"./scripts/work.mjs\"; [ -f \"$W\" ] && node \"$W\" snapshot; true",
+            "statusMessage": "Snapshotting the task"
           }
         ]
       }

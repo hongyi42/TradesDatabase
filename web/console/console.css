@@ -139,14 +139,7 @@ input[type="number"], input:not([type]) {
 }
 select { text-transform: capitalize; }
 
-.spinner {
-  width: 13px; height: 13px; border-radius: 50%;
-  border: 2px solid var(--line-strong); border-top-color: var(--accent);
-  animation: spin 0.7s linear infinite;
-}
 @keyframes spin { to { transform: rotate(360deg); } }
-/* Idle: keeps its slot in the toolbar so a fetch never shifts the layout. */
-.spinner.is-idle { visibility: hidden; animation: none; }
 
 /* ── Frame ─────────────────────────────────────────────────────────────── */
 .body { display: flex; flex: 1; min-height: 0; }
@@ -248,14 +241,17 @@ select { text-transform: capitalize; }
 .pull-ring-arc {
   width: 32px; height: 32px; margin: 2px; box-sizing: border-box;
   border-radius: 50%;
-  border: 3px solid var(--line-strong); border-top-color: var(--accent);
+  /* 4px, not 3 (user, 2026-09-09: "bolder"): at 32px across, a 3px arc on a
+     dark ground read as a hairline on a phone. */
+  border: 4px solid var(--line-strong); border-top-color: var(--accent);
   background: var(--bg-raised);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
 .pull-ring.is-armed .pull-ring-arc { border-color: var(--accent); border-top-color: var(--bg-raised); }
 .pull-ring.is-loading .pull-ring-arc {
   border-color: var(--line-strong); border-top-color: var(--accent);
-  animation: spin 0.7s linear infinite;
+  /* Faster than the old 0.7s (user, 2026-09-09: "circle much quicker"). */
+  animation: spin 0.4s linear infinite;
 }
 
 /* The phone's line filler; nothing anywhere else. */
@@ -570,17 +566,16 @@ select { text-transform: capitalize; }
   .rail.sheet-leave { animation: sheet-down 220ms ease-in forwards; pointer-events: none; }
   .rail-scrim.scrim-leave { animation: scrim-out 220ms ease-in forwards; pointer-events: none; }
   /* THREE rows (user, 2026-09-08: "all of them on the same line", then
-     "the filter on a new line below"): the date, with the spinner and the
-     fullscreen toggle at its right; tray, Today, ‹, ›, ↶ and Day|Month on
-     ONE line, each stretched so the row fills the width; colour-by alone,
-     full width, below. The pseudo-elements are the forced breaks. */
+     "the filter on a new line below"): the date, with the fullscreen toggle
+     at its right; tray, Today, ‹, ›, ↶ and Day|Month on ONE line, each
+     stretched so the row fills the width; colour-by alone, full width,
+     below. The pseudo-elements are the forced breaks. */
   .toolbar { flex-wrap: wrap; gap: 4px; row-gap: 6px; padding: 6px 8px; }
   .toolbar::before, .toolbar::after { content: ''; display: block; width: 100%; height: 0; }
   .toolbar::before { order: -1; }
   .toolbar::after { order: 7; }
-  .range-title, .toolbar > .spinner, .toolbar [data-fullscreen] { order: -2; }
+  .range-title, .toolbar [data-fullscreen] { order: -2; }
   .range-title { flex: 1 1 auto; min-width: 0; font-size: 14px; margin: 0; overflow: hidden; text-overflow: ellipsis; }
-  .toolbar > .spinner { margin: 0 0 0 4px; }
   .toolbar-right { display: contents; }
   /* Same size (user, 2026-09-08): Today, ‹, ›, ↶, Day and Month are six
      equal units of the row — flex-basis 0 with the SAME padding and border,

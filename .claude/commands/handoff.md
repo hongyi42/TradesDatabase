@@ -56,15 +56,19 @@ operator, and it is the part this command writes.
    standing between the next session and its work. If it does not qualify, say so in a few words
    rather than staying silent — an unstated call is indistinguishable from a forgotten one.
 
-5. **If the task is finished**, close it and promote what is durable into `thoughts/`:
+5. **If the task is finished**, close it and act on the call you just made:
 
    ```bash
    node "$W" done <id>
-   node "$W" promote <id>
+   node "$W" promote <id>     # the call was YES — writes thoughts/shared/findings/<date>-<slug>.md
+   node "$W" archive <id>     # the call was NO  — out of the live record, no document
    ```
 
-   Promotion writes `thoughts/shared/findings/<date>-<slug>.md`. Then run
-   `npm run decisions:index` and commit both, so the pre-edit hook can find it.
+   After `promote`, run `npm run decisions:index` and commit both, so the pre-edit hook can find
+   it. `archive` needs no commit — the record is not tracked.
+
+   Run one of them. A finished task left in the record is not a third option: it makes work
+   deliberately left undocumented look identical to work nobody got round to.
 
 6. **Report** the task id, one sentence on what you recorded, and your promotion call.
 

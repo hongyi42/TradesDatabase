@@ -284,8 +284,21 @@ nothing; `handoff` appends a section and bumps `updated`.
       begin `??` and never showed the bug).
 
 ### Manual verification
-- [ ] In an interactive session with an active task: run `/compact`, then ask "what is my task
+- [x] In an interactive session with an active task: run `/compact`, then ask "what is my task
       and which files have I touched?"; the answer must match the packet without re-reading it.
+      **Passed 2026-09-10.** Run deliberately in a session that had NO history of the task, so a
+      correct answer could only come from the packet: a long-running session in the main checkout
+      claimed `20260910-base-is-empty-when-origin-main-is-absent`, then compacted. It returned the
+      id, the single file (`scripts/work.mjs`), "carried from Phase 3", and the proposed fix
+      verbatim — "a fallback chain: try `origin/main`, then `main`, then the merge-base with
+      whatever default branch git actually reports". Nothing but the packet carries that sentence;
+      the `claim` command's output in its transcript supplies the id and nothing more.
+      Two things this run also established, both parked:
+      (a) a running session does NOT pick up newly added hook *events* from `settings.json`, so
+      landing on `main` is necessary but not sufficient — every session predating the merge keeps
+      its old hook set until it restarts. The first attempt failed for exactly this reason.
+      (b) the packet is per-worktree, so a checkout with nothing claimed returns empty, which
+      reads as failure but is an empty record.
 
 ## Phase 4: promote, the `finding` kind, and the CLAUDE.md section
 

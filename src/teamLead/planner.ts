@@ -1868,7 +1868,9 @@ const TEMPORAL_RE = new RegExp(
     '\\b\\d{4}-\\d{2}-\\d{2}\\b',
     '\\b\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?\\b',
     '\\b\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)\\b',
-    '\\b(?:today|tonight|yesterday|tomorrow|this morning|this afternoon)\\b',
+    // `\\s+`, not a space: the chat leg keeps line breaks (keepBreaks), so
+    // "this\nafternoon" must still be seen as the phrase it is.
+    '\\b(?:today|tonight|yesterday|tomorrow|this\\s+morning|this\\s+afternoon)\\b',
     '\\b\\d+\\s*(?:minute|hour|day|week|month)s?\\b',
   ].join('|'),
   'gi',
@@ -1906,7 +1908,25 @@ export function cleanPlannerText(
   // into a note CANNOT reach a person, because a message carrying it must pass
   // that gap's own `dateLabels`, which a note never joins. Pinned both ways in
   // planner.test.ts.
-  opts: { label: string; maxLen: number; skipDateRail?: boolean },
+  // `keepBreaks` is the CHAT LEG's (2026-09-10): `cleanQuestionDraft` for a
+  // message about a gap, and the gap-less branch of `validateDecisions` for a
+  // message about nothing. Every other string this rail guards is read by a
+  // machine or injected into an assistant's session, and for those a newline is
+  // noise the collapse removes. A chat message is read by a PERSON on a phone,
+  // where the break between the ask and the detail under it is the difference
+  // between a text and a paragraph — so that leg keeps its breaks, and only
+  // that leg.
+  //
+  // The flat collapse stays the DEFAULT for a second reason: it is what makes
+  // the footer delimiter (`\n\nNote for the assistant:`) structurally
+  // unwritable by the model, since a two-newline string cannot survive it. A
+  // caller that keeps breaks gives that up, so THE OPTION ITSELF carries the
+  // footer-phrase refusal below: the guarantee holds by construction on the flat
+  // path and by the phrase check on this one, and no caller can take the breaks
+  // without the check. (It first lived in cleanQuestionDraft alone, held there by
+  // a "do not add a second caller" comment — and the gap-less chat send, which
+  // needed breaks just as much, was that second caller. Review, 2026-09-10.)
+  opts: { label: string; maxLen: number; skipDateRail?: boolean; keepBreaks?: boolean },
 ): { note: string | null; why?: string } {
   if (raw === undefined || raw === null) return { note: null };
   if (typeof raw !== 'string') return { note: null, why: `${opts.label} was not a string` };
@@ -1914,19 +1934,42 @@ export function cleanPlannerText(
   // verbatim and decoded on the box, and `\s` does not match NUL or most C0
   // controls. Compose used to apply this via `flatten`; with compose gone the
   // rail is the only crossing left.
-  const note = raw
-    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  // What `keepBreaks` preserves is a LINE BREAK and nothing else: \r\n
+  // normalises, every other C0 control still strips, runs of spaces and tabs
+  // still collapse, no space is left hanging off either side of a break, and a
+  // run of blank lines becomes at most one. So the model gains the one piece of
+  // shape a phone renders and none of the rest.
+  const note = opts.keepBreaks
+    ? raw
+        .replace(/\r\n?/g, '\n')
+        .replace(/[\u0000-\u0009\u000b-\u001f\u007f]+/g, ' ')
+        .replace(/[^\S\n]+/g, ' ')
+        .replace(/ ?\n ?/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim()
+    : raw
+        .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
   if (!note) return { note: null };
   if (note.length > opts.maxLen) {
     return { note: null, why: `${opts.label} over ${opts.maxLen} characters` };
   }
   if (/https?:\/\//i.test(note)) return { note: null, why: `${opts.label} contained a link` };
+  // Rides `keepBreaks`, by construction (see the option's comment). `\s+`
+  // between the words, not spaces: a line break may now fall inside the
+  // phrase, and "Note\nfor the assistant:" is the footer all the same.
+  if (opts.keepBreaks && /note\s+for\s+the\s+assistant/i.test(note)) {
+    return { note: null, why: `${opts.label} tried to impersonate the assistant footer` };
+  }
   if (opts.skipDateRail) return { note };
   const haystack = dateLabels.join(' | ').toLowerCase();
   for (const m of note.match(TEMPORAL_RE) ?? []) {
-    if (!haystack.includes(m.toLowerCase())) {
+    // Compared on single spaces, the way the labels are written. Since the chat
+    // leg keeps line breaks, a date it was GIVEN can arrive split ("Aug\n18"),
+    // and matching the raw text refused a date the model had every right to
+    // use; a date it was not given is refused exactly as before.
+    if (!haystack.includes(m.toLowerCase().replace(/\s+/g, ' '))) {
       return { note: null, why: `${opts.label} used a date it was not given: "${m}"` };
     }
   }
@@ -1971,9 +2014,10 @@ export function anchorLine(n: Nudge): string {
  *
  * Same date rail every model-written surface rides, and the highest stakes of
  * them: this reaches a person OUTSIDE the office, in their own assistant's
- * voice. Two guards of its own — the length cap below and the
- * footer-impersonation check — since build 5 this file is the message's only
- * author (compose, whose guards these once mirrored, is deleted).
+ * voice. Two guards beyond the shared rail — the length cap below, and the
+ * footer-impersonation refusal that comes with keeping line breaks — since
+ * build 5 this file is the message's only author (compose, whose guards these
+ * once mirrored, is deleted).
  */
 // GROUPED SENDS GET MORE ROOM. 500 chars was sized for one question; a message
 // covering three would be refused for length alone, and a refused question
@@ -1995,15 +2039,14 @@ export function cleanQuestionDraft(
   dateLabels: string[],
   members: number = 1,
 ): { note: string | null; why?: string } {
-  const base = cleanPlannerText(raw, dateLabels, {
+  // `keepBreaks` brings the footer-impersonation refusal with it (see
+  // cleanPlannerText), so that guard needs no line of its own here — and the
+  // refusal reads exactly as it did: "question tried to impersonate…".
+  return cleanPlannerText(raw, dateLabels, {
     label: 'question',
     maxLen: questionCapFor(members),
+    keepBreaks: true,
   });
-  if (!base.note) return base;
-  if (/note for the assistant/i.test(base.note)) {
-    return { note: null, why: 'question tried to impersonate the assistant footer' };
-  }
-  return base;
 }
 
 export function validateDecisions(
@@ -2351,7 +2394,17 @@ export function validateDecisions(
       // from. So the rail admits no date at all here, and says so when it
       // refuses one. That is the safe direction: the planner may not name a
       // day it cannot show it was given.
-      const msg = cleanPlannerText(d.message, [], { label: 'message', maxLen: 500 });
+      // A CHAT message keeps its line breaks here exactly as it does on a gap
+      // (review, 2026-09-10): on a focused pass this is the path a manager's
+      // ask takes when the planner forgets to name the item, and `boundGapless`
+      // only attaches it to the item AFTER this rail has run — so flattening
+      // here un-did the copy pass on the very message it was written for. The
+      // footer refusal comes with the option; the assistant leg stays flat.
+      const msg = cleanPlannerText(d.message, [], {
+        label: 'message',
+        maxLen: 500,
+        keepBreaks: as === 'chat',
+      });
       if (msg.why) noteDrops.push(`(no gap): ${msg.why}`);
       if (!msg.note) {
         push(

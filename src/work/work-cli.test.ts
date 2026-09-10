@@ -248,11 +248,14 @@ describe('work.mjs — the shared work record', () => {
     // pipe into non-blocking mode, so a payload written even a moment after spawn is dropped
     // and the verb silently answers for its own cwd instead. Every other packet test passes
     // --cwd, which short-circuits stdin entirely and would never catch it.
+    //
+    // `--for-session` because that is the only `packet` form a hook invokes, and therefore the
+    // only one that waits for a payload at all. The bare form must not — see the test below.
     const id = work(['park', '--title', 'late payload probe', '--kind', 'task'], mainCheckout);
     work(['claim', id, '--force'], worktree);
 
     const out = await new Promise<string>((res) => {
-      const p = spawn('node', [CLI, 'packet'], {
+      const p = spawn('node', [CLI, 'packet', '--for-session'], {
         // Deliberately a NON-REPOSITORY directory: only the payload names a worktree. This
         // also pins that the main checkout is resolved from the payload's cwd rather than
         // from process.cwd(), which would otherwise exit early and answer nothing.
@@ -273,6 +276,58 @@ describe('work.mjs — the shared work record', () => {
       // downstream that expects this worktree to be holding `claimableId`.
       work(['done', id], mainCheckout);
       work(['claim', claimableId, '--force'], worktree);
+    }
+  });
+
+  test('bare packet never waits on a pipe nobody is going to close', async () => {
+    // Measured while building Phase 4: `node scripts/work.mjs packet` inherited a pipe that was
+    // never closed and hung forever, because stdin was read for every hook verb. Only
+    // `packet --for-session` comes from a hook, and a hook always closes its pipe. The bare form
+    // is the one a person runs by hand, and an agent's shell rarely gives it a tty — so it must
+    // answer from its own cwd and never block.
+    const id = work(['park', '--title', 'no hang probe', '--kind', 'task'], mainCheckout);
+    work(['claim', id, '--force'], worktree);
+    try {
+      const result = await new Promise<{ done: boolean; out: string }>((res) => {
+        const p = spawn('node', [CLI, 'packet'], {
+          cwd: worktree,
+          // stdin is a pipe that is deliberately never written to and never closed.
+          stdio: ['pipe', 'pipe', 'ignore'],
+          env: { ...process.env, ...GIT_ENV, HOME: home },
+        });
+        let buf = '';
+        p.stdout.on('data', (d) => { buf += d; });
+        const timer = setTimeout(() => { p.kill('SIGKILL'); res({ done: false, out: buf }); }, 5000);
+        p.on('close', () => { clearTimeout(timer); res({ done: true, out: buf }); });
+      });
+      expect(result.done).toBe(true);
+      expect(result.out).toContain('no hang probe');
+    } finally {
+      work(['done', id], mainCheckout);
+      work(['claim', claimableId, '--force'], worktree);
+    }
+  });
+
+  test('base falls back to a real commit when there is no origin/main', () => {
+    // A local-only clone has no remote at all, and a fork's remote may be named anything. base is
+    // the fixed point an overlap check measures "changed since" from, so leaving it empty makes
+    // that question unanswerable rather than merely approximate.
+    const solo = realpathSync(mkdtempSync(join(tmpdir(), 'work-record-solo-')));
+    try {
+      // Branch deliberately named neither main nor master, and no remote configured.
+      git(['init', '-b', 'trunk'], solo);
+      writeFileSync(join(solo, 'a.txt'), 'x\n');
+      git(['add', '.'], solo);
+      git(['commit', '-m', 'first'], solo);
+
+      const id = work(['park', '--title', 'solo repo task'], solo);
+      work(['claim', id], solo);
+      const text = readFileSync(join(solo, '.claude', 'work', 'tasks', `${id}.md`), 'utf8');
+      const base = /^base: (.*)$/m.exec(text)?.[1] ?? '';
+      expect(base).toBe(git(['rev-parse', 'HEAD'], solo));
+      expect(base).toMatch(/^[0-9a-f]{40}$/);
+    } finally {
+      rmSync(solo, { recursive: true, force: true });
     }
   });
 

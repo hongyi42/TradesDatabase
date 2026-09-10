@@ -58,6 +58,20 @@ beforeAll(() => {
     '## Notes', '', 'The prose never names the file a second time.', '',
   ].join('\n'));
 
+  // A finding whose file list looks like a real one: a script outside src/, a dotted basename,
+  // more entries than MAX_FILES_PER_DOC, and two paths that must be refused.
+  write('scripts/tool.mjs', '// a tool\n');
+  write('src/deep/thing.test.ts', 'export const t = 1;\n');
+  for (let i = 1; i <= 9; i++) write(`src/many/m${i}.ts`, `export const m${i} = ${i};\n`);
+  write('thoughts/shared/findings/2026-09-10-a-broad-finding.md', [
+    '---', 'date: 2026-09-10', 'task: a broad finding', 'status: complete', 'origin: ',
+    `files: scripts/tool.mjs, src/deep/thing.test.ts, ${
+      Array.from({ length: 9 }, (_, i) => `src/many/m${i + 1}.ts`).join(', ')
+    }, src/never/existed.ts, ../outside-the-repo.ts`,
+    'supersedes: nothing', '---', '',
+    '## Notes', '', 'The prose names none of them.', '',
+  ].join('\n'));
+
   write('thoughts/shared/findings/2026-09-10-a-dropped-finding.md', [
     '---', 'date: 2026-09-10', 'task: a finding decided against', 'status: dropped',
     'origin: ', 'files: src/bar.ts', 'supersedes: nothing', '---', '',
@@ -97,7 +111,29 @@ describe('decision-index.mjs — promoted findings', () => {
     expect(byFile['src/foo.ts'][0].kind).toBe('finding');
   });
 
-  test('only source paths are seeded — a non-source path in files: attaches nothing', () => {
+  test('a finding attaches to any repo path it names, not just the src/*.ts prose shape', () => {
+    // The pattern the PROSE scanner uses is deliberately narrow, because a loose one would
+    // credit a document with everything it wandered past. A finding's list is not prose — it was
+    // named deliberately, and the pre-edit hook fires on every file. Measured 2026-09-10: the
+    // first real promotion attached to NOTHING, its three files being one under scripts/ and two
+    // with dotted basenames.
+    expect(byFile['scripts/tool.mjs']?.[0]?.kind).toBe('finding');
+    expect(byFile['src/deep/thing.test.ts']?.[0]?.kind).toBe('finding');
+  });
+
+  test('a finding is not capped at MAX_FILES_PER_DOC — its list is data, not prose', () => {
+    // Nine files past the two above, all seeded at the same mention floor. Capped at 8 and sorted
+    // stably, the ones dropped would be whichever the edit hook recorded LAST.
+    for (let i = 1; i <= 9; i++) {
+      expect(byFile[`src/many/m${i}.ts`]?.[0]?.kind, `src/many/m${i}.ts`).toBe('finding');
+    }
+  });
+
+  test('a named path that does not exist, or escapes the repo, attaches nothing', () => {
+    expect(byFile['src/never/existed.ts']).toBeUndefined();
+    expect(byFile['../outside-the-repo.ts']).toBeUndefined();
+    expect(byFile['outside-the-repo.ts']).toBeUndefined();
+    // The prose-scanned document alongside it is unaffected: this widening is findings-only.
     expect(byFile['scripts/not-source.mjs']).toBeUndefined();
   });
 

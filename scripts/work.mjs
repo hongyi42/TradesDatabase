@@ -98,6 +98,33 @@ function worktreeOf(path) {
 }
 
 /**
+ * The commit this work forked from — the reference an overlap check measures "changed since"
+ * against, recorded once at claim time.
+ *
+ * `origin/main` is the usual answer but never a given: a local-only clone has no remote at all,
+ * and a fork's remote may be called anything. Asking only for `origin/main` left `base` EMPTY in
+ * those repositories, and an empty base is not a small loss — it is the fixed point the whole
+ * overlap question is asked from, so the answer degrades to "everything" or "nothing" with no
+ * way to tell which. Hence a chain: whatever the remote itself calls its default branch, then
+ * the usual names, and finally HEAD.
+ *
+ * HEAD is the honest floor, not a fudge. `base` is captured at the moment of the claim, before
+ * any of the work exists, so in a repository with no branch to compare against, "where this work
+ * started" really is the commit that was checked out when it was claimed.
+ */
+function mergeBase(cwd) {
+  const candidates = ['origin/main', 'main', 'origin/master', 'master'];
+  const remoteDefault = git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], cwd);
+  if (remoteDefault) candidates.unshift(remoteDefault);
+  for (const ref of candidates) {
+    if (!git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd)) continue;
+    const found = git(['merge-base', 'HEAD', ref], cwd);
+    if (found) return found;
+  }
+  return git(['rev-parse', 'HEAD'], cwd) ?? '';
+}
+
+/**
  * The nearest ancestor that exists. A Write creating `src/deep/new/file.ts` names a directory
  * that is not there yet, and `git -C <missing dir>` fails — so asking git about the file's own
  * directory would silently give up on precisely the edits that add new modules.
@@ -377,8 +404,7 @@ function cmdClaim(main, cwd, { flags, positional }) {
   }
 
   const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], here) ?? '';
-  // The commit this work forked from: what a later overlap check measures "changed since" against.
-  const base = git(['merge-base', 'HEAD', 'origin/main'], here) ?? '';
+  const base = mergeBase(here);
   withTaskLock(task.file, () => {
     const t = findTask(main, id);
     if (!t) return;
@@ -850,10 +876,18 @@ let hookPayload = null;
  * puts the pipe into non-blocking mode, after which readFileSync(0) fails with EAGAIN unless the
  * writer got there first — turning "the hook sent a payload" into "no active task", a silent
  * wrong answer. Guarded on a tty because reading a terminal waits for an EOF nobody sends.
+ *
+ * A tty is not the only thing that never sends EOF, which is why the payload read is narrowed to
+ * the invocations a hook actually makes. `packet` is the one verb people also run by hand, and
+ * reading stdin on the bare form hung forever whenever it inherited a pipe nobody was going to
+ * close — a shell pipeline, a terminal multiplexer. Only `packet --for-session` comes from a
+ * hook, and a hook always closes its pipe, so that is the only form that waits for one.
  */
+const wantsHookPayload = (v, flags) => (v === 'packet' ? Boolean(flags['for-session']) : HOOK_VERBS.has(v));
+
 function resolveCwd(v, flags) {
   if (typeof flags.cwd === 'string') return flags.cwd;
-  if (HOOK_VERBS.has(v) && !isatty(0)) {
+  if (wantsHookPayload(v, flags) && !isatty(0)) {
     try {
       hookPayload = JSON.parse(readStdin());
       if (hookPayload && typeof hookPayload.cwd === 'string') return hookPayload.cwd;

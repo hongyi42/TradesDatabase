@@ -28,6 +28,12 @@ the files involved.
      finding reach the next person: the hook matches on exactly these paths.
    - **A body** — 2 to 5 lines: what you observed, the evidence (file:line, an error, a
      measurement), and why it is out of scope here. Enough that someone can pick it up cold.
+   - **Whether it is a job or a lesson.** Most parked items are work someone will do. Some are
+     not fixable at all — a vendor's behaviour, a tool's contract, something true about the
+     environment — and those are finished the moment they are written down and verified. Say
+     which in the body, because they close differently: a job is closed by fixing it, a lesson by
+     promoting it. A lesson left looking like a job sits open forever waiting for a fix that was
+     never possible.
 
 3. **Write it**, passing the body on stdin so newlines survive:
 

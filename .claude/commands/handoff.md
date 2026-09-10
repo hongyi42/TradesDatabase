@@ -44,17 +44,33 @@ operator, and it is the part this command writes.
    EOF
    ```
 
-4. **If the task is finished**, close it and promote what is durable into `thoughts/`:
+4. **Make the promotion call out loud, finished or not.** The operator will not remember to ask,
+   and by tomorrow the reason will have gone fuzzy — so state it now, in one line, either way.
+
+   Promote when a future session would otherwise lose an afternoon: a vendor or tool contract that
+   changed under us, a trap whose symptom points somewhere other than its cause, a decision whose
+   rejected alternative is invisible in the code, a measurement that would otherwise be re-taken.
+
+   Do **not** promote a fix that a test already pins and the commit already explains. A promoted
+   finding is put in front of every future edit of its files, and "this was fixed" is noise
+   standing between the next session and its work. If it does not qualify, say so in a few words
+   rather than staying silent — an unstated call is indistinguishable from a forgotten one.
+
+5. **If the task is finished**, close it and act on the call you just made:
 
    ```bash
    node "$W" done <id>
-   node "$W" promote <id>
+   node "$W" promote <id>     # the call was YES — writes thoughts/shared/findings/<date>-<slug>.md
+   node "$W" archive <id>     # the call was NO  — out of the live record, no document
    ```
 
-   Promotion writes `thoughts/shared/findings/<date>-<slug>.md`. Then run
-   `npm run decisions:index` and commit both, so the pre-edit hook can find it.
+   After `promote`, run `npm run decisions:index` and commit both, so the pre-edit hook can find
+   it. `archive` needs no commit — the record is not tracked.
 
-5. **Report** the task id and one sentence on what you recorded.
+   Run one of them. A finished task left in the record is not a third option: it makes work
+   deliberately left undocumented look identical to work nobody got round to.
+
+6. **Report** the task id, one sentence on what you recorded, and your promotion call.
 
 ## Hard constraints
 

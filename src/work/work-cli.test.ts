@@ -473,6 +473,50 @@ describe('work.mjs — the shared work record', () => {
     expect(doc).toContain('## Files\n\n_none recorded_');
   });
 
+  test('archive takes a closed task out of the record without writing a document', () => {
+    // The counterpart to promote. Most finished work needs no document — a fix a test already
+    // pins and a commit already explains — and publishing one anyway puts "this was fixed" in
+    // front of every later edit of those files. Before this verb, saying so had nowhere to go.
+    const id = work(['park', '--title', 'Nothing durable here', '--files', 'src/a.ts'], worktree).trim();
+    work(['done', id], worktree);
+
+    const findings = join(worktree, 'thoughts', 'shared', 'findings');
+    const before = existsSync(findings) ? readdirSync(findings).length : 0;
+    expect(work(['archive', id], worktree)).toContain('no document written');
+
+    expect(existsSync(join(mainCheckout, '.claude', 'work', 'tasks', `${id}.md`))).toBe(false);
+    expect(existsSync(join(mainCheckout, '.claude', 'work', 'archive', `${id}.md`))).toBe(true);
+    // The task's own content survives intact — archiving loses nothing, it only declines to publish.
+    expect(readFileSync(join(mainCheckout, '.claude', 'work', 'archive', `${id}.md`), 'utf8'))
+      .toContain('Nothing durable here');
+    expect(existsSync(findings) ? readdirSync(findings).length : 0).toBe(before);
+
+    expect(() => work(['archive', id], worktree)).toThrow(/already archived/);
+  });
+
+  test('archive refuses a task that is still open or active', () => {
+    const id = work(['park', '--title', 'Not closed yet'], worktree).trim();
+    expect(() => work(['archive', id], worktree)).toThrow(/only a done or dropped task/);
+    expect(existsSync(join(mainCheckout, '.claude', 'work', 'tasks', `${id}.md`))).toBe(true);
+    work(['done', id], worktree);
+    work(['archive', id], worktree);
+  });
+
+  test('the session packet names finished tasks still awaiting a promote-or-archive call', () => {
+    // The backstop under the judgement the commands ask for: a `done` task that nobody decided
+    // about is invisible otherwise, and indistinguishable from one deliberately left undocumented.
+    const id = work(['park', '--title', 'Awaiting a call'], worktree).trim();
+    work(['done', id], worktree);
+    try {
+      const out = work(['packet', '--for-session', '--cwd', worktree], worktree);
+      const ctx = JSON.parse(out).hookSpecificOutput.additionalContext as string;
+      expect(ctx).toContain('waiting on a promote-or-archive call');
+      expect(ctx).toContain(id);
+    } finally {
+      work(['archive', id], worktree);
+    }
+  });
+
   test('promote refuses a task that is still open or active', () => {
     const id = work(['park', '--title', 'Still open'], worktree).trim();
     expect(() => work(['promote', id], worktree)).toThrow(/only a done or dropped task/);

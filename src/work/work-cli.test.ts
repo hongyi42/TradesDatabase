@@ -308,6 +308,34 @@ describe('work.mjs — the shared work record', () => {
     }
   });
 
+  test('touch records via --file when an earlier hook has already drained stdin', () => {
+    // The regression this pins, and it is the worst kind — silent, and invisible to every test
+    // that existed. Hooks on one event share a single stdin, and the syntax check ahead of this
+    // one reads it to EOF with `jq`. So the payload was gone before this process even started,
+    // and `touch` recorded NOTHING in any real session for as long as it existed, while its whole
+    // test suite passed: the tests hand it a payload directly, so the only untested thing was the
+    // wiring. Taking the path as an argument removes the dependency rather than reordering it.
+    const id = work(['park', '--title', 'drained stdin probe', '--kind', 'task'], mainCheckout);
+    work(['claim', id, '--force'], worktree);
+    const target = join(worktree, 'src', 'touched-by-flag.ts');
+    writeFileSync(target, 'export const t = 1;\n');
+    try {
+      // An EMPTY stdin is exactly what the second hook on an event receives.
+      work(['touch', '--file', target, '--cwd', worktree], worktree, '');
+      expect(taskFile(id).files).toContain('src/touched-by-flag.ts');
+
+      // And the shape that was broken: no --file and no payload records nothing, rather than
+      // guessing at a path. Without this half, --file could be ignored and the test still pass.
+      const after = taskFile(id).files;
+      work(['touch', '--cwd', worktree], worktree, '');
+      expect(taskFile(id).files).toBe(after);
+    } finally {
+      rmSync(target, { force: true });
+      work(['done', id], mainCheckout);
+      work(['claim', claimableId, '--force'], worktree);
+    }
+  });
+
   test('base falls back to a real commit when there is no origin/main', () => {
     // A local-only clone has no remote at all, and a fork's remote may be named anything. base is
     // the fixed point an overlap check measures "changed since" from, so leaving it empty makes

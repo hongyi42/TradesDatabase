@@ -773,10 +773,17 @@ function cmdPromote(main, cwd, { positional }) {
  * discipline would be empty exactly when it mattered. Silent in every failure case: it runs
  * after every single edit and must never produce output or a non-zero exit.
  */
-function cmdTouch(main) {
-  const filePath = hookPayload?.tool_input?.file_path;
+function cmdTouch(main, flags) {
+  // `--file` first, and it is the form the hook uses. Reading the payload from stdin looked
+  // right and was dead on arrival: several hook commands share one event's stdin, and the
+  // syntax check ahead of this one consumes it with `jq` before this process ever starts. So
+  // this verb had never once recorded a file in a real session, while every test passed —
+  // because the tests hand it a payload directly, and the only untested thing was the wiring.
+  // Taking the path as an argument removes the dependency instead of reordering around it.
+  const fromFlag = typeof flags?.file === 'string' && flags.file ? flags.file : null;
+  const filePath = fromFlag ?? hookPayload?.tool_input?.file_path;
   if (typeof filePath !== 'string' || !filePath) return;
-  const abs = isAbsolute(filePath) ? filePath : resolve(hookPayload.cwd ?? process.cwd(), filePath);
+  const abs = isAbsolute(filePath) ? filePath : resolve(hookPayload?.cwd ?? process.cwd(), filePath);
 
   // The file's OWN worktree, not the session's cwd: an edit can name a path anywhere.
   const wt = worktreeOf(nearestExistingDir(dirname(abs)));
@@ -986,7 +993,7 @@ switch (verb) {
     break;
   case 'touch':
     // Runs after every edit in every session: swallow everything.
-    try { cmdTouch(main); } catch { /* never cost the user an edit */ }
+    try { cmdTouch(main, args.flags); } catch { /* never cost the user an edit */ }
     break;
   case 'snapshot':
     // Runs on every Stop and before every compaction: same policy.

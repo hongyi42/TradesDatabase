@@ -27,14 +27,10 @@
         "matcher": "Edit|Write",
         "hooks": [
           {
+            "_comment": "ONE command, deliberately. Several hooks on one event share a single stdin, so the first to read the payload to EOF consumes it: this used to be two entries, and the second (the record) never saw a payload at all. It silently recorded nothing in every session while all its tests passed, because the tests hand it a payload directly. Now stdin is read once and the path is passed as an argument. Record BEFORE the syntax check: PostToolUse runs after the write, so the edit happened whether or not it parses, and `exit 2` must stay the last word.",
             "type": "command",
-            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in */node_modules/*) ;; *.js|*.mjs|*.cjs) node --check \"$f\" || exit 2;; esac",
-            "statusMessage": "Checking JS syntax"
-          },
-          {
-            "type": "command",
-            "command": "W=\"$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../scripts/work.mjs\"; [ -f \"$W\" ] || W=\"$CLAUDE_PROJECT_DIR/scripts/work.mjs\"; [ -f \"$W\" ] || W=\"./scripts/work.mjs\"; [ -f \"$W\" ] && node \"$W\" touch; true",
-            "statusMessage": "Recording touched file"
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); W=\"$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../scripts/work.mjs\"; [ -f \"$W\" ] || W=\"$CLAUDE_PROJECT_DIR/scripts/work.mjs\"; [ -f \"$W\" ] || W=\"./scripts/work.mjs\"; [ -f \"$W\" ] && node \"$W\" touch --file \"$f\" --cwd \"$PWD\"; case \"$f\" in */node_modules/*) ;; *.js|*.mjs|*.cjs) node --check \"$f\" || exit 2;; esac; true",
+            "statusMessage": "Recording the edit"
           }
         ]
       }

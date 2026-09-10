@@ -4531,9 +4531,30 @@ Seats' doctrine: bootstrap-box.sh §0l "Messages to and from the office" (sync r
 plannerSim: world seed `officeMessages` + timeline step `office_inform` + `officeAfter`
 read-back. Eval: tier-1 cases W14/W15/X09; tool surface 17/46/47 (**17/42/43 since rung 8** — the four solver tools left).
 
-**Deploy notes (the rebuild is still NOT deployed):** migrations 20260901150000 +
+**Deploy notes:** migrations 20260901150000 +
 20260901160000 BEFORE code; office-runner is a box rollout — s2 first, fleet only with the
 whole-order deploy; a hosted reseed now clears the pilot's office_messages like its siblings.
+
+**INSTALLED AND LIVE 2026-09-10 18:51Z — and it had been staged-but-never-installed for nine
+days.** The three files sat in `/home/ubuntu/Box_Setup_Stuff/` since 2026-09-01 while
+`/etc/systemd/system/` held only `nudge-runner.{service,timer}`; `systemctl status
+office-runner.service` answered "Unit could not be found" and Render logged ZERO `/control/office`
+requests. So from build 5.5 Phase 3 until now **the planner's quiet-note leg had never once been
+delivered in production** — every `via: assistant` row accumulated at `status: queued,
+serve_count: 0, delivered_at: null` while its paired `via: chat` Telegram leg went out normally.
+The pair looked healthy from the human side; only the DB showed the other half stranded. **Check
+the install, not just the file** — a staged unit and an installed unit look identical in
+`Box_Setup_Stuff`. Installed md5s, all three byte-identical to the repo at `217cf81`:
+`office-runner.sh` **`4a77d9d9a7c7bd2550bbc464504e19a9`** → `/usr/local/sbin/` (0700 root),
+`.service` **`2f665e3c01176a20198b5e388a278f5d`** and `.timer`
+**`862f6c82b865b51093350025699f0689`** → `/etc/systemd/system/` (0644). Reuses
+`/etc/doorman/badge-pull.env`; no new secret. First drain injected the three-row backlog
+sequentially (46s / 27s / 30s per turn, unit `Result=success`), all three flipped to `delivered`,
+and **the loop closed end to end**: s2's `manager-sam` absorbed the note and wrote a `kind: reply`
+row back to `spine:team-lead` naming the job it had just opened — the first agent-authored office
+reply in production. Note `serve_count: 2` on each is benign: a manual queue probe and the
+runner's own pull each count as a serve. Escape hatch unchanged: `systemctl disable --now
+office-runner.timer`.
 Joins the 4–7 evaluation train. Deferred by ruling: re-ask (the once-ever index), escalate =
 ask(manager) semantics (build 6 decision 2 — `nudge_id` on the bucket is its hook), unread-
 aging alarms (the tick drains the bucket; tick-death is already alarmed).

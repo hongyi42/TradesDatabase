@@ -48,7 +48,7 @@ the live record. Never promote a task that is not `done` or `dropped`.
 
 **Raise promotion yourself — nobody will remember to ask you.** The moment something surfaces that
 a future session would otherwise lose an afternoon rediscovering, say so in one line: *"worth
-promoting: &lt;what, and what it would cost to relearn&gt;"*. What qualifies: a vendor or tool contract
+promoting: <what, and what it would cost to relearn>"*. What qualifies: a vendor or tool contract
 that changed under us; a trap whose symptom points somewhere other than its cause; a decision whose
 rejected alternative is invisible in the code; a measurement that would otherwise be re-measured.
 Say it while it is fresh — by the end of the task the reason has already gone fuzzy, which is

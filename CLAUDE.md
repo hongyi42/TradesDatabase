@@ -46,6 +46,17 @@ what a diff cannot: what was decided, what you assumed, what is still open. Then
 <id>` and `work.mjs promote <id>` writes it to `thoughts/shared/findings/` and archives it out of
 the live record. Never promote a task that is not `done` or `dropped`.
 
+**Raise promotion yourself — nobody will remember to ask you.** The moment something surfaces that
+a future session would otherwise lose an afternoon rediscovering, say so in one line: *"worth
+promoting: &lt;what, and what it would cost to relearn&gt;"*. What qualifies: a vendor or tool contract
+that changed under us; a trap whose symptom points somewhere other than its cause; a decision whose
+rejected alternative is invisible in the code; a measurement that would otherwise be re-measured.
+Say it while it is fresh — by the end of the task the reason has already gone fuzzy, which is
+exactly how it gets lost. What does **not** qualify matters as much: a fix that a test already pins
+and a commit message already explains. A promoted finding is shown before every future edit of its
+files, so "this was fixed" becomes noise standing between the next session and its work. Promote
+what someone must KNOW, not what they can read.
+
 New to the repo? [docs/onboarding.md](docs/onboarding.md) is the map — what the project is, how the
 pieces fit, day-1 local setup, and the rules that cost us incidents.
 

@@ -44,7 +44,19 @@ operator, and it is the part this command writes.
    EOF
    ```
 
-4. **If the task is finished**, close it and promote what is durable into `thoughts/`:
+4. **Make the promotion call out loud, finished or not.** The operator will not remember to ask,
+   and by tomorrow the reason will have gone fuzzy — so state it now, in one line, either way.
+
+   Promote when a future session would otherwise lose an afternoon: a vendor or tool contract that
+   changed under us, a trap whose symptom points somewhere other than its cause, a decision whose
+   rejected alternative is invisible in the code, a measurement that would otherwise be re-taken.
+
+   Do **not** promote a fix that a test already pins and the commit already explains. A promoted
+   finding is put in front of every future edit of its files, and "this was fixed" is noise
+   standing between the next session and its work. If it does not qualify, say so in a few words
+   rather than staying silent — an unstated call is indistinguishable from a forgotten one.
+
+5. **If the task is finished**, close it and promote what is durable into `thoughts/`:
 
    ```bash
    node "$W" done <id>
@@ -54,7 +66,7 @@ operator, and it is the part this command writes.
    Promotion writes `thoughts/shared/findings/<date>-<slug>.md`. Then run
    `npm run decisions:index` and commit both, so the pre-edit hook can find it.
 
-5. **Report** the task id and one sentence on what you recorded.
+6. **Report** the task id, one sentence on what you recorded, and your promotion call.
 
 ## Hard constraints
 

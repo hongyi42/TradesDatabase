@@ -19,6 +19,7 @@
 //   node scripts/work.mjs packet [--cwd <path>] [--json]
 //   node scripts/work.mjs touch            # PostToolUse(Edit|Write): record the touched file
 //   node scripts/work.mjs promote <id>     # a done/dropped task -> thoughts/shared/findings/
+//   node scripts/work.mjs archive <id>     # ...or out of the live record with no document
 //   node scripts/work.mjs board
 //
 // Failure policy, deliberately two-sided: verbs a PERSON runs report the problem on stderr and
@@ -494,10 +495,23 @@ function cmdPacketForSession(main, cwd) {
     if (latest?.text) parts.push('', `## ${latest.title} (most recent handoff)`, '', latest.text);
   }
 
-  const open = listTasks(main).filter((t) => t.fm.status === 'open');
+  const all = listTasks(main);
+  const open = all.filter((t) => t.fm.status === 'open');
   if (open.length) {
     parts.push('', `${open.length} finding(s) are parked and unclaimed in the record.`
       + ' Run `npm run board` to see them before starting something new.');
+  }
+
+  // Finished, but still sitting in the live half. This is the backstop under the judgement the
+  // commands ask for: both answers are one command, and what is NOT an answer is leaving it here,
+  // because then "deliberately not durable" and "nobody got round to it" look identical.
+  const pending = all.filter((t) => t.fm.status === 'done' || t.fm.status === 'dropped');
+  if (pending.length) {
+    const named = pending.slice(0, 5).map((t) => t.fm.id).join(', ');
+    parts.push('', `${pending.length} finished task(s) are still in the live record, waiting on a`
+      + ` promote-or-archive call: ${named}${pending.length > 5 ? ', …' : ''}.`
+      + ' `promote` when a future session must KNOW it; `archive` when the test and the commit'
+      + ' already say it.');
   }
 
   // A worktree has its own project directory, so it starts with none of the main checkout's
@@ -585,6 +599,67 @@ function cmdHandoff(main, cwd, { flags }) {
     writeTask(task.file, task.fm, `${task.body.replace(/\s*$/, '')}\n\n## Handoff ${stamp}\n\n${text}\n`);
   });
   process.stdout.write(`handoff appended to ${found.fm.id}\n`);
+}
+
+/**
+ * Move a closed task and its snapshot out of `tasks/` into `archive/`. The caller holds the lock.
+ *
+ * Shared by `promote` and `archive` so the two exits from the live record cannot drift apart —
+ * the difference between them is whether a document gets written, never what happens to the task.
+ */
+function moveToArchive(main, task, id) {
+  renameSync(task.file, join(archiveDir(main), `${id}.md`));
+  // Best effort: the task is archived by the time this runs, so a stack trace here would report
+  // failure for work that actually succeeded.
+  try {
+    const snap = join(tasksDir(main), `${id}.snapshot.json`);
+    if (existsSync(snap)) renameSync(snap, join(archiveDir(main), `${id}.snapshot.json`));
+  } catch { /* the snapshot is derived state — it can be regenerated, the task cannot */ }
+}
+
+/**
+ * `archive <id>`: take a closed task out of the live record WITHOUT writing a document.
+ *
+ * The counterpart to `promote`, and the reason both exist. Promotion answers one question — must
+ * a future session KNOW this? — and for most finished work the honest answer is no: a fix a test
+ * already pins and a commit already explains needs no document, and publishing one anyway puts
+ * "this was fixed" in front of every later edit of those files, where it is noise.
+ *
+ * Until this verb existed that answer had nowhere to go. A task finished and deliberately not
+ * made durable looked exactly like one nobody had got round to, so the count of finished tasks
+ * meant nothing and was learned-past. Saying "no" is a decision; it needs recording like any other.
+ */
+function cmdArchive(main, { positional }) {
+  const id = positional[0];
+  if (!id) fail('archive needs a task id');
+  const file = taskPath(main, id);
+  const archived = join(archiveDir(main), `${id}.md`);
+  if (!existsSync(file)) {
+    if (existsSync(archived)) fail(`${id} is already archived — it is in ${relative(main, archiveDir(main))}`);
+    fail(`no task ${id}`);
+  }
+
+  let error = null;
+  let moved = false;
+  withTaskLock(file, () => {
+    const task = findTask(main, id);
+    if (!task) { error = `no task ${id}`; return; }
+    if (task.fm.status !== 'done' && task.fm.status !== 'dropped') {
+      error = `${id} is ${task.fm.status || 'open'} — only a done or dropped task may be archived`;
+      return;
+    }
+    ensureRecord(main);
+    if (existsSync(archived)) {
+      error = `${relative(main, archived)} already exists — refusing to write over it`;
+      return;
+    }
+    moveToArchive(main, task, id);
+    moved = true;
+  });
+
+  if (error) fail(error);
+  if (!moved) fail(`could not take the lock on ${id} — another session is writing to it`);
+  process.stdout.write(`${id} archived — no document written\n`);
 }
 
 /**
@@ -681,13 +756,7 @@ function cmdPromote(main, cwd, { positional }) {
       return;
     }
 
-    renameSync(task.file, archived);
-    // Best-effort: the document is written and the task archived by now, so a stack trace here
-    // would report failure for work that actually succeeded.
-    try {
-      const snap = join(tasksDir(main), `${id}.snapshot.json`);
-      if (existsSync(snap)) renameSync(snap, join(archiveDir(main), `${id}.snapshot.json`));
-    } catch { /* the snapshot is derived state — it can be regenerated, the task cannot */ }
+    moveToArchive(main, task, id);
     written = relative(wt, out);
   });
 
@@ -925,9 +994,10 @@ switch (verb) {
     break;
   case 'handoff': cmdHandoff(main, cwd, args); break;
   case 'promote': cmdPromote(main, cwd, args); break;
+  case 'archive': cmdArchive(main, args); break;
   case 'board': cmdBoard(main); break;
   default:
     process.stderr.write('work: usage: park | claim | done | drop | packet | touch | snapshot'
-      + ' | handoff | promote | board\n');
+      + ' | handoff | promote | archive | board\n');
     process.exit(1);
 }

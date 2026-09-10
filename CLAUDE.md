@@ -57,6 +57,13 @@ and a commit message already explains. A promoted finding is shown before every 
 files, so "this was fixed" becomes noise standing between the next session and its work. Promote
 what someone must KNOW, not what they can read.
 
+**"No" is an answer, and it has a verb: `work.mjs archive <id>`.** It takes a closed task out of
+the live record without writing a document, losing nothing — the task file moves to `archive/`
+intact. Use it whenever the promotion call is no. Leaving a finished task sitting in the record is
+the one thing that is *not* an answer, because then work deliberately left undocumented looks
+exactly like work nobody got round to, and the count stops meaning anything. Every session start
+lists what is still waiting on that call.
+
 New to the repo? [docs/onboarding.md](docs/onboarding.md) is the map — what the project is, how the
 pieces fit, day-1 local setup, and the rules that cost us incidents.
 

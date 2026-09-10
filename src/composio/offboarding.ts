@@ -10,7 +10,7 @@ import {
   deleteComposioPairing,
   getComposioClient,
   isGoneError,
-  type PairingClient,
+  type PairingClient,  setWatchersEnabled,
 } from './pairing.js';
 
 // Grace-period offboarding (decided 2026-07-02): a confirmed deactivation
@@ -40,13 +40,12 @@ export interface OffboardingDeps {
 // callers treat it as advisory (the expiry teardown is the backstop).
 export async function disablePairing(tech: Technician, deps: OffboardingDeps = {}): Promise<void> {
   const client = requireClient(deps);
-  if (tech.composio_trigger_id) {
-    try {
-      await client.triggers.disable(tech.composio_trigger_id);
-    } catch (err) {
-      if (!isGoneError(err)) throw err;
-    }
-  }
+  // EVERY watcher, not just the one the roster names (rung 10b.4). Gmail's menu
+  // has two and the column holds one, so a column-driven disable left a
+  // deactivated person's OUTGOING mail streaming to our webhook for the whole
+  // grace period — dropped with a receipt, but still delivered and still billed,
+  // for somebody who has been told their access is off.
+  await setWatchersEnabled(client, tech, false);
   if (tech.composio_connected_account_id) {
     try {
       await client.connectedAccounts.disable(tech.composio_connected_account_id);
@@ -59,12 +58,15 @@ export async function disablePairing(tech: Technician, deps: OffboardingDeps = {
 // Mirror of disablePairing — the reactivation path.
 export async function enablePairing(tech: Technician, deps: OffboardingDeps = {}): Promise<void> {
   const client = requireClient(deps);
+  // Account FIRST here — the mirror of disable's order, so a watcher is never
+  // switched back on while the mailbox it reads is still disabled.
   if (tech.composio_connected_account_id) {
     await client.connectedAccounts.enable(tech.composio_connected_account_id);
   }
-  if (tech.composio_trigger_id) {
-    await client.triggers.enable(tech.composio_trigger_id);
-  }
+  // …and every watcher, for the same reason disable takes them all: reactivating
+  // only the one the roster names would leave a returning person's own replies
+  // silently uncaptured while their inbound mail flowed normally.
+  await setWatchersEnabled(client, tech, true);
 }
 
 export interface ExpireResult {

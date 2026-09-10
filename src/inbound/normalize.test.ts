@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { resolveNormalizer } from './normalize.js';
 import { gmailNewMessageNormalizer } from './gmail.js'; // self-registers GMAIL normalizer
+import { gmailEmailSentNormalizer } from './gmailSent.js'; // …and the SENT one
 
 // Pure-function unit tests: no DB, no network. Proves the payload → envelope seam
 // and the registry routing independent of any live Composio connection.
@@ -131,5 +132,88 @@ describe('resolveNormalizer', () => {
   test('returns null for an unknown toolkit/triggerType', () => {
     expect(resolveNormalizer('SLACK', 'NEW_MESSAGE')).toBeNull();
     expect(resolveNormalizer('GMAIL', 'GMAIL_UNKNOWN_TRIGGER')).toBeNull();
+  });
+});
+
+// RUNG 10B.4 — THE OTHER HALF OF THE MAILBOX. Gmail's trigger menu has exactly
+// two watchers and each sees ONE DIRECTION. The received one is named, in
+// Composio's own metadata, "New Gmail Message RECEIVED Trigger", so no config
+// on it delivers the firm's own replies — verified live 2026-09-10. This
+// normalizer serves GMAIL_EMAIL_SENT_TRIGGER, whose payload is a DIFFERENT
+// shape: no `label_ids`, and `recipients`/`cc`/`bcc` that the received one
+// never carries.
+describe('gmailEmailSentNormalizer', () => {
+  const sent = {
+    message_id: 'gmail-sent-1',
+    sender: 'Office <office@firm.test>',
+    subject: 'Re: Radiator not heating upstairs',
+    message_text: "Thursday works — we'll come out then.",
+    message_timestamp: '2026-09-10T00:13:33.000Z',
+    thread_id: 'thread-radiator',
+    to: 'Iris <iris@homeowner.test>',
+    recipients: 'iris@homeowner.test, bookkeeping@firm.test',
+  };
+
+  test('the direction comes from the TRIGGER TYPE — the payload has no labels', () => {
+    const env = gmailEmailSentNormalizer(sent);
+    expect(env.channel).toBe('outbound_email');
+    // Nothing in the payload says "sent"; being handed to this normalizer does.
+    expect(sent).not.toHaveProperty('label_ids');
+  });
+
+  test('keyed in the OUTBOUND namespace, with Gmail’s bare id kept beside it', () => {
+    const env = gmailEmailSentNormalizer(sent);
+    // One key for all three writers of an outbound row — this trigger,
+    // send_email and logIngest — so one email cannot become two L1 rows.
+    expect(env.externalId).toBe('sent:gmail-sent-1');
+    expect((env.sourceMeta as { messageId?: string }).messageId).toBe('gmail-sent-1');
+  });
+
+  test('the classifier still gates it — the user’s ruling, and L1 has no delete', () => {
+    expect(gmailEmailSentNormalizer(sent).requiresWorkClassifier).toBe(true);
+  });
+
+  test('stores the header form, and keeps the CLEAN body for the classifier', () => {
+    const env = gmailEmailSentNormalizer(sent);
+    expect(env.rawText).toBe(
+      "Subject: Re: Radiator not heating upstairs\nFrom: Office <office@firm.test>\n\nThursday works — we'll come out then.",
+    );
+    expect((env.sourceMeta as { body?: string }).body).toBe("Thursday works — we'll come out then.");
+    expect((env.sourceMeta as { body?: string }).body).not.toContain('Subject:');
+  });
+
+  test('the door keys on `to`, and `recipients` is kept as the record of who got it', () => {
+    // A Bcc'd colleague must not turn a one-customer reply into an ambiguous
+    // one: the door refuses anything but a single recipient, so it reads the
+    // To line, not the folded list.
+    const env = gmailEmailSentNormalizer(sent);
+    expect(env.sourceMeta).toMatchObject({
+      to: 'Iris <iris@homeowner.test>',
+      recipients: 'iris@homeowner.test, bookkeeping@firm.test',
+    });
+  });
+
+  test('present-only fields stay absent, and the timestamp rides along', () => {
+    const bare = gmailEmailSentNormalizer({ message_id: 'm', sender: 'a@b.test' });
+    expect(bare.sourceMeta).not.toHaveProperty('threadId');
+    expect(bare.sourceMeta).not.toHaveProperty('cc');
+    expect(bare.sourceMeta).not.toHaveProperty('recipients');
+    expect(gmailEmailSentNormalizer(sent).occurredAt).toBe('2026-09-10T00:13:33.000Z');
+  });
+
+  test('no message id throws — no dedup key, and nothing to join the send to', () => {
+    expect(() => gmailEmailSentNormalizer({ sender: 'x@y.test' })).toThrow();
+  });
+
+  test('an absurdly long thread id is dropped, and the mail still ingests', () => {
+    const env = gmailEmailSentNormalizer({ ...sent, thread_id: 'x'.repeat(256) });
+    expect(env.sourceMeta).not.toHaveProperty('threadId');
+    expect(env.externalId).toBe('sent:gmail-sent-1');
+  });
+
+  test('it is REGISTERED, or the webhook answers `unrouted` and discards the mail', () => {
+    expect(resolveNormalizer('GMAIL', 'GMAIL_EMAIL_SENT_TRIGGER')).toBe(gmailEmailSentNormalizer);
+    // …and the two doors stay distinct.
+    expect(resolveNormalizer('GMAIL', 'GMAIL_NEW_GMAIL_MESSAGE')).toBe(gmailNewMessageNormalizer);
   });
 });

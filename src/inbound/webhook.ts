@@ -20,7 +20,8 @@ import {
 import type { WorkClassifier } from '../email/classify.js';
 import { resolveNormalizer as liveResolveNormalizer } from './normalize.js';
 import type { Normalizer } from './normalize.js';
-import './gmail.js'; // self-registers the Gmail normalizer
+import './gmail.js'; // self-registers the Gmail received normalizer
+import './gmailSent.js'; // …and the Gmail SENT one (rung 10b.4)
 
 // Composio-trigger entry point. Composio POSTs a signed JSON payload to /inbound/*;
 // we HMAC-verify it, route by toolkit+triggerType to a normalizer, run the
@@ -225,6 +226,9 @@ export async function handleInboundWebhook(
     messageId?: string;
     threadId?: string;
     to?: string;
+    recipients?: string;
+    cc?: string;
+    bcc?: string;
     labelIds?: string[];
   };
   // GMAIL'S OWN ID FOR THIS MESSAGE. Not the same thing as `externalId` any
@@ -268,7 +272,10 @@ export async function handleInboundWebhook(
         tenantId,
         channel: envelope.channel,
         externalId: envelope.externalId,
-        from: meta.from,
+        // The recipient on the firm's own mail, for the same reason the
+        // non-work receipt below takes it: the receipt keeps a DOMAIN only, and
+        // on outbound the sender's domain is our own on every single row.
+        from: outbound ? (meta.to ?? meta.from) : meta.from,
         reason: 'offboarded',
         technicianRef,
       });
@@ -332,7 +339,10 @@ export async function handleInboundWebhook(
           body: meta.body ?? '',
           // RUNG 10B.3: on the firm's own mail the sender is always us, so the
           // recipient is the whole signal — customer, or the manager's dentist.
-          ...(outbound ? { outbound: true, to: meta.to ?? '' } : {}),
+          // `|| undefined`, not `?? ''`: an empty string would sail past
+          // classify.ts's own `?? '(unknown)'` guard and show the model a blank
+          // `To:` line on a prompt whose entire recipient signal is that line.
+          ...(outbound ? { outbound: true, to: meta.to || undefined } : {}),
         },
         // Billed even when the verdict is "personal" and the mail is dropped —
         // we paid for the triage either way.
@@ -469,6 +479,15 @@ export async function handleInboundWebhook(
         // it reached; `labelIds` says INBOX vs SENT. All three present-only.
         ...(meta.threadId ? { threadId: meta.threadId } : {}),
         ...(meta.to ? { to: meta.to } : {}),
+        // WHO ACTUALLY RECEIVED IT, on the firm's own mail (rung 10b.4). The
+        // door keys on ONE recipient and refuses the rest, but the record of a
+        // Cc'd landlord or a Bcc'd bookkeeper is exactly the sort of thing
+        // somebody asks about later — and L1 is append-only, so a field not
+        // written here can never be recovered. Present-only, and inert on every
+        // channel that has no such header.
+        ...(meta.recipients ? { recipients: meta.recipients } : {}),
+        ...(meta.cc ? { cc: meta.cc } : {}),
+        ...(meta.bcc ? { bcc: meta.bcc } : {}),
         ...(meta.labelIds ? { labelIds: meta.labelIds } : {}),
         // The account id keys the stamp to a pairing EPISODE: across a
         // wrong-mailbox → dismiss → re-pair loop, a bare boolean couldn't say

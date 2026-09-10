@@ -2,7 +2,7 @@
 date: 2026-09-09
 task: the thread supplies the JOB when a person key found the customer; and the firm's own half of an email conversation finally reaches the record
 research: thoughts/shared/research/2026-09-09-who-may-write-l2.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -290,10 +290,20 @@ work/personal classifier, without duplicating the assistant's own sends.
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP, the deployed pilot, the trigger reconfigured for at least one
   seat
-- [ ] a manager replies from Gmail directly → the capture appears as `outbound_email` on the right
+- [x] a manager replies from Gmail directly → the capture appears as `outbound_email` on the right
       job — evidence: the row plus its `job_captures`/`visit_notes` link
-- [ ] a personal email sent from the same mailbox → NOT in `raw_captures`, present in
+      **PROVEN 2026-09-10 20:14:14Z.** capture `f1e9c37f`, `external_id: sent:1a08cf47d9756ab7`,
+      `channel: outbound_email`, from `hhe23360228@gmail.com` to Delphine Warrick, thread
+      `1a08cb325c71ae59`; `job_captures` → job `ceb4f676` "Boiler diagnostic". Matched by
+      `soleRecipientOf(to)` (on outbound the sender is always us), job named by the thread.
+- [x] a personal email sent from the same mailbox → NOT in `raw_captures`, present in
       `dropped_audit` — this is the ruling's whole point and must be proven, not assumed
+      **PROVEN 2026-09-10 20:20:01Z.** `dropped_audit` row `sent:1a08cf96bb87dc94`, domain
+      `gmail.com`, reason "Personal dinner invitation, unrelated to the trades business."
+      `raw_captures` for that message: **0 rows** (also 0 matching its body text anywhere in
+      L1). The SENT watcher demonstrably saw the message — `1a08cf96bb87dc94` appears in
+      `ti_vVRScPZX84eQ`'s own message list — so this proves the gate runs BEFORE the insert,
+      which is the only thing that can work on an append-only table.
 
 ### Manual verification
 None.
@@ -348,10 +358,37 @@ Test B is unaffected — it was proven against the keyless row before the update
    nothing in L1.
 
 ### Automated verification
-- [ ] read-backs for each step above
+- [x] read-backs for each step above — all via `supabase-test` SELECT, evidence recorded below
 
 ### Manual verification
-- [ ] the job's correspondence now reads as a conversation with both halves in it
+- [x] the job's correspondence now reads as a conversation with both halves in it — job
+      `ceb4f676` carries the customer's first email, her two replies, the firm's reply, and the
+      firm's booking confirmation, all on thread `1a08cb325c71ae59`
+
+**FIXTURE SUBSTITUTION, and why.** Phase 3 above names Iris Calloway. She could not serve: her
+row is keyless, and step 2 ("the two-open-jobs case") needs a customer whose PERSON key matches
+first, since Phase 1's change is precisely what happens *after* a person match. One fixture
+cannot be both. The run used **Delphine Warrick** (`75c21b4a`), created live through the same
+unmatched-caller door on 2026-09-10 19:09 and holding `email = hongyi23360228@gmail.com`.
+
+**Live run, 2026-09-10 (all UTC).**
+- **Step 1 — thread supplies the job.** Reply on thread `1a08cb325c71ae59` at 20:08:46 (capture
+  `c0e6eb3d`) → `job_captures` → `ceb4f676`. No observation raised.
+- **Step 2 — the two-open-jobs case, the decisive one.** Decoy job `1959bd8f` "Kitchen tap
+  dripping" created on Delphine at 20:10:23, deliberately with no capture on any thread. Second
+  reply at 20:11:30 (capture `89f3a785`) → `job_captures` → **`ceb4f676`, not `1959bd8f`**. With
+  two open jobs on one customer and the decoy already in place, the thread was the only thing
+  that could choose — which is exactly what `withThreadJob` was written to do: the email key
+  answers *who*, the thread answers *which job*, consulted after the person match rather than
+  instead of it.
+- **Step 3 — the firm's own reply, and the personal drop.** Recorded against Phase 2 above.
+
+**Also proven incidentally.** The firm's promise in that outbound mail raised an
+`inbound_commitment` item (`100282cc`) two seconds after capture — promise detection on the
+firm's OWN mail, impossible before the SENT watcher existed. That item exposed a separate defect
+unrelated to this plan (a `book_visit` / `record_caller` doctrine collision, and an item closed
+on words while the record was empty); parked as
+`20260910-a-promised-visit-was-never-booked-and-th`, not fixed here.
 
 ---
 *Pause after Phase 3's manual item.*

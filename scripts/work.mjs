@@ -18,6 +18,7 @@
 //   node scripts/work.mjs done|drop <id>
 //   node scripts/work.mjs packet [--cwd <path>] [--json]
 //   node scripts/work.mjs touch            # PostToolUse(Edit|Write): record the touched file
+//   node scripts/work.mjs promote <id>     # a done/dropped task -> thoughts/shared/findings/
 //   node scripts/work.mjs board
 //
 // Failure policy, deliberately two-sided: verbs a PERSON runs report the problem on stderr and
@@ -263,6 +264,11 @@ function createTask(main, title, now, fm, body) {
     .replace(/-$/, '') || 'task';
   for (let n = 1; n < 1000; n++) {
     const id = n === 1 ? `${day}-${slug}` : `${day}-${slug}-${n}`;
+    // An id is retired for good, never reissued. `promote` empties a task's slot in `tasks/`,
+    // and without this the next park of the same title on the same day would take the id back —
+    // after which promoting THAT task would rename straight over the archived copy, which is the
+    // only remaining record of the first one's body, decisions and handoffs.
+    if (existsSync(join(archiveDir(main), `${id}.md`))) continue;
     try {
       writeFileSync(taskPath(main, id), serializeTask({ ...fm, id }, body), { flag: 'wx' });
       return id;
@@ -556,6 +562,115 @@ function cmdHandoff(main, cwd, { flags }) {
 }
 
 /**
+ * `promote <id>`: turn a closed task into a durable finding document under `thoughts/`.
+ *
+ * The record is the LIVE half and `thoughts/` is the DURABLE half. Mixing them is what made the
+ * old prose notes untrustworthy: a directory where finished and in-flight work look alike is a
+ * directory nobody trusts. So promotion is one-way and terminal — only a `done` or `dropped`
+ * task may be promoted, and the same move archives it out of the live record.
+ *
+ * The document is written into the CALLER'S worktree, not the main checkout, because `thoughts/`
+ * is tracked: the finding has to land in the tree whose branch is about to commit it. Writing it
+ * to the main checkout would drop an untracked file onto whatever branch that checkout holds.
+ *
+ * Write first, archive second. If the archive move fails the finding still exists and the task
+ * can be archived by hand; the other order can lose the task with nothing written in its place.
+ */
+function cmdPromote(main, cwd, { positional }) {
+  const id = positional[0];
+  if (!id) fail('promote needs a task id');
+  const wt = worktreeOf(cwd);
+  if (!wt) fail('not inside a git worktree');
+
+  const file = taskPath(main, id);
+  const archived = join(archiveDir(main), `${id}.md`);
+  if (!existsSync(file)) {
+    if (existsSync(archived)) fail(`${id} is already promoted — it is in ${relative(main, archiveDir(main))}`);
+    fail(`no task ${id}`);
+  }
+
+  // Reading the task and moving it happen under ONE lock, like every other mutating verb.
+  // Without it a concurrent `claim` can turn this task active between the status check and the
+  // archive move, and promote would then archive a task a live session is working on — silently,
+  // because nothing reads `archive/`: that session's packet, file list and board row simply go
+  // empty. `fail()` is never called inside the lock, because process.exit skips the `finally`
+  // that releases it; the outcome is carried out and acted on after the lock is gone.
+  let error = null;
+  let written = null;
+  withTaskLock(file, () => {
+    const task = findTask(main, id);
+    if (!task) { error = `no task ${id}`; return; }
+    if (task.fm.status !== 'done' && task.fm.status !== 'dropped') {
+      error = `${id} is ${task.fm.status || 'open'} — only a done or dropped task may be promoted`;
+      return;
+    }
+    ensureRecord(main);
+    // The archive is the only remaining copy of a promoted task's body. `createTask` already
+    // refuses to reissue an archived id, so reaching this means something outside the tool put
+    // a file here — never write over it.
+    if (existsSync(archived)) {
+      error = `${relative(main, archived)} already exists — refusing to write over it`;
+      return;
+    }
+
+    // Dated by when the work STARTED, not when it was filed, so the finding sorts beside the
+    // research and plan documents written alongside it.
+    const date = /^\d{4}-\d{2}-\d{2}/.exec(task.fm.created || '')?.[0]
+      ?? new Date().toISOString().slice(0, 10);
+    const slug = id.replace(/^\d{8}-/, '') || 'finding';
+    const files = listField(task.fm.files);
+
+    const head = [
+      `date: ${date}`,
+      `task: ${task.fm.title ?? ''}`,
+      // `dropped` is classified as superseded by the index, which is the honest reading: the
+      // finding stays findable, but ranked last and labelled, because somebody decided against
+      // it. `done` is a record of work that actually happened.
+      `status: ${task.fm.status === 'done' ? 'complete' : 'dropped'}`,
+      `origin: ${task.fm.origin ?? ''}`,
+      `files: ${joinField(files)}`,
+      'supersedes: nothing',
+    ].join('\n');
+
+    // Sections are re-emitted rather than the body copied verbatim, only to drop the ones that
+    // were never filled in. Anything before the first heading is carried across as-is: the CLI's
+    // own writers always open with `## Notes`, but a hand-edited task file need not, and losing
+    // prose on promotion would be the worst possible moment to lose it.
+    const firstHeading = task.body.search(/^## /m);
+    const preamble = (firstHeading === -1 ? task.body : task.body.slice(0, firstHeading)).trim();
+    const fileList = files.length ? files.map((f) => `- ${f}`).join('\n') : '_none recorded_';
+    const blocks = [`## Files\n\n${fileList}`];
+    if (preamble) blocks.push(preamble);
+    for (const s of sections(task.body)) if (s.text) blocks.push(`## ${s.title}\n\n${s.text}`);
+    const doc = `---\n${head}\n---\n\n${blocks.join('\n\n')}\n`;
+
+    const dir = join(wt, 'thoughts', 'shared', 'findings');
+    mkdirSync(dir, { recursive: true });
+    const out = join(dir, `${date}-${slug}.md`);
+    try {
+      writeFileSync(out, doc, { flag: 'wx' });
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      error = `${relative(wt, out)} already exists — move it aside first`;
+      return;
+    }
+
+    renameSync(task.file, archived);
+    // Best-effort: the document is written and the task archived by now, so a stack trace here
+    // would report failure for work that actually succeeded.
+    try {
+      const snap = join(tasksDir(main), `${id}.snapshot.json`);
+      if (existsSync(snap)) renameSync(snap, join(archiveDir(main), `${id}.snapshot.json`));
+    } catch { /* the snapshot is derived state — it can be regenerated, the task cannot */ }
+    written = relative(wt, out);
+  });
+
+  if (error) fail(error);
+  if (!written) fail(`could not take the lock on ${id} — another session is writing to it`);
+  process.stdout.write(`${written}\n`);
+}
+
+/**
  * PostToolUse(Edit|Write): record that this worktree's active task touched a file.
  *
  * This is how a task's file list writes itself. Nobody remembers to maintain one by hand, and
@@ -775,9 +890,10 @@ switch (verb) {
     try { cmdSnapshot(main, cwd); } catch { /* never block a turn from ending */ }
     break;
   case 'handoff': cmdHandoff(main, cwd, args); break;
+  case 'promote': cmdPromote(main, cwd, args); break;
   case 'board': cmdBoard(main); break;
   default:
     process.stderr.write('work: usage: park | claim | done | drop | packet | touch | snapshot'
-      + ' | handoff | board\n');
+      + ' | handoff | promote | board\n');
     process.exit(1);
 }

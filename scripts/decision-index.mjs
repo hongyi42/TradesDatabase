@@ -78,7 +78,9 @@ function parseFrontmatter(text) {
 function classifyStatus(status) {
   if (!status) return 'unknown';
   const s = status.toLowerCase();
-  if (/supersed|superced|retired|abandoned|obsolete/.test(s)) return 'superseded';
+  // `dropped` is a promoted finding somebody decided against. It is kept and findable, but it
+  // belongs with the reversed decisions rather than among the ones still in force.
+  if (/supersed|superced|retired|abandoned|obsolete|dropped/.test(s)) return 'superseded';
   if (/^complete\b|^implemented\b|^done\b|^shipped\b|^landed\b/.test(s)) return 'complete';
   if (/^draft\b|^open\b|^proposed\b|^pending\b/.test(s)) return 'draft';
   return 'other';
@@ -348,10 +350,26 @@ const docs = walk(THOUGHTS)
     const text = readFileSync(abs, 'utf8');
     const fm = parseFrontmatter(text);
     const path = relative(ROOT, abs).split(sep).join('/');
+    const kind = path.includes('/research/') ? 'research'
+      : path.includes('/plans/') ? 'plan'
+        : path.includes('/findings/') ? 'finding'
+          : 'note';
+    // A promoted finding carries its file list as DATA in `files:`, written by the edit hook as
+    // the work happened, so it does not depend on the prose happening to name each file twice.
+    // Seed those paths at the mention floor before the text scan, or the most precisely-attributed
+    // documents in the repo would be the ones that attach to no file at all.
+    const counts = allSourceRefs(text);
+    if (kind === 'finding') {
+      for (const p of (fm.files ?? '').split(',').map((s) => s.trim())) {
+        if (/^src\/[a-zA-Z0-9_/-]+\.ts$/.test(p)) {
+          counts.set(p, Math.max(counts.get(p) ?? 0, MENTION_FLOOR));
+        }
+      }
+    }
     return {
       path,
       slug: basename(path, '.md'),
-      kind: path.includes('/research/') ? 'research' : path.includes('/plans/') ? 'plan' : 'note',
+      kind,
       date: fm.date ?? '',
       topic: fm.topic ?? '',
       task: fm.task ?? fm.note ?? '',
@@ -364,8 +382,8 @@ const docs = walk(THOUGHTS)
       supersededBy: null,
       commit: (fm.commit ?? '').match(/^[0-9a-f]{7,40}/)?.[0] ?? '',
       durable: durableSection(text),
-      files: localityRefs(allSourceRefs(text)),
-      staleness: stalenessRefs(allSourceRefs(text)),
+      files: localityRefs(counts),
+      staleness: stalenessRefs(counts),
       drift: 0,
       deadFiles: 0,
     };
@@ -422,7 +440,7 @@ const md = [
   '',
   '# Decision index',
   '',
-  'Every research and plan document in `thoughts/`, newest first, with evidence of whether it is',
+  'Every research, plan and finding document in `thoughts/`, newest first, with evidence of whether it is',
   'still current. **Read this before building on anything in `thoughts/`** — a superseded or drifted',
   'document is worse than no document, because it is wrong and looks authoritative.',
   '',
@@ -495,7 +513,14 @@ for (const d of docs) {
       path: d.path,
       date: d.date,
       task: d.task || d.topic || '',
-      statusClass: d.statusClass,
+      // A live finding is ranked as its own kind, not by its status. Its file list was recorded
+      // by the edit hook as the work happened, so it is the most precisely attributed document
+      // here — but its seeded mention count is the FLOOR, the lowest possible, so on rank alone
+      // it loses every tiebreak and MAX_PER_FILE drops it. That is silent and backwards: 52 of
+      // this repo's 96 attached files are already at the cap, and they are exactly the busy
+      // files a finding is most likely to be about. A dropped one keeps `superseded` and stays
+      // last, because somebody decided against it.
+      statusClass: d.kind === 'finding' && d.statusClass !== 'superseded' ? 'finding' : d.statusClass,
       supersededBy: d.supersededBy,
       drift: d.drift,
       deadFiles: d.deadFiles,
@@ -538,7 +563,7 @@ for (const list of Object.values(byFile)) {
 // The hook's view: hardest-won facts first, then the documents that are most about this file.
 // Superseded documents are kept but ranked last and labelled — knowing a decision was reversed
 // is worth more than not knowing the document exists.
-const RANK = { rule: 0, memory: 1, doc: 2, superseded: 4 };
+const RANK = { rule: 0, memory: 1, doc: 2, finding: 2, superseded: 4 };
 const rank = (e) => RANK[e.statusClass] ?? 3;
 const hookView = {};
 for (const [file, list] of Object.entries(byFile)) {

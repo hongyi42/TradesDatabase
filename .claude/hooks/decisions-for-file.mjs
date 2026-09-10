@@ -69,6 +69,10 @@ function main(evt) {
       rule: 'REPO RULE',
       memory: 'ENGINEERING MEMORY',
       doc: 'DOC',
+      // A promoted finding is ranked above every other document for this file, so it arrives
+      // first. Without a tag of its own it would read as an ordinary dated document and the
+      // ranking would buy nothing.
+      finding: 'FINDING',
       superseded: 'SUPERSEDED — do not build on this',
     };
     const tag = TAGS[h.kind] ?? h.date ?? '';

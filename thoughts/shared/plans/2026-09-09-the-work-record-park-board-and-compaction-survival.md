@@ -2,7 +2,7 @@
 date: 2026-09-09
 task: The shared work record — one place every session reads and writes (tasks and parked findings), a board of worktrees and sessions, the pre-edit hook made worktree-aware and finding-aware, and the task packet re-injected at session start and after compaction. First of two builds; spawn, the code-graph overlap check and the integrate verb are the second.
 research: thoughts/shared/research/2026-09-09-how-context-travels-between-sessions.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -316,15 +316,26 @@ frontmatter and `## Files`, and moves the task to `archive/`; a `dropped` task p
 `status: dropped`.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass
-- [ ] `npm run decisions:index` lists a promoted probe finding as `` `finding` `` in
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass — 2877 passed, 12 skipped, 0 failed;
+      typecheck, lint and `npm run build` all silent.
+- [x] `npm run decisions:index` lists a promoted probe finding as `` `finding` `` in
       `thoughts/INDEX.md` and attaches it to its file in `by-file.json`; then the probe is removed
-      and the index regenerated
+      and the index regenerated — INDEX row:
+      ``- `2026-09-10` `finding` [2026-09-10-probe-finding-for-the-index](…) — probe finding for the index``;
+      `by-file.json` for `src/db/jobs.ts` gained the probe at position 0 with `"kind": "finding"`.
+      Both probes deleted and the index regenerated back to 226 documents.
+- [x] the round trip is codified, not only probed: `src/work/decision-index.test.ts` runs the real
+      `work.mjs park → done → promote` and feeds ITS output to `decision-index.mjs`, so a change to
+      either side's shape fails the suite. Four mutations were checked and each one bites.
 
 ### Live verification (agent-executable)
 - Prerequisites: none.
-- [ ] A fresh-context subagent runs `park --files src/db/jobs.ts` → `done` → `promote` on a probe,
+- [x] A fresh-context subagent runs `park --files src/db/jobs.ts` → `done` → `promote` on a probe,
       runs `npm run decisions:index`, reports the INDEX row and the `by-file.json` entry for
-      `src/db/jobs.ts`; then deletes the probe finding and regenerates.
+      `src/db/jobs.ts`; then deletes the probe finding and regenerates — done on task
+      `20260910-verification-probe`. Reported: INDEX line 53 carrying `` `finding` ``; the
+      `by-file.json` entry at position 0 with `"kind": "finding"`; frontmatter carrying `date`,
+      `task`, `status: complete`, `origin`, `files`, `supersedes`. Cleanup verified: both
+      directories empty and `git status` unchanged.
 
 ### Manual verification — none

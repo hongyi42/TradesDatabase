@@ -12,7 +12,8 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
 import {
-  existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync,
+  existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -364,5 +365,103 @@ describe('work.mjs — the shared work record', () => {
     // Hooks run on the critical path of every session. "Not a git repository" is an ordinary
     // condition there, and an error banner at session start would be the tool's own fault.
     expect(work(['packet', '--cwd', home], mainCheckout)).toBe('');
+  });
+
+  test('promote writes a finding document, carries every handoff, and archives the task', () => {
+    const id = work(['park', '--title', 'A promotable finding', '--files', 'src/a.ts,src/b.ts',
+      '--body', '-'], worktree, 'what was noticed').trim();
+    // --force because the suite left an earlier task active here; promote itself needs no claim,
+    // but a handoff does, and a handoff is the part of the document worth proving carries over.
+    work(['claim', id, '--force'], worktree);
+    work(['handoff', '--body', '-'], worktree, 'the first thing only the model knew');
+    work(['handoff', '--body', '-'], worktree, 'the second thing only the model knew');
+    work(['snapshot'], worktree);
+    work(['done', id], worktree);
+
+    const day = id.slice(0, 8);
+    const date = `${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6, 8)}`;
+    const rel = work(['promote', id], worktree);
+    expect(rel).toBe(join('thoughts', 'shared', 'findings', `${date}-${id.slice(9)}.md`));
+
+    const doc = readFileSync(join(worktree, rel), 'utf8');
+    expect(doc).toContain(`date: ${date}`);
+    expect(doc).toContain('task: A promotable finding');
+    expect(doc).toContain('status: complete');
+    expect(doc).toContain('files: src/a.ts, src/b.ts');
+    expect(doc).toContain('supersedes: nothing');
+    expect(doc).toContain('## Files\n\n- src/a.ts\n- src/b.ts');
+    expect(doc).toContain('what was noticed');
+    // "every Handoff", not just the newest — the packet shows one, the document keeps the lot.
+    expect(doc).toContain('the first thing only the model knew');
+    expect(doc).toContain('the second thing only the model knew');
+    // An empty section is dropped rather than promoted as a bare heading with nothing under it.
+    expect(doc).not.toContain('## Decisions');
+
+    const tasks = join(mainCheckout, '.claude', 'work', 'tasks');
+    const archive = join(mainCheckout, '.claude', 'work', 'archive');
+    expect(existsSync(join(tasks, `${id}.md`))).toBe(false);
+    expect(existsSync(join(archive, `${id}.md`))).toBe(true);
+    expect(existsSync(join(tasks, `${id}.snapshot.json`))).toBe(false);
+    expect(existsSync(join(archive, `${id}.snapshot.json`))).toBe(true);
+
+    // Promotion is one-way. A second run must say so rather than find "no task" and look like
+    // a typo, or write a second copy of a document that already exists.
+    expect(() => work(['promote', id], worktree)).toThrow(/already promoted/);
+  });
+
+  test('a dropped task promotes as dropped, so the index ranks it with the reversed decisions', () => {
+    const id = work(['park', '--title', 'A finding decided against'], worktree).trim();
+    work(['drop', id], worktree);
+    const rel = work(['promote', id], worktree);
+    const doc = readFileSync(join(worktree, rel), 'utf8');
+    expect(doc).toContain('status: dropped');
+    expect(doc).toContain('## Files\n\n_none recorded_');
+  });
+
+  test('promote refuses a task that is still open or active', () => {
+    const id = work(['park', '--title', 'Still open'], worktree).trim();
+    expect(() => work(['promote', id], worktree)).toThrow(/only a done or dropped task/);
+    work(['claim', id, '--force'], worktree);
+    expect(() => work(['promote', id], worktree)).toThrow(/only a done or dropped task/);
+    // The live record still holds it — a refused promote must not half-archive anything.
+    expect(existsSync(join(mainCheckout, '.claude', 'work', 'tasks', `${id}.md`))).toBe(true);
+  });
+
+  test('a promoted id is retired, never reissued to a later task with the same title', () => {
+    // promote empties the task's slot in tasks/, so without a check against archive/ the next
+    // park of the same title on the same day takes the id back — and promoting THAT task renames
+    // over the archived copy, which by then is the only record of the first task's body.
+    const first = work(['park', '--title', 'Recyclable'], worktree).trim();
+    work(['done', first], worktree);
+    work(['promote', first], worktree);
+
+    const second = work(['park', '--title', 'Recyclable'], worktree).trim();
+    expect(second).not.toBe(first);
+    work(['done', second], worktree);
+    work(['promote', second], worktree);
+
+    const archive = join(mainCheckout, '.claude', 'work', 'archive');
+    expect(existsSync(join(archive, `${first}.md`))).toBe(true);
+    expect(existsSync(join(archive, `${second}.md`))).toBe(true);
+    expect(readFileSync(join(archive, `${first}.md`), 'utf8')).toContain(`id: ${first}`);
+  });
+
+  test('promote refuses rather than proceeding when the task lock is held', () => {
+    const id = work(['park', '--title', 'Locked out'], worktree).trim();
+    work(['done', id], worktree);
+    // `<id>.md.lock` — the lock is a sibling of the task FILE, not of its id.
+    const lock = join(mainCheckout, '.claude', 'work', 'tasks', `${id}.md.lock`);
+    writeFileSync(lock, '999999'); // a live holder: fresh mtime, so the staleness steal declines
+    try {
+      expect(() => work(['promote', id], worktree)).toThrow(/could not take the lock/);
+      // Refusing is only safe if it refuses whole. Nothing may be half-done: the task stays in
+      // the live record, and no document is left behind for the next run to trip over.
+      expect(existsSync(join(mainCheckout, '.claude', 'work', 'tasks', `${id}.md`))).toBe(true);
+      expect(existsSync(join(mainCheckout, '.claude', 'work', 'archive', `${id}.md`))).toBe(false);
+      const findings = join(worktree, 'thoughts', 'shared', 'findings');
+      expect(readdirSync(findings).filter((f) => f.includes('locked-out'))).toEqual([]);
+    } finally {
+      rmSync(lock, { force: true });
+    }
   });
 });

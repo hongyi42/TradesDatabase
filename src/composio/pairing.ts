@@ -130,7 +130,7 @@ export async function checkPairing(
     tech.composio_connected_account_id &&
     !tech.composio_trigger_id
   ) {
-    const healedId = await ensureTrigger(client, tech, tech.composio_connected_account_id);
+    const healedId = await ensureTriggers(client, tech, tech.composio_connected_account_id);
     await update(tech.id, { composio_trigger_id: healedId ?? null });
     return {
       status: 'paired',
@@ -218,107 +218,152 @@ export async function checkPairing(
   });
   // Trigger LAST (see the claim comment). If this throws, the claim + item
   // stand and the next sweep's healing branch finishes the trigger.
-  const triggerId = await ensureTrigger(client, tech, active.id);
+  const triggerId = await ensureTriggers(client, tech, active.id);
   await update(tech.id, { composio_trigger_id: triggerId ?? null });
   return { status: 'paired', connectedAccountId: active.id, email };
 }
 
 export const GMAIL_TRIGGER_SLUG = 'GMAIL_NEW_GMAIL_MESSAGE';
+export const GMAIL_SENT_TRIGGER_SLUG = 'GMAIL_EMAIL_SENT_TRIGGER';
 
-// THE MAIL TRIGGER'S CONFIG — one definition, because three places now need it:
-// creation, the staleness comparison below, and the reconciliation script for
-// seats that paired before this shape existed.
+// TWO WATCHERS PER MAILBOX, because Gmail's trigger menu has exactly two and
+// each sees ONE DIRECTION OF MAIL (rung 10b.4).
 //
-// WHY A QUERY AND NOT A SECOND LABEL (rung 10b.3). The obvious change — put
-// SENT next to INBOX in `labelIds` — is not expressible. Verified against the
-// LIVE trigger-type schema on 2026-09-09,
-// GET https://backend.composio.dev/api/v3/triggers_types/GMAIL_NEW_GMAIL_MESSAGE:
-//   labelIds: "Filter messages by a SINGLE label ID … For complex label
-//              filtering, use the 'query' parameter instead."
-//   query:    "Advanced Gmail search using the same syntax as Gmail's search
-//              box … If specified, this takes precedence over labelIds."
-//              — and its own examples include `label:inbox OR label:sent`.
-// So the firm's own half of a conversation arrives through `query`. `labelIds`
-// is left at 'INBOX' deliberately: the query overrides it, and every live
-// trigger row already carries that value, so dropping it would be a silent
-// shape change on a running trigger for no gain.
+// The received one is named, in Composio's own metadata, "New Gmail Message
+// RECEIVED Trigger" — "triggers when a new message is received in Gmail". No
+// config widens it to the firm's own sends: `labelIds` and `query` both filter
+// WITHIN mail that arrived, and a sent message never arrives. Verified live on
+// 2026-09-10 — a `query` of `label:inbox OR label:sent` delivered nothing new
+// and the sent message never entered the instance's tracked-message state.
+// GMAIL_EMAIL_SENT_TRIGGER "polls the 'SENT' label" and is the other half.
 //
-// WHY WATCHING SENT MATTERS: a manager who replies from Gmail directly was
-// never captured — not filtered, not dropped, never delivered — so a job's
-// correspondence was one-sided and a promise typed by hand ("we'll come
-// Thursday") bound the firm with the spine unaware.
-export const GMAIL_TRIGGER_CONFIG: Record<string, string | number> = {
-  interval: 1,
-  labelIds: 'INBOX',
-  query: 'label:inbox OR label:sent',
-  userId: 'me',
-};
+// WHY THAT MATTERS: a manager replying from Gmail by hand was never captured —
+// not filtered, not dropped, never delivered — so a job's correspondence was
+// one-sided and a promise typed out ("we'll come Thursday") bound the firm with
+// the spine unaware.
+export const GMAIL_TRIGGERS: { slug: string; config: Record<string, string | number> }[] = [
+  // `labelIds` takes exactly ONE label (live trigger-type schema, 2026-09-09);
+  // this is its default and the only one this door wants.
+  { slug: GMAIL_TRIGGER_SLUG, config: { interval: 1, labelIds: 'INBOX', userId: 'me' } },
+  // The sent trigger takes no label — it IS the SENT label — only an optional
+  // extra `query`, which we deliberately leave empty: every reply the firm
+  // types is a candidate, and the work/personal classifier is what decides.
+  { slug: GMAIL_SENT_TRIGGER_SLUG, config: { interval: 1, userId: 'me' } },
+];
 
-// Does a live trigger already carry the config above? The list response spells
-// it BOTH ways (`trigger_config` snake and `triggerConfig` camel — seen on a
-// live read 2026-09-09), so read either. An absent config reads as stale, which
-// is the safe direction: at worst we upsert a trigger that was already correct.
-function triggerConfigIsCurrent(item: Record<string, unknown>): boolean {
+// Does a live trigger already carry the config we want? The list response
+// spells it BOTH ways (`trigger_config` snake and `triggerConfig` camel — seen
+// on a live read 2026-09-09), so read either, and compare as STRINGS because
+// the values come back off the API untyped and an `interval` of "1" would
+// otherwise read as stale forever. An absent config reads as stale, which is
+// the safe direction: at worst we upsert a trigger that was already correct.
+function triggerConfigIsCurrent(
+  item: Record<string, unknown>,
+  want: Record<string, string | number>,
+): boolean {
   const cfg = (item.triggerConfig ?? item.trigger_config) as Record<string, unknown> | undefined;
   if (!cfg) return false;
-  // Compared as STRINGS: the config comes back straight off the API as
-  // `Record<string, unknown>`, and an `interval` returned as "1" rather than 1
-  // would read as stale forever under `===` — re-upserting on every pairing.
-  return Object.entries(GMAIL_TRIGGER_CONFIG).every(
-    ([key, want]) => String(cfg[key]) === String(want),
-  );
+  return Object.entries(want).every(([key, value]) => String(cfg[key]) === String(value));
 }
 
-// Idempotent trigger provisioning: adopt OUR trigger type if it already exists
-// AND already carries the config above (the triggerNames filter keeps an
-// unrelated trigger from being adopted as ti_* and later torn down), else
-// upsert it PINNED to the verified account — without the pin the SDK attaches
-// to "the first connected account for the user", which can be a stale
-// INITIATED request from an abandoned link (review finding).
+// Idempotent provisioning of BOTH watchers, PINNED to the verified account —
+// without the pin the SDK attaches to "the first connected account for the
+// user", which can be a stale INITIATED request from an abandoned link.
 //
-// CREATE IS AN UPSERT, NOT A DUPLICATE. `triggers.create` posts to
-// POST /api/v3/trigger_instances/{slug}/upsert, documented as "Creates a new
-// trigger instance or updates an existing one with the same configuration. If a
-// matching trigger already exists and is disabled, it will be re-enabled"
-// (docs.composio.dev/reference/api-reference/triggers/postTriggerInstancesBySlugUpsert,
-// read 2026-09-09). That is why a stale trigger is RECONFIGURED here rather
-// than deleted and recreated: a recreate would drop the instance's polling
-// watermark, and Composio would redeliver the mailbox's backlog — every one of
-// those deliveries paying for a work/personal classification.
-// (`triggers.update` cannot do it: that endpoint takes only
-// `{status: 'enable'|'disable'}` — checked in the installed SDK typings.)
-async function ensureTrigger(
+// CREATE IS AN UPSERT, AND IT KEYS ON THE CONFIGURATION. `triggers.create`
+// posts to POST /api/v3/trigger_instances/{slug}/upsert, documented as
+// "creates a new trigger instance or updates an existing one WITH THE SAME
+// configuration". That last clause is load-bearing and was verified the hard
+// way on 2026-09-10: changing a live trigger's config MINTED A SECOND INSTANCE
+// and left the first one polling. So a trigger that already carries the config
+// is left strictly alone here — re-upserting an existing one is safe only
+// because the config is identical.
+//
+// Returns the RECEIVED trigger's id for the roster row, which keeps it as a
+// human-readable handle. Teardown no longer depends on it (see below).
+async function ensureTriggers(
   client: PairingClient,
   tech: Technician,
   connectedAccountId: string,
 ): Promise<string | undefined> {
-  const existing = asItems(
-    await client.triggers.listActive({
-      connectedAccountIds: [connectedAccountId],
-      triggerNames: [GMAIL_TRIGGER_SLUG],
-    }),
-  );
-  const found = existing[0];
-  const foundId = found?.id as string | undefined;
-  if (foundId && triggerConfigIsCurrent(found)) return foundId;
+  let receivedId: string | undefined;
+  // DID EVERY WATCHER LAND? Returning the received id while the SENT one failed
+  // would write a non-null `composio_trigger_id`, and checkPairing's healing
+  // branch fires only on a NULL one — so the seat would watch inbound only,
+  // FOREVER: the 15-minute sweep skips anything past `pending_verification`,
+  // and nothing else revisits an active seat. Reporting nothing instead keeps
+  // the column null, and the healing branch retries. That retry is idempotent —
+  // a watcher that already exists is adopted below, never re-created.
+  let allLanded = true;
+  for (const { slug, config } of GMAIL_TRIGGERS) {
+    const existing = asItems(
+      await client.triggers.listActive({
+        connectedAccountIds: [connectedAccountId],
+        triggerNames: [slug],
+      }),
+    );
+    const found = existing[0];
+    const foundId = found?.id as string | undefined;
+    let id = foundId;
+    if (!foundId || !triggerConfigIsCurrent(found, config)) {
+      try {
+        const created = await client.triggers.create(compositeUserId(tech), slug, {
+          connectedAccountId,
+          triggerConfig: { ...config },
+        });
+        id = ((created.triggerId ?? created.id) as string | undefined) ?? foundId;
+      } catch (err) {
+        // ONE WATCHER FAILING MUST NOT COST THE OTHER, NOR THE PAIRING. With
+        // nothing live for this slug there is genuinely less coverage, and it
+        // is said out loud; checkPairing's healing branch retries only when the
+        // ROSTER id is missing, so a failed SENT trigger is picked up by the
+        // reconciliation script rather than silently forgotten.
+        console.error(
+          `[pairing] ${slug} not provisioned for ${tech.ref} — ` +
+            `${err instanceof Error ? err.message : String(err)}. ` +
+            `Reconcile with: npm run composio:retrigger -- ` +
+            `user=${compositeUserId(tech)} account=${connectedAccountId}`,
+        );
+      }
+    }
+    if (!id) allLanded = false;
+    if (slug === GMAIL_TRIGGER_SLUG) receivedId = id;
+  }
+  return allLanded ? receivedId : undefined;
+}
+
+// EVERY WATCHER ON THIS MAILBOX — what we recorded, plus whatever Composio says
+// is actually there. The roster keeps ONE trigger id and a mailbox now carries
+// TWO, so our note can only ever be a subset; the connected account is the
+// handle we do record reliably, and every watcher hangs off it.
+//
+// `ok` reports whether the LIST succeeded. Callers that are about to destroy the
+// account must not proceed on a false — deleting it would take away the only
+// handle that could ever find the watchers we failed to enumerate.
+async function watchersOn(
+  client: PairingClient,
+  tech: Technician,
+): Promise<{ ids: Set<string>; ok: boolean }> {
+  const ids = new Set<string>();
+  if (tech.composio_trigger_id) ids.add(tech.composio_trigger_id);
+  const accountId = tech.composio_connected_account_id;
+  if (!accountId) return { ids, ok: true };
   try {
-    const created = await client.triggers.create(compositeUserId(tech), GMAIL_TRIGGER_SLUG, {
-      connectedAccountId,
-      triggerConfig: { ...GMAIL_TRIGGER_CONFIG },
-    });
-    return ((created.triggerId ?? created.id) as string | undefined) ?? foundId;
+    // No `triggerNames` filter: whatever is on this mailbox counts, including a
+    // slug this code has never heard of. That is what makes it self-healing for
+    // watchers nobody wrote down. Composio scopes `connectedAccountIds`
+    // server-side, and an account belongs to exactly one composite user id, so
+    // this can never reach another person's or another tenant's trigger.
+    for (const item of asItems(await client.triggers.listActive({ connectedAccountIds: [accountId] }))) {
+      if (typeof item.id === 'string' && item.id) ids.add(item.id);
+    }
+    return { ids, ok: true };
   } catch (err) {
-    // A RECONFIGURE FAILURE MUST NOT UNDO A WORKING PAIRING. With no trigger at
-    // all there is nothing to keep, so the throw stands and checkPairing's
-    // healing branch finishes it on the next sweep. With one already live, the
-    // mailbox still delivers INBOX — narrower than intended, and said out loud
-    // rather than turned into a failed pairing.
-    if (!foundId) throw err;
     console.error(
-      `[pairing] trigger ${foundId} kept its old config for ${tech.ref} — ` +
+      `[pairing] could not list watchers on ${accountId} for ${tech.ref} — ` +
         `${err instanceof Error ? err.message : String(err)}`,
     );
-    return foundId;
+    return { ids, ok: false };
   }
 }
 
@@ -332,22 +377,78 @@ export function isGoneError(err: unknown): boolean {
   return (err as { status?: number })?.status === 404;
 }
 
-// Delete the Composio objects for a pairing — trigger FIRST (no deliveries
+// Delete the Composio objects for a pairing — triggers FIRST (no deliveries
 // racing the account delete). Idempotent: already-deleted (404) is success;
 // any other failure throws so the caller can retry (offboarding expiry runs
 // again next cron tick). Does NOT touch the roster row.
+//
+// WE ASK COMPOSIO WHAT EXISTS RATHER THAN TRUSTING OUR OWN NOTE (rung 10b.4).
+// The roster has ONE `composio_trigger_id` column and a mailbox now carries TWO
+// watchers, so the column cannot name them all. The CONNECTED ACCOUNT is the
+// handle we do record reliably, and every trigger hangs off it, so the live
+// system can answer "what is watching this mailbox" better than our copy can.
+//
+// It is also SELF-HEALING, which the column could never be: it tears down
+// watchers nobody ever wrote down — including any left by a pairing that
+// pre-dates this code, or by an upsert that minted an instance under a new id.
+//
+// ⚠ UNVERIFIED, AND DELIBERATELY NOT RELIED ON: whether deleting a connected
+// account also destroys the trigger instances pinned to it. Composio does not
+// document that cascade either way (checked 2026-09-10), and we have no
+// specimen — every teardown this code has ever run deleted the trigger first.
+// So this does NOT rest on "an unlisted trigger keeps polling forever": it
+// rests on the weaker and provable claim that once the account is gone we have
+// no handle left to find one with, whatever it is or is not still doing.
+//
+// The stored id is still tried, and deliberately: if the LIST fails we would
+// otherwise tear down nothing at all, and one known id removed beats none.
 export async function deleteComposioPairing(tech: Technician, deps: PairingDeps = {}): Promise<void> {
   const client = deps.client ?? getComposio();
-  if (tech.composio_trigger_id) {
+  const accountId = tech.composio_connected_account_id;
+  const { ids, ok } = await watchersOn(client, tech);
+  for (const id of ids) {
     try {
-      await client.triggers.delete(tech.composio_trigger_id);
+      await client.triggers.delete(id);
     } catch (err) {
       if (!isGoneError(err)) throw err; // already-deleted is fine; anything else must surface
     }
   }
-  if (tech.composio_connected_account_id) {
+  // THE ACCOUNT IS DESTROYED ONLY IF WE KNOW WHAT WAS ON IT. Deleting it after a
+  // failed enumeration takes away the only handle that could ever find the
+  // watchers we could not list — they would be unreachable by id, by account and
+  // by roster row, with no way left to stop them. Throwing instead leaves the
+  // pairing intact and findable; the expiry sweep has already CASed the row to
+  // 'offboarded' by this point, so the objects stay as inert clutter (the mail
+  // is dropped by the webhook's roster gate regardless) rather than becoming an
+  // orphan nothing can name.
+  if (!ok) {
+    throw new Error(
+      `could not enumerate the watchers on ${accountId} — refusing to delete the account ` +
+        'while they cannot be found again',
+    );
+  }
+  if (accountId) {
     try {
-      await client.connectedAccounts.delete(tech.composio_connected_account_id);
+      await client.connectedAccounts.delete(accountId);
+    } catch (err) {
+      if (!isGoneError(err)) throw err;
+    }
+  }
+}
+
+// EVERY WATCHER, SWITCHED OFF — the non-destructive half, used by
+// deactivate/reactivate. Same reasoning as the teardown: the roster names one
+// and the mailbox carries two, so a column-driven disable leaves a deactivated
+// person's outgoing mail streaming to our webhook for the whole grace period.
+export async function setWatchersEnabled(
+  client: PairingClient,
+  tech: Technician,
+  enabled: boolean,
+): Promise<void> {
+  const { ids } = await watchersOn(client, tech);
+  for (const id of ids) {
+    try {
+      await (enabled ? client.triggers.enable(id) : client.triggers.disable(id));
     } catch (err) {
       if (!isGoneError(err)) throw err;
     }

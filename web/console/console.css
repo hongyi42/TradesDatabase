@@ -139,8 +139,6 @@ input[type="number"], input:not([type]) {
 }
 select { text-transform: capitalize; }
 
-@keyframes spin { to { transform: rotate(360deg); } }
-
 /* ── Frame ─────────────────────────────────────────────────────────────── */
 .body { display: flex; flex: 1; min-height: 0; }
 
@@ -232,6 +230,7 @@ select { text-transform: capitalize; }
 .horizon { padding: 8px 12px; }
 
 /* Pull to refresh: the ring drawn down from the top of the calendar. */
+@keyframes ring-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .pull-ring {
   position: fixed; z-index: 35;
   width: 36px; height: 36px;
@@ -250,8 +249,12 @@ select { text-transform: capitalize; }
 .pull-ring.is-armed .pull-ring-arc { border-color: var(--accent); border-top-color: var(--bg-raised); }
 .pull-ring.is-loading .pull-ring-arc {
   border-color: var(--line-strong); border-top-color: var(--accent);
-  /* Faster than the old 0.7s (user, 2026-09-09: "circle much quicker"). */
-  animation: spin 0.4s linear infinite;
+  /* Faster than the old 0.7s (user, 2026-09-09: "circle much quicker"), and
+     explicitly from 0deg — a keyframe set with only a `to` inherits the
+     element's current transform as its start, which after a drag is the
+     finger's rotation, so the spin swept a fraction of a turn. */
+  animation: ring-spin 0.5s linear infinite;
+  will-change: transform;
 }
 
 /* The phone's line filler; nothing anywhere else. */

@@ -278,7 +278,7 @@ if (command === 'create-host') {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      menu_button: { type: 'web_app', text: 'Open console', web_app: { url } },
+      menu_button: { type: 'web_app', text: 'Schedule', web_app: { url } },
     }),
   });
   const btn = await btnResp.json().catch(() => null);

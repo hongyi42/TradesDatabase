@@ -78,7 +78,7 @@ describe('the console rollout lever', () => {
       chat_id: '111',
       menu_button: {
         type: 'web_app',
-        text: 'Open console',
+        text: 'Schedule',
         web_app: { url: 'https://spine.example.com/console' },
       },
     });

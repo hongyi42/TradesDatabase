@@ -2,7 +2,10 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import type { Technician, TechnicianPatch } from '../db/technicians.js';
 import type { ReviewItem, UpsertOpenReviewItemInput } from '../db/index.js';
 import {
-  GMAIL_TRIGGER_CONFIG,
+  deleteComposioPairing,
+  GMAIL_SENT_TRIGGER_SLUG,
+  GMAIL_TRIGGERS,
+  GMAIL_TRIGGER_SLUG,
   checkPairing,
   createConnectLink,
   unpair,
@@ -96,7 +99,10 @@ function pairingDeps(db: ReturnType<typeof dbStubs>, client: PairingClient) {
 function clientStub(opts: {
   accounts?: Array<Record<string, unknown>>;
   activeTriggers?: Array<Record<string, unknown>>;
+  activeTriggersBySlug?: Record<string, Array<Record<string, unknown>>>;
   createThrows?: boolean;
+  createThrowsForSlug?: string;
+  listActiveThrows?: boolean;
   profileData?: Record<string, unknown>;
   profileThrows?: boolean;
   deleteThrows?: (id: string) => Error | null;
@@ -131,12 +137,19 @@ function clientStub(opts: {
     triggers: {
       listActive: async (q) => {
         rec('triggers.listActive', q);
+        if (opts.listActiveThrows) throw new Error('composio unreachable');
+        const slug = q.triggerNames?.[0];
+        if (opts.activeTriggersBySlug) {
+          return { items: (slug && opts.activeTriggersBySlug[slug]) || [] };
+        }
         return { items: opts.activeTriggers ?? [] };
       },
       create: async (userId, slug, o) => {
         rec('triggers.create', userId, slug, o);
-        if (opts.createThrows) throw new Error('upsert refused');
-        return { triggerId: 'ti_new123' };
+        if (opts.createThrows || opts.createThrowsForSlug === slug) {
+          throw new Error('upsert refused');
+        }
+        return { triggerId: slug === 'GMAIL_EMAIL_SENT_TRIGGER' ? 'ti_sent123' : 'ti_new123' };
       },
       delete: async (id) => {
         rec('triggers.delete', id);
@@ -285,15 +298,105 @@ describe('checkPairing', () => {
     expect(db.items).toHaveLength(0); // the item opened once, at the claim
   });
 
-  test('idempotent on an existing trigger CARRYING THE CURRENT CONFIG: adopts it, never calls create', async () => {
+  test('idempotent on existing triggers CARRYING THE CURRENT CONFIG: adopts them, never calls create', async () => {
     const db = dbStubs();
     const { client, calls } = clientStub({
       accounts: [ACTIVE_GMAIL],
-      activeTriggers: [{ id: 'ti_existing', triggerConfig: { ...GMAIL_TRIGGER_CONFIG } }],
+      // listActive is filtered by slug, so the stub hands the same row back for
+      // each; both configs must match or one of them would be re-upserted.
+      activeTriggersBySlug: {
+        [GMAIL_TRIGGER_SLUG]: [{ id: 'ti_existing', triggerConfig: { ...GMAIL_TRIGGERS[0].config } }],
+        [GMAIL_SENT_TRIGGER_SLUG]: [{ id: 'ti_sent', triggerConfig: { ...GMAIL_TRIGGERS[1].config } }],
+      },
     });
     await checkPairing(tech(), pairingDeps(db, client));
     expect(calls.map((c) => c.method)).not.toContain('triggers.create');
+    // The RECEIVED trigger's id is what the roster keeps — a handle, not the
+    // teardown list, which asks Composio what is actually on the mailbox.
     expect(db.patches[0].patch.composio_trigger_id).toBe('ti_existing');
+  });
+
+  // RUNG 10B.4 — GMAIL'S MENU HAS TWO WATCHERS AND EACH SEES ONE DIRECTION.
+  // The received trigger is, in Composio's own words, "New Gmail Message
+  // RECEIVED Trigger", so no config on it can deliver the firm's own replies.
+  test('BOTH watchers are provisioned: mail received AND mail sent', async () => {
+    const db = dbStubs();
+    const { client, calls } = clientStub({ accounts: [ACTIVE_GMAIL] });
+    await checkPairing(tech(), pairingDeps(db, client));
+    const created = calls.filter((c) => c.method === 'triggers.create');
+    expect(created.map((c) => c.args[1])).toEqual([GMAIL_TRIGGER_SLUG, GMAIL_SENT_TRIGGER_SLUG]);
+    // Each pinned to the verified account, each with its OWN config: the sent
+    // trigger takes no labelIds — it IS the SENT label.
+    expect(created[0].args[2]).toMatchObject({
+      connectedAccountId: 'ca_abc123',
+      triggerConfig: { interval: 1, labelIds: 'INBOX', userId: 'me' },
+    });
+    expect(created[1].args[2]).toMatchObject({
+      connectedAccountId: 'ca_abc123',
+      triggerConfig: { interval: 1, userId: 'me' },
+    });
+    expect((created[1].args[2] as { triggerConfig: Record<string, unknown> }).triggerConfig)
+      .not.toHaveProperty('labelIds');
+  });
+
+  test('the received trigger no longer carries a SENT query — it could never honour one', async () => {
+    // A `query` of `label:inbox OR label:sent` delivered nothing new on a live
+    // mailbox (2026-09-10): the trigger filters within mail that ARRIVED.
+    expect(GMAIL_TRIGGERS[0].config).not.toHaveProperty('query');
+    expect(JSON.stringify(GMAIL_TRIGGERS)).not.toContain('label:sent');
+  });
+
+  test('one watcher failing does not cost the other, nor the pairing', async () => {
+    const db = dbStubs();
+    const { client, calls } = clientStub({
+      accounts: [ACTIVE_GMAIL],
+      createThrowsForSlug: GMAIL_TRIGGER_SLUG,
+    });
+    const r = await checkPairing(tech(), pairingDeps(db, client));
+    expect(r).toMatchObject({ status: 'paired' });
+    // The SENT one was still attempted after the received one threw.
+    expect(calls.filter((c) => c.method === 'triggers.create').map((c) => c.args[1])).toEqual([
+      GMAIL_TRIGGER_SLUG,
+      GMAIL_SENT_TRIGGER_SLUG,
+    ]);
+  });
+
+  // …AND THE OTHER WAY ROUND, WHICH IS THE ONE THAT COULD ROT. Reporting the
+  // received id while the SENT watcher failed would write a non-null
+  // composio_trigger_id, and checkPairing's healing branch fires only on a NULL
+  // one — so the seat would watch inbound only FOREVER: the 15-minute sweep
+  // skips anything past pending_verification and nothing revisits an active seat.
+  test('a half-provisioned mailbox leaves the column NULL so the sweep retries', async () => {
+    const db = dbStubs();
+    const { client } = clientStub({
+      accounts: [ACTIVE_GMAIL],
+      createThrowsForSlug: GMAIL_SENT_TRIGGER_SLUG,
+    });
+    const r = await checkPairing(tech(), pairingDeps(db, client));
+    expect(r).toMatchObject({ status: 'paired' }); // the consent still stands
+    expect(db.patches[0].patch.composio_trigger_id).toBeNull();
+  });
+
+  test('…and the healing branch then finishes it, adopting what already exists', async () => {
+    const db = dbStubs();
+    const { client, calls } = clientStub({
+      accounts: [ACTIVE_GMAIL],
+      // The received watcher landed on the failed pass; only SENT is missing.
+      activeTriggersBySlug: {
+        [GMAIL_TRIGGER_SLUG]: [{ id: 'ti_recv', triggerConfig: { ...GMAIL_TRIGGERS[0].config } }],
+      },
+    });
+    const healing = tech({
+      state: 'pending_verification',
+      composio_connected_account_id: 'ca_abc123',
+      composio_trigger_id: null,
+    });
+    await checkPairing(healing, pairingDeps(db, client));
+    // Idempotent: the existing one is adopted, only the missing one created.
+    expect(calls.filter((c) => c.method === 'triggers.create').map((c) => c.args[1])).toEqual([
+      GMAIL_SENT_TRIGGER_SLUG,
+    ]);
+    expect(db.patches[0].patch.composio_trigger_id).toBe('ti_recv');
   });
 
   // RUNG 10B.3. Watching SENT is a change to the trigger's CONFIG, and every
@@ -303,10 +406,13 @@ describe('checkPairing', () => {
     const db = dbStubs();
     const { client, calls } = clientStub({
       accounts: [ACTIVE_GMAIL],
-      // What every seat paired before this rung actually holds.
-      activeTriggers: [
-        { id: 'ti_existing', trigger_config: { interval: 1, labelIds: 'INBOX', userId: 'me' } },
-      ],
+      // What a seat paired before this rung actually holds: the received
+      // trigger under a stale config, and no sent trigger at all.
+      activeTriggersBySlug: {
+        [GMAIL_TRIGGER_SLUG]: [
+          { id: 'ti_existing', trigger_config: { interval: 2, labelIds: 'INBOX', userId: 'me' } },
+        ],
+      },
     });
     await checkPairing(tech(), pairingDeps(db, client));
     const create = calls.find((c) => c.method === 'triggers.create');
@@ -316,35 +422,37 @@ describe('checkPairing', () => {
     expect(calls.map((c) => c.method)).not.toContain('triggers.delete');
     expect(create?.args[2]).toMatchObject({
       connectedAccountId: 'ca_abc123',
-      triggerConfig: { ...GMAIL_TRIGGER_CONFIG },
+      triggerConfig: { ...GMAIL_TRIGGERS[0].config },
     });
   });
 
-  test('the config that goes out watches SENT through `query`, not a second labelId', async () => {
-    // labelIds takes ONE label (live trigger-type schema, 2026-09-09), and
-    // `query` takes precedence over it — so "INBOX plus SENT" is a query.
-    expect(GMAIL_TRIGGER_CONFIG.query).toBe('label:inbox OR label:sent');
-    expect(GMAIL_TRIGGER_CONFIG.labelIds).toBe('INBOX');
-  });
-
-  test('a reconfigure that FAILS keeps the trigger that already works', async () => {
-    // The mailbox still delivers INBOX. Turning a live pairing into a failed one
-    // over a narrower filter would be the worse trade.
+  test('a create that FAILS keeps the pairing, and flags itself for the sweep', async () => {
+    // The mailbox still delivers what it already had. Turning a completed OAuth
+    // consent into a failed pairing would be the worse trade — but the column
+    // stays NULL, because a non-null one closes the healing branch and the
+    // half-provisioned mailbox would never be revisited.
     const db = dbStubs();
     const { client } = clientStub({
       accounts: [ACTIVE_GMAIL],
-      activeTriggers: [{ id: 'ti_existing', trigger_config: { labelIds: 'INBOX' } }],
+      activeTriggersBySlug: {
+        [GMAIL_TRIGGER_SLUG]: [{ id: 'ti_existing', trigger_config: { labelIds: 'INBOX' } }],
+      },
       createThrows: true,
     });
     const r = await checkPairing(tech(), pairingDeps(db, client));
     expect(r).toMatchObject({ status: 'paired' });
-    expect(db.patches[0].patch.composio_trigger_id).toBe('ti_existing');
+    expect(db.patches[0].patch.composio_trigger_id).toBeNull();
   });
 
-  test('a create that fails with NO trigger to keep still throws — the sweep heals it', async () => {
+  test('a create that fails with NO trigger to keep still pairs — the reconcile picks it up', async () => {
+    // Turning a completed OAuth consent into a failed pairing over a watcher
+    // that can be provisioned later is the worse trade: the mailbox is
+    // connected, and the person would have to re-consent.
     const db = dbStubs();
     const { client } = clientStub({ accounts: [ACTIVE_GMAIL], createThrows: true });
-    await expect(checkPairing(tech(), pairingDeps(db, client))).rejects.toThrow();
+    const r = await checkPairing(tech(), pairingDeps(db, client));
+    expect(r).toMatchObject({ status: 'paired' });
+    expect(db.patches[0].patch.composio_trigger_id).toBeNull();
   });
 
   test('profile fetch failure is advisory: still paired, email null in claim and item', async () => {
@@ -425,7 +533,14 @@ describe('unpair', () => {
     const db = dbStubs();
     const { client, calls } = clientStub();
     await unpair(paired(), pairingDeps(db, client));
-    expect(calls.map((c) => c.method)).toEqual(['triggers.delete', 'accounts.delete']); // trigger FIRST
+    // The mailbox is ASKED what is watching it before anything is deleted
+    // (rung 10b.4) — the roster's single column cannot name two watchers — and
+    // triggers still go FIRST, so no delivery races the account delete.
+    expect(calls.map((c) => c.method)).toEqual([
+      'triggers.listActive',
+      'triggers.delete',
+      'accounts.delete',
+    ])
     // CAS from pending_verification: a deactivation landing mid-teardown wins
     // and its state is left alone.
     expect(db.casCalls[0]).toMatchObject({
@@ -438,6 +553,41 @@ describe('unpair', () => {
         state: 'invited',
       },
     });
+  });
+
+  // RUNG 10B.4 — WE ASK COMPOSIO WHAT EXISTS RATHER THAN TRUSTING OUR OWN NOTE.
+  // The roster has ONE trigger-id column and a mailbox now carries TWO watchers,
+  // so a teardown driven by the column would leave one polling a departed
+  // person's mailbox forever, still billing, with nothing tying it to anyone.
+  test('tears down EVERY watcher on the mailbox, including ones nobody wrote down', async () => {
+    const db = dbStubs();
+    const { client, calls } = clientStub({
+      activeTriggers: [{ id: 'ti_recorded' }, { id: 'ti_sent_unrecorded' }, { id: 'ti_orphan' }],
+    });
+    await unpair(paired(), pairingDeps(db, client));
+    const deleted = calls.filter((c) => c.method === 'triggers.delete').map((c) => c.args[0]);
+    expect(new Set(deleted)).toEqual(
+      new Set(['ti_new123', 'ti_recorded', 'ti_sent_unrecorded', 'ti_orphan']),
+    );
+    // The LIST is unfiltered by slug: a watcher this code has never heard of
+    // still goes, which is what makes the teardown self-healing.
+    const listed = calls.find((c) => c.method === 'triggers.listActive');
+    expect(listed?.args[0]).toMatchObject({ connectedAccountIds: ['ca_abc123'] });
+    expect(listed?.args[0]).not.toHaveProperty('triggerNames');
+  });
+
+  // A LIST FAILURE MUST NOT COST US THE HANDLE. Deleting the account after a
+  // failed enumeration leaves any watcher we could not list unreachable by id,
+  // by account AND by roster row — nothing could ever find it again. The row is
+  // already CASed to 'offboarded' by this point, so throwing leaves inert
+  // clutter (the webhook's roster gate drops the mail regardless) instead.
+  test('a LIST failure removes what we recorded, then REFUSES to delete the account', async () => {
+    const { client, calls } = clientStub({ listActiveThrows: true });
+    await expect(deleteComposioPairing(paired(), { client })).rejects.toThrow(/enumerate/i);
+    expect(calls.filter((c) => c.method === 'triggers.delete').map((c) => c.args[0])).toEqual([
+      'ti_new123',
+    ]);
+    expect(calls.map((c) => c.method)).not.toContain('accounts.delete');
   });
 
   test('swallows only REAL API 404s; network errors and lying 500s rethrow', async () => {

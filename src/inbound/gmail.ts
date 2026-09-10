@@ -67,6 +67,19 @@ export const gmailNewMessageNormalizer: Normalizer = (payload: unknown): Inbound
   // own replies" rule, isTechnicianChannel — keeps working with no edit.
   // A message to oneself carries BOTH labels: SENT wins, because the firm
   // wrote it, and that is the fact every one of those readers is asking about.
+  // KEPT ALONGSIDE THE SENT TRIGGER, not replaced by it: a message the mailbox
+  // sends to ITSELF carries both labels, so the received trigger delivers it too
+  // — and when it does, both doors must agree on `outbound_email` and the
+  // `sent:` key, or one email becomes two permanent rows.
+  //
+  // NAMED EDGE: if `label_ids` is absent or empty on such a self-send, this door
+  // cannot tell, keys the BARE id on channel `email`, and the sent trigger's
+  // copy lands separately as `sent:<id>` — two undeletable rows, and the `email`
+  // one raises an unmatched observation about a message the firm itself wrote.
+  // It needs a self-send AND a payload missing a field Gmail always returns, so
+  // it is accepted rather than guessed around: inferring "this is ours" from the
+  // headers is exactly the false-positive `isOwnMailbox` refuses to make, and
+  // getting it wrong costs a real customer their identity key.
   const isOwnSend = !!labelIds?.includes('SENT');
 
   // …AND IT IS KEYED IN THE OUTBOUND NAMESPACE, `sent:<messageId>`, because the

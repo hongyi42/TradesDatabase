@@ -41,7 +41,7 @@ function row(over: Partial<Technician> = {}): Technician {
   };
 }
 
-function clientStub(opts: { deleteThrows?: Error } = {}) {
+function clientStub(opts: { deleteThrows?: Error; activeTriggers?: Array<{ id: string }> } = {}) {
   const calls: Array<{ method: string; id: string }> = [];
   const rec = (method: string) => async (id: string) => {
     calls.push({ method, id });
@@ -57,7 +57,10 @@ function clientStub(opts: { deleteThrows?: Error } = {}) {
       enable: rec('accounts.enable'),
     },
     triggers: {
-      listActive: async () => ({ items: [] }),
+      listActive: async () => {
+        calls.push({ method: 'triggers.listActive', id: '' });
+        return { items: opts.activeTriggers ?? [] };
+      },
       create: async () => ({}),
       delete: rec('triggers.delete'),
       disable: rec('triggers.disable'),
@@ -117,20 +120,43 @@ function sweepStubs(rows: Technician[], opts: { casMissIds?: string[] } = {}) {
 }
 
 describe('disablePairing / enablePairing', () => {
-  test('disable: trigger then account; enable: account then trigger', async () => {
+  test('disable: triggers then account; enable: account then triggers', async () => {
     const d = clientStub();
     await disablePairing(row(), { client: d.client });
-    expect(d.calls).toEqual([
-      { method: 'triggers.disable', id: 'ti_gone' },
-      { method: 'accounts.disable', id: 'ca_gone' },
+    expect(d.calls.map((c) => c.method)).toEqual([
+      'triggers.listActive',
+      'triggers.disable',
+      'accounts.disable',
     ]);
 
     const e = clientStub();
     await enablePairing(row(), { client: e.client });
-    expect(e.calls).toEqual([
-      { method: 'accounts.enable', id: 'ca_gone' },
-      { method: 'triggers.enable', id: 'ti_gone' },
+    expect(e.calls.map((c) => c.method)).toEqual([
+      'accounts.enable',
+      'triggers.listActive',
+      'triggers.enable',
     ]);
+  });
+
+  // RUNG 10B.4 — EVERY watcher, not just the one the roster names. Gmail's menu
+  // has two and the column holds one, so a column-driven disable left a
+  // deactivated person's OUTGOING mail streaming to our webhook for the whole
+  // grace period: dropped with a receipt, but still delivered and still billed,
+  // for somebody who has been told their access is off.
+  test('disable reaches watchers the roster never recorded', async () => {
+    const { client, calls } = clientStub({
+      activeTriggers: [{ id: 'ti_sent_unrecorded' }, { id: 'ti_gone' }],
+    });
+    await disablePairing(row(), { client });
+    const disabled = calls.filter((c) => c.method === 'triggers.disable').map((c) => c.id);
+    expect(new Set(disabled)).toEqual(new Set(['ti_gone', 'ti_sent_unrecorded']));
+  });
+
+  test('…and so does enable, or a returning person’s own replies stay uncaptured', async () => {
+    const { client, calls } = clientStub({ activeTriggers: [{ id: 'ti_sent_unrecorded' }] });
+    await enablePairing(row(), { client });
+    const enabled = calls.filter((c) => c.method === 'triggers.enable').map((c) => c.id);
+    expect(new Set(enabled)).toEqual(new Set(['ti_gone', 'ti_sent_unrecorded']));
   });
 
   test('no-ops cleanly on a row that never paired', async () => {
@@ -139,7 +165,8 @@ describe('disablePairing / enablePairing', () => {
       row({ composio_connected_account_id: null, composio_trigger_id: null }),
       { client },
     );
-    expect(calls).toHaveLength(0);
+    // Nothing to list and nothing to switch off.
+    expect(calls.filter((c) => c.method !== 'triggers.listActive')).toHaveLength(0);
   });
 });
 
@@ -172,7 +199,7 @@ describe('expireOffboarding', () => {
     expect(s.casCalls).toEqual([
       { id: 'row-1', from: 'offboarding', patch: { state: 'offboarded' } }, // no id nulling
     ]);
-    expect(calls).toEqual([
+    expect(calls.filter((c) => c.method !== 'triggers.listActive')).toEqual([
       { method: 'triggers.delete', id: 'ti_gone' },
       { method: 'accounts.delete', id: 'ca_gone' },
     ]);
@@ -231,7 +258,7 @@ describe('expireOffboarding', () => {
     const { client, calls } = clientStub();
     const r = await expireOffboarding(NOW, { ...s.deps, client });
     expect(r).toMatchObject({ expired: 1, failed: 0, sessionsCleaned: 0 });
-    expect(calls).toEqual([
+    expect(calls.filter((c) => c.method !== 'triggers.listActive')).toEqual([
       { method: 'triggers.delete', id: 'ti_gone' },
       { method: 'accounts.delete', id: 'ca_gone' },
       { method: 'sessions.delete', id: 'trs_gone' },
@@ -257,7 +284,7 @@ describe('expireOffboarding', () => {
     const r = await expireOffboarding(NOW, { ...s.deps, client });
     // Not counted as scanned/expired â€” it's the retry pass, not the grace sweep.
     expect(r).toMatchObject({ scanned: 0, expired: 0, failed: 0, sessionsCleaned: 1 });
-    expect(calls).toEqual([{ method: 'sessions.delete', id: 'trs_leaked' }]);
+    expect(calls.filter((c) => c.method !== 'triggers.listActive')).toEqual([{ method: 'sessions.delete', id: 'trs_leaked' }]);
     expect(s.patches).toEqual([{ id: 'row-leak', patch: { composio_session_id: null } }]);
 
     // A still-failing delete stays queued (failed++, column untouched).
@@ -338,7 +365,7 @@ describe('expireOffboarding', () => {
       },
     );
     // Pairing objects torn down, session untouched.
-    expect(calls).toEqual([
+    expect(calls.filter((c) => c.method !== 'triggers.listActive')).toEqual([
       { method: 'triggers.delete', id: 'ti_gone' },
       { method: 'accounts.delete', id: 'ca_gone' },
     ]);

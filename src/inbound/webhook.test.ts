@@ -1279,3 +1279,167 @@ describe("the firm's own replies reach the record, gated (rung 10b.3)", () => {
     });
   });
 });
+
+// RUNG 10B.4 — THE REAL DOOR THE FIRM'S REPLIES COME THROUGH. The tests above
+// drive GMAIL_NEW_GMAIL_MESSAGE with a SENT label, which is a message the
+// mailbox sent to ITSELF (Gmail puts both labels on those, so the received
+// trigger does deliver them). An ordinary reply to a customer arrives on a
+// different trigger entirely, and it is that one the manager's own mail uses.
+describe('the SENT trigger reaches the same door (rung 10b.4)', () => {
+  let prevSecret: string | undefined;
+  beforeAll(() => {
+    prevSecret = process.env.COMPOSIO_WEBHOOK_SECRET;
+    process.env.COMPOSIO_WEBHOOK_SECRET = SECRET;
+  });
+  afterAll(() => {
+    if (prevSecret === undefined) delete process.env.COMPOSIO_WEBHOOK_SECRET;
+    else process.env.COMPOSIO_WEBHOOK_SECRET = prevSecret;
+  });
+
+  const sentTrigger = (over: Record<string, unknown> = {}) =>
+    body({
+      metadata: { user_id: `${TENANT}:tech-test`, trigger_slug: 'GMAIL_EMAIL_SENT_TRIGGER' },
+      data: {
+        message_id: 'gmail-real-sent-1',
+        sender: 'Office <office@firm.test>',
+        subject: 'Re: Radiator not heating upstairs',
+        message_text: "Thursday works — we'll come out then.",
+        message_timestamp: '2026-09-10T00:13:33.000Z',
+        thread_id: 'thread-radiator',
+        to: 'Iris <iris@homeowner.test>',
+        recipients: 'iris@homeowner.test',
+        ...over,
+      },
+    });
+
+  test('it routes, lands as outbound_email, and keys on WHO IT WENT TO', async () => {
+    const raw = sentTrigger();
+    const rec = recorder();
+    const r = await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
+    expect(r.status).toBe('ingested'); // NOT 'unrouted' — the registry knows this slug
+    expect(rec.calls[0].channel).toBe('outbound_email');
+    expect(rec.calls[0].externalId).toBe('sent:gmail-real-sent-1');
+    expect(rec.calls[0].fallbackEmail).toBe('iris@homeowner.test');
+    expect(rec.calls[0].threadId).toBe('thread-radiator');
+  });
+
+  test('the classifier is told the direction and shown the recipient', async () => {
+    const raw = sentTrigger({ message_id: 'gmail-real-sent-2' });
+    const cls = classifyStub(true);
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ classify: cls.fn }));
+    expect(cls.calls[0]).toMatchObject({ outbound: true, to: 'Iris <iris@homeowner.test>' });
+  });
+
+  test('a PERSONAL one is dropped with a receipt, and never written', async () => {
+    const raw = sentTrigger({
+      message_id: 'gmail-real-sent-personal',
+      to: 'dentist@clinic.test',
+      subject: 'Appointment Thursday',
+      message_text: 'confirming my 3pm cleaning',
+    });
+    const rec = recorder();
+    const drops = dropRecorder();
+    const r = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({ recordFieldNote: rec.fn, classify: classifyStub(false).fn, recordDrop: drops.fn }),
+    );
+    expect(r.status).toBe('skipped_non_work');
+    expect(rec.calls).toHaveLength(0);
+    expect(drops.calls[0]).toMatchObject({
+      channel: 'outbound_email',
+      externalId: 'sent:gmail-real-sent-personal',
+      from: 'dentist@clinic.test', // the RECIPIENT — our own domain says nothing
+    });
+  });
+
+  test("the agent's own send of the same message is recognised, not appended twice", async () => {
+    const raw = sentTrigger({ message_id: 'gmail-real-sent-twin' });
+    const rec = recorder();
+    const cls = classifyStub(true);
+    const r = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        recordFieldNote: rec.fn,
+        classify: cls.fn,
+        findCaptureByExternalId: async () =>
+          ({ id: 'cap-sent-1', metadata: { sentVia: 'GMAIL_SEND_EMAIL' } }) as never,
+      }),
+    );
+    expect(r).toEqual({ status: 'duplicate', captureId: 'cap-sent-1' });
+    expect(cls.calls).toHaveLength(0); // before the classifier — no model call
+  });
+
+  // RUNG 10B.4 REVIEW — the whole outbound door keys off `to`, and the trigger's
+  // own DESCRIPTION lists "sender, recipients, subject, timestamp, thread ID"
+  // without it. If it ever comes back empty, every outbound message would be
+  // unmatched, silently.
+  test('an empty `to` falls back to `recipients` rather than losing the key', async () => {
+    const raw = sentTrigger({ message_id: 'gmail-real-sent-noto', to: '', recipients: 'iris@homeowner.test' });
+    const rec = recorder();
+    const cls = classifyStub(true);
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn, classify: cls.fn }));
+    expect(rec.calls[0].fallbackEmail).toBe('iris@homeowner.test');
+    // …and the classifier is shown a real recipient, never a blank To: line.
+    expect(cls.calls[0].to).toBe('iris@homeowner.test');
+  });
+
+  test('…but a fallback with TWO recipients still names neither', async () => {
+    const raw = sentTrigger({
+      message_id: 'gmail-real-sent-multi',
+      to: '',
+      recipients: 'iris@homeowner.test, landlord@example.test',
+    });
+    const rec = recorder();
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
+    expect(rec.calls[0].fallbackEmail).toBeNull();
+  });
+
+  test('WHO ACTUALLY RECEIVED IT reaches L1 — the door keys on one, the record keeps all', async () => {
+    // L1 is append-only: a field not written here can never be recovered, and a
+    // Cc'd landlord is exactly what somebody asks about later.
+    const raw = sentTrigger({
+      message_id: 'gmail-real-sent-cc',
+      recipients: 'iris@homeowner.test, landlord@example.test',
+      cc: 'landlord@example.test',
+      bcc: 'bookkeeping@firm.test',
+    });
+    const rec = recorder();
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
+    expect(rec.calls[0].sourceMeta).toMatchObject({
+      to: 'Iris <iris@homeowner.test>',
+      recipients: 'iris@homeowner.test, landlord@example.test',
+      cc: 'landlord@example.test',
+      bcc: 'bookkeeping@firm.test',
+    });
+    // Still keyed on the single To address — a Bcc must not make it ambiguous.
+    expect(rec.calls[0].fallbackEmail).toBe('iris@homeowner.test');
+  });
+
+  test('an OFFBOARDED mailbox drops it naming the recipient, not our own domain', async () => {
+    const raw = sentTrigger({ message_id: 'gmail-real-sent-offboarded' });
+    const drops = dropRecorder();
+    const rec = recorder();
+    const r = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        recordFieldNote: rec.fn,
+        recordDrop: drops.fn,
+        getTechnician: async () => techRow({ state: 'offboarded' }),
+      }),
+    );
+    expect(r.status).toBe('skipped_offboarded');
+    expect(rec.calls).toHaveLength(0);
+    expect(drops.calls[0]).toMatchObject({ from: 'Iris <iris@homeowner.test>' });
+  });
+
+  test('a slug we have no normalizer for is unrouted, never guessed at', async () => {
+    const raw = body({
+      metadata: { user_id: `${TENANT}:tech-test`, trigger_slug: 'GMAIL_SOMETHING_NEW' },
+    });
+    const r = await handleInboundWebhook(raw, sign(raw), baseDeps());
+    expect(r.status).toBe('unrouted');
+  });
+});

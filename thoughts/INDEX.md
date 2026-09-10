@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 229 documents · 218 live · 11 superseded.
+Regenerate with `npm run decisions:index`. 230 documents · 219 live · 11 superseded.
 
 ## Superseded — do not build on these
 
@@ -50,6 +50,7 @@ Regenerate with `npm run decisions:index`. 229 documents · 218 live · 11 super
 
 ## Live
 
+- `2026-09-10` `finding` [2026-09-10-build-the-shared-work-record-plan-2026-0](shared/findings/2026-09-10-build-the-shared-work-record-plan-2026-0.md) — build the shared work record (plan 2026-09-09)
 - `2026-09-09` `plan` [2026-09-09-one-bot-per-person](shared/plans/2026-09-09-one-bot-per-person.md) · _phase 1 implemented (uncommitted) — ver…_ — Merge the global board bot into each person's own assistant bot — one bot per person, opened as a Main Mini A…
 - `2026-09-09` `plan` [2026-09-09-the-conversation-decides-which](shared/plans/2026-09-09-the-conversation-decides-which.md) · _draft_ — the thread supplies the JOB when a person key found the customer; and the firm's own half of an email convers…
 - `2026-09-09` `plan` [2026-09-09-the-work-record-park-board-and-compaction-survival](shared/plans/2026-09-09-the-work-record-park-board-and-compaction-survival.md) — The shared work record — one place every session reads and writes (tasks and parked findings), a board of wor…

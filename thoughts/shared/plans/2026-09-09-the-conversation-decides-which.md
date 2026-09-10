@@ -302,6 +302,39 @@ None.
 
 ## Phase 3: the live verification, including 10b.2's deferred tests
 
+### Evidence so far (2026-09-10)
+
+**Deployed** `2fba38e`: web `/health` reports its own commit (it caught the old instance still
+serving for four polls — the trigger response alone would have been read 40s too early);
+lifecycle-heart deploy live; Calls-worker auto-deployed.
+
+**The trigger.** `--apply` settled the question the docs could not: Composio's upsert **keys on
+configuration**, so changing it MINTED A SECOND INSTANCE (`ti_hSKW81HqamaI` → `ti_F5OHa0V_I7UV`)
+and left the old one polling. The script's post-apply re-comparison caught it and said so; the
+orphan was deleted by hand. One trigger now carries `query: label:inbox OR label:sent`. It
+inherited `history_id: 532744`, so no backlog was replayed.
+*Standing:* `manager-sam`'s roster row still records neither account nor trigger id (rung 13), so
+nothing would tear this trigger down on offboarding.
+
+**Test B — PASSED.** Reply `827672cd` (`1a088a4e16472d11`) on thread `1a0881c47f5e00bc` from
+`hhesecured@gmail.com` → filed on job `95b47086` "Upstairs radiator cold" via `visit_notes` →
+visit `8f79b147`; NO unmatched observation. Iris (`6f1c5a5d`) has `phone`/`email`/`address_line1`
+all NULL, so the conversation was the only key that could have found her. The job's
+`correspondence` now carries both halves, and the extractor wrote *"Customer requested Friday
+instead of the proposed Thursday afternoon"* — Thursday appears nowhere in the reply's own words,
+so the thread context was read, on the **L1-fallback path** (the roster row has no connected
+account, so the Composio fetch never fires). That is the path this rung's round-3 self-exclusion
+fix protects.
+
+**A FLAW IN THIS PLAN'S OWN STEP 2, found while running it.** Steps 1 and 2 cannot both work on
+one fixture: Test B needs Iris KEYLESS so only the thread can find her, but Phase 1's defect only
+fires when a PERSON key matches FIRST and its early return discards the thread's answer. With a
+keyless customer the thread arm answers, and the thread arm returned its job on `main` too — so
+the two-open-jobs reply proves nothing about Phase 1. The fix costs one field
+(`customers.email = 'hhesecured@gmail.com'`) and no extra message: step 3's outbound reply keys on
+the RECIPIENT, so it matches Iris by the email key and then has to ask the thread for the job.
+Test B is unaffected — it was proven against the keyless row before the update.
+
 ### Steps
 1. **Test B (held over from 10b.2).** Reply on the "Radiator not heating upstairs" thread FROM the
    customer's account — `hhesecured@gmail.com`, not the pilot inbox, or it lands in SENT and (before

@@ -264,15 +264,24 @@ MEMORY.md path and at least one title from a fixture `HOME`, and its total lengt
 nothing; `handoff` appends a section and bumps `updated`.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass; new cases pass
-- [ ] `echo '{"cwd":"'$PWD'","hook_event_name":"SessionStart"}' | node scripts/work.mjs packet --for-session`
-      prints valid JSON or nothing
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass; new cases pass — 2866 passed, 0 failed.
+- [x] `echo '{"cwd":"…","hook_event_name":"SessionStart"}' | node scripts/work.mjs packet --for-session`
+      prints valid JSON or nothing — valid JSON, `hookEventName: SessionStart`, 4,159 chars.
 
 ### Live verification (agent-executable)
 - Prerequisites: none.
-- [ ] A fresh-context subagent claims a probe task in **this implementation worktree** (absolute
+- [x] A fresh-context subagent claims a probe task in **this implementation worktree** (absolute
       script path), writes a handoff via `handoff --body -`, runs `packet --for-session --cwd <it>`,
       and reports that the output contains the handoff text and the memory path; then drops it.
+      — PASSED. The packet carried the title, the file list, the newest handoff (and not the
+      superseded one), and the memory path, at 4,562 characters. The handoff was confirmed on
+      disk by `cat`, independently of the tool, and `snapshot` printed nothing.
+      **The probe found a real defect, since fixed:** `changedFiles[0]` lost its first character
+      (`.claude/…` → `claude/…`). Cause: the git helper trimmed whole-command output, eating the
+      leading space `git status --porcelain` writes for a modified tracked file, after which a
+      fixed `slice(3)` ate one character too many — in exactly one entry per snapshot. Now read
+      untrimmed, with a regression test that uses a modified TRACKED file (untracked entries
+      begin `??` and never showed the bug).
 
 ### Manual verification
 - [ ] In an interactive session with an active task: run `/compact`, then ask "what is my task

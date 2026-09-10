@@ -282,6 +282,84 @@ describe('work.mjs — the shared work record', () => {
     expect(taskFile(claimableId).worktree).toBe(realpathSync(worktree));
   });
 
+  test('packet --for-session carries the task, its decisions and its newest handoff', () => {
+    const id = work(['park', '--title', 'session packet target', '--kind', 'task', '--files', 'src/a.ts'], mainCheckout);
+    work(['claim', id, '--force'], worktree);
+    work(['handoff', '--body', '-'], worktree, 'first pass, superseded');
+    work(['handoff', '--body', '-'], worktree, 'the newest handoff line');
+
+    const raw = work(['packet', '--for-session', '--cwd', worktree], mainCheckout);
+    const parsed = JSON.parse(raw);
+    expect(parsed.hookSpecificOutput.hookEventName).toBe('SessionStart');
+    const ctx = parsed.hookSpecificOutput.additionalContext as string;
+
+    expect(ctx).toContain('session packet target');
+    expect(ctx).toContain('src/a.ts');
+    expect(ctx).toContain('the newest handoff line');
+    // Only the newest: an accumulating pile of handoffs would blow the output cap.
+    expect(ctx).not.toContain('first pass, superseded');
+    // Hook output is capped at 10,000 characters; past that Claude Code files it away instead.
+    expect(raw.length).toBeLessThan(10000);
+
+    work(['done', id], mainCheckout);
+    work(['claim', claimableId, '--force'], worktree);
+  });
+
+  test('packet --for-session points a worktree at the main checkout\'s session memory', () => {
+    const memoryDir = join(home, '.claude', 'projects',
+      mainCheckout.replace(/[^A-Za-z0-9]/g, '-'), 'memory');
+    mkdirSync(memoryDir, { recursive: true });
+    writeFileSync(join(memoryDir, 'MEMORY.md'),
+      '# Memory Index\n- [A remembered thing](a.md) — hook\n- [Another one](b.md) — hook\n');
+
+    const fromWorktree = JSON.parse(work(['packet', '--for-session', '--cwd', worktree], mainCheckout))
+      .hookSpecificOutput.additionalContext as string;
+    // A worktree gets its own (empty) project directory, so it starts with none of this.
+    expect(fromWorktree).toContain('Session memory');
+    expect(fromWorktree).toContain(join(memoryDir, 'MEMORY.md'));
+    expect(fromWorktree).toContain('A remembered thing');
+
+    // The main checkout already has it loaded; repeating it there would be pure waste.
+    const fromMain = work(['packet', '--for-session', '--cwd', mainCheckout], mainCheckout);
+    expect(fromMain === '' || !fromMain.includes('Session memory')).toBe(true);
+  });
+
+  test('snapshot records the mechanical state and prints nothing', () => {
+    // A MODIFIED TRACKED file, deliberately: `git status --porcelain` writes those with a
+    // leading space (` M src/a.ts`), and trimming the whole output ate that space, so a fixed
+    // slice(3) then ate the first character of the first filename — silently, and in exactly
+    // one entry per snapshot. Untracked files (`?? …`) have no leading space and never showed it.
+    const tracked = join(worktree, 'src', 'a.ts');
+    const original = readFileSync(tracked, 'utf8');
+    writeFileSync(tracked, `${original}// modified\n`);
+    writeFileSync(join(worktree, 'src', 'dirty.ts'), 'export const d = 1;\n');
+    expect(work(['snapshot', '--cwd', worktree], mainCheckout)).toBe('');
+
+    const snap = JSON.parse(readFileSync(
+      join(mainCheckout, '.claude', 'work', 'tasks', `${claimableId}.snapshot.json`), 'utf8',
+    ));
+    expect(snap.branch).toBe('feature');
+    expect(snap.head).toMatch(/^[0-9a-f]{40}$/);
+    expect(snap.changedFiles).toContain('src/a.ts');
+    expect(snap.changedFiles).toContain('src/dirty.ts');
+    for (const f of snap.changedFiles) expect(f).not.toMatch(/^rc\//);
+    writeFileSync(tracked, original);
+    rmSync(join(worktree, 'src', 'dirty.ts'));
+  });
+
+  test('handoff appends a stamped section and refuses when nothing is active', () => {
+    const before = taskFile(claimableId).updated;
+    work(['handoff', '--body', '-'], worktree, 'what only the model knows');
+    const text = readFileSync(join(mainCheckout, '.claude', 'work', 'tasks', `${claimableId}.md`), 'utf8');
+    expect(text).toMatch(/## Handoff \d{4}-\d{2}-\d{2}T/);
+    expect(text).toContain('what only the model knows');
+    expect(taskFile(claimableId).updated).not.toBe(before);
+
+    // A person verb: silence here would read as "recorded", which is the worst outcome.
+    expect(() => work(['handoff', '--body', '-'], mainCheckout, 'nowhere to put this'))
+      .toThrow(/no active task/);
+  });
+
   test('a hook verb outside a git repository exits 0 in silence', () => {
     // Hooks run on the critical path of every session. "Not a git repository" is an ordinary
     // condition there, and an error banner at session start would be the tool's own fault.

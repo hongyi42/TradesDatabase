@@ -50,6 +50,40 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "W=\"$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../scripts/work.mjs\"; [ -f \"$W\" ] || W=\"$CLAUDE_PROJECT_DIR/scripts/work.mjs\"; [ -f \"$W\" ] || W=\"./scripts/work.mjs\"; [ -f \"$W\" ] && node \"$W\" packet --for-session; true",
+            "statusMessage": "Restoring the work packet"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "W=\"$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../scripts/work.mjs\"; [ -f \"$W\" ] || W=\"$CLAUDE_PROJECT_DIR/scripts/work.mjs\"; [ -f \"$W\" ] || W=\"./scripts/work.mjs\"; [ -f \"$W\" ] && node \"$W\" snapshot; true",
+            "statusMessage": "Snapshotting the task"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "W=\"$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../scripts/work.mjs\"; [ -f \"$W\" ] || W=\"$CLAUDE_PROJECT_DIR/scripts/work.mjs\"; [ -f \"$W\" ] || W=\"./scripts/work.mjs\"; [ -f \"$W\" ] && node \"$W\" snapshot; true",
+            "statusMessage": "Snapshotting the task"
+          }
+        ]
+      }
     ]
   }
 }

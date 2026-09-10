@@ -17,6 +17,7 @@ Implement the plan at: **$ARGUMENTS**
 4. **Implement one phase at a time:**
    - **Env preflight — before writing any code for the phase:** check the plan's *Secrets & env preflight* list for this phase and verify each named key exists in the env file (check key names only, e.g. `grep -c '^NAME='` — **never print or echo values**). If the plan predates that section, scan the phase's changes for new env vars and check those. If anything is missing, STOP and ask the user for **everything the phase needs at once**, passing along the plan's where-to-get-it notes. After the user says it's filled, re-run the key-name check before starting — this catches the filled-but-not-saved case.
    - Make all changes for the phase
+   - **An issue outside this phase's scope: `/park` it and continue.** Do not fix it here and do not carry it in your head — parking is what lets it be picked up in parallel instead of serialized behind this work.
    - Run the automated verification commands listed in the plan (including `npm test`)
    - Fix any failures before proceeding
    - **Live verification (if the phase declares agent-executable checks):** first **preflight the capabilities** — confirm the MCP servers / credentials the phase declared are actually connected (`claude mcp list`). If any are missing, **STOP and name exactly what to set up; never silently fall back to a manual checklist** (per the `verifying-behavior` skill). Then run the check via a **fresh-context verification subagent** (Task tool) following that skill: it exercises the real flow, confirms through an independent channel (cross-channel read-back), and reports evidence — not "looks good." Record the evidence with the phase.
@@ -29,7 +30,7 @@ Implement the plan at: **$ARGUMENTS**
 
 6. **Final review gate** — when all phases are implemented, run the bundled `/code-review` skill on the full diff. Fix any Important (correctness) findings and re-run verification. Surface nit-level findings to the user without acting on them unless asked.
 
-7. **When all phases are complete and the final review is clean**, update the plan's `status:` frontmatter from `draft` to `complete`.
+7. **When all phases are complete and the final review is clean**, update the plan's `status:` frontmatter from `draft` to `complete`, then `/handoff` — the snapshot taken at each stop records what changed, but only you can record what was decided, what you assumed, and what is still open.
 
 ## Hard constraints
 

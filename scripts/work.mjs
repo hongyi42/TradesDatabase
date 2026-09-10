@@ -39,18 +39,31 @@ const MAX_SLUG = 40;
 
 // ── git helpers ───────────────────────────────────────────────────────────────
 
-/** Run git, returning trimmed stdout, or null if it fails for any reason. */
-function git(args, cwd) {
+/** Run git, returning raw stdout, or null if it fails for any reason. */
+function gitRaw(args, cwd) {
   try {
     return execFileSync('git', args, {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       maxBuffer: 16 * 1024 * 1024,
-    }).trim();
+    });
   } catch {
     return null;
   }
+}
+
+/**
+ * Run git and trim the answer — right for every command whose output is one value.
+ *
+ * NOT for `status --porcelain`, whose first two columns are a status field that may begin with
+ * a space (` M path`). Trimming the whole output eats that space, and a fixed `slice(3)` then
+ * eats the first character of the first filename: `.claude/x` came back as `claude/x`, wrong in
+ * exactly one entry and silently. Use gitRaw() where leading whitespace carries meaning.
+ */
+function git(args, cwd) {
+  const out = gitRaw(args, cwd);
+  return out === null ? null : out.trim();
 }
 
 /**
@@ -398,6 +411,150 @@ function cmdPacket(main, cwd, { flags }) {
   process.stdout.write(`${serializeTask(task.fm, task.body)}`);
 }
 
+/** Split a task body into its `## ...` sections, in order. */
+function sections(body) {
+  const out = [];
+  const re = /^## (.+)$/gm;
+  let m;
+  let open = null;
+  while ((m = re.exec(body)) !== null) {
+    if (open) out.push({ title: open.title, text: body.slice(open.end, m.index).trim() });
+    open = { title: m[1].trim(), end: m.index + m[0].length };
+  }
+  if (open) out.push({ title: open.title, text: body.slice(open.end).trim() });
+  return out;
+}
+
+/**
+ * SessionStart: hand the session back what compaction and a fresh start would otherwise lose.
+ *
+ * This is the piece that stops the operator being the only thing joining one session's turns to
+ * the next. It carries the active task, the decisions recorded against it, the newest handoff,
+ * and the file list the edit hook maintained — none of which survive a summary reliably.
+ *
+ * `PreCompact` cannot do this: the docs give it only `decision`/`block`, no additionalContext.
+ * `SessionStart` with matcher `compact` fires right after a compaction, which is the moment the
+ * context is thinnest, so that is where the packet goes back in.
+ */
+function cmdPacketForSession(main, cwd) {
+  const wt = worktreeOf(cwd);
+  const task = wt ? activeTaskFor(main, wt) : null;
+  const parts = [];
+
+  if (task) {
+    const secs = sections(task.body);
+    const decisions = secs.find((s) => /^Decisions?$/i.test(s.title));
+    const handoffs = secs.filter((s) => /^Handoff\b/i.test(s.title));
+    const latest = handoffs[handoffs.length - 1];
+    const files = listField(task.fm.files);
+
+    parts.push(
+      `Your active task in this worktree, from the shared work record (${recordDir(main)}):`,
+      '',
+      `- id: ${task.fm.id}   kind: ${task.fm.kind}   branch: ${task.fm.branch || '(none)'}`,
+      `- title: ${task.fm.title}`,
+      files.length
+        ? `- files touched so far (${files.length}): ${files.join(', ')}`
+        : '- files touched so far: none recorded yet',
+    );
+    if (task.fm.origin) parts.push(`- parked from: ${task.fm.origin}`);
+    if (decisions?.text) parts.push('', '## Decisions on this task', '', decisions.text);
+    if (latest?.text) parts.push('', `## ${latest.title} (most recent handoff)`, '', latest.text);
+  }
+
+  const open = listTasks(main).filter((t) => t.fm.status === 'open');
+  if (open.length) {
+    parts.push('', `${open.length} finding(s) are parked and unclaimed in the record.`
+      + ' Run `npm run board` to see them before starting something new.');
+  }
+
+  // A worktree has its own project directory, so it starts with none of the main checkout's
+  // session memory. Point at the index rather than inlining it: hook output is capped at
+  // 10,000 characters and the index alone is longer than that.
+  if (wt && wt !== main) {
+    const memory = join(homedir(), '.claude', 'projects', encodeProjectDir(main), 'memory', 'MEMORY.md');
+    if (existsSync(memory)) {
+      parts.push('', 'Session memory (from the main checkout — this worktree has none of its own):',
+        `  ${memory}`, '  Read it before starting; it is the index, one line per memory.');
+      const titles = [];
+      try {
+        for (const line of readFileSync(memory, 'utf8').split(/\r?\n/)) {
+          const m = /^-\s*\[([^\]]+)\]/.exec(line);
+          if (m) titles.push(m[1].trim());
+        }
+      } catch { /* unreadable index — the path alone is still worth having */ }
+      if (titles.length) {
+        const budget = 9000 - parts.join('\n').length;
+        const kept = [];
+        let used = 0;
+        for (const t of titles) {
+          if (used + t.length + 3 > budget) break;
+          used += t.length + 3;
+          kept.push(t);
+        }
+        if (kept.length) {
+          parts.push(`  Topics (${kept.length} of ${titles.length}): ${kept.join(' · ')}`);
+        }
+      }
+    }
+  }
+
+  const text = parts.join('\n').replace(/^\n+/, '').trimEnd();
+  if (!text) return; // nothing to say is a normal state
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text },
+  }));
+}
+
+/** Claude Code's per-directory project folder name: every non-alphanumeric becomes a dash. */
+function encodeProjectDir(abs) {
+  return abs.replace(/[^A-Za-z0-9]/g, '-');
+}
+
+/**
+ * Stop / PreCompact: record where the work stood, mechanically.
+ *
+ * Deliberately only what a machine can know for certain — branch, head, changed files. What was
+ * DECIDED and what is still open cannot be extracted from a diff, which is why `/handoff` exists
+ * and is written by the model. Prints nothing: any output on a Stop hook continues the turn.
+ */
+function cmdSnapshot(main, cwd) {
+  const wt = worktreeOf(cwd);
+  if (!wt) return;
+  const task = activeTaskFor(main, wt);
+  if (!task) return;
+  const porcelain = gitRaw(['status', '--porcelain'], wt) ?? '';
+  const snapshot = {
+    ts: new Date().toISOString(),
+    branch: git(['rev-parse', '--abbrev-ref', 'HEAD'], wt) ?? '',
+    head: git(['rev-parse', 'HEAD'], wt) ?? '',
+    changedFiles: porcelain.split('\n').filter(Boolean).map((l) => l.slice(3).trim()),
+    diffStat: git(['diff', '--stat'], wt) ?? '',
+  };
+  writeFileSync(join(tasksDir(main), `${task.fm.id}.snapshot.json`), `${JSON.stringify(snapshot, null, 2)}\n`);
+}
+
+/** `/handoff`: append what only the model knows — decisions, assumptions, what is still open. */
+function cmdHandoff(main, cwd, { flags }) {
+  const wt = worktreeOf(cwd);
+  if (!wt) fail('not inside a git worktree');
+  const found = activeTaskFor(main, wt);
+  if (!found) fail(`no active task in ${basename(wt)} — claim one first (work claim <id>)`);
+
+  const text = flags.body === '-'
+    ? readStdin().trim()
+    : (typeof flags.body === 'string' ? flags.body.trim() : '');
+  if (!text) fail('handoff needs --body - (text on stdin) or --body "<text>"');
+
+  const stamp = new Date().toISOString();
+  withTaskLock(found.file, () => {
+    const task = findTask(main, found.fm.id);
+    if (!task) return;
+    writeTask(task.file, task.fm, `${task.body.replace(/\s*$/, '')}\n\n## Handoff ${stamp}\n\n${text}\n`);
+  });
+  process.stdout.write(`handoff appended to ${found.fm.id}\n`);
+}
+
 /**
  * PostToolUse(Edit|Write): record that this worktree's active task touched a file.
  *
@@ -563,7 +720,7 @@ function cmdBoard(main) {
 // Verbs a HOOK invokes. These run on the critical path of a session and must never cost the
 // user an edit or an error banner, so any failure is a silent exit 0 — including "this is not
 // a git repository", which for a hook is an ordinary condition rather than a mistake.
-const HOOK_VERBS = new Set(['packet', 'touch']);
+const HOOK_VERBS = new Set(['packet', 'touch', 'snapshot']);
 
 /** The hook payload, parsed once by resolveCwd — stdin can only be read to EOF once. */
 let hookPayload = null;
@@ -604,13 +761,23 @@ switch (verb) {
   case 'claim': cmdClaim(main, cwd, args); break;
   case 'done': cmdSetStatus(main, args, 'done'); break;
   case 'drop': cmdSetStatus(main, args, 'dropped'); break;
-  case 'packet': cmdPacket(main, cwd, args); break;
+  case 'packet':
+    if (args.flags['for-session']) {
+      try { cmdPacketForSession(main, cwd); } catch { /* a session must still start */ }
+    } else cmdPacket(main, cwd, args);
+    break;
   case 'touch':
     // Runs after every edit in every session: swallow everything.
     try { cmdTouch(main); } catch { /* never cost the user an edit */ }
     break;
+  case 'snapshot':
+    // Runs on every Stop and before every compaction: same policy.
+    try { cmdSnapshot(main, cwd); } catch { /* never block a turn from ending */ }
+    break;
+  case 'handoff': cmdHandoff(main, cwd, args); break;
   case 'board': cmdBoard(main); break;
   default:
-    process.stderr.write('work: usage: park | claim | done | drop | packet | touch | board\n');
+    process.stderr.write('work: usage: park | claim | done | drop | packet | touch | snapshot'
+      + ' | handoff | board\n');
     process.exit(1);
 }

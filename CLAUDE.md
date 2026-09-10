@@ -33,6 +33,13 @@ touching this file" always has an answer. Hooks and commands run the **main chec
 `scripts/work.mjs`, and Claude Code reads hooks from the directory the session was *launched* in,
 so launch a session inside the worktree it will work in or none of this fires.
 
+**A running session never gains a hook it did not start with** (measured 2026-09-10).
+`settings.json` is read once, at launch — neither a new hook *event* nor a new command inside an
+existing event reaches a session already running. What IS picked up live is a change to a hook
+*script's* contents, because that file is re-read on every invocation. So after pulling anything
+that edits `settings.json`, restart the session; an old one keeps its original hook set and fails
+silently, since every hook command here ends in `; true` so it can never cost you an edit.
+
 Find something out of scope mid-task? **`/park` it** — that is what lets it be picked up in
 parallel instead of serialized behind the current work. Finishing a task? **`/handoff`** records
 what a diff cannot: what was decided, what you assumed, what is still open. Then `work.mjs done

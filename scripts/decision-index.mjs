@@ -17,7 +17,7 @@
 
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join, relative, basename, sep } from 'node:path';
+import { join, relative, basename, sep, isAbsolute } from 'node:path';
 
 const ROOT = process.cwd();
 const THOUGHTS = join(ROOT, 'thoughts');
@@ -126,12 +126,17 @@ function allSourceRefs(text) {
 /**
  * Files for the hook's locality lookup: precise, so the reminder is about this file and not
  * a file the document mentioned once in passing.
+ *
+ * `limit` exists because that risk is not universal. The cap guards against a document being
+ * credited with every file its prose wandered past; a promoted finding's list is explicit data
+ * written by the edit hook as the work happened, so there is nothing to guard against and
+ * capping it just drops real attachments. Per-FILE noise is a separate limit (MAX_PER_FILE).
  */
-function localityRefs(counts) {
+function localityRefs(counts, limit = MAX_FILES_PER_DOC) {
   return [...counts.entries()]
     .filter(([p, n]) => n >= MENTION_FLOOR && existsSync(join(ROOT, p)))
     .sort((a, b) => b[1] - a[1])
-    .slice(0, MAX_FILES_PER_DOC)
+    .slice(0, limit)
     .map(([path, mentions]) => ({ path, mentions }));
 }
 
@@ -358,12 +363,22 @@ const docs = walk(THOUGHTS)
     // the work happened, so it does not depend on the prose happening to name each file twice.
     // Seed those paths at the mention floor before the text scan, or the most precisely-attributed
     // documents in the repo would be the ones that attach to no file at all.
+    //
+    // ANY repo path, not the `src/**/*.ts` shape the prose scanner is limited to. That limit is
+    // right for prose, where a loose pattern would credit a document with everything it wandered
+    // past; it is wrong here, because these paths were named deliberately and the pre-edit hook
+    // fires on EVERY file. Measured 2026-09-10: the first real promotion attached to nothing at
+    // all — one of its files lived under `scripts/`, and the other two had dotted basenames, so
+    // all three fell outside the pattern. The document about the feature was invisible to it.
     const counts = allSourceRefs(text);
     if (kind === 'finding') {
       for (const p of (fm.files ?? '').split(',').map((s) => s.trim())) {
-        if (/^src\/[a-zA-Z0-9_/-]+\.ts$/.test(p)) {
-          counts.set(p, Math.max(counts.get(p) ?? 0, MENTION_FLOOR));
-        }
+        // Must be a repo-relative path to something that still exists: `existsSync` is what stops
+        // a typo becoming a phantom file, and the traversal guard stops `files:` naming its way
+        // out of the repo.
+        if (!p || isAbsolute(p) || p.split('/').includes('..')) continue;
+        if (!existsSync(join(ROOT, p))) continue;
+        counts.set(p, Math.max(counts.get(p) ?? 0, MENTION_FLOOR));
       }
     }
     return {
@@ -382,7 +397,7 @@ const docs = walk(THOUGHTS)
       supersededBy: null,
       commit: (fm.commit ?? '').match(/^[0-9a-f]{7,40}/)?.[0] ?? '',
       durable: durableSection(text),
-      files: localityRefs(counts),
+      files: localityRefs(counts, kind === 'finding' ? Infinity : MAX_FILES_PER_DOC),
       staleness: stalenessRefs(counts),
       drift: 0,
       deadFiles: 0,

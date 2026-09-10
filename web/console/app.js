@@ -1753,6 +1753,12 @@ async function pullRelease(armed) {
   pullRing = null;
   if (!ring) return;
   if (armed) {
+    // Clear the drag rotation FIRST. A CSS animation with no `from` starts at
+    // the element's current computed transform, so the inline rotate(270deg)
+    // left by the finger made the spin run 270°→360° and snap back — a 90°
+    // twitch, not a circle (user, 2026-09-09: "not circling in the whole
+    // circle motion").
+    ring.firstElementChild.style.transform = '';
     ring.classList.add('is-loading');
     ring.style.transition = 'transform 160ms ease-out';
     ring.style.transform = 'translate(-50%,' + (PULL_ARM - 40) + 'px)';

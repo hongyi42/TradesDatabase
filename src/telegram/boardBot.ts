@@ -63,7 +63,7 @@ export async function setConsoleMenuButtonFor(chatIds: string[]): Promise<void> 
     try {
       await callTelegram('setChatMenuButton', {
         chat_id: chatId,
-        menu_button: { type: 'web_app', text: 'Open console', web_app: { url } },
+        menu_button: { type: 'web_app', text: 'Schedule', web_app: { url } },
       });
     } catch (err) {
       console.error(`board worker: console button not set for ${chatId}:`, err);

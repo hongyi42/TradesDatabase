@@ -469,10 +469,13 @@ function exportTable(ts, text, fileName) {
     if (!ts.isImportDeclaration(st) || !ts.isStringLiteral(st.moduleSpecifier)) continue;
     const spec = st.moduleSpecifier.text;
     const clause = st.importClause;
-    if (clause?.name) imported.set(clause.name.text, `default from '${spec}'`);
+    const type = clause?.isTypeOnly ? 'type ' : '';
+    if (clause?.name) imported.set(clause.name.text, `${type}default from '${spec}'`);
     const nb = clause?.namedBindings;
-    if (nb && ts.isNamespaceImport(nb)) imported.set(nb.name.text, `* from '${spec}'`);
-    if (nb && ts.isNamedImports(nb)) for (const el of nb.elements) imported.set(el.name.text, `${(el.propertyName ?? el.name).text} from '${spec}'`);
+    if (nb && ts.isNamespaceImport(nb)) imported.set(nb.name.text, `${type}* from '${spec}'`);
+    if (nb && ts.isNamedImports(nb)) {
+      for (const el of nb.elements) imported.set(el.name.text, `${type || (el.isTypeOnly ? 'type ' : '')}${(el.propertyName ?? el.name).text} from '${spec}'`);
+    }
   }
   // `type ` is part of where a re-export points: `export *` becoming `export type *` keeps every
   // name and breaks every caller that uses one as a value.
@@ -487,7 +490,7 @@ function exportTable(ts, text, fileName) {
     } else if (st.exportClause && ts.isNamedExports(st.exportClause)) {
       for (const el of st.exportClause.elements) {
         const from = imported.get((el.propertyName ?? el.name).text);
-        if (from && !local.has((el.propertyName ?? el.name).text)) pass(el.name.text, `${typeOnly(el)}${from}`);
+        if (from && !local.has((el.propertyName ?? el.name).text)) pass(el.name.text, from.startsWith('type ') ? from : `${typeOnly(el)}${from}`);
       }
     }
   }
@@ -688,13 +691,15 @@ function moduleStatements(ts, text, fileName) {
   const out = [];
   for (const st of parse(ts, text, fileName).statements) {
     if (ts.isImportDeclaration(st) && ts.isStringLiteral(st.moduleSpecifier)) {
+      // `typeOnly` here too: `import type { x }` passed back out passes on a type alone.
       const clause = st.importClause;
+      const whole = Boolean(clause?.isTypeOnly);
       const bindings = [];
-      if (clause?.name) bindings.push({ imported: 'default', local: clause.name.text });
+      if (clause?.name) bindings.push({ imported: 'default', local: clause.name.text, typeOnly: whole });
       const nb = clause?.namedBindings;
-      if (nb && ts.isNamespaceImport(nb)) bindings.push({ imported: '*', local: nb.name.text });
+      if (nb && ts.isNamespaceImport(nb)) bindings.push({ imported: '*', local: nb.name.text, typeOnly: whole });
       if (nb && ts.isNamedImports(nb)) {
-        for (const el of nb.elements) bindings.push({ imported: (el.propertyName ?? el.name).text, local: el.name.text });
+        for (const el of nb.elements) bindings.push({ imported: (el.propertyName ?? el.name).text, local: el.name.text, typeOnly: whole || el.isTypeOnly });
       }
       out.push({ spec: st.moduleSpecifier.text, bindings, isExport: false });
     } else if (ts.isExportDeclaration(st) && st.moduleSpecifier && ts.isStringLiteral(st.moduleSpecifier)) {
@@ -725,7 +730,7 @@ function importBinding(info, local) {
   for (const st of info.statements) {
     if (st.isExport) continue;
     const b = st.bindings.find((x) => x.local === local);
-    if (b) return { spec: st.spec, imported: b.imported };
+    if (b) return { spec: st.spec, imported: b.imported, typeOnly: b.typeOnly };
   }
   return null;
 }
@@ -767,7 +772,7 @@ function declarerOf(ts, tree, file, name, depth = 0, seen = new Set(), via = [])
       const from = b ? importBinding(info, b.imported) : null;
       const target = from && from.imported !== '*' ? resolveSpec(ts, tree, file, from.spec) : null;
       if (target) {
-        const hops = [...via, { file, key: name, name, typeOnly: b.typeOnly }];
+        const hops = [...via, { file, key: name, name, typeOnly: b.typeOnly || from.typeOnly }];
         return declarerOf(ts, tree, target, from.imported, depth + 1, seen, hops) ?? { file: target, name: from.imported, via: hops };
       }
       continue;
@@ -825,26 +830,31 @@ function allExportsOf(ts, tree, file, depth = 0, seen = new Set()) {
  * per file that DECLARES what it uses — and one per barrel it reaches that through, whose names
  * are the barrel's re-export keys (exportTable's). `locals[name]` is every way this file refers
  * to it: the local binding, or `ns.member` for a namespace import. A barrel entry's
- * `through[key]` maps each name that key passes on to this file's locals for it (lostThrough
- * reads it). Re-exports count too: a barrel depends on everything it re-exports. `root` is a
- * checkout path, or a tree (treeOf).
+ * `through[key][name]` is what that key passes on to this file — `{ file, name, typeOnly,
+ * locals }`: the declaration it reached, whether this file only ever needs it as a type, and this
+ * file's locals for it (lostThrough reads it). Re-exports count too: a barrel depends on
+ * everything it re-exports. `root` is a checkout path, or a tree (treeOf).
  */
 export function namedImports(ts, root, file, text) {
   const tree = asTree(ts, root);
   const byFrom = new Map();
-  const note = (from, name, local, passed = null) => {
+  const note = (from, name, local) => {
     let e = byFrom.get(from);
     if (!e) { e = { from, names: [], locals: {} }; byFrom.set(from, e); }
     if (!e.names.includes(name)) { e.names.push(name); e.locals[name] = []; }
     if (!e.locals[name].includes(local)) e.locals[name].push(local);
-    if (passed === null) return;
-    const byName = ((e.through ??= {})[name] ??= {});
-    const locals = (byName[passed] ??= []);
-    if (!locals.includes(local)) locals.push(local);
+    return e;
   };
-  const noteAll = (d, local) => {
+  const noteAll = (d, local, typeImport) => {
     note(d.file, d.name, local);
-    for (const hop of d.via) note(hop.file, hop.key, local, hop.name);
+    // A type-only step anywhere on the way means this file already gets it as a type alone.
+    const typeOnly = typeImport || d.via.some((h) => h.typeOnly);
+    for (const hop of d.via) {
+      const byName = ((note(hop.file, hop.key, local).through ??= {})[hop.key] ??= {});
+      const rec = (byName[hop.name] ??= { file: d.file, name: d.name, typeOnly, locals: [] });
+      rec.typeOnly &&= typeOnly; // one value use anywhere, and the route must carry values
+      if (!rec.locals.includes(local)) rec.locals.push(local);
+    }
   };
   for (const st of moduleStatements(ts, text, file)) {
     if (st.spec === null) continue; // a local export list imports nothing; its imports are counted
@@ -852,9 +862,9 @@ export function namedImports(ts, root, file, text) {
     if (!target) continue;
     for (const b of st.bindings) {
       if (b.imported === '*') {
-        for (const d of allExportsOf(ts, tree, target)) noteAll(d, b.local ? `${b.local}.${d.as}` : d.as);
+        for (const d of allExportsOf(ts, tree, target)) noteAll(d, b.local ? `${b.local}.${d.as}` : d.as, b.typeOnly);
       } else {
-        noteAll(declarerOf(ts, tree, target, b.imported) ?? { file: target, name: b.imported, via: [] }, b.local ?? b.imported);
+        noteAll(declarerOf(ts, tree, target, b.imported) ?? { file: target, name: b.imported, via: [] }, b.local ?? b.imported, b.typeOnly);
       }
     }
   }
@@ -862,23 +872,49 @@ export function namedImports(ts, root, file, text) {
 }
 
 /**
- * Of the names a namedImports entry `imp` reaches through re-export `key` of `imp.from`, the ones
- * subject `s`'s version of that file no longer passes on as values — or null when `key` is not a
- * re-export this file came through, and the change is an ordinary one.
+ * What re-export `key` of `imp.from` (a namedImports entry, read in `importer` — a checkout path
+ * or a tree) no longer gives the importer, as subject `s` has that file now: one `{ name, why,
+ * file? }` per name it passed on that is not what it was — or null when `key` is not a re-export
+ * the importer came through, and the change is an ordinary one.
  *
- * A re-export key changing is not by itself a break. A barrel narrowing `export *` to the names
- * still used, or re-pointing one at a module the function moved to, breaks nobody — and was
- * reported as a removal. A barrel dropping a name, or passing it on as a type alone, breaks every
- * caller using it as a value.
+ *   gone       the name no longer gets through at all
+ *   type       it gets through as a type alone, and the importer uses it as a value
+ *   signature  it now reaches a different declaration (`file`) with a different signature
+ *   behaviour  … with the same signature and a different body
+ *
+ * A re-export key changing is not by itself a break: narrowing `export *` to the names still
+ * used, or re-pointing one at the module a function moved to (same declaration text), is nothing.
+ * But "the name still resolves" is not enough — re-pointed at another module's `createJob`, it
+ * resolves fine and breaks every caller.
  */
-export function lostThrough(main, ts, s, imp, key) {
-  const names = imp.through?.[key];
-  if (!names) return null;
-  const tree = treeOf(ts, main, s);
-  return Object.keys(names).filter((n) => {
-    const hit = declarerOf(ts, tree, imp.from, n);
-    return !hit || hit.via.some((h) => h.typeOnly);
-  });
+export function lostThrough(main, ts, s, imp, key, importer) {
+  const passed = imp.through?.[key];
+  if (!passed) return null;
+  const now = treeOf(ts, main, s);
+  const was = asTree(ts, importer);
+  const lost = [];
+  for (const [name, rec] of Object.entries(passed)) {
+    const hit = declarerOf(ts, now, imp.from, name);
+    if (!hit) { lost.push({ name, why: 'gone' }); continue; }
+    if (!rec.typeOnly && hit.via.some((h) => h.typeOnly)) { lost.push({ name, why: 'type' }); continue; }
+    // The same declaration: its own changes are judged as its own, in the declaring file.
+    if (hit.file === rec.file && hit.name === rec.name) continue;
+    const before = fileInfo(ts, was, rec.file)?.exports.get(rec.name);
+    const after = fileInfo(ts, now, hit.file)?.exports.get(hit.name);
+    if (!before || !after || before.sig !== after.sig) lost.push({ name, why: 'signature', file: hit.file });
+    else if (before.body !== after.body) lost.push({ name, why: 'behaviour', file: hit.file });
+  }
+  return lost;
+}
+
+/** How lostThrough's answer reads in a report: what each name no longer gets, and from where. */
+function describeLost(lost) {
+  return lost.map((l) => `\`${l.name}\` ${{
+    gone: 'no longer comes through it',
+    type: 'now comes through it as a type only',
+    signature: `now comes from ${l.file}, with a different signature`,
+    behaviour: `now comes from ${l.file}: same signature, different body`,
+  }[l.why]}`).join('; ');
 }
 
 /**
@@ -1057,15 +1093,15 @@ export function overlaps(main, ts, a, b) {
         if (imp.from === g || GENERATED.has(imp.from) || !fx.has(imp.from)) continue;
         for (const c of changesOf(imp.from)) {
           if (c.change === 'added' || !imp.names.includes(c.name) || high.has(`${imp.from}\0${c.name}`)) continue;
-          // A re-export this file came through: only a name that no longer gets through counts.
-          const lost = x.predicted ? null : lostThrough(main, ts, x, imp, c.name);
+          // A re-export this file came through: only what it no longer gets the same way counts.
+          const lost = x.predicted ? null : lostThrough(main, ts, x, imp, c.name, tree);
           if (lost && !lost.length) continue;
           const k = `${imp.from}\0${c.name}`;
           const hit = hits.get(k) ?? { c, from: imp.from, files: [], sites: 0, lost: null };
           hit.files.push(g);
-          const locals = lost ? lost.flatMap((n) => imp.through[c.name][n]) : imp.locals[c.name];
+          const locals = lost ? lost.flatMap((l) => imp.through[c.name][l.name].locals) : imp.locals[c.name];
           for (const local of locals) hit.sites += callSites(ts, text, local, g);
-          if (lost) hit.lost = [...new Set([...(hit.lost ?? []), ...lost])];
+          if (lost) hit.lost = [...(hit.lost ?? []), ...lost.filter((l) => !hit.lost?.some((m) => m.name === l.name))];
           hits.set(k, hit);
         }
       }
@@ -1077,6 +1113,11 @@ export function overlaps(main, ts, a, b) {
       // `changer` and `callers` say which side did what, so a caller of `integrate` can look for
       // the commits in the right files: the changer's in `file`, the other side's in `callers`.
       const who = { changer: x.label, callers: files };
+      // Re-pointed at a same-signature function with another body: what it does changed, not how it is called.
+      if (lost && lost.every((l) => l.why === 'behaviour')) {
+        items.push({ severity: 'LOW', kind: 'changed behaviour', file: from, symbol: c.name, detail: `${x.label} re-pointed it — ${describeLost(lost)}; ${where}`, sizes: { callSites: sites }, ...who });
+        continue;
+      }
       if (c.change === 'body') {
         items.push({ severity: 'LOW', kind: 'changed behaviour', file: from, symbol: c.name, detail: `${x.label} changed what it does (${lineCountLabel(c.lines)}); ${where}`, sizes: { [x.label]: c.lines, callSites: sites }, ...who });
         continue;
@@ -1087,7 +1128,7 @@ export function overlaps(main, ts, a, b) {
         items.push({ severity: 'MED', kind: 'calls what it names', file: from, symbol: c.name, detail: `${x.label} names this file and mentions \`${c.name}\`; ${where}; ${repoWide}`, sizes: { callSites: sites, importers }, ...who });
       } else {
         const what = lost
-          ? `${c.change === 'removed' ? 'removed it' : 'changed it'} — ${lost.map((n) => `\`${n}\``).join(', ')} no longer ${lost.length === 1 ? 'comes' : 'come'} through it as a value`
+          ? `${c.change === 'removed' ? 'removed it' : 'changed it'} — ${describeLost(lost)}`
           : c.change === 'removed' ? 'removed it' : `changed its signature (${lineCountLabel(c.lines)})`;
         items.push({ severity: 'MED', kind: 'changed signature', file: from, symbol: c.name, detail: `${x.label} ${what}; ${where}; ${repoWide}`, sizes: { [x.label]: c.lines, callSites: sites, importers }, ...who });
       }

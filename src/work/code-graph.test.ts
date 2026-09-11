@@ -167,6 +167,10 @@ beforeAll(() => {
   writeFileSync(join(mainCheckout, 'src', 'consts.ts'), "export const PROMPT = 'You are helpful.';\nexport const LIMITS = { max: 3, min: 1 };\n");
   writeFileSync(join(mainCheckout, 'src', 'useConsts.ts'),
     "import { PROMPT, LIMITS } from './consts.js';\n\nexport const size = PROMPT.length + LIMITS.max;\n");
+  // A type passed through a barrel as a type, to a file that only ever needs a type — src/db/index.ts's
+  // `export type { Database, Json }`, which 30 files `import type` through.
+  writeFileSync(join(mainCheckout, 'src', 'tbarrel.ts'), "export type { Row } from './lib.js';\n");
+  writeFileSync(join(mainCheckout, 'src', 'useRow.ts'), "import type { Row } from './tbarrel.js';\n\nexport const r: Row = { id: 1 };\n");
   git(['add', '.'], mainCheckout);
   git(['commit', '-m', 'fixture'], mainCheckout);
   // A configured `origin` (pointing nowhere, so a fetch fails fast): without one, git never gives a
@@ -913,7 +917,7 @@ describe('the final review — what the graph could not see, and checks that pas
         "src/barrel.ts › export * from './lib.js'", 'src/barrel2.ts › cost', 'src/pass.ts › greet',
       ]);
       expect(hits.every((i) => i.detail.includes(`${A.id} removed it`))).toBe(true);
-      expect(hits.find((i) => i.file === 'src/barrel.ts')?.detail).toContain('`price` no longer comes through it as a value');
+      expect(hits.find((i) => i.file === 'src/barrel.ts')?.detail).toContain('`price` no longer comes through it');
       expect(hits.find((i) => i.file === 'src/barrel.ts')?.sizes.callSites).toBe(1);
     } finally {
       finish(A.id, B.id);
@@ -932,9 +936,56 @@ describe('the final review — what the graph could not see, and checks that pas
       expect(overlap(narrow.id, B.id)).toEqual([]);
       const hit = overlap(typed.id, B.id).find((i) => i.kind === 'changed signature');
       expect(hit).toMatchObject({ severity: 'MED', file: 'src/barrel.ts', symbol: "export * from './lib.js'" });
-      expect(hit?.detail).toContain('`price` no longer comes through it as a value');
+      expect(hit?.detail).toContain('`price` now comes through it as a type only');
     } finally {
       finish(narrow.id, typed.id, B.id);
+    }
+  });
+
+  test('a barrel re-pointed is judged by what it reaches now: the same function, another signature, another body', () => {
+    const PRICE = 'export function price(amount: number): number {\n  return amount + 1;\n}\n';
+    const moved = newTask('move price, same text');
+    const other = newTask('point the barrel at a price with a tax argument');
+    const alt = newTask('point the barrel at a price that rounds');
+    const B = newTask('edit the barrel caller, re-pointed');
+    try {
+      writeFileSync(join(moved.wt, 'src', 'moved.ts'), PRICE);
+      rewrite(moved.wt, 'src/barrel.ts', "'./lib.js'", "'./moved.js'");
+      writeFileSync(join(other.wt, 'src', 'other.ts'), 'export function price(amount: number, tax: number): number {\n  return amount + tax;\n}\n');
+      rewrite(other.wt, 'src/barrel.ts', "'./lib.js'", "'./other.js'");
+      writeFileSync(join(alt.wt, 'src', 'alt.ts'), PRICE.replace('amount + 1', 'Math.round(amount + 1)'));
+      rewrite(alt.wt, 'src/barrel.ts', "'./lib.js'", "'./alt.js'");
+      edit(B.wt, 'src/use2.ts', 'export const three');
+      expect(overlap(moved.id, B.id)).toEqual([]);
+      // "The name still resolves" is not enough: this one resolves fine, and every caller breaks.
+      const broken = overlap(other.id, B.id).find((i) => i.file === 'src/barrel.ts');
+      expect(broken).toMatchObject({ severity: 'MED', kind: 'changed signature' });
+      expect(broken?.detail).toContain('`price` now comes from src/other.ts, with a different signature');
+      const rounded = overlap(alt.id, B.id).find((i) => i.file === 'src/barrel.ts');
+      expect(rounded).toMatchObject({ severity: 'LOW', kind: 'changed behaviour' });
+      expect(rounded?.detail).toContain('`price` now comes from src/alt.ts: same signature, different body');
+    } finally {
+      finish(moved.id, other.id, alt.id, B.id);
+    }
+  });
+
+  test('an import made type-only and passed back out breaks value callers; a type re-export re-pointed breaks nobody', () => {
+    const typed = newTask('import greet as a type in pass');
+    const retyped = newTask('move Row to its own file');
+    const B = newTask('edit the pass and Row callers');
+    try {
+      rewrite(typed.wt, 'src/pass.ts', "import { greet } from './lib.js';", "import type { greet } from './lib.js';");
+      writeFileSync(join(retyped.wt, 'src', 'types2.ts'), 'export type Row = { id: number };\n');
+      rewrite(retyped.wt, 'src/tbarrel.ts', "'./lib.js'", "'./types2.js'");
+      edit(B.wt, 'src/usePass.ts', 'export const hi');
+      edit(B.wt, 'src/useRow.ts', 'export const r');
+      const hit = overlap(typed.id, B.id).find((i) => i.file === 'src/pass.ts');
+      expect(hit).toMatchObject({ severity: 'MED', symbol: 'greet' });
+      expect(hit?.detail).toContain('`greet` now comes through it as a type only');
+      // useRow.ts only ever needed a type, and the type it reaches now is the same one.
+      expect(overlap(retyped.id, B.id)).toEqual([]);
+    } finally {
+      finish(typed.id, retyped.id, B.id);
     }
   });
 
@@ -966,6 +1017,25 @@ describe('the final review — what the graph could not see, and checks that pas
       const r = workResult(['spawn', finding], mainCheckout);
       expect(r.status).toBe(2);
       expect(r.stdout).toMatch(/HIGH\s+same function\s+src\/lib\.ts › greet/);
+    } finally {
+      work(['drop', T], mainCheckout);
+      work(['drop', finding], mainCheckout);
+    }
+  });
+
+  test('a task active in the record with no worktree or branch left is named, so it can be dropped', () => {
+    const n = ++counter;
+    const wt = join(tmp, `wt-${n}`);
+    git(['worktree', 'add', '--no-track', wt, '-b', `branch-${n}`, 'origin/main'], mainCheckout);
+    const T = work(['park', '--title', 'finished long ago, never closed', '--kind', 'task', '--files', 'src/lib.ts'], mainCheckout);
+    work(['claim', T], wt);
+    const finding = work(['park', '--title', 'lib needs a look', '--files', 'src/lib.ts'], mainCheckout);
+    try {
+      git(['worktree', 'remove', '--force', wt], mainCheckout);
+      git(['branch', '-D', `branch-${n}`], mainCheckout);
+      const r = workResult(['spawn', finding], mainCheckout);
+      expect(r.status).toBe(2);
+      expect(r.stdout).toContain(`(active in the record but with no worktree or branch left: ${T} — \`work.mjs drop <id>\` if it is finished)`);
     } finally {
       work(['drop', T], mainCheckout);
       work(['drop', finding], mainCheckout);

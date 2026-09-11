@@ -46,14 +46,15 @@ const MAX_SLUG = 40;
 
 // ── git helpers ───────────────────────────────────────────────────────────────
 
-/** Run git, returning raw stdout, or null if it fails for any reason. */
-function gitRaw(args, cwd) {
+/** Run git, returning raw stdout, or null if it fails for any reason (a `timeout` in `opts` included). */
+function gitRaw(args, cwd, opts = {}) {
   try {
     return execFileSync('git', args, {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       maxBuffer: 16 * 1024 * 1024,
+      ...opts,
     });
   } catch {
     return null;
@@ -931,12 +932,15 @@ async function cmdSpawn(main, { positional, flags }) {
   let items = [];
   let compared = 0;
   let finding;
+  const unclosed = []; // active in the record, with neither a worktree nor a branch left
   try {
     finding = graph.subjectFromTask(main, task.fm, task.body);
     // Every active task, its folder gone or not: a removed worktree's branch can still hold
     // unmerged commits, and subjectFromTask reads it from the branch.
     for (const t of listTasks(main)) {
       if (t.fm.status !== 'active') continue;
+      const branch = t.fm.branch && t.fm.branch !== 'HEAD' ? git(['rev-parse', '--verify', '--quiet', `refs/heads/${t.fm.branch}`], main) : null;
+      if (!(t.fm.worktree && existsSync(t.fm.worktree)) && !branch) unclosed.push(t.fm.id);
       compared++;
       items.push(...graph.overlaps(main, ts, graph.subjectFromTask(main, t.fm, t.body), finding));
     }
@@ -948,6 +952,9 @@ async function cmdSpawn(main, { positional, flags }) {
   const notes = [
     fetched ? null : `(could not fetch origin — checked against the local ${ref})`,
     ts ? null : '(TypeScript not found beside scripts/ — file-level answers only)',
+    // Checked from its file list alone. If an overlap above names one of these, the task is
+    // probably finished and never closed: `drop` it, rather than --proceed past it.
+    unclosed.length ? `(active in the record but with no worktree or branch left: ${unclosed.join(', ')} — \`work.mjs drop <id>\` if it is finished)` : null,
   ].filter(Boolean);
   // A finding's footprint IS its file list. With none, there was nothing to check — and "none
   // found" would be a claim the check never earned, so it stops for the operator like an overlap.
@@ -1132,6 +1139,15 @@ async function cmdIntegrate(main, cwd, { positional, flags }) {
 const LIVE_SESSION_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * How prune reads OTHER worktrees: never taking their index lock — a plain `status` refreshes
+ * the index under one that "may conflict with other simultaneous processes" (git-status(1),
+ * BACKGROUND REFRESH), a live session's commit included — and never for longer than this. A
+ * read that times out is null, and null keeps the worktree.
+ */
+const READ_ONLY = ['--no-optional-locks'];
+const PRUNE_GIT_MS = 30000;
+
+/**
  * Proof, by COMMIT, that a worktree's branch is merged: its tip is already on the default
  * branch, or GitHub has a merged PR whose head was exactly that tip. The name alone proves
  * nothing — `mergedLabel` (the board's) matches on it, and spawn's `work/<slug>` names recur, so a
@@ -1263,7 +1279,7 @@ function regenerable(main, path, p) {
  * it away with the `git checkout` it needs before `git worktree remove` will agree.
  */
 function onlyStackRewrite(path) {
-  const diff = gitRaw(['diff', '--unified=0', '--', 'supabase/config.toml'], path) ?? '';
+  const diff = gitRaw([...READ_ONLY, 'diff', '--unified=0', '--', 'supabase/config.toml'], path, { timeout: PRUNE_GIT_MS }) ?? '';
   const changed = diff.split('\n').filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l));
   // `#?`: the script shifts every line mentioning a port, commented-out ones included
   // (`# smtp_port = 54325`), so those are part of its rewrite too.
@@ -1311,7 +1327,7 @@ function cmdPrune(main, cwd, { flags }) {
     // Ignored files too (`!!`): `git worktree remove` deletes them with the folder without a word,
     // and "ignored" here covers eval runs, scratch notes and a hand-edited .env as well as
     // node_modules. Null is not clean: a status git could not produce proves nothing.
-    const raw = gitRaw(['status', '--porcelain', '--untracked-files=all', '--ignored=matching'], wt.path);
+    const raw = gitRaw([...READ_ONLY, 'status', '--porcelain', '--untracked-files=all', '--ignored=matching'], wt.path, { timeout: PRUNE_GIT_MS });
     const lines = (raw ?? '').split('\n').filter(Boolean);
     const status = lines.filter((l) => !l.startsWith('!! '));
     const ignored = lines.filter((l) => l.startsWith('!! ')).map((l) => l.slice(3)).filter((p) => !regenerable(main, wt.path, p));

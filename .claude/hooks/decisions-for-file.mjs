@@ -274,7 +274,7 @@ function graphLines(graph, { abs, root, rel, evt, main, siblings, own, siblingLi
   // A re-export this file comes through counts only when a name it uses no longer gets through —
   // a barrel narrowed to what is still used breaks nobody (lostThrough).
   const reaches = (s, imp, c) => {
-    const lost = safe(() => graph.lostThrough(main, ts, s, imp, c.name));
+    const lost = safe(() => graph.lostThrough(main, ts, s, imp, c.name, root));
     return !lost || lost.length > 0;
   };
   const used = (s, fp) => imports.filter((imp) => imp.from !== rel && fp.has(imp.from) && !graph.isGenerated(imp.from))

@@ -58,17 +58,21 @@ Inputs: the three 2026-09-09 research docs; `…/findings/2026-09-10-settings-js
   trimmed, cut to 40 bytes, no ellipsis ([config.go#L1036-L1053](https://github.com/supabase/cli/blob/v2.107.0/apps/cli-go/pkg/config/config.go#L1036-L1053),
   applied at [#L825-L829](https://github.com/supabase/cli/blob/v2.107.0/apps/cli-go/pkg/config/config.go#L825-L829));
   the npm CLI's `stop` proxies to that Go code ([stop.handler.ts](https://github.com/supabase/cli/blob/v2.107.0/apps/cli/src/legacy/commands/stop/stop.handler.ts#L5-L14)).
-- **Final review (2026-09-11, assistant; two rounds)** — fixed, each with a test that fails
-  without it. The rule behind all of them: a check that could not look is never "none".
+- **Final review (2026-09-11, assistant; three rounds)** — fixed, each with a test that fails
+  without it (36 deliberate breaks across the rounds, all caught). The rule behind all of them: a
+  check that could not look is never "none".
   - *Incomplete checks:* a side git cannot read — a failed status or diff, a `.git` pointing
     nowhere, a folder that has lost its `.git`, no merge-base with main — is a `?  not checked`
     item, which stops spawn. spawn and integrate check every active task, its folder gone or not
     (the branch is read instead).
   - *Paths:* `files:` entries are repo paths (`./`, absolute); a directory is expanded — at main
     for a finding, from the checkout's disk for a running task — and a path not in main stops spawn.
-  - *Re-exports are symbols:* a barrel that stops passing a used name on as a value (dropped,
-    or made `export type`) is MED to its importers; one narrowed to the names still used, or
-    re-pointed, is nothing (`lostThrough`).
+  - *Re-exports are symbols,* judged by what each used name reaches now (`lostThrough`): gone,
+    or a type alone where the importer needs a value (`export type *`, `import type` passed back
+    out) → MED; re-pointed at a declaration with another signature → MED — "the name still
+    resolves" is not enough; same signature, other body → LOW; narrowed to the names still used,
+    or re-pointed at an identical copy (a moved function) → nothing, types re-pointed for a
+    type-only importer included (`src/db/index.ts`'s `export type { Database, Json }`).
   - *Reading:* a subject with no checkout is read and resolved at its commit. An unannotated
     literal const's shape is its signature, its value its body (prompt text → LOW, not MED).
     Mentions are every word but `default` — reading only backticked names was tried in round 1
@@ -76,6 +80,9 @@ Inputs: the three 2026-09-09 research docs; `…/findings/2026-09-10-settings-js
   - *prune:* keeps a worktree holding ignored files that do not rebuild themselves (node_modules,
     dist, `.env.test`, `supabase/.branches` and `.temp`, a byte-identical `.env` do), keeps one
     whose status git cannot read, and deletes a branch by the proven commit (`update-ref -d`).
+    It reads other worktrees with `--no-optional-locks` and a 30 s limit (not codified: a held
+    index lock or a hung git cannot be staged reliably in a test). spawn names any task active in
+    the record with neither worktree nor branch left, so it can be dropped, not proceeded past.
   - **Kept as designed:** the hook's once-per-file marker — later news about a file already told
     of this session is not repeated (the plan's call: its fast path bounds an edit's cost).
     **Known, not fixed:** a `git show <base>:<file>` that fails reads as "the file is new", so

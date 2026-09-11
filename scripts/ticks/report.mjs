@@ -263,7 +263,7 @@ try {
   // adding it here — which is what the loud `unknown` branch below exists to
   // tell you about, rather than leaving you to notice a permanent zero.
   const OUTCOME_BUCKETS = new Set(['planned', 'no_gaps', 'off_cadence', 'error']);
-  const limitHits = { budget: 0, turns: 0 };
+  const limitHits = { budget: 0, turns: 0, stalled: 0 };
   for (const r of runs) {
     // Tenant-agnostic, so it cannot go on a firm's line — but it is the only
     // place a loop-limit hit is distinguishable from any other tenant error,
@@ -272,6 +272,9 @@ try {
     if (lh) {
       limitHits.budget += lh.budget ?? 0;
       limitHits.turns += lh.turns ?? 0;
+      // 2026-09-11. Rows written before it carry no key, which reads as 0 — the
+      // honest number for a window in which the breaker did not yet exist.
+      limitHits.stalled += lh.stalled ?? 0;
     }
     const plans = r.summary?.teamLeadPlanner?.plans;
     if (!Array.isArray(plans)) continue;
@@ -285,6 +288,13 @@ try {
         // sum hides the tail, and the tail IS the answer. One entry per PLANNED
         // tick; see the push below for why only planned ones.
         turnsEach: [], msEach: [], errMsEach: [],
+        // WHICH tools, and how often (2026-09-11). Null prototype for the same
+        // reason LEGACY_OUTCOMES has one: these keys come out of a database
+        // column, and '__proto__' as a bucket name would poison the accumulator
+        // rather than count anything.
+        tools: Object.create(null),
+        // Ticks the loop had to tell they were going in circles.
+        stalledWarnings: 0,
       };
       // LOUD, never silent. This accumulator hardcodes its buckets, and it used
       // to drop anything it did not recognise on the floor — so renaming an
@@ -349,6 +359,15 @@ try {
         f.refused += p.refusals;
         f.entriesWithRefusals += 1;
       }
+      // The question build 1b's instrument could not answer: a tick that ran
+      // away recorded how MANY calls it made, never which. Names only — the
+      // planner allowlists them before the row is written.
+      if (p.toolsUsed && typeof p.toolsUsed === 'object') {
+        for (const [name, n] of Object.entries(p.toolsUsed)) {
+          if (typeof n === 'number') f.tools[name] = (f.tools[name] ?? 0) + n;
+        }
+      }
+      f.stalledWarnings += p.stalledWarnings ?? 0;
       perFirm.set(p.tenantId, f);
     }
   }
@@ -399,6 +418,26 @@ try {
           `(${f.planned} planned tick${f.planned === 1 ? '' : 's'})`,
       );
     }
+    // WHAT the tick actually called, busiest first. Capped: the list is bounded
+    // by the tool surface, but a window that spans a tool rename would print
+    // both names, and this is a summary line.
+    const tools = Object.entries(f.tools).sort((a, b) => b[1] - a[1]);
+    if (tools.length > 0) {
+      lines.push(
+        `    tools: ${tools.slice(0, 6).map(([n, c]) => `${n} ${c}`).join(' · ')}` +
+          (tools.length > 6 ? ` · +${tools.length - 6} more` : ''),
+      );
+    }
+    // The near-miss line. These ticks did NOT necessarily fail — most will have
+    // been told they were repeating themselves and then finished — which is
+    // exactly why it needs saying: nothing else distinguishes a plan reached
+    // calmly from one reached after the loop had to intervene.
+    if (f.stalledWarnings > 0) {
+      lines.push(
+        `    ⚠ ${f.stalledWarnings} tick${f.stalledWarnings === 1 ? '' : 's'} had to be told ` +
+          'they were going in circles. Look at the prompt, not the clock.',
+      );
+    }
     // Only when there is something to say, and LOUD when there is: a firm whose
     // ticks die after minutes is a different animal from one that fails fast,
     // and `errors N` alone cannot tell them apart.
@@ -411,12 +450,15 @@ try {
       );
     }
   }
-  if (limitHits.budget > 0 || limitHits.turns > 0) {
+  if (limitHits.budget > 0 || limitHits.turns > 0 || limitHits.stalled > 0) {
     lines.push(
-      `- ⚠ loop limits hit: ${limitHits.budget} budget · ${limitHits.turns} turns. ` +
+      `- ⚠ loop limits hit: ${limitHits.budget} budget · ${limitHits.turns} turns · ` +
+        `${limitHits.stalled} stalled. ` +
         'A BUDGET hit means the work stopped fitting in the clock, not that the provider ' +
         'failed. A TURNS hit means somebody restored the turn ceiling the planner opted ' +
-        'out of in build 1b.',
+        'out of in build 1b. A STALLED hit means the model repeated the same calls, was ' +
+        'told so, and kept going — the tool tally above names what it repeated, and no ' +
+        'clock or ceiling would have helped.',
     );
   }
   if (unknownOutcomes.size > 0) {

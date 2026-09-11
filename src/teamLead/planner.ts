@@ -374,6 +374,27 @@ export function noteRefusal(
   );
 }
 
+// Anything the model called that is not a tool we handed it. A model may emit
+// ANY string as a tool name — that string is model-authored free text, and
+// `toolsUsed` rides into `lifecycle_runs`, a table with no tenant_id. An
+// allowlist is the only thing between "which tools did this tick call" and a
+// customer's words landing outside their firm's boundary, so unknown names are
+// counted under one fixed key rather than kept.
+//
+// It also keeps the key set closed: a bucket per hallucinated name would let a
+// looping model grow the record without bound, which is the same failure
+// REFUSALS_KEPT exists for above.
+export const UNKNOWN_TOOL = '(unknown)';
+
+export function countTool(
+  into: Record<string, number>,
+  name: string,
+  allowed: ReadonlySet<string>,
+): void {
+  const key = allowed.has(name) ? name : UNKNOWN_TOOL;
+  into[key] = (into[key] ?? 0) + 1;
+}
+
 // What became of ONE firm on ONE tick. Every firm the sweep considered gets an
 // entry, not just the ones the model ran for — the flat skippedNoGaps /
 // skippedCadence / tenantErrors counters say HOW MANY were passed over but never
@@ -405,6 +426,23 @@ export interface PlannerTenantPlan {
   recorded: number;
   turns: number;
   toolCalls: number;
+  // WHICH tools this tick called, and how many times each — `{spine_read: 612,
+  // submit_plan: 1}`. Counts only, names ALLOWLISTED (see countTool), so unlike
+  // `decisions` / `dropped` / `refusals` this one survives into the durable run
+  // record whole: there is no customer text in it to keep out of a row that has
+  // no tenant_id.
+  //
+  // The gap it closes: on 2026-09-11 a tick made the same call ~600 times and
+  // the record kept `turns: 620, toolCalls: 620` — enough to see that something
+  // ran away, not enough to say WHICH call it was. `cost_events` has per-call
+  // tokens and OpenRouter's generation API has metadata only, so the answer was
+  // unrecoverable after the fact.
+  toolsUsed: Record<string, number>;
+  // How often the loop had to tell this tick it was repeating itself. 0 is
+  // healthy; 1 means it stalled and RECOVERED after being told — a plan reached
+  // on a tick that nearly ran away, which no other field would show. A tick that
+  // did NOT recover has outcome 'error' and a limitHits.stalled instead.
+  stalledWarnings: number;
   ms: number;
 }
 
@@ -431,6 +469,8 @@ const idlePlan = (
   recorded: 0,
   turns: 0,
   toolCalls: 0,
+  toolsUsed: {},
+  stalledWarnings: 0,
   ms,
 });
 
@@ -4001,6 +4041,11 @@ export async function runPlanner(
   const listVisitsSince = deps.listVisitsSince ?? listVisitsCreatedSince;
   const focus = deps.focus ?? null;
   const tools = deps.tools ?? [];
+  // The names allowed into the durable record — see countTool. Built from what
+  // this pass actually hands the model, plus the terminal tool the loop adds
+  // below, so a tool added to TEAM_LEAD_TOOLS is counted by its own name without
+  // anybody remembering to update a second list.
+  const toolNames = new Set([...tools.map((t) => t.name), SUBMIT_PLAN_TOOL.name]);
   const execute = deps.execute;
 
   const nowMs = Date.parse(nowIso);
@@ -4017,7 +4062,10 @@ export async function runPlanner(
     refusedAtApply: 0,
     recorded: 0,
     tenantErrors: 0,
-    limitHits: { budget: 0, turns: 0 },
+    // `stalled` joins them 2026-09-11: the loop ended a tick that kept repeating
+    // itself AFTER being told it was. Unlike `turns` this one IS reachable for
+    // the planner — it is not a ceiling, it fires on repetition alone.
+    limitHits: { budget: 0, turns: 0, stalled: 0 },
     byAction: {},
     plans: [],
   };
@@ -4095,6 +4143,15 @@ export async function runPlanner(
     // Hoisted for the CATCH, like `views`: a loop that died on the clock after
     // thirty refusals must still say what they were.
     const refusals = new Map<string, PlannerRefusal>();
+    // Which tools this tick called, and how often. Hoisted for the CATCH for a
+    // sharper version of the same reason: the tick this exists to explain is
+    // precisely the one that never returns, and `result.calls` arrives only on
+    // the way out.
+    const toolsUsed: Record<string, number> = {};
+    // How many times the loop had to tell this tick it was going in circles.
+    // Hoisted for the same reason — a tick that was told and then died still
+    // needs to say it was told, or the record shows only the death.
+    let stalledWarnings = 0;
     // Hoisted for the CATCH like `views`: the failed-tick trace must key each
     // row to its stage, or an observation-staged row keyed nudge_id 23503s and
     // the whole trace is silently discarded (phase-3 review F1).
@@ -4836,6 +4893,9 @@ export async function runPlanner(
           // submit_plan's own result is appended too and that is harmless: it
           // is this loop's terminal tool, so nothing is validated after it.
           onResult: (call) => {
+            // EVERY call, failed ones included: a tick that spent 600 turns on
+            // a call that kept erroring is exactly what this is for.
+            countTool(toolsUsed, call.name, toolNames);
             if (!call.ok) noteRefusal(refusals, call);
             // ALLOWLISTED (see CITABLE_TOOLS): the planner's own notes and
             // memory come back through this hook too, and quoting those would
@@ -4846,6 +4906,14 @@ export async function runPlanner(
             // model's own rejected text back at it, which must never become
             // quotable on the retry.
             if (call.ok && CITABLE_TOOLS.has(call.name)) readText.push(call.result);
+          },
+          // The loop has just told the model it is repeating itself. Recorded
+          // rather than merely logged: a tick that was told and then finished
+          // looks like any other successful tick in every other field, and "this
+          // firm needs telling every time" is what says its PROMPT needs work
+          // rather than its clock.
+          onStall: () => {
+            stalledWarnings += 1;
           },
         },
         [...tools, SUBMIT_PLAN_TOOL],
@@ -5291,6 +5359,8 @@ export async function runPlanner(
         recorded,
         turns: result.turns,
         toolCalls: result.calls.length,
+        toolsUsed,
+        stalledWarnings,
         ms: Date.now() - started,
       });
 
@@ -5410,6 +5480,8 @@ export async function runPlanner(
             loopStarted === null ? 0 : Date.now() - loopStarted,
           ),
           refusals: [...refusals.values()],
+          toolsUsed,
+          stalledWarnings,
         });
       // …but it no longer leaves NO TRACE. This catch sits after runLoop, so a
       // ToolLoopLimitError or a provider outage used to write nothing at all —

@@ -181,6 +181,7 @@ describe('runTick — production wiring, stubbed model', () => {
         calls: [
           { turn: 1, name: 'submit_plan', args: {}, ok: true, result: JSON.stringify(reply) },
         ],
+        stalledWarnings: 0,
       };
     };
 
@@ -235,7 +236,7 @@ describe('runTick — production wiring, stubbed model', () => {
     const stubLoop: typeof runToolLoop = async (req, _tools, execute) => {
       // An EMPTY plan is a legitimate choice — this test is about the READ.
       await execute('submit_plan', { decisions: [] });
-      return { text: '', turns: 1, calls: [] };
+      return { text: '', turns: 1, calls: [], stalledWarnings: 0 };
     };
     const tick = await runTick(t.id, t0, { runLoop: stubLoop });
 
@@ -292,7 +293,7 @@ describe('runTick — production wiring, stubbed model', () => {
     // is the cheapest stub that still proves the model call HAPPENED.
     const emptyPlan: typeof runToolLoop = async (_req, _tools, execute) => {
       await execute('submit_plan', { decisions: [] });
-      return { text: '', turns: 1, calls: [] };
+      return { text: '', turns: 1, calls: [], stalledWarnings: 0 };
     };
     const evening = atOffset(t0Ms, '+12h'); // 22:00 firm-local
     const tick = await runTick(t.id, evening, { runLoop: emptyPlan });
@@ -339,7 +340,7 @@ describe('the sim clock owns job-note stamps', () => {
         const run = execute as unknown as (n: string, a: Record<string, unknown>) => Promise<void>;
         await run('write_job_note', { jobId: seeded.jobId, content: 'written mid-tick' });
         await run('submit_plan', { decisions: [] });
-        return { text: '', turns: 1, calls: [] };
+        return { text: '', turns: 1, calls: [], stalledWarnings: 0 };
       }) as never,
     });
     const { rows } = await pg.query(
@@ -460,7 +461,7 @@ describe('the planner ends a moot gap on the record (build 5)', () => {
         ],
       })) as { accepted: number };
       expect(reply.accepted).toBe(1);
-      return { text: '', turns: 1, calls: [{ turn: 1, name: 'submit_plan', args: {}, ok: true, result: 'ok' }] };
+      return { text: '', turns: 1, calls: [{ turn: 1, name: 'submit_plan', args: {}, ok: true, result: 'ok' }], stalledWarnings: 0 };
     };
     const summary = await runPlanner(t0, 'live', {
       listTenants: async () => [t.id],
@@ -537,7 +538,7 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
             ? { decisions: [{ nudgeId: reqGapId(req.user), action: 'close', basis: 'evidence', citation: CAPTURE, confidence: 'high', reason: 'stub: the note answers it' }] }
             : { decisions: [] };
       await execute('submit_plan', plan);
-      return { text: '', turns: 1, calls: [{ turn: 1, name: 'submit_plan', args: {}, ok: true, result: 'ok' }] };
+      return { text: '', turns: 1, calls: [{ turn: 1, name: 'submit_plan', args: {}, ok: true, result: 'ok' }], stalledWarnings: 0 };
     };
     // The gap id, read from the rendered block — the stub has no other channel.
     const reqGapId = (user: string): string => /gap ([0-9a-f-]{36})/.exec(user)![1];
@@ -585,7 +586,7 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
     ];
     await expect(
       runArc(t.id, { world, timeline }, t0Ms, {
-        runLoop: async () => ({ text: '', turns: 1, calls: [] }),
+        runLoop: async () => ({ text: '', turns: 1, calls: [], stalledWarnings: 0 }),
       }),
     ).rejects.toThrow(/timeline regressed/);
   });
@@ -639,6 +640,7 @@ describe('runTick over an observation-seeded world (plan 2026-08-31)', () => {
         text: '',
         turns: 1,
         calls: [{ turn: 1, name: 'submit_plan', args: {}, ok: true, result: JSON.stringify(reply) }],
+        stalledWarnings: 0,
       };
     };
 
@@ -676,7 +678,7 @@ describe('runTick over an observation-seeded world (plan 2026-08-31)', () => {
           { nudgeId: gapId, action: 'dismiss', confidence: 'high', reason: 'stub: routine, nothing riding' },
         ],
       });
-      return { text: '', turns: 1, calls: [] };
+      return { text: '', turns: 1, calls: [], stalledWarnings: 0 };
     };
     const tick = await runTick(t.id, t0, { runLoop: stubLoop });
     const row = tick.nudgesAfter.find((n) => n.id === gapId);

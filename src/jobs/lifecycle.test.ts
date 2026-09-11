@@ -410,7 +410,7 @@ describe('runLifecycle', () => {
         refusedAtApply: 0,
         recorded: 0,
         tenantErrors: 0,
-        limitHits: { budget: 0, turns: 0 },
+        limitHits: { budget: 0, turns: 0, stalled: 0 },
         byAction: {},
         plans: [],
         ...over,
@@ -429,13 +429,20 @@ describe('runLifecycle', () => {
 
       // ONE budget hit out of two firms is enough. Waiting for all of them would
       // let a single firm sit in a permanent runaway behind a healthy one.
-      const budget = await run({ limitHits: { budget: 1, turns: 0 }, tenantErrors: 1 });
+      const budget = await run({ limitHits: { budget: 1, turns: 0, stalled: 0 }, tenantErrors: 1 });
       expect(budget.ok).toBe(false);
 
       // Same for a turns hit — structurally impossible while the planner passes
       // maxTurns: null, so if it appears the ceiling came back.
-      const turns = await run({ limitHits: { budget: 0, turns: 1 }, tenantErrors: 1 });
+      const turns = await run({ limitHits: { budget: 0, turns: 1, stalled: 0 }, tenantErrors: 1 });
       expect(turns.ok).toBe(false);
+
+      // And for a STALL that survived being told (2026-09-11). Deterministic in
+      // the same way a budget hit is — same firm, same rows, same prompt — so it
+      // will repeat every half hour until somebody looks at the prompt, and a
+      // green run would hide it exactly as it hid the 620-turn tick.
+      const stalled = await run({ limitHits: { budget: 0, turns: 0, stalled: 1 }, tenantErrors: 1 });
+      expect(stalled.ok).toBe(false);
 
       // A lone provider blip is NOT systemic and must not cry wolf: an alarm
       // that fires on a fault which fixed itself is one people learn to ignore.
@@ -480,7 +487,7 @@ describe('runLifecycle', () => {
           refusedAtApply: 0,
           recorded: 0,
           tenantErrors: 0,
-          limitHits: { budget: 0, turns: 0 },
+          limitHits: { budget: 0, turns: 0, stalled: 0 },
           byAction: {},
           plans: [],
         }),
@@ -828,7 +835,7 @@ describe('the planner gate', () => {
             applied: 0,
       refusedAtApply: 0,
       recorded: 0,
-      limitHits: { budget: 0, turns: 0 },
+      limitHits: { budget: 0, turns: 0, stalled: 0 },
             tenantErrors: 0,
             byAction: {},
             plans: [],

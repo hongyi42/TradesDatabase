@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { recordModelUsage, type CostContext } from '../db/index.js';
 import {
@@ -102,6 +103,44 @@ export const MIN_TURN_BUDGET_MS = 15_000;
 // budget alone would have silently handed one hung spine read the full fifteen
 // minutes. The extra allowance is for long-horizon THINKING, not for one I/O.
 export const MAX_TOOL_CALL_MS = 90_000;
+// NOT A TURN CEILING — the one rail that counts turns without capping them.
+//
+// Build 1b took the turn ceiling off the planner (user: "I would not try to put
+// a maximum number over the planner's head to constrain it"), leaving the clock
+// alone against a model that loops. MEASURED, 2026-09-11 19:30Z, pilot firm
+// 82bbc6f8: turns 1-13 varied, then 602 turns emitted EXACTLY 73 output tokens
+// each, ~1.5s apart, until the 15-minute clock killed the tick at turn 620. The
+// same call, the same answer, six hundred times. $8.67 — and it ended by
+// exhausting the OpenRouter key's MONTHLY limit, so every tick for the next
+// hours died on `inference 403: Key limit exceeded`. Cost is QUADRATIC in turns
+// because each one resends the whole history; caching (99.8% hit) is all that
+// kept it off ~$45.
+//
+// The ruling still stands and this does not touch it: a turn that learned
+// something is never counted. Only a turn whose every call was one the loop had
+// already made and been given the IDENTICAL answer to counts. A planner thinking
+// for fifty turns is untouched; a planner asking the same question five times in
+// a row has stopped thinking.
+//
+// AND THE FIRST ANSWER IS TO TELL IT, NOT TO KILL IT (user, 2026-09-11): "I
+// think we should tell the model and let it decide. We can give it the option to
+// give up on something, close it, or what not." At five wasted turns the loop
+// says so, in a note beside the results, and the model decides what to do with
+// that — finish, leave something unsettled, give it up. Only if it repeats
+// another five turns after being told does the loop stop it.
+//
+// Why telling comes first, beyond it being the kinder read: a stall is
+// DETERMINISTIC. Same firm, same rows, same prompt, so a tick killed for
+// stalling would stall again at the next tick, and the next — red every half
+// hour, planning nothing, until a human intervenes (user: "it might hit the same
+// thing and might run over and over again on the same loop issue"). A tick that
+// is told can still finish, and a firm that keeps needing to be told shows up as
+// `stalledWarnings` in its tick record rather than as a dead planner.
+//
+// Five, not the previous turn alone: fingerprints are remembered for the whole
+// call, so an A→B→A→B cycle is caught too — it learns nothing new either, and
+// comparing against only the last turn would never see it.
+export const MAX_STALLED_TURNS = 5;
 
 /**
  * The loop gave up on ITS OWN limits — not the model, not the provider.
@@ -116,7 +155,20 @@ export const MAX_TOOL_CALL_MS = 90_000;
  * Thrown rather than returned because both cases end the call with no plan:
  * the caller's job is to tell them apart, not to recover.
  */
-export type ToolLoopLimit = 'budget' | 'turns';
+/**
+ * `budget` — the clock ran out: the work stopped fitting.
+ * `turns`  — the turn ceiling: too many model calls for a caller that kept it.
+ * `stalled` — the loop stopped LEARNING and kept at it AFTER BEING TOLD:
+ *   MAX_STALLED_TURNS turns of repeats, a note saying so, then another
+ *   MAX_STALLED_TURNS turns of the same. Opposite meaning to `budget` and it
+ *   wants an opposite response: a budget hit says the queue outgrew the clock
+ *   (raise the ceiling, or batch the work), a stall says the model is repeating
+ *   itself and did not take the exit it was offered — read the tick's tool
+ *   tally, then look at the prompt; no clock or ceiling would have made it
+ *   finish. A tick that was told and then RECOVERED never reaches this: it
+ *   shows up as `stalledWarnings` on an otherwise successful plan.
+ */
+export type ToolLoopLimit = 'budget' | 'turns' | 'stalled';
 
 export class ToolLoopLimitError extends Error {
   readonly limit: ToolLoopLimit;
@@ -187,6 +239,20 @@ export interface ToolLoopRequest {
    * plan the model has already produced.
    */
   onResult?: (call: ToolLoopCall) => void;
+  /**
+   * Called when the loop has just TOLD the model it is repeating itself (see
+   * MAX_STALLED_TURNS) — not when it gives up, which is the thrown
+   * ToolLoopLimitError('stalled') instead.
+   *
+   * Exists for the same reason `onResult` does: a caller that must know BEFORE
+   * the loop returns, because the loop may never return normally. A tick that
+   * was told and then recovered looks identical to a healthy tick in every
+   * other record, and "this firm has to be told every time" is the signal that
+   * its prompt, not its clock, is what needs fixing.
+   *
+   * Never allowed to break the loop: a throwing hook is caught and logged.
+   */
+  onStall?: () => void;
 }
 
 /** One tool the model actually invoked, with what came back. Returned for the
@@ -207,6 +273,14 @@ export interface ToolLoopResult {
   /** Model calls made (≤ maxTurns). */
   turns: number;
   calls: ToolLoopCall[];
+  /**
+   * How many times this loop had to tell the model it was repeating itself
+   * (MAX_STALLED_TURNS). Zero on a healthy call; 1 means it wobbled and
+   * RECOVERED — the answer below was produced after being told. It cannot
+   * exceed 1 today, because a second stall throws instead; it is a count rather
+   * than a flag so that stays true by construction if the rule ever changes.
+   */
+  stalledWarnings: number;
 }
 
 export type ToolExecutor = (
@@ -265,7 +339,20 @@ interface LoopTransport {
    *  tick forever — which is how a 9-second agent turn became a 71-minute one in
    *  the date-eval runner. */
   step(history: unknown[], signal: AbortSignal): Promise<ModelStep>;
-  toolResults(results: ToolResult[]): unknown[];
+  /**
+   * `note` is the loop speaking to the model IN ITS OWN VOICE — see
+   * MAX_STALLED_TURNS. It rides BESIDE the results, never inside one: a tool
+   * result is evidence the caller may let the model quote (the planner feeds
+   * CITABLE_TOOLS results into its quote check), and machinery's words must
+   * never become quotable as something a customer or a record said.
+   *
+   * Anthropic wants tool_result blocks at the START of the user turn, so the
+   * note is a text block after them in that same message. The OpenAI wire has
+   * no such container — the results are their own `role:'tool'` messages — so
+   * it gets a plain user message after them (consecutive same-role messages
+   * are permitted and are combined into one turn).
+   */
+  toolResults(results: ToolResult[], note?: string): unknown[];
 }
 
 // Bound anything that could hang on the loop's remaining budget. Promise.race
@@ -375,15 +462,18 @@ function anthropicTransport(req: ToolLoopRequest, tools: ForcedToolSpec[]): Loop
         assistantMessage: { role: 'assistant', content: message.content },
       };
     },
-    toolResults: (results) => [
+    toolResults: (results, note) => [
       {
         role: 'user',
-        content: results.map((r) => ({
-          type: 'tool_result',
-          tool_use_id: r.id,
-          content: r.content,
-          is_error: r.isError,
-        })),
+        content: [
+          ...results.map((r) => ({
+            type: 'tool_result',
+            tool_use_id: r.id,
+            content: r.content,
+            is_error: r.isError,
+          })),
+          ...(note ? [{ type: 'text', text: note }] : []),
+        ],
       },
     ],
   };
@@ -500,9 +590,48 @@ function openAiTransport(req: ToolLoopRequest, tools: ForcedToolSpec[]): LoopTra
         },
       };
     },
-    toolResults: (results) =>
-      results.map((r) => ({ role: 'tool', tool_call_id: r.id, content: r.content })),
+    toolResults: (results, note) => [
+      ...results.map((r) => ({ role: 'tool', tool_call_id: r.id, content: r.content })),
+      ...(note ? [{ role: 'user', content: note }] : []),
+    ],
   };
+}
+
+// Key order is the model's, not ours: the same call re-emitted with `{sql, max}`
+// one turn and `{max, sql}` the next is the SAME call, and a plain JSON.stringify
+// would read it as progress. Sorted, recursively, so the fingerprint is about
+// content alone.
+function canonical(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
+}
+
+// HASHED, never the strings themselves. A result runs to MAX_TOOL_RESULT_CHARS
+// (20k) and the loop that needs this most is the one making hundreds of turns ×
+// up to 8 calls — holding those verbatim is ~96MB of retained strings on a box
+// whose per-turn hazard is already memory, not CPU. sha1 is a fingerprint here,
+// not a security claim: the inputs are this process's own tool results.
+function fingerprint(name: string, args: Record<string, unknown>, result: string): string {
+  return createHash('sha1').update(`${name} ${canonical(args)} ${result}`).digest('hex');
+}
+
+// WHAT, not how (the doctrine rule this repo learned the expensive way): it says
+// what is true — these answers will not change — names the exit, and stops. The
+// model decides what to do about it, including deciding that something cannot be
+// settled today. It never names the caller's own verbs; a caller whose doctrine
+// has better words for "give up" has already taught them in its system prompt.
+function stalledNote(names: string, terminalTool?: string): string {
+  return (
+    `NO NEW INFORMATION: the last ${MAX_STALLED_TURNS} turns repeated calls you had already ` +
+    `made (${names}) and got back exactly what you had already been given. Asking again ` +
+    'returns the same answer. Decide with what you have and finish' +
+    `${terminalTool ? ` by calling ${terminalTool}` : ''} — leaving something unsettled, or ` +
+    'giving up on it, is a legitimate answer.'
+  );
 }
 
 function stringifyResult(value: unknown): string {
@@ -549,6 +678,11 @@ export async function runToolLoop(
   const calls: ToolLoopCall[] = [];
   const started = Date.now();
   let turns = 0;
+  // Every (tool, arguments, answer) this call has already seen — the whole call,
+  // not the last turn. See MAX_STALLED_TURNS.
+  const seen = new Set<string>();
+  let stalledTurns = 0;
+  let stalledWarnings = 0;
 
   for (;;) {
     if (turns >= maxTurns) {
@@ -598,10 +732,17 @@ export async function runToolLoop(
     // call. Billing a loop once would under-report it by up to maxTurns×.
     await recordUsage(ledgerVendor(), step.usage, ctx);
 
-    if (step.toolCalls.length === 0) return { text: step.text, turns, calls };
+    if (step.toolCalls.length === 0) return { text: step.text, turns, calls, stalledWarnings };
 
     history.push(step.assistantMessage);
     const results: ToolResult[] = [];
+    // Did this turn learn ANYTHING? One new call-and-answer is enough — a turn
+    // that re-reads something it already knows while also asking something new
+    // is a model working, not a model stuck.
+    let learnedSomething = false;
+    // What the loop has to say to the model this turn, if anything. Rides beside
+    // the results, never inside one — see LoopTransport.toolResults.
+    let note: string | undefined;
     for (const [index, call] of step.toolCalls.entries()) {
       // EVERY branch goes through stringifyResult, errors included. A database
       // rejection can echo the offending statement back verbatim, and that is
@@ -647,6 +788,17 @@ export async function runToolLoop(
       results.push({ id: call.id, name: call.name, content, isError: !ok });
       const record: ToolLoopCall = { turn: turns, name: call.name, args: call.args, ok, result: content };
       calls.push(record);
+      // PROGRESS = a call-and-answer this loop has not seen before. The ANSWER
+      // is half of it, deliberately: the same read run again after a write that
+      // changed the rows returns something new and IS progress, while the same
+      // read returning the same rows is not. Errors count the same way — a model
+      // re-sending a call that was refused with identical words learned nothing
+      // from the refusal.
+      const fp = fingerprint(call.name, call.args, content);
+      if (!seen.has(fp)) {
+        seen.add(fp);
+        learnedSomething = true;
+      }
       // Handed over the moment it exists, because the caller may need it before
       // this loop returns — see onResult's own header. Wrapped: a caller's
       // bookkeeping must never cost a plan the model already produced.
@@ -662,9 +814,48 @@ export async function runToolLoop(
       // try again on a later turn — within whichever rail the caller kept: the
       // turn ceiling, or, for a `maxTurns: null` caller, the clock alone.
       if (ok && call.name === req.terminalTool) {
-        return { text: step.text, turns, calls };
+        return { text: step.text, turns, calls, stalledWarnings };
       }
     }
-    history.push(...transport.toolResults(results));
+    // One new thing anywhere in the turn clears the count: this rail is about a
+    // loop that has stopped learning, never about how long it is allowed to
+    // think (build 1b's ruling is untouched — see MAX_STALLED_TURNS).
+    if (learnedSomething) stalledTurns = 0;
+    else if ((stalledTurns += 1) >= MAX_STALLED_TURNS) {
+      // NAMES ONLY, never arguments — in the note, the log and the error alike.
+      // All three reach a cron log or the caller's error record, and a tool's
+      // arguments can carry a customer's words; the name is what identifies the
+      // repeat anyway.
+      const names = [...new Set(results.map((r) => r.name))].join(', ');
+      if (stalledWarnings === 0) {
+        // TOLD, NOT KILLED — the first answer to a stall (user, 2026-09-11).
+        // The counter resets, so the model gets a full further
+        // MAX_STALLED_TURNS to act on what it has just been told.
+        note = stalledNote(names, req.terminalTool);
+        stalledWarnings += 1;
+        stalledTurns = 0;
+        console.error(
+          `[toolLoop] ${req.label}: ${MAX_STALLED_TURNS} turns with no new information ` +
+            `(${names}) — telling the model and letting it decide`,
+        );
+        if (req.onStall) {
+          try {
+            req.onStall();
+          } catch (err) {
+            console.error(`[toolLoop] ${req.label}: onStall threw — continuing`, err);
+          }
+        }
+      } else {
+        throw new ToolLoopLimitError(
+          'stalled',
+          `${req.label}: tool loop made no progress for ${MAX_STALLED_TURNS} turns running, was ` +
+            `told so, and then repeated itself for ${MAX_STALLED_TURNS} more (turn ` +
+            `${turns}, ${calls.length} tool calls made, last turn called: ${names}). Stopped well ` +
+            `inside the ${budgetMs}ms clock: it had stopped learning, so more time would not ` +
+            'have helped.',
+        );
+      }
+    }
+    history.push(...transport.toolResults(results, note));
   }
 }

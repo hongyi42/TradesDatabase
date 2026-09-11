@@ -23,6 +23,7 @@
 //   node scripts/work.mjs board
 //   node scripts/work.mjs overlap <a> <b> [--json]   # where two tasks/branches collide, sized
 //   node scripts/work.mjs spawn <id> [--proceed] [--branch <b>]   # a parked task into its own worktree
+//   node scripts/work.mjs integrate [<id>] [--json]   # before landing: what moved under you, whom you affect
 //
 // Failure policy, deliberately two-sided: verbs a PERSON runs report the problem on stderr and
 // exit non-zero, because a silent no-op would read as success. Verbs a HOOK runs (`packet`,
@@ -1017,6 +1018,91 @@ async function cmdSpawn(main, { positional, flags }) {
   ].join('\n') + '\n');
 }
 
+/**
+ * `integrate [<id>] [--json]`: before a task lands, what changed under it and whom it affects.
+ *
+ * The successor to integrate-two, reshaped for many tasks landing one at a time instead of two
+ * features known up front. It reports two things and changes nothing: what main has landed since
+ * this task's base that the task touches or calls (with the commits that did it), and which other
+ * active tasks this one overlaps — who needs to know when it lands. Then it names the steps. The
+ * merge, the gates and the focused review are the `/integrate` command's, where a person can stop
+ * them; this verb only ever reads.
+ */
+async function cmdIntegrate(main, cwd, { positional, flags }) {
+  const id = positional[0];
+  const task = id ? findTask(main, id) : activeTaskFor(main, worktreeOf(cwd));
+  if (!task) fail(id ? `no task ${id}` : 'no active task in this worktree — pass a task id');
+  if (task.fm.status !== 'active' || !task.fm.worktree || !existsSync(task.fm.worktree)) {
+    fail(`${task.fm.id} is not active in an existing worktree — integrate is for work in progress`);
+  }
+
+  const fetched = fetchOrigin(main);
+  const graph = await loadGraph();
+  const ts = graph.loadTs();
+  let landed = [];
+  const affects = [];
+  let moved = null;
+  try {
+    const self = graph.subjectFromTask(main, task.fm, task.body);
+    // The task's OWN base, which subjectFromTask computed behind its guard: re-deriving it with a
+    // plain merge-base in a folder that has lost its `.git` would ask the enclosing main checkout
+    // instead, and report "nothing landed" about a task main has moved a long way under.
+    const m = graph.mainSince(main, task.fm.worktree, task.fm.base);
+    moved = m && { ...m, base: self.base };
+    if (!moved) fail('no default branch (origin/main, main, …) to compare this task against');
+    landed = graph.overlaps(main, ts, moved, self);
+    for (const t of listTasks(main)) {
+      if (t.fm.id === task.fm.id || t.fm.status !== 'active' || !t.fm.worktree || !existsSync(t.fm.worktree)) continue;
+      affects.push(...graph.overlaps(main, ts, self, graph.subjectFromTask(main, t.fm, t.body)));
+    }
+  } catch (e) {
+    fail(`integrate could not finish: ${e?.message ?? e}`);
+  }
+  // Which commits on main did it, so the review starts from the change rather than the file. Main
+  // is sometimes the CALLER — the task changed a function and main added a use of it — and then
+  // main's commits are in the calling files, not in the file that declares the function.
+  for (const item of landed) {
+    const paths = item.changer && item.changer !== moved.label ? (item.callers ?? [item.file]) : [item.file];
+    item.commits = (git(['log', '--format=%h %s', '-n', '3', `${moved.base}..${moved.ref}`, '--', ...paths], main) ?? '')
+      .split('\n').filter(Boolean);
+  }
+  const detached = git(['rev-parse', '--abbrev-ref', 'HEAD'], task.fm.worktree) === 'HEAD';
+  if (flags.json) {
+    process.stdout.write(`${JSON.stringify({
+      task: task.fm.id, main: moved.label, base: moved.base, fetched, typescript: Boolean(ts), detached, landed, affects,
+    })}\n`);
+    return;
+  }
+
+  const mainLabel = moved.label;
+  const count = (n) => `${n} overlap${n === 1 ? '' : 's'}`;
+  // The base is printed because `/integrate` needs it AFTER the merge, when a merge-base would be
+  // main itself — and a diff from there hides main's side of every item below.
+  const out = [`integrate ${task.fm.id} — ${basename(task.fm.worktree)} on ${task.fm.branch || '(unknown branch)'}`,
+    `base: ${moved.base}   (compared with ${mainLabel} at ${moved.ref.slice(0, 7)})`];
+  if (!fetched) out.push(`(could not fetch origin — compared against the local ${mainLabel})`);
+  if (!ts) out.push('(TypeScript not found beside scripts/ — file-level answers only)');
+  if (detached) out.push('(this worktree is on a detached HEAD — `git switch -c <branch>` before merging, or the merge has no branch to keep it)');
+  out.push('', `LANDED ON ${mainLabel} SINCE THIS TASK'S BASE — ${landed.length ? count(landed.length) : 'none that this task touches or calls'}`);
+  for (const item of landed) {
+    out.push(renderOverlaps([item]));
+    for (const c of item.commits) out.push(`          ${c}`);
+  }
+  out.push('', `WHOM YOU AFFECT — ${affects.length ? `${count(affects.length)} with other active tasks` : 'no other active task overlaps this one'}`);
+  if (affects.length) out.push(renderOverlaps(affects));
+  const generated = landed.some((i) => i.kind === 'generated file');
+  out.push(
+    '',
+    'NEXT',
+    `  1. git merge ${mainLabel}   (in ${task.fm.worktree} — merge, never rebase: the branch may be pushed)`,
+    ...(generated ? ['  2. regenerate each generated file flagged above (the command is in its row) — never merge it by hand'] : []),
+    `  ${generated ? 3 : 2}. npm run typecheck && npm run lint && npm test && npm run build`,
+    `  ${generated ? 4 : 3}. review only the items above — the combination, not each side again`,
+    `  ${generated ? 5 : 4}. npm run work -- integrate ${task.fm.id}   (clean = nothing left from ${mainLabel})`,
+  );
+  process.stdout.write(`${out.join('\n')}\n`);
+}
+
 /** A path as a shell word: bare when it is safe, single-quoted when it is not. */
 function shellQuote(s) {
   return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`;
@@ -1256,8 +1342,9 @@ switch (verb) {
   case 'board': cmdBoard(main); break;
   case 'overlap': await cmdOverlap(main, args); break;
   case 'spawn': await cmdSpawn(main, args); break;
+  case 'integrate': await cmdIntegrate(main, cwd, args); break;
   default:
     process.stderr.write('work: usage: park | claim | done | drop | packet | touch | snapshot'
-      + ' | handoff | promote | archive | board | overlap | spawn\n');
+      + ' | handoff | promote | archive | board | overlap | spawn | integrate\n');
     process.exit(1);
 }

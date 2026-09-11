@@ -277,15 +277,28 @@ subject; after B merges the default ref, a re-run lists nothing landed (review: 
 A and B both change `g` → HIGH under "whom you affect"; no branch ref moves (`git rev-parse`).
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` pass; integrate cases pass
-- [ ] `grep -rn "plan-two\|integrate-two" CLAUDE.md .claude/commands .claude/workflows .claude/hooks` returns nothing
+- [x] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` pass; integrate cases pass
+      — 3065 passed, 12 skipped, build clean; 7 integrate cases (the plan's 3 plus 4 from review),
+      each mutation-checked. Review fixes: commits looked up in main's CALLING files when the task
+      changed the function; main's base taken from the task's guarded base (an orphaned folder
+      no longer reports a false clean); no default branch fails instead of printing "none"; the
+      base printed and in `--json` for `/integrate` to diff from after its merge; a side that only
+      LISTS a file is described as listing it, never as changing it.
+- [x] `grep -rn "plan-two\|integrate-two" CLAUDE.md .claude/commands .claude/workflows .claude/hooks` returns nothing
+      — exit 1 (no matches); `.claude/workflows/` is gone. Also rewritten, found by review:
+      `docs/onboarding.md` and the RPI rule in `docs/engineering-memory.md`.
 
 ### Live verification (agent-executable)
 - Prerequisites: none.
-- [ ] `npm run work -- integrate` on the implementation task: every "landed" item's commit
+- [x] `npm run work -- integrate` on the implementation task: every "landed" item's commit
       appears in `git log <base>..origin/main -- <file>` (cross-check by hand).
+      — PASSED (fresh-context verifier): on this task, correctly "none" (base = origin/main
+      4c2eb14, `git diff` confirms 0 files). Run also on the OTHER active task (planner copy,
+      2 commits behind): 4 items — MED `plannerPrompt.ts › PLANNER_SYSTEM` + 3 LOW — each with
+      commit `6793555 (#226)`, all matching `git log`, the importing line, and the +28-line size.
+      Refs and working tree byte-identical before and after.
 - [ ] Before opening the PR, the implementing session runs `/integrate` on its own task; evidence:
-      the report, the merge commit, gate output.
+      the report, the merge commit, gate output. — runs at landing, after Phase 5.
 
 ### Manual verification — none
 

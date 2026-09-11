@@ -686,11 +686,22 @@ export function overlaps(main, ts, a, b) {
   };
   const items = [];
   const high = new Set();
+  // What each side has REALLY changed, per git — as against files it only lists. A task's
+  // `files:` can name a file it has not touched yet, and "X changes it" about such a file is a
+  // claim the report has not earned (found live, on a task whose HEAD still equalled its base).
+  const ga = footprint(main, { ...a, files: [] });
+  const gb = footprint(main, { ...b, files: [] });
+  const gitOf = (s) => (s === a ? ga : gb);
+  const sideOf = (s, f, d) => {
+    if (s.predicted) return `${s.label} names it`;
+    if (!gitOf(s).has(f)) return `${s.label} lists it but has not changed it`;
+    return d ? `${s.label} changed ${listChanges(d)}` : `${s.label} changes it`;
+  };
 
   for (const f of fa) {
     if (!fb.has(f)) continue;
     if (GENERATED.has(f)) {
-      items.push({ severity: 'LOW', kind: 'generated file', file: f, symbol: '', detail: `both change it — regenerate it after merging (${GENERATED.get(f)}); never merge it by hand`, sizes: {} });
+      items.push({ severity: 'LOW', kind: 'generated file', file: f, symbol: '', detail: `${sideOf(a, f, null)}; ${sideOf(b, f, null)} — regenerate it after merging (${GENERATED.get(f)}); never merge it by hand`, sizes: {} });
       continue;
     }
     // A deletion against an edit is one collision, whatever the functions inside say: whichever
@@ -704,16 +715,12 @@ export function overlaps(main, ts, a, b) {
         continue;
       }
       const [gone, kept] = goneA ? [a, b] : [b, a];
-      const keptSide = kept.predicted ? `${kept.label} names it`
-        : `${kept.label} changes it${ts && isSymbolFile(f) ? ` (${listChanges(delta(kept, f))})` : ''}`;
+      const keptSide = sideOf(kept, f, ts && isSymbolFile(f) ? delta(kept, f) : null);
       items.push({ severity: 'HIGH', kind: 'deleted file', file: f, symbol: '', detail: `${gone.label} deletes this file; ${keptSide}`, sizes: {} });
       continue;
     }
     if (!ts || !isSymbolFile(f) || (a.predicted && b.predicted)) {
-      const who = a.predicted && b.predicted ? 'both name it'
-        : a.predicted || b.predicted ? `${a.predicted ? b.label : a.label} changes it; ${a.predicted ? a.label : b.label} names it`
-          : 'both change it';
-      items.push({ severity: 'LOW', kind: 'same file only', file: f, symbol: '', detail: who, sizes: {} });
+      items.push({ severity: 'LOW', kind: 'same file only', file: f, symbol: '', detail: `${sideOf(a, f, null)}; ${sideOf(b, f, null)}`, sizes: {} });
       continue;
     }
     const da = delta(a, f);
@@ -733,10 +740,7 @@ export function overlaps(main, ts, a, b) {
       items.push({ severity: 'HIGH', kind: 'same function', file: f, symbol: name, detail: `${side(a, da)}; ${side(b, db)}`, sizes });
     }
     if (!shared.length) {
-      const detail = a.predicted || b.predicted
-        ? `${a.predicted ? b.label : a.label} changed ${listChanges(a.predicted ? db : da)}; ${a.predicted ? a.label : b.label} names this file`
-        : `${a.label} changed ${listChanges(da)}; ${b.label} changed ${listChanges(db)}`;
-      items.push({ severity: 'LOW', kind: 'same file only', file: f, symbol: '', detail, sizes: {} });
+      items.push({ severity: 'LOW', kind: 'same file only', file: f, symbol: '', detail: `${sideOf(a, f, da)}; ${sideOf(b, f, db)}`, sizes: {} });
     }
   }
 
@@ -768,18 +772,23 @@ export function overlaps(main, ts, a, b) {
       }
     }
     for (const { c, from, files, sites } of hits.values()) {
-      const where = `called at ${sites} site${sites === 1 ? '' : 's'} in ${files.length} file${files.length === 1 ? '' : 's'} ${y.label} ${y.predicted ? 'names' : 'changes'} (${files.join(', ')})`;
+      const changed = files.filter((g) => gitOf(y).has(g)).length;
+      const verb = y.predicted ? 'names' : changed === files.length ? 'changes' : changed === 0 ? 'lists' : 'touches';
+      const where = `called at ${sites} site${sites === 1 ? '' : 's'} in ${files.length} file${files.length === 1 ? '' : 's'} ${y.label} ${verb} (${files.join(', ')})`;
+      // `changer` and `callers` say which side did what, so a caller of `integrate` can look for
+      // the commits in the right files: the changer's in `file`, the other side's in `callers`.
+      const who = { changer: x.label, callers: files };
       if (c.change === 'body') {
-        items.push({ severity: 'LOW', kind: 'changed behaviour', file: from, symbol: c.name, detail: `${x.label} changed what it does (${lineCountLabel(c.lines)}); ${where}`, sizes: { [x.label]: c.lines, callSites: sites } });
+        items.push({ severity: 'LOW', kind: 'changed behaviour', file: from, symbol: c.name, detail: `${x.label} changed what it does (${lineCountLabel(c.lines)}); ${where}`, sizes: { [x.label]: c.lines, callSites: sites }, ...who });
         continue;
       }
       const importers = importersOf(ts, main, from, c.name);
       const repoWide = `${importers} module${importers === 1 ? ' imports' : 's import'} it repo-wide`;
       if (c.change === 'named') {
-        items.push({ severity: 'MED', kind: 'calls what it names', file: from, symbol: c.name, detail: `${x.label} names this file and mentions \`${c.name}\`; ${where}; ${repoWide}`, sizes: { callSites: sites, importers } });
+        items.push({ severity: 'MED', kind: 'calls what it names', file: from, symbol: c.name, detail: `${x.label} names this file and mentions \`${c.name}\`; ${where}; ${repoWide}`, sizes: { callSites: sites, importers }, ...who });
       } else {
         const what = c.change === 'removed' ? 'removed it' : `changed its signature (${lineCountLabel(c.lines)})`;
-        items.push({ severity: 'MED', kind: 'changed signature', file: from, symbol: c.name, detail: `${x.label} ${what}; ${where}; ${repoWide}`, sizes: { [x.label]: c.lines, callSites: sites, importers } });
+        items.push({ severity: 'MED', kind: 'changed signature', file: from, symbol: c.name, detail: `${x.label} ${what}; ${where}; ${repoWide}`, sizes: { [x.label]: c.lines, callSites: sites, importers }, ...who });
       }
     }
   };

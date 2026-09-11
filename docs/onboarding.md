@@ -559,9 +559,12 @@ implementing. Both artifacts get committed alongside the code they describe — 
 decision history of this project, with citations, and it is genuinely the best place to find out
 *why* something is the way it is.
 
-Two features at once? **Plan both before implementing either.** Research and planning are
-read-only, so run both cycles concurrently, then compare the two plans' file footprints. Disjoint →
-implement in parallel (separate worktrees, separate Supabase stacks). Overlapping → stack them.
+Work in parallel? **Park, spawn, integrate.** Something out of scope mid-task → `/park` it.
+Something parked that can start now → `/spawn <id>`: it checks the item against every active task
+function by function, stops and shows how big any overlap is so you can decide, and otherwise cuts
+it its own worktree and prints the `scripts/second-stack.sh` line for its own Supabase stack. Before a task
+lands → `/integrate`: what main changed under it, and which other tasks it affects. The full
+picture for any two tasks or branches is `npm run work -- overlap <a> <b>`.
 
 ### Verification
 

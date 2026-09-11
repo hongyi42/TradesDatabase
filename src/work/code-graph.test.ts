@@ -11,7 +11,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
-  existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync,
+  existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -709,6 +709,169 @@ describe('work.mjs spawn — a parked task into its own worktree, after a sized 
       expect(r.stderr).toContain('only an open (parked) task can be spawned');
     } finally {
       finish(A.id);
+    }
+  });
+});
+
+describe('work.mjs integrate — what moved under a task, and whom it affects, before it lands', () => {
+  interface Report { task: string; main: string; landed: (Item & { commits: string[] })[]; affects: Item[] }
+  const integrate = (id: string): Report => JSON.parse(work(['integrate', id, '--json'], mainCheckout)) as Report;
+  const refs = () => git(['for-each-ref', '--format=%(refname) %(objectname)'], mainCheckout);
+
+  test('a signature main changed under the task is named with the commit that did it, until main is merged', () => {
+    const original = git(['rev-parse', 'refs/remotes/origin/main'], mainCheckout);
+    const B = newTask('a long task that calls price');
+    const mover = join(tmp, `wt-${++counter}`);
+    try {
+      rewrite(B.wt, 'src/use.ts', 'export const two', 'export const extra = 0;\nexport const two');
+      commit(B.wt, 'B');
+      git(['worktree', 'add', '--detach', mover, 'origin/main'], mainCheckout);
+      rewrite(mover, 'src/lib.ts', 'price(amount: number)', 'price(amount: number, tax = 0)');
+      git(['commit', '-q', '-am', 'main widens price'], mover);
+      git(['update-ref', 'refs/remotes/origin/main', git(['rev-parse', 'HEAD'], mover)], mainCheckout);
+
+      const before = refs();
+      const report = integrate(B.id);
+      // Read-only: integrate names the steps, it never takes them.
+      expect(refs()).toBe(before);
+      expect(report.main).toBe('origin/main');
+      const hit = report.landed.find((i) => i.kind === 'changed signature');
+      expect(hit).toMatchObject({ severity: 'MED', file: 'src/lib.ts', symbol: 'price' });
+      expect(hit?.commits[0]).toMatch(/^[0-9a-f]{7,} main widens price$/);
+
+      const text = work(['integrate', B.id], mainCheckout);
+      expect(text).toContain("LANDED ON origin/main SINCE THIS TASK'S BASE — 1 overlap");
+      expect(text).toContain('1. git merge origin/main');
+
+      // After merging, what main changed is the task's own history, not something under it.
+      git(['merge', '-q', '--no-edit', 'origin/main'], B.wt);
+      expect(integrate(B.id).landed).toEqual([]);
+    } finally {
+      git(['update-ref', 'refs/remotes/origin/main', original], mainCheckout);
+      finish(B.id);
+    }
+  });
+
+  test('another active task changing the same function is named under whom-you-affect', () => {
+    const A = newTask('greet for integrate');
+    const B = newTask('greet too, for integrate');
+    try {
+      rewrite(A.wt, 'src/lib.ts', "return 'hello';", "return 'hi there';");
+      rewrite(B.wt, 'src/lib.ts', "return 'hello';", "return 'ahoy';");
+      const report = integrate(A.id);
+      expect(report.affects).toEqual([
+        expect.objectContaining({ severity: 'HIGH', kind: 'same function', file: 'src/lib.ts', symbol: 'greet' }),
+      ]);
+      expect(report.landed).toEqual([]);
+    } finally {
+      finish(A.id, B.id);
+    }
+  });
+
+  test('a task that is not in progress cannot be integrated', () => {
+    const parked = work(['park', '--title', 'not started yet', '--files', 'src/lib.ts'], mainCheckout);
+    try {
+      const r = workResult(['integrate', parked], mainCheckout);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('is not active in an existing worktree');
+    } finally {
+      work(['drop', parked], mainCheckout);
+    }
+  });
+});
+
+describe('integrate — the review fixes', () => {
+  interface Report { fetched: boolean; typescript: boolean; detached?: boolean; landed: (Item & { commits: string[]; changer?: string; callers?: string[] })[]; affects: Item[] }
+  const integrate = (id: string): Report => JSON.parse(work(['integrate', id, '--json'], mainCheckout)) as Report;
+
+  /** Move origin/main by one commit made in a throwaway checkout; returns a restore function. */
+  function moveMain(edit: (wt: string) => void, message: string): () => void {
+    const original = git(['rev-parse', 'refs/remotes/origin/main'], mainCheckout);
+    const mover = join(tmp, `wt-${++counter}`);
+    git(['worktree', 'add', '--detach', mover, 'origin/main'], mainCheckout);
+    edit(mover);
+    git(['add', '-A'], mover);
+    git(['commit', '-q', '-m', message], mover);
+    git(['update-ref', 'refs/remotes/origin/main', git(['rev-parse', 'HEAD'], mover)], mainCheckout);
+    return () => git(['update-ref', 'refs/remotes/origin/main', original], mainCheckout);
+  }
+
+  test('when main is the CALLER of what the task changed, the commits come from main\'s calling file', () => {
+    const T = newTask('widen price, then main calls it');
+    const startedFrom = git(['rev-parse', 'refs/remotes/origin/main'], mainCheckout);
+    let restore = () => {};
+    try {
+      rewrite(T.wt, 'src/lib.ts', 'price(amount: number)', 'price(amount: number, tax = 0)');
+      commit(T.wt, 'T widens price');
+      restore = moveMain((wt) => writeFileSync(join(wt, 'src', 'caller.ts'),
+        "import { price } from './lib.js';\n\nexport const c = price(9);\n"), 'main adds a caller of price');
+      const report = integrate(T.id);
+      const hit = report.landed.find((i) => i.kind === 'changed signature');
+      expect(hit).toMatchObject({ file: 'src/lib.ts', symbol: 'price', changer: T.id, callers: ['src/caller.ts'] });
+      // Looking only in lib.ts — main never touched it — would find nothing, or the wrong commit.
+      expect(hit?.commits[0]).toMatch(/ main adds a caller of price$/);
+      expect(report.fetched).toBe(false); // the fixture's origin points nowhere
+      expect(report.typescript).toBe(true);
+      // The base /integrate diffs from after its merge, when a merge-base would be main itself.
+      expect((report as unknown as { base: string }).base).toBe(startedFrom);
+      expect(work(['integrate', T.id], mainCheckout)).toContain(`base: ${startedFrom}`);
+    } finally {
+      restore();
+      finish(T.id);
+    }
+  });
+
+  test('a task whose worktree folder has lost its .git is not reported clean against the main checkout', () => {
+    const slugPath = join(mainCheckout, '.claude', 'worktrees', `ghost-${++counter}`);
+    git(['worktree', 'add', '--no-track', slugPath, '-b', `ghost-int-${counter}`, 'origin/main'], mainCheckout);
+    const id = work(['park', '--title', 'ghost integrate', '--kind', 'task'], mainCheckout);
+    work(['claim', id], slugPath);
+    let restore = () => {};
+    const mainHead = git(['rev-parse', 'HEAD'], mainCheckout);
+    try {
+      rewrite(slugPath, 'src/use.ts', 'export const two', 'export const extra = 0;\nexport const two');
+      git(['commit', '-q', '-am', 'ghost task edits use'], slugPath);
+      restore = moveMain((wt) => rewrite(wt, 'src/lib.ts', 'price(amount: number)', 'price(amount: number, tax = 0)'), 'main widens price');
+      // The main checkout itself is AT the new origin/main, so a merge-base asked from inside it
+      // (which is where git lands from a folder with no .git) says nothing has landed.
+      git(['reset', '-q', '--hard', 'origin/main'], mainCheckout);
+      renameSync(join(slugPath, '.git'), join(slugPath, '.git.bak'));
+      expect(integrate(id).landed.find((i) => i.kind === 'changed signature')).toMatchObject({ file: 'src/lib.ts', symbol: 'price' });
+    } finally {
+      try { renameSync(join(slugPath, '.git.bak'), join(slugPath, '.git')); } catch { /* already back */ }
+      git(['reset', '-q', '--hard', mainHead], mainCheckout);
+      restore();
+      work(['drop', id], mainCheckout);
+      git(['worktree', 'remove', '--force', slugPath], mainCheckout);
+    }
+  });
+
+  test('a task on a detached HEAD is warned before it merges into nothing', () => {
+    const wt = join(tmp, `wt-${++counter}`);
+    git(['worktree', 'add', '--detach', wt, 'origin/main'], mainCheckout);
+    const id = work(['park', '--title', 'detached for integrate', '--kind', 'task'], mainCheckout);
+    work(['claim', id], wt);
+    try {
+      expect(integrate(id)).toMatchObject({ detached: true });
+      expect(work(['integrate', id], mainCheckout)).toContain('detached HEAD');
+    } finally {
+      finish(id);
+    }
+  });
+
+  test('a file a task only lists is described as listed, never as changed', () => {
+    const listed = newTask('lists lib but has not started');
+    const B = newTask('changes greet, beside a lister');
+    try {
+      // Give the lister a files: entry without any change in git.
+      const f = join(mainCheckout, '.claude', 'work', 'tasks', `${listed.id}.md`);
+      writeFileSync(f, readFileSync(f, 'utf8').replace(/^files:.*$/m, 'files: src/lib.ts'));
+      rewrite(B.wt, 'src/lib.ts', "return 'hello';", "return 'g\\'day';");
+      const item = overlap(listed.id, B.id).find((i) => i.file === 'src/lib.ts');
+      expect(item?.detail).toContain(`${listed.id} lists it but has not changed it`);
+      expect(item?.detail).toContain(`${B.id} changed \`greet\``);
+    } finally {
+      finish(listed.id, B.id);
     }
   });
 });

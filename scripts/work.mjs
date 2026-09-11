@@ -774,12 +774,14 @@ function cmdPromote(main, cwd, { positional }) {
  * after every single edit and must never produce output or a non-zero exit.
  */
 function cmdTouch(main, flags) {
-  // `--file` first, and it is the form the hook uses. Reading the payload from stdin looked
-  // right and was dead on arrival: several hook commands share one event's stdin, and the
-  // syntax check ahead of this one consumes it with `jq` before this process ever starts. So
-  // this verb had never once recorded a file in a real session, while every test passed —
-  // because the tests hand it a payload directly, and the only untested thing was the wiring.
-  // Taking the path as an argument removes the dependency instead of reordering around it.
+  // `--file` first, and it is the form the hook uses: `jq` parses the payload once in the hook
+  // command and this process never reads stdin. The commit that introduced it (1e2cd42) said the
+  // stdin route was dead because the hooks on one event share a single stdin. Measured false on
+  // 2026-09-10 — each hook gets its own full copy. What this verb actually cannot see is any edit
+  // that does not go through the Edit or Write tool: a file rewritten from Bash (sed, a node or
+  // python script) is never recorded, and neither is anything a session did before it had this
+  // hook. So files: is a floor, not the whole footprint; `snapshot` reads `git status`, which
+  // catches those edits too, but only while they are still uncommitted.
   const fromFlag = typeof flags?.file === 'string' && flags.file ? flags.file : null;
   const filePath = fromFlag ?? hookPayload?.tool_input?.file_path;
   if (typeof filePath !== 'string' || !filePath) return;

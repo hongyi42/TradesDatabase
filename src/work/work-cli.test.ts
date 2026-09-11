@@ -308,24 +308,23 @@ describe('work.mjs — the shared work record', () => {
     }
   });
 
-  test('touch records via --file when an earlier hook has already drained stdin', () => {
-    // The regression this pins, and it is the worst kind — silent, and invisible to every test
-    // that existed. Hooks on one event share a single stdin, and the syntax check ahead of this
-    // one reads it to EOF with `jq`. So the payload was gone before this process even started,
-    // and `touch` recorded NOTHING in any real session for as long as it existed, while its whole
-    // test suite passed: the tests hand it a payload directly, so the only untested thing was the
-    // wiring. Taking the path as an argument removes the dependency rather than reordering it.
+  test('touch records via --file when stdin is already at EOF', () => {
+    // Pins the form the hook actually uses. Inside that one command `jq` reads the payload to EOF
+    // before `node` starts, so this process always sees an empty stdin and everything it needs
+    // has to arrive by flag. The commit that added this test blamed a stdin shared ACROSS the
+    // hooks on one event; that was measured false on 2026-09-10 — each hook gets its own copy.
+    // What actually kept files: empty is in the settings.json comment on this hook.
     const id = work(['park', '--title', 'drained stdin probe', '--kind', 'task'], mainCheckout);
     work(['claim', id, '--force'], worktree);
     const target = join(worktree, 'src', 'touched-by-flag.ts');
     writeFileSync(target, 'export const t = 1;\n');
     try {
-      // An EMPTY stdin is exactly what the second hook on an event receives.
+      // An EMPTY stdin is exactly what `node` receives inside the hook, after `jq` has read it.
       work(['touch', '--file', target, '--cwd', worktree], worktree, '');
       expect(taskFile(id).files).toContain('src/touched-by-flag.ts');
 
-      // And the shape that was broken: no --file and no payload records nothing, rather than
-      // guessing at a path. Without this half, --file could be ignored and the test still pass.
+      // And the other half: no --file and no payload records nothing, rather than guessing at a
+      // path. Without this half, --file could be ignored and the test would still pass.
       const after = taskFile(id).files;
       work(['touch', '--cwd', worktree], worktree, '');
       expect(taskFile(id).files).toBe(after);

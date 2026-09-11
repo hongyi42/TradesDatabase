@@ -316,6 +316,64 @@ export interface DroppedDecision {
   nudgeIds?: string[];
 }
 
+// WHAT THE MODEL WAS TOLD NO, word for word (2026-09-11). Every tool call that
+// came back to it as an error — a submission the rails refused outright, a
+// malformed call, a tool that does not exist, a query that failed — collected
+// as the loop runs. From the model's side these are one thing: it was told no
+// and tried again, and every try is a turn.
+//
+// Before this only the LAST submission survived a tick. The first close after
+// PR #226 (2026-09-11 19:01) took 38 turns and recorded `turns: 38` and nothing
+// else, so why it took 38 could be inferred but not read.
+//
+// DEDUPED by tool and text: a model that loops resubmits the same thing and
+// gets the same answer, and thirty-seven identical lines say less than one
+// line with a count. Bounded by REFUSALS_KEPT and REFUSAL_TEXT_CHARS, so a loop
+// that runs to the 15-minute clock cannot grow the tick's log line without end.
+export interface PlannerRefusal {
+  tool: string;
+  // Exactly what went back to the model, capped. It can echo the model's own
+  // rejected quote — a customer's words — which is why the durable run record
+  // keeps only the count (lifecycle.ts redactForRecord) and the words live in
+  // the tick's stdout line beside the decisions, which carry the same class of
+  // text already.
+  text: string;
+  count: number; // calls that got exactly this text back
+  firstTurn: number;
+}
+
+const REFUSAL_TEXT_CHARS = 1_000;
+// Distinct texts kept per firm per pass. Past it, a further DISTINCT error is
+// counted on one overflow entry instead of kept, so the counts still add up to
+// every call that was refused.
+const REFUSALS_KEPT = 20;
+const REFUSAL_OVERFLOW = '*'; // cannot collide: every real key carries a newline
+
+export function noteRefusal(
+  into: Map<string, PlannerRefusal>,
+  call: { turn: number; name: string; result: string },
+): void {
+  const text = call.result.slice(0, REFUSAL_TEXT_CHARS);
+  let key = `${call.name}\n${text}`;
+  if (!into.has(key) && into.size >= REFUSALS_KEPT) key = REFUSAL_OVERFLOW;
+  const seen = into.get(key);
+  if (seen) {
+    seen.count += 1;
+    return;
+  }
+  into.set(
+    key,
+    key === REFUSAL_OVERFLOW
+      ? {
+          tool: '*',
+          text: `further distinct errors past the first ${REFUSALS_KEPT} — counted, not kept`,
+          count: 1,
+          firstTurn: call.turn,
+        }
+      : { tool: call.name, text, count: 1, firstTurn: call.turn },
+  );
+}
+
 // What became of ONE firm on ONE tick. Every firm the sweep considered gets an
 // entry, not just the ones the model ran for — the flat skippedNoGaps /
 // skippedCadence / tenantErrors counters say HOW MANY were passed over but never
@@ -338,6 +396,10 @@ export interface PlannerTenantPlan {
   // outcome field already says which entries carry real work.
   decisions: PlannerDecision[];
   dropped: DroppedDecision[];
+  // Every error the model was sent back during the loop — see PlannerRefusal.
+  // On an `error` outcome too: a pass that looped on refusals until the clock
+  // ran out is the one whose refusals matter most.
+  refusals: PlannerRefusal[];
   applied: number;
   refusedAtApply: number;
   recorded: number;
@@ -363,6 +425,7 @@ const idlePlan = (
   gaps,
   decisions: [],
   dropped: [],
+  refusals: [],
   applied: 0,
   refusedAtApply: 0,
   recorded: 0,
@@ -4028,6 +4091,10 @@ export async function runPlanner(
     // Bounded by the loop's own MAX_TOOL_RESULT_CHARS per call and by the
     // 15-minute clock overall; it is dropped when the tenant's iteration ends.
     const readText: string[] = [];
+    // Every error the model was sent back this tick, filled by the same hook.
+    // Hoisted for the CATCH, like `views`: a loop that died on the clock after
+    // thirty refusals must still say what they were.
+    const refusals = new Map<string, PlannerRefusal>();
     // Hoisted for the CATCH like `views`: the failed-tick trace must key each
     // row to its stage, or an observation-staged row keyed nudge_id 23503s and
     // the whole trace is silently discarded (phase-3 review F1).
@@ -4769,6 +4836,7 @@ export async function runPlanner(
           // submit_plan's own result is appended too and that is harmless: it
           // is this loop's terminal tool, so nothing is validated after it.
           onResult: (call) => {
+            if (!call.ok) noteRefusal(refusals, call);
             // ALLOWLISTED (see CITABLE_TOOLS): the planner's own notes and
             // memory come back through this hook too, and quoting those would
             // let it launder its own prose into an evidence-basis close.
@@ -5217,6 +5285,7 @@ export async function runPlanner(
         gaps: open.length,
         decisions,
         dropped,
+        refusals: [...refusals.values()],
         applied,
         refusedAtApply,
         recorded,
@@ -5333,14 +5402,15 @@ export async function runPlanner(
       // views were assembled, which is itself the honest number. `views` is
       // declared outside the try precisely so this path can see it.
       if (!named)
-        name(
-          idlePlan(
+        name({
+          ...idlePlan(
             tenantId,
             'error',
             views.size,
             loopStarted === null ? 0 : Date.now() - loopStarted,
           ),
-        );
+          refusals: [...refusals.values()],
+        });
       // …but it no longer leaves NO TRACE. This catch sits after runLoop, so a
       // ToolLoopLimitError or a provider outage used to write nothing at all —
       // making the failed tick indistinguishable from a tick that never ran, in

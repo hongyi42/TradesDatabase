@@ -1018,6 +1018,11 @@ describe('redactForRecord', () => {
           },
         ],
         dropped: [{ nudgeId: 'n2', why: 'no citation' }],
+        // A refusal can echo the model's rejected quote — customer words.
+        refusals: [
+          { tool: 'submit_plan', text: 'error: "Hartley paid cash" appears nowhere', count: 3, firstTurn: 1 },
+          { tool: 'spine_read', text: 'error: column "condenser" does not exist', count: 1, firstTurn: 4 },
+        ],
       },
     ],
   };
@@ -1029,6 +1034,8 @@ describe('redactForRecord', () => {
     const plan = out.teamLeadPlanner.plans[0];
     expect(plan.decisions).toBe(1);
     expect(plan.dropped).toBe(1);
+    // Refused CALLS, not distinct texts: 3 + 1.
+    expect(plan.refusals).toBe(4);
     expect(plan).toMatchObject({
       tenantId: 't1',
       gaps: 2,
@@ -1043,7 +1050,7 @@ describe('redactForRecord', () => {
 
   test('no customer-derived text survives anywhere in the record', () => {
     const json = JSON.stringify(redactForRecord(summaryWith(PLANNER)));
-    for (const leak of ['questionDraft', 'citation', 'reason', 'Hartley', 'condenser', 'Judy']) {
+    for (const leak of ['questionDraft', 'citation', 'reason', 'Hartley', 'condenser', 'Judy', 'appears nowhere']) {
       expect(json).not.toContain(leak);
     }
   });

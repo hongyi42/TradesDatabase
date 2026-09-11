@@ -11,6 +11,7 @@ import {
   buildReachableBlock,
   buildOutboundBlock,
   limitationOf,
+  noteRefusal,
   buildOfficeMessagesBlock,
   cleanQuestionDraft,
   buildPlannerUserMessage,
@@ -33,7 +34,7 @@ import {
 import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
 import { ORPHAN_FOOTER_PREFIX } from './memory.js';
 
-import { ToolLoopLimitError, type ToolLoopResult } from '../model/toolLoop.js';
+import { ToolLoopLimitError, type ToolLoopCall, type ToolLoopResult } from '../model/toolLoop.js';
 import { MAX_DELIVERY_ATTEMPTS, MAX_SERVE_COUNT } from '../control/nudgeQueue.js';
 
 // NOW is 12:00 — on the planner's cadence grid (720 minutes since midnight,
@@ -94,24 +95,33 @@ const evidence = (capturedAt: string, text: string, jobId = 'j1'): JobEvidenceRo
 // rejects a wholly-refused submission so the model can correct it, and a stub
 // that let that throw escape would test a loop this repo does not have.
 // `attempts` optionally replays a second submission, the way a real model would.
+// And it hands each call to `onResult` the way runToolLoop does — an error as
+// `error: <message>`, one turn per submission — which is where the planner
+// collects what the model was told no with.
 function loopReturning(
   decisions: unknown[],
   seen: { user?: string; errors?: string[] } = {},
   retry?: unknown[],
 ) {
   return (async (
-    req: { user: string },
+    req: { user: string; onResult?: (call: ToolLoopCall) => void },
     _tools: unknown,
     execute: (name: string, args: Record<string, unknown>) => Promise<unknown>,
   ): Promise<ToolLoopResult> => {
     seen.user = req.user;
     seen.errors = [];
+    let turn = 0;
     const submit = async (d: unknown[]) => {
+      turn += 1;
+      const args = { decisions: d };
       try {
-        await execute(SUBMIT_PLAN_TOOL.name, { decisions: d });
+        const out = await execute(SUBMIT_PLAN_TOOL.name, args);
+        req.onResult?.({ turn, name: SUBMIT_PLAN_TOOL.name, args, ok: true, result: JSON.stringify(out) });
         return true;
       } catch (err) {
-        seen.errors?.push(err instanceof Error ? err.message : String(err));
+        const message = err instanceof Error ? err.message : String(err);
+        seen.errors?.push(message);
+        req.onResult?.({ turn, name: SUBMIT_PLAN_TOOL.name, args, ok: false, result: `error: ${message}` });
         return false;
       }
     };
@@ -1186,6 +1196,37 @@ describe('the code rails on what the model returns', () => {
     expect(seen.errors?.[0]).toContain('every decision was refused');
     expect(seen.errors?.[0]).toContain('appears neither in the evidence nor in anything you read');
     expect(s.decisions).toBe(1); // the retry landed
+  });
+
+  test('what the model was told no with is KEPT on the tick, not just the plan that stood', async () => {
+    // The first close after PR #226 took 38 turns and recorded nothing but the
+    // number: only the last submission survived, so why it was refused 37
+    // times could be inferred and never read.
+    const good = 'parts came to forty dollars';
+    const s = await runPlanner(NOW, 'shadow', baseDeps({
+      listEvidence: async () => [evidence('2026-08-15T13:00:00.000Z', good)],
+      runLoop: loopReturning(
+        [{ nudgeId: 'n1', action: 'close', citation: 'invented words', confidence: 'high', reason: 'x' }],
+        {},
+        [{ nudgeId: 'n1', action: 'close', citation: good, confidence: 'high', reason: 'x' }],
+      ),
+    }));
+    expect(s.decisions).toBe(1);
+    expect(s.plans[0].dropped).toEqual([]); // the plan that stood refused nothing…
+    expect(s.plans[0].refusals).toEqual([ // …and the attempt before it is still on record
+      {
+        tool: SUBMIT_PLAN_TOOL.name,
+        text: expect.stringContaining('every decision was refused'),
+        count: 1,
+        firstTurn: 1,
+      },
+    ]);
+    expect(s.plans[0].refusals[0].text).toContain('appears neither in the evidence');
+  });
+
+  test('a clean tick keeps no refusals', async () => {
+    const s = await runPlanner(NOW, 'shadow', baseDeps({ runLoop: loopReturning([]) }));
+    expect(s.plans[0].refusals).toEqual([]);
   });
 
   test('an EMPTY plan is accepted as a real choice, not treated as a mistake', async () => {
@@ -3968,6 +4009,36 @@ describe('every firm considered is named in the record', () => {
     expect(summary.plans).toHaveLength(1);
   });
 
+  test('a tick that DIES after refusals still says what they were', async () => {
+    // The case the refusals matter most: a model resubmitting the same refused
+    // plan until the clock runs out. The throw carries no result, so they have
+    // to be collected as the loop runs, not read off it afterwards.
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      runLoop: (async (req: { onResult?: (call: ToolLoopCall) => void }) => {
+        for (const turn of [1, 2, 3]) {
+          req.onResult?.({
+            turn,
+            name: SUBMIT_PLAN_TOOL.name,
+            args: {},
+            ok: false,
+            result: 'error: every decision was refused: close n1 — no citation',
+          });
+        }
+        throw new ToolLoopLimitError('budget', 'teamLeadPlanner: tool loop exceeded its budget');
+      }) as unknown as NonNullable<PlannerDeps['runLoop']>,
+    }));
+    const plan = planFor(summary, 't1');
+    expect(plan?.outcome).toBe('error');
+    expect(plan?.refusals).toEqual([
+      {
+        tool: SUBMIT_PLAN_TOOL.name,
+        text: 'error: every decision was refused: close n1 — no citation',
+        count: 3,
+        firstTurn: 1,
+      },
+    ]);
+  });
+
   test('a non-planned entry carries empty work, never undefined', async () => {
     const summary = await runPlanner(NOW, 'shadow', baseDeps({
       listNudges: async () => [],
@@ -3977,6 +4048,7 @@ describe('every firm considered is named in the record', () => {
       outcome: 'no_gaps',
       decisions: [],
       dropped: [],
+      refusals: [],
       applied: 0,
       refusedAtApply: 0,
       recorded: 0,
@@ -7262,5 +7334,36 @@ describe('rung 10 — inbound requests reach the planner', () => {
     ]);
     expect(commitment).toContain("the caller's words");
     expect(commitment).not.toContain('THE RECORD');
+  });
+});
+
+describe('noteRefusal — what the model was told no with (2026-09-11)', () => {
+  const call = (turn: number, result: string, name = SUBMIT_PLAN_TOOL.name) => ({ turn, name, result });
+
+  test('the same answer to the same tool is ONE entry with a count', () => {
+    const into = new Map();
+    for (const turn of [1, 2, 3]) noteRefusal(into, call(turn, 'error: every decision was refused'));
+    noteRefusal(into, call(4, 'error: every decision was refused', 'spine_read'));
+    expect([...into.values()]).toEqual([
+      { tool: SUBMIT_PLAN_TOOL.name, text: 'error: every decision was refused', count: 3, firstTurn: 1 },
+      { tool: 'spine_read', text: 'error: every decision was refused', count: 1, firstTurn: 4 },
+    ]);
+  });
+
+  test('the text is capped, so one long echo cannot grow the tick line', () => {
+    const into = new Map();
+    noteRefusal(into, call(1, 'x'.repeat(5_000)));
+    expect([...into.values()][0].text).toHaveLength(1_000);
+  });
+
+  test('past twenty distinct texts the rest are COUNTED on one entry, so the sum is every refused call', () => {
+    const into = new Map();
+    for (let turn = 1; turn <= 25; turn++) noteRefusal(into, call(turn, `error: distinct ${turn}`));
+    noteRefusal(into, call(26, 'error: distinct 3')); // a kept text still counts on its own entry
+    const entries = [...into.values()];
+    expect(entries).toHaveLength(21);
+    expect(entries[2]).toMatchObject({ text: 'error: distinct 3', count: 2 });
+    expect(entries[20]).toMatchObject({ tool: '*', count: 5, firstTurn: 21 });
+    expect(entries.reduce((n, r) => n + r.count, 0)).toBe(26);
   });
 });

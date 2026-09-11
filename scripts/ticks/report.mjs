@@ -279,6 +279,7 @@ try {
       const f = perFirm.get(p.tenantId) ?? {
         planned: 0, no_gaps: 0, off_cadence: 0, error: 0, unknown: 0,
         turns: 0, toolCalls: 0, ms: 0, decisions: 0,
+        refused: 0, entries: 0, entriesWithRefusals: 0,
         // Build 1b. The totals above cannot answer the question the build
         // exists to ask — "does the planner need a turn ceiling?" — because a
         // sum hides the tail, and the tail IS the answer. One entry per PLANNED
@@ -338,6 +339,16 @@ try {
       // array (which carried the technician's question and the model's reasoning)
       // before the row was written.
       f.decisions += typeof p.decisions === 'number' ? p.decisions : 0;
+      // Tool calls the model was told no on (2026-09-11) — a count here too,
+      // for the same reason; the words are in that tick's stdout line. Rows
+      // written before it carry no key, and a window reaching back past it must
+      // not print them as "0 refused", so the entries that DO carry it are
+      // counted apart.
+      f.entries += 1;
+      if (typeof p.refusals === 'number') {
+        f.refused += p.refusals;
+        f.entriesWithRefusals += 1;
+      }
       perFirm.set(p.tenantId, f);
     }
   }
@@ -352,8 +363,14 @@ try {
     );
     if (f.planned > 0) {
       lines.push(
-        `    ${f.decisions} decisions over ${f.turns} turns / ${f.toolCalls} tool calls, ` +
-          `${(f.ms / f.planned / 1000).toFixed(1)}s avg`,
+        `    ${f.decisions} decisions over ${f.turns} turns / ${f.toolCalls} tool calls` +
+          (f.entriesWithRefusals === 0
+            ? ''
+            : ` (${f.refused} refused` +
+              (f.entriesWithRefusals < f.entries
+                ? ` — only ${f.entriesWithRefusals} of ${f.entries} entries record refusals)`
+                : ')')) +
+          `, ${(f.ms / f.planned / 1000).toFixed(1)}s avg`,
       );
 
       // Build 1b: the planner has NO turn ceiling any more, so the only thing

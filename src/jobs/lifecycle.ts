@@ -215,6 +215,16 @@ export function redactForRecord(summary: LifecycleSummary): Json {
       // undefined and vanishing from the JSON.
       decisions: Array.isArray(plan.decisions) ? plan.decisions.length : plan.decisions,
       dropped: Array.isArray(plan.dropped) ? plan.dropped.length : plan.dropped,
+      // What the model was told no with (2026-09-11) can echo its own rejected
+      // quote, so the record keeps HOW MANY calls were refused — the entries'
+      // counts summed, not the number of distinct texts — and stdout keeps the
+      // words.
+      refusals: Array.isArray(plan.refusals)
+        ? (plan.refusals as { count?: unknown }[]).reduce(
+            (n, r) => n + (typeof r.count === 'number' ? r.count : 1),
+            0,
+          )
+        : plan.refusals,
     }));
   }
   return copy as Json;

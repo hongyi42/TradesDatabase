@@ -67,7 +67,14 @@ export async function drainOneObservationPing(
     // iteration. Null is "somebody else has it", never an error.
     const claimed = await claim(next.id);
     if (!claimed) return 'idle';
-    await pass(claimed);
+    const summary = await pass(claimed);
+    // THE PASS'S OWN RECORD (2026-09-11). The heartbeat prints its whole tick
+    // summary as one stdout line; this loop printed nothing, so a focused
+    // pass's turns, decisions and refusals were computed and thrown away. One
+    // line per pass — passes run one claimed row at a time, never per poll.
+    if (summary !== undefined) {
+      console.log(`[calls:ping] focused pass ${claimed.id} ${JSON.stringify(summary)}`);
+    }
     return 'pinged';
   } catch (err) {
     // NEVER RETHROWN, and THE CLAIM STAYS. Rethrowing would kill the worker's

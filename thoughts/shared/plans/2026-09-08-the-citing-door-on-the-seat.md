@@ -2,7 +2,7 @@
 date: 2026-09-08
 task: give the manager seat a door that can cite the caller's own email, and close the two tool defects the live test exposed
 research: thoughts/shared/research/2026-09-09-who-may-write-l2.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 

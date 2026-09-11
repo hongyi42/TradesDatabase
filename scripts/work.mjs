@@ -24,6 +24,7 @@
 //   node scripts/work.mjs overlap <a> <b> [--json]   # where two tasks/branches collide, sized
 //   node scripts/work.mjs spawn <id> [--proceed] [--branch <b>]   # a parked task into its own worktree
 //   node scripts/work.mjs integrate [<id>] [--json]   # before landing: what moved under you, whom you affect
+//   node scripts/work.mjs prune [--apply]            # remove worktrees whose work is provably finished
 //
 // Failure policy, deliberately two-sided: verbs a PERSON runs report the problem on stderr and
 // exit non-zero, because a silent no-op would read as success. Verbs a HOOK runs (`packet`,
@@ -32,12 +33,13 @@
 
 import {
   readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync, renameSync, rmSync, statSync,
+  openSync, fstatSync, readSync, closeSync, mkdtempSync,
 } from 'node:fs';
 import {
   join, basename, dirname, isAbsolute, relative, resolve,
 } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { isatty } from 'node:tty';
 
 const MAX_SLUG = 40;
@@ -117,15 +119,19 @@ function worktreeOf(path) {
  * started" really is the commit that was checked out when it was claimed.
  */
 function mergeBase(cwd) {
-  const candidates = ['origin/main', 'main', 'origin/master', 'master'];
-  const remoteDefault = git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], cwd);
-  if (remoteDefault) candidates.unshift(remoteDefault);
-  for (const ref of candidates) {
-    if (!git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd)) continue;
+  for (const ref of mainRefs(cwd)) {
     const found = git(['merge-base', 'HEAD', ref], cwd);
     if (found) return found;
   }
   return git(['rev-parse', 'HEAD'], cwd) ?? '';
+}
+
+/** The branches this clone might call "main", best first — only those that exist. */
+function mainRefs(cwd) {
+  const candidates = ['origin/main', 'main', 'origin/master', 'master'];
+  const remoteDefault = git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], cwd);
+  if (remoteDefault) candidates.unshift(remoteDefault);
+  return candidates.filter((ref) => git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd));
 }
 
 /**
@@ -1103,6 +1109,309 @@ async function cmdIntegrate(main, cwd, { positional, flags }) {
   process.stdout.write(`${out.join('\n')}\n`);
 }
 
+/** How recent a session's last transcript write must be for its worktree to count as in use. */
+const LIVE_SESSION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Proof, by COMMIT, that a worktree's branch is merged: its tip is already on the default
+ * branch, or GitHub has a merged PR whose head was exactly that tip. The name alone proves
+ * nothing — `mergedLabel` (the board's) matches on it, and spawn's `work/<slug>` names recur, so a
+ * new branch can share a name with a merged one while holding commits that were never pushed.
+ */
+function mergeProof(wt, main, def) {
+  if (!wt.head) return null;
+  if (def && git(['merge-base', '--is-ancestor', wt.head, def], main) !== null) return `on ${def}`;
+  if (!wt.branch) return null;
+  try {
+    const out = execFileSync('gh', ['pr', 'list', '--state', 'merged', '--head', wt.branch, '--json', 'number,headRefOid'], {
+      cwd: main, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000,
+    });
+    const pr = (JSON.parse(out) ?? []).find((p) => p.headRefOid === wt.head);
+    return pr ? `merged PR #${pr.number}` : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `project_id` from a checkout's supabase/config.toml, or null. */
+function projectIdOf(dir) {
+  try {
+    return /^project_id\s*=\s*"([^"]+)"/m.exec(readFileSync(join(dir, 'supabase', 'config.toml'), 'utf8'))?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether two project ids can name the same running stack. `supabase start` labels containers
+ * with a sanitised id — other characters to `_`, cut to 40 (per the Supabase CLI source read in
+ * plan 2's review) — so two ids that differ only past character 40 share one stack. Used only
+ * to decide NOT to stop something: erring toward "same" can leave a stack up, never take one down.
+ */
+function sameStack(x, y) {
+  return x === y || stackLabel(x) === stackLabel(y);
+}
+
+/** The id Supabase actually labels a project's containers with: sanitised, capped at 40. */
+function stackLabel(id) {
+  return id.replace(/[^a-zA-Z0-9_.-]+/g, '_').replace(/^[_.-]+/, '').slice(0, 40);
+}
+
+/**
+ * The newest moment any Claude session was working inside `path`: its own project folder, AND
+ * every transcript of this repo written in the last day whose recent entries ran there. A session
+ * launched in the main checkout that then entered a worktree keeps writing its transcript under
+ * the MAIN checkout's folder, with `cwd` set to the worktree — so the worktree's own folder alone
+ * says "no session" about exactly how this repo is usually worked.
+ */
+function sessionActivityIn(main, path) {
+  let newest = lastSessionActivity(path) ?? 0;
+  const root = join(homedir(), '.claude', 'projects');
+  const quoted = JSON.stringify(path);
+  const needles = [`"cwd":${quoted}`, `"cwd":${quoted.slice(0, -1)}/`];
+  let dirs = [];
+  try { dirs = readdirSync(root).filter((d) => d.startsWith(encodeProjectDir(main))); } catch { return newest || null; }
+  for (const dir of dirs) {
+    let names = [];
+    try { names = readdirSync(join(root, dir)); } catch { continue; }
+    // Subagents too, under <session>/subagents/: a worktree-isolated subagent is clean and "on
+    // main" until its first commit — exactly the shape prune would otherwise remove mid-run.
+    const files = [];
+    for (const name of names) {
+      if (name.endsWith('.jsonl')) { files.push(join(root, dir, name)); continue; }
+      try {
+        for (const sub of readdirSync(join(root, dir, name, 'subagents'))) {
+          if (sub.endsWith('.jsonl')) files.push(join(root, dir, name, 'subagents', sub));
+        }
+      } catch { /* not a session directory */ }
+    }
+    for (const file of files) {
+      let stat;
+      try { stat = statSync(file); } catch { continue; }
+      if (Date.now() - stat.mtimeMs > LIVE_SESSION_MS || stat.mtimeMs <= newest) continue;
+      // Only the tail: where a session is NOW is in its latest entries, and transcripts run long.
+      if (needles.some((n) => readTail(file, 256 * 1024).includes(n))) newest = stat.mtimeMs;
+    }
+  }
+  return newest || null;
+}
+
+function readTail(file, bytes) {
+  let fd;
+  try {
+    fd = openSync(file, 'r');
+    const size = fstatSync(fd).size;
+    const buf = Buffer.alloc(Math.min(bytes, size));
+    readSync(fd, buf, 0, buf.length, Math.max(0, size - buf.length));
+    return buf.toString('utf8');
+  } catch {
+    return '';
+  } finally {
+    if (fd !== undefined) try { closeSync(fd); } catch { /* already closed */ }
+  }
+}
+
+/**
+ * True when the only change to supabase/config.toml is what scripts/second-stack.sh writes: the
+ * project_id and the port lines. Anything else in that file is real work, and prune would throw
+ * it away with the `git checkout` it needs before `git worktree remove` will agree.
+ */
+function onlyStackRewrite(path) {
+  const diff = gitRaw(['diff', '--unified=0', '--', 'supabase/config.toml'], path) ?? '';
+  const changed = diff.split('\n').filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l));
+  // `#?`: the script shifts every line mentioning a port, commented-out ones included
+  // (`# smtp_port = 54325`), so those are part of its rewrite too.
+  return changed.length > 0 && changed.every((l) => /^[+-]\s*#?\s*(project_id|[a-z0-9_]*port)\s*=/.test(l));
+}
+
+/**
+ * `prune [--apply]`: remove worktrees whose work is finished — and only those.
+ *
+ * Stale worktrees never close on their own (Claude Code's sweep skips interactive ones, and a
+ * squash merge leaves every branch looking unmerged to git), so they pile up holding stacks and
+ * stale pictures of the code. This removes a worktree only when nothing can be lost. KEEP, always:
+ * the main checkout; the worktree prune is running from; a locked one; one with an active task;
+ * one any session worked in during the last day; one with any uncommitted or untracked file (bar
+ * a config.toml second-stack.sh rewrote and nothing else); a branch without a merge proof by
+ * commit. Dry run by default; `--apply` acts, row by row, and exits 1 if any row failed.
+ *
+ * A stack is stopped only AFTER every worktree using it is gone, from a throwaway folder holding a
+ * copy of its config (see stopStack) — never inside a real checkout, where `supabase stop` acts on
+ * whatever that checkout's config names and in one without its own config stops the PRIMARY stack
+ * (engineering memory, 2026-08-19). Never a stack another kept worktree still uses.
+ */
+function cmdPrune(main, cwd, { flags }) {
+  const refs = mainRefs(main);
+  const def = refs[0] ?? null;
+  const mainProject = projectIdOf(main);
+  const here = worktreeOf(cwd);
+  // Never deleted, whatever worktree holds them: the branches this clone treats as main.
+  const keepBranches = new Set([...refs.map((r) => r.replace(/^origin\//, '')), git(['rev-parse', '--abbrev-ref', 'HEAD'], main)]);
+  const tasks = listTasks(main);
+  const rows = [];
+  for (const wt of parseWorktrees(main)) {
+    if (wt.path === main) continue;
+    const row = { wt, name: basename(wt.path), branch: wt.detached ? '(detached)' : wt.branch || '—' };
+    if (wt.prunable) {
+      const folder = existsSync(wt.path) ? 'its folder is still on disk and is left there' : 'its folder is gone';
+      rows.push({ ...row, remove: true, why: `registration only — git's link to it is broken; ${folder}`, prunable: true });
+      continue;
+    }
+    row.project = projectIdOf(wt.path);
+    const canonical = worktreeOf(wt.path) ?? wt.path;
+    const active = tasks.find((t) => t.fm.status === 'active' && t.fm.worktree === canonical);
+    const session = sessionActivityIn(main, wt.path);
+    const status = (gitRaw(['status', '--porcelain', '--untracked-files=all'], wt.path) ?? '').split('\n').filter(Boolean);
+    const rewritten = status.includes(' M supabase/config.toml') && onlyStackRewrite(wt.path);
+    const dirty = status.filter((l) => !(l === ' M supabase/config.toml' && rewritten));
+    let proof = null;
+    const keep = (why) => rows.push({ ...row, remove: false, why });
+    if (canonical === here) keep('prune is running from inside it');
+    else if (wt.locked) keep('locked (git worktree lock) — unlock it first if it is really finished');
+    else if (active) keep(`active task ${active.fm.id}`);
+    else if (session && Date.now() - session < LIVE_SESSION_MS) keep(`a session worked here ${ageLabel(session)} ago`);
+    else if (dirty.length) keep(`uncommitted: ${dirty.length} file${dirty.length === 1 ? '' : 's'}`);
+    else if (!(proof = mergeProof(wt, main, def))) {
+      const counts = def ? git(['rev-list', '--left-right', '--count', `${def}...${wt.head}`], main) : null;
+      const [behind, ahead] = counts ? counts.split(/\s+/) : ['?', '?'];
+      keep(`no merge proof (behind ${behind}, ahead ${ahead}) — decide by hand`);
+    } else {
+      // An id that sanitises to NOTHING is never stopped: the CLI would filter on the bare label,
+      // which matches every Supabase stack on the machine — the primary one included.
+      const own = row.project && stackLabel(row.project) && mainProject && !sameStack(row.project, mainProject);
+      rows.push({ ...row, remove: true, why: proof, rewritten, stack: own ? row.project : null });
+    }
+  }
+  // A stack still used by a worktree that stays is not this worktree's to stop.
+  for (const r of rows) {
+    if (!r.stack) continue;
+    const sharer = rows.find((k) => !k.remove && k.project && sameStack(k.project, r.stack));
+    if (sharer) { r.sharedWith = sharer.name; r.stack = null; }
+  }
+
+  const removable = rows.filter((r) => r.remove);
+  const out = [`PRUNE — ${rows.length} worktree${rows.length === 1 ? '' : 's'} besides the main checkout${flags.apply ? '' : ' (dry run)'}`];
+  for (const r of rows) {
+    const verdict = r.remove ? 'REMOVE' : 'KEEP';
+    const stack = r.stack ? ` · then stop its stack ${r.stack}`
+      : r.sharedWith ? ` · its stack is shared with ${r.sharedWith}, left running`
+        : r.remove && !r.prunable ? ' · no own stack' : '';
+    const branch = r.remove && r.wt.branch && keepBranches.has(r.wt.branch) ? ` · branch ${r.wt.branch} kept` : '';
+    out.push(`  ${pad(verdict, 7)} ${pad(r.name, 30)} ${pad(r.branch, 34)} ${r.why}${stack}${branch}`);
+  }
+  if (!flags.apply) {
+    out.push('', removable.length
+      ? `Nothing removed. Re-run with --apply to remove ${removable.length}.`
+      : 'Nothing to remove.');
+    process.stdout.write(`${out.join('\n')}\n`);
+    return;
+  }
+
+  out.push('');
+  let failed = false;
+  let pruneRegistrations = false;
+  for (const r of removable) {
+    if (r.prunable) { pruneRegistrations = true; continue; }
+    // The stack's config, read BEFORE the folder holding it goes (see stopStack).
+    if (r.stack) {
+      try { r.stackConfig = readFileSync(join(r.wt.path, 'supabase', 'config.toml'), 'utf8'); } catch { r.stack = null; }
+    }
+    r.result = removeWorktree(main, r, keepBranches);
+    if (!r.result.ok) failed = true;
+    out.push(`  ${r.result.removed ? 'removed' : 'KEPT   '} ${r.name} — ${r.result.note}`);
+  }
+  // Stacks last, once each, and only when EVERY worktree using that stack is actually gone:
+  // stopping with --no-backup deletes the stack's data, which must never happen under a worktree
+  // that ended up staying because its own removal failed.
+  const stopped = new Set();
+  for (const r of removable) {
+    if (!r.stack || [...stopped].some((s) => sameStack(s, r.stack))) continue;
+    stopped.add(r.stack);
+    const users = removable.filter((u) => u.stack && sameStack(u.stack, r.stack));
+    const stayed = users.filter((u) => !u.result?.removed);
+    if (stayed.length) {
+      failed = true;
+      out.push(`  stack ${r.stack} left running — ${stayed.map((u) => u.name).join(', ')} could not be removed`);
+    } else if (stopStack(main, r.stackConfig)) {
+      out.push(`  stack ${r.stack} stopped (its data volumes deleted)`);
+    } else {
+      failed = true;
+      out.push(`  stack ${r.stack} could NOT be stopped — run: npx supabase stop --no-backup --project-id ${stackLabel(r.stack)}`);
+    }
+  }
+  if (pruneRegistrations) {
+    if (gitRaw(['worktree', 'prune'], main) === null) {
+      failed = true;
+      out.push('  could not drop the broken registrations — run `git worktree prune`');
+    } else {
+      out.push('  dropped the registrations git reported as broken (any folder left on disk is untouched)');
+    }
+  }
+  process.stdout.write(`${out.join('\n')}\n`);
+  if (failed) process.exit(1);
+}
+
+/**
+ * Stop a removed worktree's stack by running the repo's own Supabase CLI in a throwaway folder
+ * holding only a copy of that worktree's config.toml. Not `--project-id`: `start` labels
+ * containers with a sanitised, length-capped id while `stop --project-id` matches the raw one, so
+ * a long worktree name turns a raw-id stop into a silent no-op. From the config, the CLI works the
+ * id out exactly as `start` did. And never inside a real checkout, where `supabase stop` acts on
+ * whatever that checkout's config names — in the main checkout, the PRIMARY stack.
+ */
+function stopStack(main, config) {
+  const scratch = mkdtempSync(join(tmpdir(), 'work-prune-stack-'));
+  try {
+    mkdirSync(join(scratch, 'supabase'), { recursive: true });
+    writeFileSync(join(scratch, 'supabase', 'config.toml'), config);
+    // The pinned CLI, not whatever `npx` would fetch; npx only when the repo has none installed.
+    const pinned = join(main, 'node_modules', '.bin', 'supabase');
+    const [cmd, args] = existsSync(pinned) ? [pinned, ['stop', '--no-backup']] : ['npx', ['supabase', 'stop', '--no-backup']];
+    execFileSync(cmd, args, { cwd: scratch, stdio: 'ignore', timeout: 120000 });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try { rmSync(scratch, { recursive: true, force: true }); } catch { /* a temp dir */ }
+  }
+}
+
+/**
+ * Take one proven-finished worktree apart, reversible step first. The config.toml second-stack.sh
+ * rewrote is put back (a copy kept), then `git worktree remove` WITHOUT --force — the one step
+ * git can refuse, and if it does, config.toml is restored. Then the branch. The stack is NOT
+ * stopped here: cmdPrune does that last, once every worktree using it is known to be gone.
+ */
+function removeWorktree(main, r, keepBranches) {
+  const path = r.wt.path;
+  const configFile = join(path, 'supabase', 'config.toml');
+  let saved = null;
+  if (r.rewritten) {
+    try { saved = readFileSync(configFile, 'utf8'); } catch { return { ok: false, removed: false, note: 'could not read its config.toml — left exactly as it was' }; }
+    gitRaw(['checkout', '--', 'supabase/config.toml'], path);
+  }
+  if (gitRaw(['worktree', 'remove', path], main) === null) {
+    // git can fail part-way — registration dropped, some files left — so say which it was.
+    if (parseWorktrees(main).some((w) => w.path === path)) {
+      if (saved !== null) try { writeFileSync(configFile, saved); } catch { /* reported by the note */ }
+      return { ok: false, removed: false, note: 'git refused to remove it (it changed since the check?) — left as it was' };
+    }
+    return { ok: false, removed: false, note: `git dropped its registration but could not delete everything in ${path} — look before deleting the rest` };
+  }
+  const notes = ['worktree removed'];
+  let ok = true;
+  // -D, never -d: `-d` checks the branch against the MAIN checkout's HEAD, not the default
+  // branch, and refuses a squash-merged branch outright. Safe only because of the merge proof —
+  // and never for a branch this clone treats as main, whichever worktree happened to hold it.
+  if (r.wt.branch && keepBranches.has(r.wt.branch)) notes.push(`branch ${r.wt.branch} kept (a main branch)`);
+  else if (r.wt.branch) {
+    const deleted = gitRaw(['branch', '-D', r.wt.branch], main) !== null;
+    if (!deleted) ok = false;
+    notes.push(deleted ? `branch ${r.wt.branch} deleted` : `branch ${r.wt.branch} could not be deleted`);
+  }
+  return { ok, removed: true, note: notes.join('; ') };
+}
+
 /** A path as a shell word: bare when it is safe, single-quoted when it is not. */
 function shellQuote(s) {
   return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`;
@@ -1156,12 +1465,13 @@ function parseWorktrees(main) {
   for (const line of raw.split('\n')) {
     if (line.startsWith('worktree ')) {
       if (cur) out.push(cur);
-      cur = { path: line.slice(9), branch: '', head: '', prunable: false, detached: false };
+      cur = { path: line.slice(9), branch: '', head: '', prunable: false, detached: false, locked: false };
     } else if (!cur) continue;
     else if (line.startsWith('HEAD ')) cur.head = line.slice(5);
     else if (line.startsWith('branch ')) cur.branch = line.slice(7).replace('refs/heads/', '');
     else if (line.startsWith('prunable')) cur.prunable = true;
     else if (line === 'detached') cur.detached = true;
+    else if (line === 'locked' || line.startsWith('locked ')) cur.locked = true;
   }
   if (cur) out.push(cur);
   return out;
@@ -1343,8 +1653,9 @@ switch (verb) {
   case 'overlap': await cmdOverlap(main, args); break;
   case 'spawn': await cmdSpawn(main, args); break;
   case 'integrate': await cmdIntegrate(main, cwd, args); break;
+  case 'prune': cmdPrune(main, cwd, args); break;
   default:
     process.stderr.write('work: usage: park | claim | done | drop | packet | touch | snapshot'
-      + ' | handoff | promote | archive | board | overlap | spawn | integrate\n');
+      + ' | handoff | promote | archive | board | overlap | spawn | integrate | prune\n');
     process.exit(1);
 }

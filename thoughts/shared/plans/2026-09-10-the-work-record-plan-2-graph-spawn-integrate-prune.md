@@ -329,12 +329,29 @@ REMOVE only merged-clean, matching-oid and equal-id ("no own stack"), the rest K
 nothing on disk changes; `--apply` → exactly those removed with their branches, the rest intact.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` pass; prune cases pass
+- [x] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` pass; prune cases pass
+      — 3069 passed, 12 skipped, build clean. Twenty-one worktree cases across two fixtures, every
+      safety rule mutation-checked (all bite, bar `worktree remove` without --force — a backstop
+      behind the uncommitted check, for a race no test stages). Three review rounds reshaped it:
+      a session is seen through EVERY transcript of the repo, subagents included (one launched in
+      the main checkout that entered the worktree writes under main's folder); the caller's own
+      worktree, locked worktrees and main branches are never removed; the config.toml exemption
+      is only for second-stack.sh's own rewrite (a fixture as rich as the real one caught
+      `# pop3_port`); the worktree goes FIRST and its stack only after, once per stack, when every
+      user of it is gone — stopped by the removed worktree's own config from a throwaway folder,
+      because `stop --project-id` matches the raw id while `start` labels a sanitised, 40-char one.
 
 ### Live verification (agent-executable)
 - Prerequisites: none (dry run only).
-- [ ] `npm run work -- prune` on the real repo: every REMOVE row is `yes`/`squash` in `npm run
+- [x] `npm run work -- prune` on the real repo: every REMOVE row is `yes`/`squash` in `npm run
       board`'s merged column; unmerged worktrees are KEEP; nothing is removed.
+      — PASSED (fresh-context verifier, re-derived every row with its own git/gh/transcript
+      evidence: 10/10 verdicts agree; worktrees, containers and statuses byte-identical after).
+      REMOVE 6: portal-wt (registration only — its folder stays on disk), decision-index,
+      nudge-cap, retraction-fold-impact, spine-voice (on origin/main), rung-9b (merged PR #214,
+      head oid = tip). KEEP 4: the decline worktree and route-deeplink (uncommitted),
+      multi-tech-assignment (no merge proof), work-record (prune runs from it). Re-run after the
+      last review round: the same six.
 
 ### Manual verification
 - [ ] The operator reads the dry run and runs `npm run work -- prune --apply` on the real repo,

@@ -7137,7 +7137,7 @@ describe('rung 10 — inbound requests reach the planner', () => {
     expect(PLANNER_SYSTEM).toContain('A LINE BREAK IS ALLOWED');
   });
 
-  test('(15b) the doctrine looks before it closes on a message, and holds work still in progress', () => {
+  test('(15b) the doctrine says look before you close on a message — and nothing more', () => {
     // USER RULING, 2026-09-10. Live specimen: commitment item 100282cc closed
     // "answered" at 20:30:29 on a seat's reply ending "Asking Sam for visit
     // times to book." — one model call, zero reads — while the visit was
@@ -7145,10 +7145,25 @@ describe('rung 10 — inbound requests reach the planner', () => {
     // fix needs (`hold`, `spine_read`, and citable lookups since build 6), so
     // the ruling is DOCTRINE, not a rail: closing stays the planner's judgment.
     // Per-tool citation wiring back to the item was considered and rejected.
+    //
+    // USER RULING, 2026-09-11 — THE WHAT, NOT THE HOW. The first version (#226)
+    // also told the planner to close QUOTING what a lookup showed, and to hold
+    // "until it has had time to land". The first contradicted the record basis
+    // a few lines above ("you must not invent [a quote]"); the second named no
+    // date, which a hold requires. The first deciding close after that deploy
+    // took 38 turns where every earlier close took one. "We're enforcing too
+    // much of our own constraints on the planner." What remains is the look,
+    // and nothing about holding: "when it looks before close and finds that the
+    // information isn't there, it'll naturally make an informed decision to
+    // hold or not." Before re-adding a HOW to this line, re-read that.
     expect(PLANNER_SYSTEM).toContain('LOOK BEFORE YOU CLOSE ON A MESSAGE');
-    expect(PLANNER_SYSTEM).toContain('A MESSAGE SAYING THE WORK IS STILL GOING IS NOT AN ANSWER');
-    // …and it must not take the judgment away: words alone can still answer.
-    expect(PLANNER_SYSTEM).toContain('Words alone can still answer a question');
+    expect(PLANNER_SYSTEM).toContain('look it up before you call the gap done.');
+    expect(PLANNER_SYSTEM).not.toContain('close quoting what the lookup showed you');
+    expect(PLANNER_SYSTEM).not.toContain('IS NOT AN ANSWER');
+    // …which is only enough because the planner already KNOWS `hold`. The
+    // doctrine leans on the verb list for it; pinned so that dependency cannot
+    // be deleted out from under this line.
+    expect(PLANNER_SYSTEM).toContain('hold     — it should wait, and you say until when.');
   });
 
   // ---- RUNG 10B: the kind with no customer on it --------------------------

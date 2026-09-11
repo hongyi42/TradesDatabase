@@ -2,7 +2,7 @@
 date: 2026-09-10
 task: The shared work record, plan 2 — a function-level code graph read by the TypeScript compiler (task footprints from git plus the record, per-function change detection, sized overlaps), the pre-edit hook naming the functions a sibling or main changed, `spawn` (a parked finding into its own worktree after a sized overlap check that stops for the operator), `integrate` (what landed under you, then merge, gates, focused review), `prune` (merged worktrees removed safely), and plan-two / integrate-two retired
 research: thoughts/shared/research/2026-09-09-code-graph-as-source-of-truth.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -51,7 +51,42 @@ Inputs: the three 2026-09-09 research docs; `…/findings/2026-09-10-settings-js
 - **prune safety** — dry run by default; never the main checkout, an active task, a session active
   in the last 24 h, uncommitted work (bar `supabase/config.toml`), or a branch without a merge
   proof by commit (not by name); `supabase stop` only where `project_id` differs from main's
-  (engineering memory 2026-08-19: otherwise it stops the PRIMARY stack).
+  (engineering memory 2026-08-19: otherwise it stops the PRIMARY stack). The stop runs from a
+  throwaway folder holding the worktree's config, never `--project-id`: Supabase CLI v2.107.0's
+  `stop --project-id` filters on the id as typed ([stop.go#L19-L24](https://github.com/supabase/cli/blob/v2.107.0/apps/cli-go/internal/stop/stop.go#L19-L24)),
+  while loading config.toml sanitises it — runs of other characters to `_`, leading `_.-`
+  trimmed, cut to 40 bytes, no ellipsis ([config.go#L1036-L1053](https://github.com/supabase/cli/blob/v2.107.0/apps/cli-go/pkg/config/config.go#L1036-L1053),
+  applied at [#L825-L829](https://github.com/supabase/cli/blob/v2.107.0/apps/cli-go/pkg/config/config.go#L825-L829));
+  the npm CLI's `stop` proxies to that Go code ([stop.handler.ts](https://github.com/supabase/cli/blob/v2.107.0/apps/cli/src/legacy/commands/stop/stop.handler.ts#L5-L14)).
+- **Final review (2026-09-11, assistant; three rounds)** — fixed, each with a test that fails
+  without it (36 deliberate breaks across the rounds, all caught). The rule behind all of them: a
+  check that could not look is never "none".
+  - *Incomplete checks:* a side git cannot read — a failed status or diff, a `.git` pointing
+    nowhere, a folder that has lost its `.git`, no merge-base with main — is a `?  not checked`
+    item, which stops spawn. spawn and integrate check every active task, its folder gone or not
+    (the branch is read instead).
+  - *Paths:* `files:` entries are repo paths (`./`, absolute); a directory is expanded — at main
+    for a finding, from the checkout's disk for a running task — and a path not in main stops spawn.
+  - *Re-exports are symbols,* judged by what each used name reaches now (`lostThrough`): gone,
+    or a type alone where the importer needs a value (`export type *`, `import type` passed back
+    out) → MED; re-pointed at a declaration with another signature → MED — "the name still
+    resolves" is not enough; same signature, other body → LOW; narrowed to the names still used,
+    or re-pointed at an identical copy (a moved function) → nothing, types re-pointed for a
+    type-only importer included (`src/db/index.ts`'s `export type { Database, Json }`).
+  - *Reading:* a subject with no checkout is read and resolved at its commit. An unannotated
+    literal const's shape is its signature, its value its body (prompt text → LOW, not MED).
+    Mentions are every word but `default` — reading only backticked names was tried in round 1
+    and let spawn proceed alone (findings backtick paths and commands, not function names).
+  - *prune:* keeps a worktree holding ignored files that do not rebuild themselves (node_modules,
+    dist, `.env.test`, `supabase/.branches` and `.temp`, a byte-identical `.env` do), keeps one
+    whose status git cannot read, and deletes a branch by the proven commit (`update-ref -d`).
+    It reads other worktrees with `--no-optional-locks` and a 30 s limit (not codified: a held
+    index lock or a hung git cannot be staged reliably in a test). spawn names any task active in
+    the record with neither worktree nor branch left, so it can be dropped, not proceeded past.
+  - **Kept as designed:** the hook's once-per-file marker — later news about a file already told
+    of this session is not repeated (the plan's call: its fast path bounds an edit's cost).
+    **Known, not fixed:** a `git show <base>:<file>` that fails reads as "the file is new", so
+    every export looks added; a function moved to another file and re-exported is still a MED.
 - **Out of scope, parked at Phase 1 start** — `server.test.ts:197` `toHaveLength(17)` → membership
   assertion; split `src/mcp/server.ts`'s tool registry by domain (research §6.1 fixes 1, 3).
 
@@ -127,12 +162,18 @@ HIGH with both line counts; (c) A `g`, B `f` → LOW same file only; (d) comment
 mentioning `g` vs A → HIGH; (g) B edits `use2.ts` → MED through the barrel.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint` (new file linted), `npm test`, `node --check scripts/code-graph.mjs`; cases (a)–(g) pass
+- [x] `npm run typecheck`, `npm run lint` (new file linted), `npm test`, `node --check scripts/code-graph.mjs`; cases (a)–(g) pass
+      — 3036 passed, 12 skipped; `code-graph.test.ts` 22/22 (a–g plus 15 from review). Every fix
+      mutation-checked: reverting it fails its own test (13 mutations, all caught).
 
 ### Live verification (agent-executable)
 - Prerequisites: none (read-only git).
-- [ ] `npm run work -- overlap feat/the-decline-verb rescue/route-deeplink-staged` names symbols in research §4.2's
+- [x] `npm run work -- overlap feat/the-decline-verb rescue/route-deeplink-staged` names symbols in research §4.2's
       five shared files in < 5 s (report the time); cross-check one item with `git diff origin/main...<branch> -- <file>`.
+      — PASSED (fresh-context verifier): 1.26–1.51 s; all five files named with symbols; four items
+      cross-checked by hand in git (two HIGH, two MED, incl. a 10-line count and a 5-sites-in-2-files
+      count), no contradictions. It found one real gap, fixed: the rescue branch DELETES
+      `watchers.ts`, which was reported "same file only" — now HIGH `deleted file`.
 
 ### Manual verification — none
 
@@ -166,14 +207,26 @@ after B merges `origin/main`; nothing changed → no graph lines; a second edit 
 → silent; the `hookSpecificOutput` shape asserted as today.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass (existing hook cases unchanged); new cases pass
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass (existing hook cases unchanged); new cases pass
+      — 3049 passed, 12 skipped; `decisions-hook.test.ts` 13/13 untouched; `decisions-hook-graph.test.ts`
+      13/13. Three review rounds added: a files-list floor that survives a throwing library, a 1.5 s
+      graph budget + 1 s per-call git cap (one wedged sibling: 1.38 s, was 3.3 s; five: 2.4 s, was
+      34 s at eleven), the marker checked before any sibling git work (sentinel-pinned), and orphaned
+      worktree folders no longer blamed for main's edits. Each pinned by a mutation that fails its test.
 
 ### Live verification (agent-executable)
 - Prerequisites: `claude` CLI; everything inside the implementation worktree.
-- [ ] In a probe worktree + probe task, change (uncommitted) the parameters of an exported function
+- [x] In a probe worktree + probe task, change (uncommitted) the parameters of an exported function
       in a `src/db/*.ts` re-exported by `src/db/index.ts`. From the implementation worktree, `claude -p
       --allowedTools Edit` appends a comment to a file importing it **through `../db/index.js`** and quotes
       any "In flight right now" block verbatim → the signature line. Revert; drop and remove the probe.
+      — PASSED (fresh-context verifier): `listManagersWithTelegram` (src/db/technicians.ts) widened in
+      the probe; `src/calls/notify.ts` edited through `../db/index.js`. The session's transcript
+      (cross-channel, not the model's words) carries `hook_additional_context` on `PreToolUse:Edit`:
+      "SIBLING probe-hook-graph · 20260911-probe-hook-graph changed the signature of
+      `listManagersWithTelegram` (src/db/technicians.ts), which this file imports — coordinate before
+      relying on it". Cleanup verified. Side effect found and parked: the probe session's own `touch`
+      and Stop hooks wrote its probe edit into the implementation task's record.
 
 ### Manual verification — none
 
@@ -208,13 +261,27 @@ handoff carries the report; a finding naming an untouched file → proceeds with
 spawning an `active` task → exit 1.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass; spawn cases pass
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass; spawn cases pass
+      — 3058 passed, 12 skipped; 9 spawn cases (the plan's 4 plus 5 from three review rounds), each
+      mutation-checked. Review fixes: the fetch can never prompt (GIT_TERMINAL_PROMPT=0, BatchMode
+      ssh — verified by hand in a pty against a 401 server: plain `git fetch` printed "Username for",
+      spawn returned in 0 s, no orphaned helper); every refusal (path exists, registered-but-missing,
+      stale task at the path, branch exists) happens before anything is created; a failed add
+      deletes only a branch it made and shows git's `fatal:` line; claim + handoff are one locked
+      write, and a lock it cannot take undoes the worktree instead of reporting success; a finding
+      that names no files stops as unchecked whenever another task is active.
 
 ### Live verification (agent-executable)
 - Prerequisites: none beyond the repo; everything inside the implementation worktree.
-- [ ] With Phase 2's probe setup, park a probe finding naming the probe's file and mentioning its
+- [x] With Phase 2's probe setup, park a probe finding naming the probe's file and mentioning its
       function → `spawn` stops with HIGH and creates nothing (`git worktree list` before/after);
       `--proceed` → the worktree and its board row exist (`npm run board`). Clean up both probes.
+      — PASSED (fresh-context verifier, on the real repo): exit 2 in 1.45 s with one HIGH row
+      (`src/calls/redact.ts › redactSensitive`); `git worktree list` byte-identical, no `work/*`
+      branch, finding still open; `--proceed` → exit 0, `work/<slug>` with no upstream, task active
+      there with the HIGH row in its handoff, board row present; the two real active tasks
+      contributed nothing, as their footprints predict. Cleanup verified. This ran before the review
+      fixes above, which leave that path unchanged and are pinned by the tests.
 
 ### Manual verification — none
 
@@ -245,15 +312,34 @@ subject; after B merges the default ref, a re-run lists nothing landed (review: 
 A and B both change `g` → HIGH under "whom you affect"; no branch ref moves (`git rev-parse`).
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` pass; integrate cases pass
-- [ ] `grep -rn "plan-two\|integrate-two" CLAUDE.md .claude/commands .claude/workflows .claude/hooks` returns nothing
+- [x] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` pass; integrate cases pass
+      — 3065 passed, 12 skipped, build clean; 7 integrate cases (the plan's 3 plus 4 from review),
+      each mutation-checked. Review fixes: commits looked up in main's CALLING files when the task
+      changed the function; main's base taken from the task's guarded base (an orphaned folder
+      no longer reports a false clean); no default branch fails instead of printing "none"; the
+      base printed and in `--json` for `/integrate` to diff from after its merge; a side that only
+      LISTS a file is described as listing it, never as changing it.
+- [x] `grep -rn "plan-two\|integrate-two" CLAUDE.md .claude/commands .claude/workflows .claude/hooks` returns nothing
+      — exit 1 (no matches); `.claude/workflows/` is gone. Also rewritten, found by review:
+      `docs/onboarding.md` and the RPI rule in `docs/engineering-memory.md`.
 
 ### Live verification (agent-executable)
 - Prerequisites: none.
-- [ ] `npm run work -- integrate` on the implementation task: every "landed" item's commit
+- [x] `npm run work -- integrate` on the implementation task: every "landed" item's commit
       appears in `git log <base>..origin/main -- <file>` (cross-check by hand).
-- [ ] Before opening the PR, the implementing session runs `/integrate` on its own task; evidence:
-      the report, the merge commit, gate output.
+      — PASSED (fresh-context verifier): on this task, correctly "none" (base = origin/main
+      4c2eb14, `git diff` confirms 0 files). Run also on the OTHER active task (planner copy,
+      2 commits behind): 4 items — MED `plannerPrompt.ts › PLANNER_SYSTEM` + 3 LOW — each with
+      commit `6793555 (#226)`, all matching `git log`, the importing line, and the +28-line size.
+      Refs and working tree byte-identical before and after.
+- [x] Before opening the PR, the implementing session runs `/integrate` on its own task; evidence:
+      the report, the merge commit, gate output. — DONE 2026-09-11, after the final review's fixes
+      (0f2ff33): fetch succeeded; `base: 4c2eb14… (compared with origin/main at 4c2eb14)`, LANDED
+      "none that this task touches or calls", WHOM YOU AFFECT "no other active task overlaps this
+      one"; `git merge origin/main` → "Already up to date." (no merge commit: main had not moved);
+      gates as in the final-review commit — typecheck 0, lint 0, build 0, tests 3079 passed with one
+      unrelated timing flake (src/model/toolLoop.test.ts, 1 failure in 3 isolated reruns; parked
+      20260911-toolloop-test-ts-wall-clock-budget-test).
 
 ### Manual verification — none
 
@@ -284,16 +370,43 @@ REMOVE only merged-clean, matching-oid and equal-id ("no own stack"), the rest K
 nothing on disk changes; `--apply` → exactly those removed with their branches, the rest intact.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` pass; prune cases pass
+- [x] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` pass; prune cases pass
+      — 3069 passed, 12 skipped, build clean. Twenty-one worktree cases across two fixtures, every
+      safety rule mutation-checked (all bite, bar `worktree remove` without --force — a backstop
+      behind the uncommitted check, for a race no test stages). Three review rounds reshaped it:
+      a session is seen through EVERY transcript of the repo, subagents included (one launched in
+      the main checkout that entered the worktree writes under main's folder); the caller's own
+      worktree, locked worktrees and main branches are never removed; the config.toml exemption
+      is only for second-stack.sh's own rewrite (a fixture as rich as the real one caught
+      `# pop3_port`); the worktree goes FIRST and its stack only after, once per stack, when every
+      user of it is gone — stopped by the removed worktree's own config from a throwaway folder,
+      because `stop --project-id` matches the raw id while `start` labels a sanitised, 40-char one.
 
 ### Live verification (agent-executable)
 - Prerequisites: none (dry run only).
-- [ ] `npm run work -- prune` on the real repo: every REMOVE row is `yes`/`squash` in `npm run
+- [x] `npm run work -- prune` on the real repo: every REMOVE row is `yes`/`squash` in `npm run
       board`'s merged column; unmerged worktrees are KEEP; nothing is removed.
+      — PASSED (fresh-context verifier, re-derived every row with its own git/gh/transcript
+      evidence: 10/10 verdicts agree; worktrees, containers and statuses byte-identical after).
+      REMOVE 6: portal-wt (registration only — its folder stays on disk), decision-index,
+      nudge-cap, retraction-fold-impact, spine-voice (on origin/main), rung-9b (merged PR #214,
+      head oid = tip). KEEP 4: the decline worktree and route-deeplink (uncommitted),
+      multi-tech-assignment (no merge proof), work-record (prune runs from it). Re-run after the
+      last review round: the same six.
 
 ### Manual verification
-- [ ] The operator reads the dry run and runs `npm run work -- prune --apply` on the real repo,
+- [x] The operator reads the dry run and runs `npm run work -- prune --apply` on the real repo,
       then confirms with `git worktree list` and `docker ps` that only the listed worktrees and
       their stacks are gone. (Destructive on real checkouts: the operator's call, not the agent's.)
+      — DONE by the operator 2026-09-11 (run as `node .claude/worktrees/work-record/scripts/work.mjs
+      prune --apply` from the main checkout, the verb not being on main yet — with Phase 5's code,
+      85d7cbd, before the final review's fixes). `git worktree list`
+      after: main, the decline worktree, multi-tech-assignment, route-deeplink, work-record — the
+      four KEEPs exactly; the six REMOVEs gone with their branches (`git branch --list` empty for
+      all five named ones); portal-wt's folder still on disk, as reported. `docker ps` by project:
+      12 `TradesDatabase` (primary, untouched) + 12 `TradesDatabase-work-record`; no spine-voice or
+      rung-9b containers. Re-checked with the final code (dry run): the same four KEEPs for the
+      same reasons, "Nothing to remove." — the new ignored-files rule keeps nothing it should not
+      (three of the four hold `supabase/.branches/`, which `supabase start` writes).
 
-*Pause after Phase 5 for the manual check. Phases 1–4 have no manual items.*
+*Pause after Phase 5 for the manual check. Phases 1–4 have no manual items.* — confirmed.

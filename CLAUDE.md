@@ -41,7 +41,8 @@ that edits `settings.json`, restart the session; an old one keeps its original h
 silently, since every hook command here ends in `; true` so it can never cost you an edit.
 
 Find something out of scope mid-task? **`/park` it** — that is what lets it be picked up in
-parallel instead of serialized behind the current work. Finishing a task? **`/handoff`** records
+parallel instead of serialized behind the current work, and **`/spawn <id>`** is what picks it up:
+its own worktree, after a sized check against everything in flight. Finishing a task? **`/handoff`** records
 what a diff cannot: what was decided, what you assumed, what is still open. Then `work.mjs done
 <id>` and `work.mjs promote <id>` writes it to `thoughts/shared/findings/` and archives it out of
 the live record. Never promote a task that is not `done` or `dropped`.
@@ -155,21 +156,26 @@ gate — not the code diff.
 Artifacts live in `thoughts/shared/research/` and `thoughts/shared/plans/`. Commit them alongside
 the code changes they describe.
 
-### Two concurrent features — plan both first
+### Parallel work — park, spawn, integrate
 
-When building two features at once, **never start implementing either until both plans exist**:
-research + plan are read-only, so run both cycles concurrently, then compare the two plans' file
-footprints. Disjoint footprints → implement in parallel; overlapping → stack them (land A, then
-re-check/rebase B's plan on the result). Parallel implementation runs as **two separate Claude
-Code sessions**, each in its own `git worktree` running `/implement` (keeps the skill's
-stop-and-ask human gates intact — don't wrap `/implement` in subagents, which can't pause).
+Parallel work is many threads, not two features known up front. Out of scope mid-task → `/park`
+it. Parked and able to start now → **`/spawn <id>`**: it checks the item against every active
+task with the code graph (`scripts/code-graph.mjs` — exported functions, their signatures, who
+calls them, read by the TypeScript compiler), and on any overlap it **stops and shows how big each
+one is; the operator decides** before `--proceed` (user, 2026-09-10). It cuts
+`.claude/worktrees/<slug>` from main, claims the task there, and prints the command that starts
+its session — launched *inside* that worktree, as its own Claude Code session running
+`/implement` (keeps the skill's stop-and-ask human gates intact — don't wrap `/implement` in
+subagents, which can't pause). While work runs, the pre-edit hook names what a sibling or main has
+changed in a function the file imports; `npm run work -- overlap <a> <b>` gives the full sized
+picture for any two tasks or branches. Before a task lands, **`/integrate`**: it reports what
+main landed since the task's base that the task touches or calls, and whom it affects; then merge
+main (never rebase), run the gates, and review only those items.
 
 Each extra worktree gets its **own local Supabase stack** via `scripts/second-stack.sh [N]` (run
-inside the worktree): it rewrites that worktree's `supabase/config.toml` — unique `project_id`,
+inside the worktree; `spawn` prints a free N): it rewrites that worktree's `supabase/config.toml` — unique `project_id`,
 ports shifted 543xx→54(3+N)xx, leave uncommitted — starts the stack, and generates `.env.test`,
 so `npm test` and `npm run seed:local` target that stack automatically (`testEnvGuard` is
 host-based and port-agnostic, so the pilot-DB protection still holds). Note: a fresh worktree has
 no `.env`, so key-gated live-model tests are skipped there; copy `.env` in if a phase needs them.
-Integration gate after both features pass alone: merge A → `npm test` → merge B → `npm test` →
-review the **combined** diff for cross-feature interactions. Scratch-stack cleanup:
-`npx supabase stop --no-backup` inside the worktree.
+Scratch-stack cleanup: `npx supabase stop --no-backup` inside the worktree.

@@ -54,7 +54,8 @@ export default tseslint.config(
     // for one hard reason: hooks invoke it from worktrees that may have no `dist/` and no
     // `npm ci` yet, so it cannot depend on a build step. Same bargain as spine-eval above —
     // it sits outside typecheck, so lint is the only gate it has, and must not be vacuous.
-    files: ['scripts/work.mjs'],
+    // scripts/code-graph.mjs is the library its graph verbs import, under the same bargain.
+    files: ['scripts/work.mjs', 'scripts/code-graph.mjs'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',

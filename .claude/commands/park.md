@@ -48,7 +48,8 @@ the files involved.
    origin automatically, so the finding remembers where it came from.
 
 4. **Tell the user** the id, the title, and one sentence on what you parked. Then continue the
-   work you interrupted.
+   work you interrupted. A parked item that can start now, in parallel, is started with
+   `/spawn <id>` — never by picking it up in this session.
 
 ## Hard constraints
 

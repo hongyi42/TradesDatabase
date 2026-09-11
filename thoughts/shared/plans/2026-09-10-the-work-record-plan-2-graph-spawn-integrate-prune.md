@@ -55,20 +55,31 @@ Inputs: the three 2026-09-09 research docs; `…/findings/2026-09-10-settings-js
   throwaway folder holding the worktree's config, never `--project-id`: Supabase CLI v2.107.0's
   `stop --project-id` filters on the id as typed ([stop.go#L19-L24](https://github.com/supabase/cli/blob/v2.107.0/apps/cli-go/internal/stop/stop.go#L19-L24)),
   while loading config.toml sanitises it — runs of other characters to `_`, leading `_.-`
-  trimmed, cut to 40 ([config.go#L1043-L1053](https://github.com/supabase/cli/blob/v2.107.0/apps/cli-go/pkg/config/config.go#L1043-L1053),
+  trimmed, cut to 40 bytes, no ellipsis ([config.go#L1036-L1053](https://github.com/supabase/cli/blob/v2.107.0/apps/cli-go/pkg/config/config.go#L1036-L1053),
   applied at [#L825-L829](https://github.com/supabase/cli/blob/v2.107.0/apps/cli-go/pkg/config/config.go#L825-L829));
   the npm CLI's `stop` proxies to that Go code ([stop.handler.ts](https://github.com/supabase/cli/blob/v2.107.0/apps/cli/src/legacy/commands/stop/stop.handler.ts#L5-L14)).
-- **Final review (2026-09-11, assistant)** — fixed, each with a test that fails without it: a side
-  git cannot read is a `?  not checked` item, never "none" (it stops spawn); a finding's `files:`
-  are repo paths (`./`, absolute, directories expanded) and a path not in main stops spawn;
-  re-exports are symbols, so a barrel dropping one is a removal to its importers; a subject with
-  no checkout is read and resolved at its commit, not the main checkout's disk; an unannotated
-  literal const's shape is its signature and its value its body (a prompt-text edit is LOW, not
-  MED); mentions prefer backticked names and never `default`; prune keeps a worktree holding
-  ignored files that are not regenerable, keeps one whose status git cannot read, and deletes a
-  branch by the proven commit (`update-ref -d <ref> <sha>`), so a commit landing mid-run survives.
-  **Kept as designed:** the hook's once-per-file marker — later news about a file already told
-  of this session is not repeated (the plan's call: its fast path is what bounds an edit's cost).
+- **Final review (2026-09-11, assistant; two rounds)** — fixed, each with a test that fails
+  without it. The rule behind all of them: a check that could not look is never "none".
+  - *Incomplete checks:* a side git cannot read — a failed status or diff, a `.git` pointing
+    nowhere, a folder that has lost its `.git`, no merge-base with main — is a `?  not checked`
+    item, which stops spawn. spawn and integrate check every active task, its folder gone or not
+    (the branch is read instead).
+  - *Paths:* `files:` entries are repo paths (`./`, absolute); a directory is expanded — at main
+    for a finding, from the checkout's disk for a running task — and a path not in main stops spawn.
+  - *Re-exports are symbols:* a barrel that stops passing a used name on as a value (dropped,
+    or made `export type`) is MED to its importers; one narrowed to the names still used, or
+    re-pointed, is nothing (`lostThrough`).
+  - *Reading:* a subject with no checkout is read and resolved at its commit. An unannotated
+    literal const's shape is its signature, its value its body (prompt text → LOW, not MED).
+    Mentions are every word but `default` — reading only backticked names was tried in round 1
+    and let spawn proceed alone (findings backtick paths and commands, not function names).
+  - *prune:* keeps a worktree holding ignored files that do not rebuild themselves (node_modules,
+    dist, `.env.test`, `supabase/.branches` and `.temp`, a byte-identical `.env` do), keeps one
+    whose status git cannot read, and deletes a branch by the proven commit (`update-ref -d`).
+  - **Kept as designed:** the hook's once-per-file marker — later news about a file already told
+    of this session is not repeated (the plan's call: its fast path bounds an edit's cost).
+    **Known, not fixed:** a `git show <base>:<file>` that fails reads as "the file is new", so
+    every export looks added; a function moved to another file and re-exported is still a MED.
 - **Out of scope, parked at Phase 1 start** — `server.test.ts:197` `toHaveLength(17)` → membership
   assertion; split `src/mcp/server.ts`'s tool registry by domain (research §6.1 fixes 1, 3).
 
@@ -314,8 +325,14 @@ A and B both change `g` → HIGH under "whom you affect"; no branch ref moves (`
       2 commits behind): 4 items — MED `plannerPrompt.ts › PLANNER_SYSTEM` + 3 LOW — each with
       commit `6793555 (#226)`, all matching `git log`, the importing line, and the +28-line size.
       Refs and working tree byte-identical before and after.
-- [ ] Before opening the PR, the implementing session runs `/integrate` on its own task; evidence:
-      the report, the merge commit, gate output. — runs at landing, after Phase 5.
+- [x] Before opening the PR, the implementing session runs `/integrate` on its own task; evidence:
+      the report, the merge commit, gate output. — DONE 2026-09-11, after the final review's fixes
+      (0f2ff33): fetch succeeded; `base: 4c2eb14… (compared with origin/main at 4c2eb14)`, LANDED
+      "none that this task touches or calls", WHOM YOU AFFECT "no other active task overlaps this
+      one"; `git merge origin/main` → "Already up to date." (no merge commit: main had not moved);
+      gates as in the final-review commit — typecheck 0, lint 0, build 0, tests 3079 passed with one
+      unrelated timing flake (src/model/toolLoop.test.ts, 1 failure in 3 isolated reruns; parked
+      20260911-toolloop-test-ts-wall-clock-budget-test).
 
 ### Manual verification — none
 
@@ -375,11 +392,14 @@ nothing on disk changes; `--apply` → exactly those removed with their branches
       then confirms with `git worktree list` and `docker ps` that only the listed worktrees and
       their stacks are gone. (Destructive on real checkouts: the operator's call, not the agent's.)
       — DONE by the operator 2026-09-11 (run as `node .claude/worktrees/work-record/scripts/work.mjs
-      prune --apply` from the main checkout, the verb not being on main yet). `git worktree list`
+      prune --apply` from the main checkout, the verb not being on main yet — with Phase 5's code,
+      85d7cbd, before the final review's fixes). `git worktree list`
       after: main, the decline worktree, multi-tech-assignment, route-deeplink, work-record — the
       four KEEPs exactly; the six REMOVEs gone with their branches (`git branch --list` empty for
       all five named ones); portal-wt's folder still on disk, as reported. `docker ps` by project:
       12 `TradesDatabase` (primary, untouched) + 12 `TradesDatabase-work-record`; no spine-voice or
-      rung-9b containers.
+      rung-9b containers. Re-checked with the final code (dry run): the same four KEEPs for the
+      same reasons, "Nothing to remove." — the new ignored-files rule keeps nothing it should not
+      (three of the four hold `supabase/.branches/`, which `supabase start` writes).
 
 *Pause after Phase 5 for the manual check. Phases 1–4 have no manual items.* — confirmed.

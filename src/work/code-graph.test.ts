@@ -843,7 +843,10 @@ describe('integrate — the review fixes', () => {
       // (which is where git lands from a folder with no .git) says nothing has landed.
       git(['reset', '-q', '--hard', 'origin/main'], mainCheckout);
       renameSync(join(slugPath, '.git'), join(slugPath, '.git.bak'));
-      expect(integrate(id).landed.find((i) => i.kind === 'changed signature')).toMatchObject({ file: 'src/lib.ts', symbol: 'price' });
+      const landed = integrate(id).landed;
+      expect(landed.find((i) => i.kind === 'changed signature')).toMatchObject({ file: 'src/lib.ts', symbol: 'price' });
+      // And its uncommitted work, which git can no longer see there, is said to be unread.
+      expect(landed.find((i) => i.severity === '?')?.detail).toContain('which has lost its .git');
     } finally {
       try { renameSync(join(slugPath, '.git.bak'), join(slugPath, '.git')); } catch { /* already back */ }
       git(['reset', '-q', '--hard', mainHead], mainCheckout);
@@ -910,9 +913,89 @@ describe('the final review — what the graph could not see, and checks that pas
         "src/barrel.ts › export * from './lib.js'", 'src/barrel2.ts › cost', 'src/pass.ts › greet',
       ]);
       expect(hits.every((i) => i.detail.includes(`${A.id} removed it`))).toBe(true);
+      expect(hits.find((i) => i.file === 'src/barrel.ts')?.detail).toContain('`price` no longer comes through it as a value');
       expect(hits.find((i) => i.file === 'src/barrel.ts')?.sizes.callSites).toBe(1);
     } finally {
       finish(A.id, B.id);
+    }
+  });
+
+  test('a barrel narrowed to the names still used breaks nobody; one made type-only breaks every value caller', () => {
+    const narrow = newTask('narrow the barrel to what is used');
+    const typed = newTask('make the barrel type-only');
+    const B = newTask('edit the caller through the barrel, again');
+    try {
+      rewrite(narrow.wt, 'src/barrel.ts', "export * from './lib.js';", "export { price, greet } from './lib.js';");
+      rewrite(typed.wt, 'src/barrel.ts', "export * from './lib.js';", "export type * from './lib.js';");
+      edit(B.wt, 'src/use2.ts', 'export const three');
+      // `price` still comes through: the star is gone, but nothing that used it broke.
+      expect(overlap(narrow.id, B.id)).toEqual([]);
+      const hit = overlap(typed.id, B.id).find((i) => i.kind === 'changed signature');
+      expect(hit).toMatchObject({ severity: 'MED', file: 'src/barrel.ts', symbol: "export * from './lib.js'" });
+      expect(hit?.detail).toContain('`price` no longer comes through it as a value');
+    } finally {
+      finish(narrow.id, typed.id, B.id);
+    }
+  });
+
+  test('a directory in an ACTIVE task\'s files: still counts once it is running', () => {
+    const lister = newTask('a spawned task that names a folder');
+    const finding = work(['park', '--title', 'the row type needs an id, again', '--files', 'src/db/useDb.ts'], mainCheckout);
+    try {
+      // What spawn carries over from a finding parked with `--files src/db/`.
+      const f = join(mainCheckout, '.claude', 'work', 'tasks', `${lister.id}.md`);
+      writeFileSync(f, readFileSync(f, 'utf8').replace(/^files:.*$/m, 'files: src/db/'));
+      expect(overlap(lister.id, finding).map((i) => `${i.severity} ${i.kind} ${i.file}`)).toEqual(['LOW same file only src/db/useDb.ts']);
+    } finally {
+      finish(lister.id);
+      work(['drop', finding], mainCheckout);
+    }
+  });
+
+  test('an active task whose worktree folder is gone is still checked, from its branch', () => {
+    const n = ++counter;
+    const gone = join(tmp, `wt-${n}`);
+    git(['worktree', 'add', '--no-track', gone, '-b', `branch-${n}`, 'origin/main'], mainCheckout);
+    const T = work(['park', '--title', 'greet, then its folder went', '--kind', 'task'], mainCheckout);
+    work(['claim', T], gone);
+    const finding = work(['park', '--title', 'greet is too short', '--files', 'src/lib.ts'], mainCheckout);
+    try {
+      rewrite(gone, 'src/lib.ts', "return 'hello';", "return 'hello there';");
+      commit(gone, 'T changes greet');
+      git(['worktree', 'remove', '--force', gone], mainCheckout); // the branch, and its commit, remain
+      const r = workResult(['spawn', finding], mainCheckout);
+      expect(r.status).toBe(2);
+      expect(r.stdout).toMatch(/HIGH\s+same function\s+src\/lib\.ts › greet/);
+    } finally {
+      work(['drop', T], mainCheckout);
+      work(['drop', finding], mainCheckout);
+    }
+  });
+
+  test('a branch with no history in common with main is an incomplete check, not an empty one', () => {
+    const A = newTask('greet, beside an unrelated branch');
+    const n = ++counter;
+    const tree = git(['rev-parse', 'HEAD^{tree}'], mainCheckout);
+    git(['branch', `unrelated-${n}`, git(['commit-tree', tree, '-m', 'no parent'], mainCheckout)], mainCheckout);
+    const wt = join(tmp, `wt-${++counter}`);
+    git(['worktree', 'add', wt, `unrelated-${n}`], mainCheckout);
+    const T = work(['park', '--title', 'a task on the unrelated branch', '--kind', 'task'], mainCheckout);
+    work(['claim', T], wt);
+    // With no merge-base, claim records the task's own HEAD — a fair fallback. With THAT gone too,
+    // there is nothing to diff from, and "nothing committed" is not what that means.
+    const f = join(mainCheckout, '.claude', 'work', 'tasks', `${T}.md`);
+    writeFileSync(f, readFileSync(f, 'utf8').replace(/^base:.*$/m, 'base: '));
+    try {
+      rewrite(A.wt, 'src/lib.ts', "return 'hello';", "return 'howdy';");
+      for (const x of [`unrelated-${n}`, T]) {
+        const items = overlap(x, A.id);
+        expect(items[0]).toMatchObject({ severity: '?', kind: 'not checked' });
+        expect(items[0].detail).toContain('where it branched from origin/main');
+      }
+    } finally {
+      finish(A.id, T);
+      git(['worktree', 'remove', '--force', wt], mainCheckout);
+      git(['branch', '-D', `unrelated-${n}`], mainCheckout);
     }
   });
 
@@ -992,7 +1075,10 @@ describe('the final review — what the graph could not see, and checks that pas
       // An uncommitted edit in the MAIN checkout: git run inside the ghost folder walks up to it.
       rewrite(mainCheckout, 'src/lib.ts', "return 'hello';", "return 'main was here';");
       rewrite(A.wt, 'src/lib.ts', "return 'hello';", "return 'hi';");
-      expect(overlap(`ghostb-${n}`, A.id)).toEqual([]);
+      // Nothing borrowed from the main checkout — only the honest answer: its folder is unreadable.
+      const items = overlap(`ghostb-${n}`, A.id);
+      expect(items.map((i) => `${i.severity} ${i.kind}`)).toEqual(['? not checked']);
+      expect(items[0].detail).toContain(`${ghost}, which has lost its .git`);
     } finally {
       git(['checkout', '--', 'src/lib.ts'], mainCheckout);
       renameSync(join(ghost, '.git.bak'), join(ghost, '.git'));
@@ -1001,16 +1087,18 @@ describe('the final review — what the graph could not see, and checks that pas
     }
   });
 
-  test('"default" in prose is not a function name, and backticks say which words are', () => {
+  test('"default" in prose is not a function name — and a backticked path never hides the title\'s', () => {
     const A = newTask('change the default export');
-    const B = newTask('change greet, for the backtick case');
+    const B = newTask('edit the caller of price, for the backtick case');
     const byDefault = work(['park', '--title', 'other should return two by default', '--files', 'src/dflt.ts'], mainCheckout);
-    const marked = work(['park', '--title', 'rounding', '--files', 'src/lib.ts', '--body', '-'], mainCheckout, 'The `price` rounding is off; greet is fine.\n');
+    // The shape findings here really have: code names in the title, a path in backticks below.
+    const marked = work(['park', '--title', 'price double-counts tax', '--files', 'src/lib.ts', '--body', '-'], mainCheckout,
+      'Seen in `src/use.ts`, where `npm test` shows it twice.\n');
     try {
       rewrite(A.wt, 'src/dflt.ts', 'return 1;', 'return 3;');
-      rewrite(B.wt, 'src/lib.ts', "return 'hello';", "return 'hey there';");
+      edit(B.wt, 'src/use.ts', 'export const two');
       expect(overlap(A.id, byDefault).map((i) => `${i.severity} ${i.kind}`)).toEqual(['LOW same file only']);
-      expect(overlap(B.id, marked).map((i) => `${i.severity} ${i.kind}`)).toEqual(['LOW same file only']);
+      expect(overlap(B.id, marked).find((i) => i.kind === 'calls what it names')).toMatchObject({ severity: 'MED', symbol: 'price' });
     } finally {
       finish(A.id, B.id);
       work(['drop', byDefault], mainCheckout);

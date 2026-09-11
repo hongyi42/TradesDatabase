@@ -22,7 +22,7 @@
 // thoughts/shared/findings/2026-09-10-settings-json-says-hooks-on-one-event-sh.md) — so the
 // committed diff and the working tree's own status are what say what a task has really touched.
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { isAbsolute, join, posix, relative, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -119,15 +119,28 @@ const listField = (v) => (typeof v === 'string' ? v : '').split(',').map((s) => 
 /**
  * Words in a parked finding's prose that could be function names. Matched against exports later.
  *
- * When the prose marks code with backticks, only what it marks counts: "`price` rounds wrong;
- * greet is fine" is about price, and reading every word made it a HIGH on greet. And `default`
- * never counts — it is the name this file gives an anonymous default export, and as an English
- * word it turned "should be two by default" into a collision with every one of them.
+ * Every word, on purpose: a word too many can only make an overlap look bigger, and the operator
+ * still decides — a word too few lets spawn go ahead alone. (Reading only backticked names was
+ * tried and did exactly that: findings here backtick paths and commands, not function names.)
+ * The one word never counted is `default` — the name this file gives an anonymous default export,
+ * so as an English word it turned "should be two by default" into a HIGH on every one of them.
  */
 function identifiers(text) {
-  const marked = [...text.matchAll(/`([^`\n]+)`/g)].map((m) => m[1]);
-  const words = (marked.length ? marked.join(' ') : text).match(/[A-Za-z_$][\w$]{2,}/g) ?? [];
-  return [...new Set(words)].filter((w) => w !== 'default');
+  return [...new Set(text.match(/[A-Za-z_$][\w$]{2,}/g) ?? [])].filter((w) => w !== 'default');
+}
+
+/** Every file under `rel` in a checkout, repo-relative — how a directory in `files:` is read. */
+function filesUnder(root, rel) {
+  let entries;
+  try { entries = readdirSync(join(root, rel), { withFileTypes: true }); } catch { return []; }
+  const out = [];
+  for (const e of entries) {
+    if (e.name === 'node_modules' || e.name === '.git') continue;
+    const p = `${rel}/${e.name}`;
+    if (e.isDirectory()) out.push(...filesUnder(root, p));
+    else out.push(p);
+  }
+  return out;
 }
 
 /**
@@ -152,7 +165,9 @@ function isCheckout(path) {
  * With `ref` (a parked finding's, whose list is its whole footprint), a directory is expanded to
  * the files in it there, and a path that is not in the repo at `ref` is also returned in
  * `unknown`: a new file, or a typo — either way nothing could be checked for what calls it.
- * Without `ref` it is text only, because the edit hook reads every sibling's list on every edit.
+ * Without `ref`, a directory is expanded from the checkout's disk (the file system, never git:
+ * the edit hook reads every sibling's list on every edit) — or a spawned task that names `src/db/`
+ * would stop overlapping anything the moment it started.
  */
 function repoPaths(main, checkout, list, ref = null) {
   const files = [];
@@ -164,9 +179,19 @@ function repoPaths(main, checkout, list, ref = null) {
     }
     p = posix.normalize(p).replace(/\/+$/, '');
     if (!p || p === '.' || p.startsWith('../') || isAbsolute(p)) { unknown.push(raw); continue; }
-    const type = ref ? git(['cat-file', '-t', `${ref}:${p}`], main) : 'blob';
+    if (!ref) {
+      let dir = false;
+      try { dir = Boolean(checkout) && statSync(join(checkout, p)).isDirectory(); } catch { /* not on disk: a file path */ }
+      if (dir) files.push(...filesUnder(checkout, p));
+      else files.push(p);
+      continue;
+    }
+    const type = git(['cat-file', '-t', `${ref}:${p}`], main);
     if (type === 'tree') {
-      files.push(...(gitRaw(['ls-tree', '-r', '--name-only', '-z', ref, '--', `${p}/`], main) ?? '').split('\0').filter(Boolean));
+      const listed = gitRaw(['ls-tree', '-r', '--name-only', '-z', ref, '--', `${p}/`], main);
+      // Git could not list it: an unread directory, never an empty one.
+      if (listed === null) unknown.push(raw);
+      files.push(...(listed ?? '').split('\0').filter(Boolean));
       continue;
     }
     files.push(p);
@@ -201,23 +226,31 @@ export function subjectFromTask(main, fm, body = '', def = defaultRef(main)) {
   // incomplete check, and `overlaps` says so — reading it as "no changes" is how a slow or broken
   // checkout once let spawn proceed on its own.
   const unread = [];
+  // Without a base there is no committed diff to read, and "nothing committed" is not what that means.
+  const baseOf = (live, ref) => {
+    if (def && !live && !fm.base) unread.push(`where it branched from ${def}`);
+    return live || fm.base || ref;
+  };
   const held = fm.worktree ? isCheckout(fm.worktree) : false;
   if (held) {
     const ref = sha('HEAD', fm.worktree);
-    const live = def ? git(['merge-base', 'HEAD', def], fm.worktree) : null;
     if (!ref) unread.push(`the commit ${fm.worktree} is on`);
+    const base = baseOf(def ? git(['merge-base', 'HEAD', def], fm.worktree) : null, ref);
     return {
-      label: fm.id, checkout: fm.worktree, ref, base: live || fm.base || ref, files, mentions: [], predicted: false, unread,
+      label: fm.id, checkout: fm.worktree, ref, base, files, mentions: [], predicted: false, unread,
     };
   }
   if (held === null) unread.push(`its checkout ${fm.worktree}`);
+  // A folder that is there but is no longer a checkout may still hold the task's uncommitted
+  // work, and git cannot see it — an incomplete check, not a task with nothing uncommitted.
+  else if (fm.worktree && existsSync(fm.worktree)) unread.push(`${fm.worktree}, which has lost its .git`);
   // `refs/heads/` explicitly: a task claimed on a detached HEAD records its branch as `HEAD`, and
   // resolving that bare name here would hand the task the MAIN checkout's commit.
   const branchSha = fm.branch && fm.branch !== 'HEAD' ? sha(`refs/heads/${fm.branch}`, main) : null;
   if (branchSha) {
-    const live = def ? git(['merge-base', branchSha, def], main) : null;
+    const base = baseOf(def ? git(['merge-base', branchSha, def], main) : null, branchSha);
     return {
-      label: fm.id, checkout: null, ref: branchSha, base: live || fm.base || branchSha, files, mentions: [], predicted: false, unread,
+      label: fm.id, checkout: null, ref: branchSha, base, files, mentions: [], predicted: false, unread,
     };
   }
   // Closed, and its checkout and branch are gone: all that is left is the list of files it named.
@@ -229,14 +262,16 @@ export function subjectFromBranch(main, branch) {
   const ref = sha(branch, main);
   if (!ref) return null;
   const def = defaultRef(main);
-  const base = (def && git(['merge-base', ref, def], main)) || ref;
+  const live = def ? git(['merge-base', ref, def], main) : null;
+  const unread = def && !live ? [`where it branched from ${def}`] : [];
   const path = worktreeHolding(main, branch);
   // Same guard as a task's: a folder that has lost its `.git` would describe the main checkout.
   const held = isCheckout(path);
   const checkout = held ? path : null;
   const head = checkout ? sha('HEAD', checkout) : ref;
-  const unread = held === null ? [`its checkout ${path}`] : [];
-  return { label: branch, checkout, ref: head || ref, base, files: [], mentions: [], predicted: false, unread };
+  if (held === null) unread.push(`its checkout ${path}`);
+  else if (!held && path) unread.push(`${path}, which has lost its .git`);
+  return { label: branch, checkout, ref: head || ref, base: live || ref, files: [], mentions: [], predicted: false, unread };
 }
 
 /** What main has changed since `checkout` last took it — the "main moved under you" subject. */
@@ -439,17 +474,20 @@ function exportTable(ts, text, fileName) {
     if (nb && ts.isNamespaceImport(nb)) imported.set(nb.name.text, `* from '${spec}'`);
     if (nb && ts.isNamedImports(nb)) for (const el of nb.elements) imported.set(el.name.text, `${(el.propertyName ?? el.name).text} from '${spec}'`);
   }
+  // `type ` is part of where a re-export points: `export *` becoming `export type *` keeps every
+  // name and breaks every caller that uses one as a value.
   for (const st of sf.statements) {
     if (!ts.isExportDeclaration(st)) continue;
+    const typeOnly = (el) => (st.isTypeOnly || el?.isTypeOnly ? 'type ' : '');
     if (st.moduleSpecifier && ts.isStringLiteral(st.moduleSpecifier)) {
       const spec = st.moduleSpecifier.text;
-      if (!st.exportClause) pass(starKey(spec), `* from '${spec}'`);
-      else if (ts.isNamespaceExport(st.exportClause)) pass(st.exportClause.name.text, `* from '${spec}'`);
-      else for (const el of st.exportClause.elements) pass(el.name.text, `${(el.propertyName ?? el.name).text} from '${spec}'`);
+      if (!st.exportClause) pass(starKey(spec), `${typeOnly()}* from '${spec}'`);
+      else if (ts.isNamespaceExport(st.exportClause)) pass(st.exportClause.name.text, `${typeOnly()}* from '${spec}'`);
+      else for (const el of st.exportClause.elements) pass(el.name.text, `${typeOnly(el)}${(el.propertyName ?? el.name).text} from '${spec}'`);
     } else if (st.exportClause && ts.isNamedExports(st.exportClause)) {
       for (const el of st.exportClause.elements) {
         const from = imported.get((el.propertyName ?? el.name).text);
-        if (from && !local.has((el.propertyName ?? el.name).text)) pass(el.name.text, from);
+        if (from && !local.has((el.propertyName ?? el.name).text)) pass(el.name.text, `${typeOnly(el)}${from}`);
       }
     }
   }
@@ -660,15 +698,22 @@ function moduleStatements(ts, text, fileName) {
       }
       out.push({ spec: st.moduleSpecifier.text, bindings, isExport: false });
     } else if (ts.isExportDeclaration(st) && st.moduleSpecifier && ts.isStringLiteral(st.moduleSpecifier)) {
+      // `typeOnly`: the name passes through as a type alone — see lostThrough.
       const bindings = [];
-      if (!st.exportClause) bindings.push({ imported: '*', local: null, all: true });
-      else if (ts.isNamespaceExport(st.exportClause)) bindings.push({ imported: '*', local: st.exportClause.name.text });
-      else for (const el of st.exportClause.elements) bindings.push({ imported: (el.propertyName ?? el.name).text, local: el.name.text });
+      if (!st.exportClause) bindings.push({ imported: '*', local: null, all: true, typeOnly: st.isTypeOnly });
+      else if (ts.isNamespaceExport(st.exportClause)) bindings.push({ imported: '*', local: st.exportClause.name.text, typeOnly: st.isTypeOnly });
+      else {
+        for (const el of st.exportClause.elements) {
+          bindings.push({ imported: (el.propertyName ?? el.name).text, local: el.name.text, typeOnly: st.isTypeOnly || el.isTypeOnly });
+        }
+      }
       out.push({ spec: st.moduleSpecifier.text, bindings, isExport: true });
     } else if (ts.isExportDeclaration(st) && !st.moduleSpecifier && st.exportClause && ts.isNamedExports(st.exportClause)) {
       // A local export list, `export { x }`. Kept (with no spec) so that a name IMPORTED and passed
       // straight back out — `import { x } from './y.js'; export { x }` — can be followed to y.
-      const bindings = st.exportClause.elements.map((el) => ({ imported: (el.propertyName ?? el.name).text, local: el.name.text }));
+      const bindings = st.exportClause.elements.map((el) => ({
+        imported: (el.propertyName ?? el.name).text, local: el.name.text, typeOnly: st.isTypeOnly || el.isTypeOnly,
+      }));
       out.push({ spec: null, bindings, isExport: true });
     }
   }
@@ -699,8 +744,9 @@ function fileInfo(ts, tree, file) {
 
 /**
  * The file that actually DECLARES `name` as exported by `file`, followed through barrels:
- * `{ file, name, via }`, where `via` is every barrel passed on the way, each with the key its
- * re-export has in exportTable — so a barrel that drops that re-export is seen to break this.
+ * `{ file, name, via }`, where `via` is every barrel passed on the way — `{ file, key, name,
+ * typeOnly }`: the key its re-export has in exportTable, the name it passes on, and whether it
+ * passes it as a type alone — so a barrel that stops passing that name on is seen to break this.
  *
  * `src/db/index.ts` is `export * from './jobs.js'` and thirty-one more like it, and 48 modules
  * import through it. Without this, a signature change in `src/db/jobs.ts` would be invisible to
@@ -721,7 +767,7 @@ function declarerOf(ts, tree, file, name, depth = 0, seen = new Set(), via = [])
       const from = b ? importBinding(info, b.imported) : null;
       const target = from && from.imported !== '*' ? resolveSpec(ts, tree, file, from.spec) : null;
       if (target) {
-        const hops = [...via, { file, key: name }];
+        const hops = [...via, { file, key: name, name, typeOnly: b.typeOnly }];
         return declarerOf(ts, tree, target, from.imported, depth + 1, seen, hops) ?? { file: target, name: from.imported, via: hops };
       }
       continue;
@@ -730,10 +776,10 @@ function declarerOf(ts, tree, file, name, depth = 0, seen = new Set(), via = [])
     if (!target) continue;
     for (const b of st.bindings) {
       if (b.all) {
-        const hit = declarerOf(ts, tree, target, name, depth + 1, seen, [...via, { file, key: starKey(st.spec) }]);
+        const hit = declarerOf(ts, tree, target, name, depth + 1, seen, [...via, { file, key: starKey(st.spec), name, typeOnly: b.typeOnly }]);
         if (hit) return hit;
       } else if (b.local === name) {
-        const hops = [...via, { file, key: name }];
+        const hops = [...via, { file, key: name, name, typeOnly: b.typeOnly }];
         return declarerOf(ts, tree, target, b.imported, depth + 1, seen, hops) ?? { file: target, name: b.imported, via: hops };
       }
     }
@@ -762,11 +808,12 @@ function allExportsOf(ts, tree, file, depth = 0, seen = new Set()) {
     if (!target) continue;
     for (const b of st.bindings) {
       if (b.all) {
-        const hop = { file, key: starKey(st.spec) };
-        for (const d of allExportsOf(ts, tree, target, depth + 1, seen)) out.push({ ...d, via: [hop, ...d.via] });
+        for (const d of allExportsOf(ts, tree, target, depth + 1, seen)) {
+          out.push({ ...d, via: [{ file, key: starKey(st.spec), name: d.as, typeOnly: b.typeOnly }, ...d.via] });
+        }
       } else if (b.imported !== '*') {
         const d = declarerOf(ts, tree, target, b.imported);
-        if (d) out.push({ ...d, as: b.local, via: [{ file, key: b.local }, ...d.via] });
+        if (d) out.push({ ...d, as: b.local, via: [{ file, key: b.local, name: b.local, typeOnly: b.typeOnly }, ...d.via] });
       }
     }
   }
@@ -774,24 +821,30 @@ function allExportsOf(ts, tree, file, depth = 0, seen = new Set()) {
 }
 
 /**
- * What `file` (with contents `text`) imports: `[{ from, names, locals }]`, one entry per file
- * that DECLARES what it uses — and one per barrel it reaches that through, whose names are the
- * barrel's re-export keys (exportTable's). `locals[name]` is every way this file refers to it:
- * the local binding, or `ns.member` for a namespace import. Re-exports count too: a barrel
- * depends on everything it re-exports. `root` is a checkout path, or a tree (treeOf).
+ * What `file` (with contents `text`) imports: `[{ from, names, locals, through? }]`, one entry
+ * per file that DECLARES what it uses — and one per barrel it reaches that through, whose names
+ * are the barrel's re-export keys (exportTable's). `locals[name]` is every way this file refers
+ * to it: the local binding, or `ns.member` for a namespace import. A barrel entry's
+ * `through[key]` maps each name that key passes on to this file's locals for it (lostThrough
+ * reads it). Re-exports count too: a barrel depends on everything it re-exports. `root` is a
+ * checkout path, or a tree (treeOf).
  */
 export function namedImports(ts, root, file, text) {
   const tree = asTree(ts, root);
   const byFrom = new Map();
-  const note = (from, name, local) => {
+  const note = (from, name, local, passed = null) => {
     let e = byFrom.get(from);
     if (!e) { e = { from, names: [], locals: {} }; byFrom.set(from, e); }
     if (!e.names.includes(name)) { e.names.push(name); e.locals[name] = []; }
     if (!e.locals[name].includes(local)) e.locals[name].push(local);
+    if (passed === null) return;
+    const byName = ((e.through ??= {})[name] ??= {});
+    const locals = (byName[passed] ??= []);
+    if (!locals.includes(local)) locals.push(local);
   };
   const noteAll = (d, local) => {
     note(d.file, d.name, local);
-    for (const hop of d.via) note(hop.file, hop.key, local);
+    for (const hop of d.via) note(hop.file, hop.key, local, hop.name);
   };
   for (const st of moduleStatements(ts, text, file)) {
     if (st.spec === null) continue; // a local export list imports nothing; its imports are counted
@@ -806,6 +859,26 @@ export function namedImports(ts, root, file, text) {
     }
   }
   return [...byFrom.values()];
+}
+
+/**
+ * Of the names a namedImports entry `imp` reaches through re-export `key` of `imp.from`, the ones
+ * subject `s`'s version of that file no longer passes on as values — or null when `key` is not a
+ * re-export this file came through, and the change is an ordinary one.
+ *
+ * A re-export key changing is not by itself a break. A barrel narrowing `export *` to the names
+ * still used, or re-pointing one at a module the function moved to, breaks nobody — and was
+ * reported as a removal. A barrel dropping a name, or passing it on as a type alone, breaks every
+ * caller using it as a value.
+ */
+export function lostThrough(main, ts, s, imp, key) {
+  const names = imp.through?.[key];
+  if (!names) return null;
+  const tree = treeOf(ts, main, s);
+  return Object.keys(names).filter((n) => {
+    const hit = declarerOf(ts, tree, imp.from, n);
+    return !hit || hit.via.some((h) => h.typeOnly);
+  });
 }
 
 /**
@@ -984,15 +1057,20 @@ export function overlaps(main, ts, a, b) {
         if (imp.from === g || GENERATED.has(imp.from) || !fx.has(imp.from)) continue;
         for (const c of changesOf(imp.from)) {
           if (c.change === 'added' || !imp.names.includes(c.name) || high.has(`${imp.from}\0${c.name}`)) continue;
+          // A re-export this file came through: only a name that no longer gets through counts.
+          const lost = x.predicted ? null : lostThrough(main, ts, x, imp, c.name);
+          if (lost && !lost.length) continue;
           const k = `${imp.from}\0${c.name}`;
-          const hit = hits.get(k) ?? { c, from: imp.from, files: [], sites: 0 };
+          const hit = hits.get(k) ?? { c, from: imp.from, files: [], sites: 0, lost: null };
           hit.files.push(g);
-          for (const local of imp.locals[c.name]) hit.sites += callSites(ts, text, local, g);
+          const locals = lost ? lost.flatMap((n) => imp.through[c.name][n]) : imp.locals[c.name];
+          for (const local of locals) hit.sites += callSites(ts, text, local, g);
+          if (lost) hit.lost = [...new Set([...(hit.lost ?? []), ...lost])];
           hits.set(k, hit);
         }
       }
     }
-    for (const { c, from, files, sites } of hits.values()) {
+    for (const { c, from, files, sites, lost } of hits.values()) {
       const changed = files.filter((g) => gitOf(y).has(g)).length;
       const verb = y.predicted ? 'names' : changed === files.length ? 'changes' : changed === 0 ? 'lists' : 'touches';
       const where = `called at ${sites} site${sites === 1 ? '' : 's'} in ${files.length} file${files.length === 1 ? '' : 's'} ${y.label} ${verb} (${files.join(', ')})`;
@@ -1008,7 +1086,9 @@ export function overlaps(main, ts, a, b) {
       if (c.change === 'named') {
         items.push({ severity: 'MED', kind: 'calls what it names', file: from, symbol: c.name, detail: `${x.label} names this file and mentions \`${c.name}\`; ${where}; ${repoWide}`, sizes: { callSites: sites, importers }, ...who });
       } else {
-        const what = c.change === 'removed' ? 'removed it' : `changed its signature (${lineCountLabel(c.lines)})`;
+        const what = lost
+          ? `${c.change === 'removed' ? 'removed it' : 'changed it'} — ${lost.map((n) => `\`${n}\``).join(', ')} no longer ${lost.length === 1 ? 'comes' : 'come'} through it as a value`
+          : c.change === 'removed' ? 'removed it' : `changed its signature (${lineCountLabel(c.lines)})`;
         items.push({ severity: 'MED', kind: 'changed signature', file: from, symbol: c.name, detail: `${x.label} ${what}; ${where}; ${repoWide}`, sizes: { [x.label]: c.lines, callSites: sites, importers }, ...who });
       }
     }

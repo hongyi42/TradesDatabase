@@ -162,6 +162,17 @@ describe('the pre-edit hook names what a sibling or main changed', () => {
     }
   });
 
+  test('a sibling narrowing that re-export to the names still used says nothing to the file', () => {
+    const sibling = newTask('narrow the barrel');
+    const me = newTask('edit the barrel caller, narrowed');
+    try {
+      rewrite(sibling.wt, 'src/barrel.ts', "export * from './lib.js';", "export { price, greet } from './lib.js';");
+      expect(hookContext(edit(me.wt, 'src/use2.ts'))).not.toContain('export * from');
+    } finally {
+      finish(sibling.id, me.id);
+    }
+  });
+
   test('a body-only change is named as a change in what the function does', () => {
     const sibling = newTask('price rounds now');
     const me = newTask('edit use for the body case');
@@ -282,7 +293,7 @@ describe('the pre-edit hook names what a sibling or main changed', () => {
       `export const loadTs = ${ok};`, `export const setGitTimeout = ${ok};`,
       "export const defaultRef = () => { throw new Error('half-updated'); };",
       `export const subjectFromTask = ${ok};`, `export const mainSince = ${ok};`, `export const footprint = ${ok};`,
-      `export const symbolDelta = ${ok};`, `export const namedImports = ${ok};`,
+      `export const symbolDelta = ${ok};`, `export const namedImports = ${ok};`, `export const lostThrough = ${ok};`,
       'export const isSymbolFile = () => true;', 'export const isGenerated = () => false;', '',
     ].join('\n'));
     try {

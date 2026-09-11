@@ -121,6 +121,7 @@ beforeAll(() => {
   writeFileSync(join(mainCheckout, 'supabase', 'config.toml'), CONFIG);
   writeFileSync(join(mainCheckout, 'README.md'), 'fixture\n');
   writeFileSync(join(mainCheckout, '.gitignore'), 'node_modules\n.env\n.env.test\n.scratch/\n');
+  writeFileSync(join(mainCheckout, 'supabase', '.gitignore'), '.branches\n.temp\n'); // as the repo's own
   git(['add', '.'], mainCheckout);
   git(['commit', '-q', '-m', 'fixture'], mainCheckout);
   git(['update-ref', 'refs/remotes/origin/main', 'HEAD'], mainCheckout);
@@ -182,6 +183,11 @@ beforeAll(() => {
   writeFileSync(join(wt['merged-regenerable'], 'node_modules', 'x', 'index.js'), '');
   writeFileSync(join(wt['merged-regenerable'], '.env.test'), 'LOCAL=1\n');
   writeFileSync(join(wt['merged-regenerable'], '.env'), 'KEY=main\n'); // a copy of the main checkout's
+  // What `supabase start` leaves in every worktree that has run a stack.
+  mkdirSync(join(wt['merged-regenerable'], 'supabase', '.branches'), { recursive: true });
+  writeFileSync(join(wt['merged-regenerable'], 'supabase', '.branches', '_current_branch'), 'main');
+  mkdirSync(join(wt['merged-regenerable'], 'supabase', '.temp'), { recursive: true });
+  writeFileSync(join(wt['merged-regenerable'], 'supabase', '.temp', 'cli-latest'), 'v2.107.0');
   mkdirSync(join(add('merged-ignored'), '.scratch'));
   writeFileSync(join(wt['merged-ignored'], '.scratch', 'notes.md'), 'half a thought\n');
   writeFileSync(join(add('merged-env-edited'), '.env'), 'KEY=edited\n');

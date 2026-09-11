@@ -271,9 +271,15 @@ function graphLines(graph, { abs, root, rel, evt, main, siblings, own, siblingLi
   // the content being written is what will import.
   const text = readText(abs) ?? (typeof evt?.tool_input?.content === 'string' ? evt.tool_input.content : null);
   const imports = text == null ? [] : (safe(() => graph.namedImports(ts, root, rel, text)) ?? []);
+  // A re-export this file comes through counts only when a name it uses no longer gets through —
+  // a barrel narrowed to what is still used breaks nobody (lostThrough).
+  const reaches = (s, imp, c) => {
+    const lost = safe(() => graph.lostThrough(main, ts, s, imp, c.name));
+    return !lost || lost.length > 0;
+  };
   const used = (s, fp) => imports.filter((imp) => imp.from !== rel && fp.has(imp.from) && !graph.isGenerated(imp.from))
     .flatMap((imp) => (safe(() => graph.symbolDelta(main, ts, s, imp.from)) ?? [])
-      .filter((c) => imp.names.includes(c.name))
+      .filter((c) => imp.names.includes(c.name) && reaches(s, imp, c))
       .map((c) => ({ c, from: imp.from })));
 
   for (const { fm, s, fp } of seen) {
@@ -306,7 +312,7 @@ function graphLines(graph, { abs, root, rel, evt, main, siblings, own, siblingLi
 
 /** Everything the hook calls on the library. A copy missing any of them is treated as absent. */
 const GRAPH_API = ['loadTs', 'defaultRef', 'setGitTimeout', 'subjectFromTask', 'mainSince', 'footprint',
-  'symbolDelta', 'namedImports', 'isSymbolFile', 'isGenerated'];
+  'symbolDelta', 'namedImports', 'lostThrough', 'isSymbolFile', 'isGenerated'];
 
 /**
  * The code graph from this checkout's own scripts/, or null. A missing library is no reason to

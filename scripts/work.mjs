@@ -933,8 +933,10 @@ async function cmdSpawn(main, { positional, flags }) {
   let finding;
   try {
     finding = graph.subjectFromTask(main, task.fm, task.body);
+    // Every active task, its folder gone or not: a removed worktree's branch can still hold
+    // unmerged commits, and subjectFromTask reads it from the branch.
     for (const t of listTasks(main)) {
-      if (t.fm.status !== 'active' || !t.fm.worktree || !existsSync(t.fm.worktree)) continue;
+      if (t.fm.status !== 'active') continue;
       compared++;
       items.push(...graph.overlaps(main, ts, graph.subjectFromTask(main, t.fm, t.body), finding));
     }
@@ -1074,7 +1076,7 @@ async function cmdIntegrate(main, cwd, { positional, flags }) {
     if (!moved) fail('no default branch (origin/main, main, …) to compare this task against');
     landed = graph.overlaps(main, ts, moved, self);
     for (const t of listTasks(main)) {
-      if (t.fm.id === task.fm.id || t.fm.status !== 'active' || !t.fm.worktree || !existsSync(t.fm.worktree)) continue;
+      if (t.fm.id === task.fm.id || t.fm.status !== 'active') continue; // folder gone or not, as in spawn
       affects.push(...graph.overlaps(main, ts, self, graph.subjectFromTask(main, t.fm, t.body)));
     }
   } catch (e) {
@@ -1168,7 +1170,7 @@ function projectIdOf(dir) {
  *
  * Supabase CLI v2.107.0 (the repo's pin; its npm `stop` proxies to the Go implementation,
  * https://github.com/supabase/cli/blob/v2.107.0/apps/cli/src/legacy/commands/stop/stop.handler.ts#L5-L14):
- * sanitizeProjectId, https://github.com/supabase/cli/blob/v2.107.0/apps/cli-go/pkg/config/config.go#L1043-L1053,
+ * sanitizeProjectId and its plain byte cut, https://github.com/supabase/cli/blob/v2.107.0/apps/cli-go/pkg/config/config.go#L1036-L1053,
  * applied on load at https://github.com/supabase/cli/blob/v2.107.0/apps/cli-go/pkg/config/config.go#L825-L829.
  */
 function sameStack(x, y) {
@@ -1244,7 +1246,9 @@ function readTail(file, bytes) {
 function regenerable(main, path, p) {
   const bare = p.replace(/\/$/, '');
   if (bare === 'node_modules' || bare.endsWith('/node_modules') || bare === '.DS_Store' || bare.endsWith('/.DS_Store')) return true;
-  if (['dist', '.env.test', 'supabase/.temp'].includes(bare)) return true;
+  // `supabase/.branches` and `.temp`: `supabase start` writes both (supabase/.gitignore) in every
+  // worktree that has run a stack — without them here, prune would keep every one of those.
+  if (['dist', '.env.test', 'supabase/.temp', 'supabase/.branches'].includes(bare)) return true;
   if (bare !== '.env') return false;
   try {
     return readFileSync(join(path, '.env')).equals(readFileSync(join(main, '.env')));

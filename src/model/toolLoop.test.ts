@@ -637,6 +637,11 @@ describe('runToolLoop', () => {
     );
     expect(notes).toHaveLength(1);
     expect(String(notes[0].content)).toContain('spine_read');
+    // The user's clause (2026-09-11): point it somewhere else BEFORE offering the
+    // exits. Pinned because it is a ruling, not phrasing — a later tidy-up that
+    // drops it would quietly turn the note back into "finish or give up", which
+    // closes doors without opening one.
+    expect(String(notes[0].content)).toContain('a different angle');
     expect(
       last.messages.some(
         (m) => m.role === 'tool' && String(m.content).includes('NO NEW INFORMATION'),

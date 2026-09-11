@@ -620,15 +620,26 @@ function fingerprint(name: string, args: Record<string, unknown>, result: string
 }
 
 // WHAT, not how (the doctrine rule this repo learned the expensive way): it says
-// what is true — these answers will not change — names the exit, and stops. The
-// model decides what to do about it, including deciding that something cannot be
-// settled today. It never names the caller's own verbs; a caller whose doctrine
-// has better words for "give up" has already taught them in its system prompt.
+// what is true — these answers will not change — then opens ONE door and names
+// the exits. The model decides which, including deciding that something cannot
+// be settled today.
+//
+// "Try a different angle" is deliberately the first option offered (user,
+// 2026-09-11: "tell it to look another direction"). An earlier draft said only
+// "finish or give up", which closes doors without opening any — a model stuck on
+// one approach may simply have a better one available, and being told the
+// current line is exhausted is enough for it to find that on its own.
+//
+// ONE CLAUSE, not a recipe: no worked method, no preferred basis. The 38-turn
+// close of PR #226 is what two extra how-to paragraphs cost when they collide
+// with rules already in the prompt. It also never names the caller's own verbs —
+// a caller whose doctrine has better words for "give up" has taught them in its
+// own system prompt already.
 function stalledNote(names: string, terminalTool?: string): string {
   return (
     `NO NEW INFORMATION: the last ${MAX_STALLED_TURNS} turns repeated calls you had already ` +
     `made (${names}) and got back exactly what you had already been given. Asking again ` +
-    'returns the same answer. Decide with what you have and finish' +
+    'returns the same answer. Try a different angle, or decide with what you have and finish' +
     `${terminalTool ? ` by calling ${terminalTool}` : ''} — leaving something unsettled, or ` +
     'giving up on it, is a legitimate answer.'
   );

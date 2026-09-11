@@ -54,9 +54,20 @@ generation API has metadata only.
   after the `tool_result` blocks in that same user message (tool results must lead the user turn;
   consecutive same-role messages are legal and are merged — verified against the Anthropic API
   reference, 2026-09-11, since `MODEL_PROVIDER=anthropic` is the documented rollback path).
-- **The note says WHAT, not HOW** ([[doctrine-says-what-not-how]]): these answers will not change,
-  here is the exit, giving up is legitimate. It never names the caller's own verbs — a caller whose
-  doctrine has better words for "give up" already taught them in its system prompt.
+- **The note says WHAT, not HOW** ([[doctrine-says-what-not-how]]): these answers will not change —
+  try a different angle, or finish with what you have; leaving something unsettled, or giving up on
+  it, is legitimate. It never names the caller's own verbs — a caller whose doctrine has better
+  words for "give up" already taught them in its system prompt.
+- **"Try a different angle" is offered FIRST (user, 2026-09-11):** *"tell it to look another
+  direction."* The first draft said only "finish or give up", which closes doors without opening
+  one; a model stuck on one approach often has a better one available once it is told the current
+  line is exhausted. Held to ONE clause — PR #226 is what a recipe costs (a one-turn close became
+  38 turns).
+- **The backstop stays (user, 2026-09-11, after weighing removing it).** Telling is a guess about
+  what breaks a repetition loop; if the model reads the note and repeats anyway, the alternative to
+  stopping is the original incident — the full clock, ~600 turns, ~$8.67, every tick. The firm's
+  plan is lost either way once telling has failed; the stop only decides what finding that out
+  costs. It is NOT an alternative to telling, it is what catches telling having failed.
 - **A tick that was told and RECOVERED is recorded** (`plans[].stalledWarnings`, fed by a new
   `onStall` hook). Otherwise it is indistinguishable from a healthy tick, and "this firm has to be
   told every time" is the signal that its PROMPT needs work rather than its clock.

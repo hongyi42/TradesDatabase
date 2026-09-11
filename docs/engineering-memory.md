@@ -162,135 +162,135 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L3722 · The gate goes before the claim.
 - L3794 · The cross-customer hazard.
 - L3798 · RESOLVED — where send_email gets the customer/job: BOTH routes.
-- L3829 · The gate. _(2026-07-12)_
-- L3834 · Does adopting open a pairing_verification item?
-- L3896 · The seats are an eye.
-- L3899 · AUTHORSHIP: the seat PROPOSES, the planner RECORDS.
-- L3904 · SCOPE: build 7 is the subject decision + authorship.
-- L3955 · It cost one line of code.
-- L3959 · The metric does not widen.
-- L3973 · Volume.
-- L3977 · The quiet-firm skip becomes materially more reachable.
-- L4054 · A looked-up citation stamps NO capture id.
-- L4057 · THE PLANNER COULD CITE ITSELF
-- L4062 · ACCEPTED RESIDUE:
-- L4066 · ORDERING:
-- L4073 · The regression this phase introduced and review caught:
-- L4133 · The turn ceiling binds before the clock.
-- L4136 · A 15-minute tick eats the cadence behind it. _(2026-08-29)_
-- L4176 · MIN_TURN_BUDGET_MS = 15_000
-- L4181 · MAX_TOOL_CALL_MS = 90_000
-- L4198 · Context exhaustion is now the de-facto outer limit.
-- L4202 · The model is NOT told its remaining time
-- L4289 · Doctrine, not a code-enforced phase
-- L4291 · Churn: no brake
-- L4293 · Crowding out: watched, not prevented.
-- L4358 · No cap on the NUMBER of memory files, or on total bytes per firm.
-- L4364 · write_memory has NO mode gate
-- L4394 · The record grows without bound.
-- L4399 · The planner curates it.
-- L4404 · Detectors stay ours, and that is the point.
-- L4408 · The detector must not be the only way a gap opens.
-- L4502 · NUDGES_MODE is RETIRED
-- L4537 · agent informs the office
-- L4543 · agent asks the office _(2026-09-01)_
-- L4558 · the office reaches an agent
-- L4569 · seat-to-seat informs
-- L4638 · A partial index is only usable when the query IMPLIES its predicate.
-- L4751 · Durability.
-- L4753 · Observability.
-- L4813 · 1 · the firm's roster.
-- L4815 · 2 · who you can reach.
-- L4817 · 3 · a message need not be about a gap.
-- L4819 · 4 · one verb.
-- L4822 · 5 · seeing what you sent.
-- L4834 · as: 'board'
-- L4837 · Several addressees on one message
-- L4840 · The quiet-firm skip
-- L4843 · No v_office_messages
-- L4845 · B65-REACH-A-MANAGER
-- L5034 · The §4 estate table is WRONG about lifecycle-heart:
-- L5037 · Board_Worker was deliberately left BEHIND _(2026-09-08)_
-- L5091 · The own-mailbox guard's first version made things worse.
-- L5098 · The address guard was added to the wrong door. _(2026-09-08)_
-- L5102 · An eval pin that compared a literal to itself.
-- L5168 · The Composio thread fetch has never fired in the pilot. _(2026-09-07)_
-- L5175 · A known customer's QUESTION rings no bell.
-- L5179 · The sender was the firm's OWN mailbox
-- L5182 · The seat cannot ping the planner.
-- L5256 · For a customer we know, inbound creates NOTHING.
-- L5259 · The extractor gained one field, visitCommitted
-- L5261 · A. job_captures
-- L5265 · B. What a yes creates CITES the call.
-- L5268 · C. attributes.correspondence[]
-- L5272 · open_job
-- L5275 · The focused pass.
-- L5279 · Two markers, pinged_at and asked_at.
-- L5287 · A "processed" marker must be the LAST thing written.
-- L5293 · Nothing releases a pinged_at.
-- L5297 · The two doors spell the sender differently.
-- L5300 · captureHasObservation needed its own index.
-- L5304 · A gap-less send never reaches the ask marker.
-- L5308 · The date rail reaches further than it looks.
-- L5311 · ingestEmail and googleapis are deleted.
-- L5313 · ⚠ THE PHONE DOOR ONLY REACHES THIS RUNG ON A new_job INTENT. _(2026-08-06)_
-- L5319 · findFoldImpact's superset invariant is now load-bearing in a second place.
-- L5325 · THE EMAIL CHANNEL DROPS ITS THREAD ID — verified 2026-09-07, and it is time-sensitive. _(2026-09-07)_
-- L5376 · TRAP — nemoclaw <s> status LIES about the gateway right after a restart.
-- L5408 · A visit carries a CREW, and a crew has no lead
-- L5413 · The double-booking guard MOVED with the person
-- L5427 · A composite PK on a link table makes PostgREST synthesise a junction
-- L5435 · A bare ON CONFLICT DO NOTHING swallows an exclusion constraint
-- L5439 · Moving a filter from SQL into JS meets PostgREST's max_rows
-- L5443 · A derived column needs its trigger on UPDATE too, and a FOR SHARE on the parent
-- L5448 · Order is load-bearing in two different places
-- L5454 · Deploy shape: an additive migration BEFORE the code, the drop AFTER
-- L5570 · ON DELETE SET NULL is an UPDATE.
-- L5572 · Naive-local vs real UTC, again. _(2026-09-08)_
-- L5577 · A once-ever index plus stable ids = a detector that fires once, forever.
-- L5584 · A liveness filter can be bypassed by an id rename.
-- L5588 · A compat view bridges the deploy. _(2026-09-05)_
-- L5602 · schedule_events.assignment_id KEEPS ITS NAME this rung.
-- L5605 · The completed-stamp CHECK was dropped.
-- L5615 · RECORDED, NOT FIXED — a crew edit is three HTTP round trips and is NOT atomic.
-- L5625 · RECORDED, NOT FIXED — the tray became an unbounded full-table read.
-- L5711 · A green suite proves nothing when you mass-edit tests.
-- L5716 · A test can pin the bug.
-- L5719 · Reachability is not a compile error.
-- L5795 · A technician's seat agent has NO scheduling verb at any tier.
-- L5798 · Live specimen in the pilot _(2026-09-01)_
-- L5808 · Counting.
-- L5810 · Detection.
-- L5815 · Booking.
-- L5828 · Build 6 (vocabulary): _(2026-09-01)_
-- L5833 · Build 7 (detectors report): _(2026-09-05)_
-- L5843 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L3846 · The gate. _(2026-07-12)_
+- L3851 · Does adopting open a pairing_verification item?
+- L3913 · The seats are an eye.
+- L3916 · AUTHORSHIP: the seat PROPOSES, the planner RECORDS.
+- L3921 · SCOPE: build 7 is the subject decision + authorship.
+- L3972 · It cost one line of code.
+- L3976 · The metric does not widen.
+- L3990 · Volume.
+- L3994 · The quiet-firm skip becomes materially more reachable.
+- L4071 · A looked-up citation stamps NO capture id.
+- L4074 · THE PLANNER COULD CITE ITSELF
+- L4079 · ACCEPTED RESIDUE:
+- L4083 · ORDERING:
+- L4090 · The regression this phase introduced and review caught:
+- L4150 · The turn ceiling binds before the clock.
+- L4153 · A 15-minute tick eats the cadence behind it. _(2026-08-29)_
+- L4193 · MIN_TURN_BUDGET_MS = 15_000
+- L4198 · MAX_TOOL_CALL_MS = 90_000
+- L4215 · Context exhaustion is now the de-facto outer limit.
+- L4219 · The model is NOT told its remaining time
+- L4306 · Doctrine, not a code-enforced phase
+- L4308 · Churn: no brake
+- L4310 · Crowding out: watched, not prevented.
+- L4375 · No cap on the NUMBER of memory files, or on total bytes per firm.
+- L4381 · write_memory has NO mode gate
+- L4411 · The record grows without bound.
+- L4416 · The planner curates it.
+- L4421 · Detectors stay ours, and that is the point.
+- L4425 · The detector must not be the only way a gap opens.
+- L4519 · NUDGES_MODE is RETIRED
+- L4554 · agent informs the office
+- L4560 · agent asks the office _(2026-09-01)_
+- L4575 · the office reaches an agent
+- L4586 · seat-to-seat informs
+- L4655 · A partial index is only usable when the query IMPLIES its predicate.
+- L4768 · Durability.
+- L4770 · Observability.
+- L4830 · 1 · the firm's roster.
+- L4832 · 2 · who you can reach.
+- L4834 · 3 · a message need not be about a gap.
+- L4836 · 4 · one verb.
+- L4839 · 5 · seeing what you sent.
+- L4851 · as: 'board'
+- L4854 · Several addressees on one message
+- L4857 · The quiet-firm skip
+- L4860 · No v_office_messages
+- L4862 · B65-REACH-A-MANAGER
+- L5051 · The §4 estate table is WRONG about lifecycle-heart:
+- L5054 · Board_Worker was deliberately left BEHIND _(2026-09-08)_
+- L5108 · The own-mailbox guard's first version made things worse. _(2026-09-10)_
+- L5115 · The address guard was added to the wrong door. _(2026-09-08)_
+- L5119 · An eval pin that compared a literal to itself.
+- L5185 · The Composio thread fetch has never fired in the pilot. _(2026-09-07)_
+- L5192 · A known customer's QUESTION rings no bell.
+- L5196 · The sender was the firm's OWN mailbox
+- L5199 · The seat cannot ping the planner.
+- L5273 · For a customer we know, inbound creates NOTHING.
+- L5276 · The extractor gained one field, visitCommitted
+- L5278 · A. job_captures
+- L5282 · B. What a yes creates CITES the call.
+- L5285 · C. attributes.correspondence[]
+- L5289 · open_job
+- L5292 · The focused pass.
+- L5296 · Two markers, pinged_at and asked_at.
+- L5304 · A "processed" marker must be the LAST thing written.
+- L5310 · Nothing releases a pinged_at.
+- L5314 · The two doors spell the sender differently.
+- L5317 · captureHasObservation needed its own index.
+- L5321 · A gap-less send never reaches the ask marker.
+- L5325 · The date rail reaches further than it looks.
+- L5328 · ingestEmail and googleapis are deleted.
+- L5330 · ⚠ THE PHONE DOOR ONLY REACHES THIS RUNG ON A new_job INTENT. _(2026-08-06)_
+- L5336 · findFoldImpact's superset invariant is now load-bearing in a second place.
+- L5342 · THE EMAIL CHANNEL DROPS ITS THREAD ID — verified 2026-09-07, and it is time-sensitive. _(2026-09-07)_
+- L5393 · TRAP — nemoclaw <s> status LIES about the gateway right after a restart.
+- L5425 · A visit carries a CREW, and a crew has no lead
+- L5430 · The double-booking guard MOVED with the person
+- L5444 · A composite PK on a link table makes PostgREST synthesise a junction
+- L5452 · A bare ON CONFLICT DO NOTHING swallows an exclusion constraint
+- L5456 · Moving a filter from SQL into JS meets PostgREST's max_rows
+- L5460 · A derived column needs its trigger on UPDATE too, and a FOR SHARE on the parent
+- L5465 · Order is load-bearing in two different places
+- L5471 · Deploy shape: an additive migration BEFORE the code, the drop AFTER
+- L5587 · ON DELETE SET NULL is an UPDATE.
+- L5589 · Naive-local vs real UTC, again. _(2026-09-08)_
+- L5594 · A once-ever index plus stable ids = a detector that fires once, forever.
+- L5601 · A liveness filter can be bypassed by an id rename.
+- L5605 · A compat view bridges the deploy. _(2026-09-05)_
+- L5619 · schedule_events.assignment_id KEEPS ITS NAME this rung.
+- L5622 · The completed-stamp CHECK was dropped.
+- L5632 · RECORDED, NOT FIXED — a crew edit is three HTTP round trips and is NOT atomic.
+- L5642 · RECORDED, NOT FIXED — the tray became an unbounded full-table read.
+- L5728 · A green suite proves nothing when you mass-edit tests.
+- L5733 · A test can pin the bug.
+- L5736 · Reachability is not a compile error.
+- L5812 · A technician's seat agent has NO scheduling verb at any tier.
+- L5815 · Live specimen in the pilot _(2026-09-01)_
+- L5825 · Counting.
+- L5827 · Detection.
+- L5832 · Booking.
+- L5845 · Build 6 (vocabulary): _(2026-09-01)_
+- L5850 · Build 7 (detectors report): _(2026-09-05)_
+- L5860 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L6239 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L6262 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L6309 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L6346 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L6378 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L6383 · Every member row stores the FULL grouped message in question.
-- L6387 · The attribution stamp is an audit link, not a gate.
-- L6391 · The derived stamp requires a capture a badge-holder SPOKE
-- L6395 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L6401 · The follow-up loop has two halves and both had to be written down.
-- L6407 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L6481 · Batching works.
-- L6483 · The follow-up leg works, including the half that fails silently.
-- L6487 · Both attribution paths fired, each in its designed case.
-- L6491 · Escalation fired correctly
-- L6492 · The planner's group-aware pacing is the result worth keeping.
+- L6256 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L6279 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L6326 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L6363 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L6395 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L6400 · Every member row stores the FULL grouped message in question.
+- L6404 · The attribution stamp is an audit link, not a gate.
+- L6408 · The derived stamp requires a capture a badge-holder SPOKE
+- L6412 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L6418 · The follow-up loop has two halves and both had to be written down.
+- L6424 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L6498 · Batching works.
+- L6500 · The follow-up leg works, including the half that fails silently.
+- L6504 · Both attribution paths fired, each in its designed case.
+- L6508 · Escalation fired correctly
+- L6509 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L6844 · Evals:
-- L6851 · Runbooks:
-- L6856 · Decision history with citations:
-- L6860 · This file
+- L6861 · Evals:
+- L6868 · Runbooks:
+- L6873 · Decision history with citations:
+- L6877 · This file
 
 <!-- INDEX:END -->
 
@@ -3691,7 +3691,7 @@ what to do. Attention curation is a WEIGHTING, never a gate (user, 2026-08-28).
 12 new eyes                       contradiction detectors — ours, SQL, cheap   [was 9; now on ONE visit]
 10b.3 the conversation decides WHICH  a person key says who, the thread says which JOB; stamp the outbound capture; + THE FIRM'S OWN REPLIES enter L1, GATED (trigger is INBOX-only today)  [user 2026-09-09; plan 2026-09-09-the-conversation-decides-which; 10b.2's Tests A+B DEFERRED into it]
 10b.4 the SENT watcher  Gmail's trigger menu has TWO watchers, one per DIRECTION; the one we ran is "New Gmail Message RECEIVED Trigger" and NO config widens it (10b.3's `query: label:inbox OR label:sent` delivered nothing, verified live 2026-09-10). GMAIL_EMAIL_SENT_TRIGGER is the other half; teardown/disable now ASK Composio what is on a mailbox instead of reading the roster's single trigger-id column  [user decisions 2026-09-10; DEPLOYED?]
-13 the roster reconciles with Composio  an ACTIVE row with no connected account ADOPTS the one Composio holds for its composite user id  [user 2026-09-09; TAIL of the order]
+13 DROPPED 2026-09-11 (user: "the pilot is a test suite") — was: the roster reconciles with Composio, an ACTIVE row with no connected account ADOPTS the one Composio holds  [user 2026-09-09; see §Rung 13 below]
 ```
 
 **Hard dependencies:** 1 < 5 · 4 < 6 · 6 < 7 · 2 < 3 · 6.5 < 7 · 7 < 9 · 8 < 9 · 9a < 9b ·
@@ -3800,7 +3800,24 @@ plan rather than at the keyboard:
   argument alone is forgettable; address resolution alone is wrong exactly when the address is
   ambiguous. Together they cover each other and neither can fabricate — no unique answer, no stamp.
 
-**Rung 13 — the roster reconciles with Composio (user, 2026-09-09; deliberately at the TAIL).**
+**Rung 13 — the roster reconciles with Composio (user, 2026-09-09; deliberately at the TAIL). DROPPED 2026-09-11.**
+*Dropped by the user, before any code:* "the pilot is a test suite, this is genuinely not a big
+problem then. Just get rid of this task." The full handoff is on the archived task
+`20260911-rung-13-reconcile-the-roster-with-compos`. What was measured first, so nobody re-measures
+it: the specimen below is CLOSED (`manager-sam` in the pilot firm was hand-fixed 2026-09-10; no
+active pilot seat was drifted on 2026-09-11, read-only). The likely cause was the roster row being
+re-created blank while Composio kept the Gmail keyed on `tenant:ref`, which is exactly what a
+`--with-roster` reseed does (`scripts/seed.mjs:250-267`); that reseed's `TRUNCATE … technicians
+CASCADE` also empties `sandbox_pool` and every table pointing at the roster, and that was accepted
+too. Two claims in the write-up below are WRONG and are kept only as the record: the `ben-shelton`
+billing worry (`GMAIL_GET_PROFILE` runs only after an ACTIVE account is found, and Composio does not
+meter the list call) and "`ensureTrigger` is already idempotent" (it re-upserts a watcher whose config
+is stale, and Composio's upsert keys on config, so that mints a SECOND instance, verified
+2026-09-10). One vendor change any revival must design around: Composio's connected-accounts list
+no longer returns `user_id` on its items ("you will only be able to read via userId not get it
+back", docs.composio.dev/reference/api-reference/connected-accounts/getConnectedAccounts); the
+`user_ids` filter still works, so attribution takes one list call per person. The original write-up:
+
 Measured while building 10b.2: `manager-sam` IS paired in Composio (every inbound capture, drop
 and extraction cost row today attributes to it) and our roster row records **nothing** — no
 `composio_connected_account_id`, no `connected_email`, no `composio_trigger_id`. Two live
@@ -5093,8 +5110,8 @@ padding, internal whitespace and surrounding punctuation — on BOTH minting doo
   customer who kept herself on `To` (a contact form's copy-to-sender, a reply-all) would have lost
   her identity key and opened a second unmatched item. It is now conservative: yes only via the
   roster's `connected_email` (authoritative) or a `to` header with exactly ONE address. Residual,
-  documented in the code: a customer who mails themselves and BCCs the firm. **Arm one is DEAD in
-  the pilot** — see rung 13.
+  documented in the code: a customer who mails themselves and BCCs the firm. **Arm one was DEAD in
+  the pilot until the row was hand-fixed on 2026-09-10** — see rung 13 (dropped 2026-09-11).
 - **The address guard was added to the wrong door.** It lived in `resolutionFrom`
   (`record_field_note`), which rung 10b.2 had just told the seat to stop using — so it guarded the
   door nobody takes and was missing from `record_caller`, where the 2026-09-08 specimen would have

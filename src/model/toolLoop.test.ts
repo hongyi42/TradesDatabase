@@ -768,20 +768,59 @@ describe('runToolLoop', () => {
     expect(res.calls[0].result).toContain('plan was empty');
   });
 
+  // The clock is the test's, not the machine's. Against a real 1ms budget this
+  // raced the millisecond boundary and lost whenever the machine was loaded —
+  // "after 0 turns", once in a full run and once in three isolated reruns
+  // (2026-09-11). Here time moves only when the tool spends it.
   test('the wall-clock budget throws rather than letting a cron tick run long', async () => {
     serve(toolCallBody('spine_read', { sql: 'select 1' }));
-    await expect(
-      runToolLoop(
-        { system: 's', user: 'u', maxTokens: 128, label: 'planner', budgetMs: 1 },
-        [READ_TOOL],
-        // The budget is checked BEFORE each turn, never mid-flight: one full turn
-        // always completes, and the loop stops at the next boundary. A slow tool
-        // is what actually burns a cron tick, so that is what this spends.
-        async () => new Promise((r) => setTimeout(() => r([]), 10)),
-        undefined,
-        { recordUsage: async () => {} },
-      ),
-    ).rejects.toThrow(/exceeded its 1ms budget after 1 turns/);
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    // The budget is checked BEFORE each turn, never mid-flight: one full turn
+    // always completes, and the loop stops at the next boundary. A slow tool
+    // is what actually burns a cron tick, so that is what this spends.
+    const execute = vi.fn(async () => {
+      now += 10;
+      return [];
+    });
+    try {
+      await expect(
+        runToolLoop(
+          { system: 's', user: 'u', maxTokens: 128, label: 'planner', budgetMs: 1 },
+          [READ_TOOL],
+          execute,
+          undefined,
+          { recordUsage: async () => {} },
+        ),
+      ).rejects.toThrow(/exceeded its 1ms budget after 1 turns/);
+      expect(execute).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  // What the flake above was really reporting: the loop promises a tiny budget
+  // ONE attempt (MIN_TURN_BUDGET_MS's header), and the promise broke whenever
+  // the clock ticked between the loop reading its start time and checking it.
+  // Forced here on every read, so a regression is red on every run.
+  test('the first turn is never pre-empted, even when the clock moves before it starts', async () => {
+    serve(toolCallBody('spine_read', { sql: 'select 1' }));
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => (now += 5));
+    try {
+      await expect(
+        runToolLoop(
+          { system: 's', user: 'u', maxTokens: 128, label: 'planner', budgetMs: 1 },
+          [READ_TOOL],
+          async () => [],
+          undefined,
+          { recordUsage: async () => {} },
+        ),
+      ).rejects.toThrow(/exceeded its 1ms budget after 1 turns/);
+      expect(sent).toHaveLength(1); // the one attempt really reached the provider
+    } finally {
+      clock.mockRestore();
+    }
   });
 });
 

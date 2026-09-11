@@ -558,7 +558,11 @@ export async function runToolLoop(
           `(${calls.length} tool calls made)`,
       );
     }
-    const remaining = budgetMs - (Date.now() - started);
+    // The FIRST turn reads no clock. At a 1ms budget the millisecond can tick
+    // over between `started` and this line — a loaded machine widens that gap —
+    // and a first turn pre-empted by it is a coin toss, not a limit (a flaky
+    // test, 2026-09-11). Only a budget that was never positive stops turn one.
+    const remaining = turns === 0 ? budgetMs : budgetMs - (Date.now() - started);
     // `turns > 0`: always attempt one turn, however small the budget.
     const floor = turns > 0 ? Math.min(MIN_TURN_BUDGET_MS, budgetMs) : 0;
     if (remaining <= 0 || remaining < floor) {

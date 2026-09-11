@@ -160,6 +160,13 @@ beforeAll(() => {
   // An imported name passed straight back out through a local export list.
   writeFileSync(join(mainCheckout, 'src', 'pass.ts'), "import { greet } from './lib.js';\n\nexport { greet };\n");
   writeFileSync(join(mainCheckout, 'src', 'usePass.ts'), "import { greet } from './pass.js';\n\nexport const hi = greet();\n");
+  // An anonymous default export beside a named one — "default" is also an English word.
+  writeFileSync(join(mainCheckout, 'src', 'dflt.ts'),
+    'export default function () {\n  return 1;\n}\n\nexport function other(): number {\n  return 2;\n}\n');
+  // Values whose contents change without any caller's contract changing — and one whose shape does.
+  writeFileSync(join(mainCheckout, 'src', 'consts.ts'), "export const PROMPT = 'You are helpful.';\nexport const LIMITS = { max: 3, min: 1 };\n");
+  writeFileSync(join(mainCheckout, 'src', 'useConsts.ts'),
+    "import { PROMPT, LIMITS } from './consts.js';\n\nexport const size = PROMPT.length + LIMITS.max;\n");
   git(['add', '.'], mainCheckout);
   git(['commit', '-m', 'fixture'], mainCheckout);
   // A configured `origin` (pointing nowhere, so a fetch fails fast): without one, git never gives a
@@ -872,6 +879,190 @@ describe('integrate — the review fixes', () => {
       expect(item?.detail).toContain(`${B.id} changed \`greet\``);
     } finally {
       finish(listed.id, B.id);
+    }
+  });
+});
+
+describe('the final review — what the graph could not see, and checks that passed without checking', () => {
+  const edit = (wt: string, file: string, marker: string) => rewrite(wt, file, marker, `export const touched = 0;\n${marker}`);
+  const integrate = (args: string[]) => JSON.parse(work(['integrate', ...args], mainCheckout)) as { task: string; landed: (Item & { callers?: string[] })[] };
+  const adminDir = (wt: string) => git(['rev-parse', '--absolute-git-dir'], wt);
+  function unspawn(id: string): void {
+    const slug = id.replace(/^\d{8}-/, '');
+    work(['done', id], mainCheckout);
+    git(['worktree', 'remove', '--force', join(mainCheckout, '.claude', 'worktrees', slug)], mainCheckout);
+    git(['branch', '-D', `work/${slug}`], mainCheckout);
+  }
+
+  test('a barrel dropping a re-export is a removal to whoever imports through it — star, named and passed-through', () => {
+    const A = newTask('trim three barrels');
+    const B = newTask('edit the three barrel callers');
+    try {
+      rewrite(A.wt, 'src/barrel.ts', "export * from './lib.js';\n", '');
+      rewrite(A.wt, 'src/barrel2.ts', "export { price as cost } from './lib.js';\n", '');
+      rewrite(A.wt, 'src/pass.ts', '\nexport { greet };\n', '\n');
+      edit(B.wt, 'src/use2.ts', 'export const three');
+      edit(B.wt, 'src/use3.ts', 'export const four');
+      edit(B.wt, 'src/usePass.ts', 'export const hi');
+      // lib.ts, which declares all three, never changed: before, this was "none".
+      const hits = overlap(A.id, B.id).filter((i) => i.kind === 'changed signature');
+      expect(hits.map((i) => `${i.file} › ${i.symbol}`).sort()).toEqual([
+        "src/barrel.ts › export * from './lib.js'", 'src/barrel2.ts › cost', 'src/pass.ts › greet',
+      ]);
+      expect(hits.every((i) => i.detail.includes(`${A.id} removed it`))).toBe(true);
+      expect(hits.find((i) => i.file === 'src/barrel.ts')?.sizes.callSites).toBe(1);
+    } finally {
+      finish(A.id, B.id);
+    }
+  });
+
+  test('a sibling git cannot read is an incomplete check, never a clean one — and spawn stops on it', () => {
+    const broken = newTask('a checkout with a broken index');
+    const B = newTask('edits nothing the broken one could see');
+    const finding = work(['park', '--title', 'the row type needs a name', '--files', 'src/db/useDb.ts'], mainCheckout);
+    const index = join(adminDir(broken.wt), 'index');
+    try {
+      writeFileSync(index, 'not an index');
+      edit(B.wt, 'src/use.ts', 'export const two');
+      const unknown = overlap(broken.id, B.id).find((i) => i.severity === '?');
+      expect(unknown).toMatchObject({ kind: 'not checked' });
+      expect(unknown?.detail).toContain(`the uncommitted changes in ${broken.wt}`);
+      const stopped = workResult(['spawn', finding], mainCheckout);
+      expect(stopped.status).toBe(2);
+      expect(stopped.stdout).toMatch(/\?\s+not checked/);
+    } finally {
+      rmSync(index, { force: true });
+      git(['reset', '-q'], broken.wt);
+      finish(broken.id, B.id);
+      work(['drop', finding], mainCheckout);
+    }
+  });
+
+  test('a checkout whose .git points nowhere is named as unread, not described from its branch alone', () => {
+    const lost = newTask('a checkout that lost its admin dir');
+    const B = newTask('edits beside the lost one');
+    const dotGit = join(lost.wt, '.git');
+    const saved = readFileSync(dotGit, 'utf8');
+    try {
+      writeFileSync(dotGit, `gitdir: ${join(tmp, 'no-such-admin-dir')}\n`);
+      edit(B.wt, 'src/use.ts', 'export const two');
+      const unknown = overlap(lost.id, B.id).find((i) => i.severity === '?');
+      expect(unknown?.detail).toContain(`its checkout ${lost.wt}`);
+    } finally {
+      writeFileSync(dotGit, saved);
+      finish(lost.id, B.id);
+    }
+  });
+
+  test('a finding\'s files are read as repo paths: ./, a directory, and one that exists nowhere', () => {
+    const A = newTask('greet and the row, for path forms');
+    const dotted = work(['park', '--title', '`greet` is off', '--files', './src/lib.ts'], mainCheckout);
+    const folder = work(['park', '--title', 'the db folder needs a look', '--files', 'src/db/'], mainCheckout);
+    const typo = work(['park', '--title', 'a file that is not there', '--files', 'src/nope.ts'], mainCheckout);
+    try {
+      rewrite(A.wt, 'src/lib.ts', "return 'hello';", "return 'hey';");
+      edit(A.wt, 'src/db/useDb.ts', 'export const row');
+      // Matched verbatim, `./src/lib.ts` and `src/db/` matched nothing, and spawn went ahead alone.
+      const one = workResult(['spawn', dotted], mainCheckout);
+      expect(one.status).toBe(2);
+      expect(one.stdout).toMatch(/HIGH\s+same function\s+src\/lib\.ts › greet/);
+      const two = workResult(['spawn', folder], mainCheckout);
+      expect(two.status).toBe(2);
+      expect(two.stdout).toContain('src/db/useDb.ts');
+      const three = workResult(['spawn', typo], mainCheckout);
+      expect(three.status).toBe(2);
+      expect(three.stdout).toContain('It names 1 path not in origin/main — src/nope.ts — a new file, or a typo?');
+      expect(workResult(['spawn', typo, '--proceed'], mainCheckout).status).toBe(0);
+      expect(taskBody(typo)).toContain('src/nope.ts — a new file, or a typo? Only a path that exists can be checked for what calls it. The operator proceeded (--proceed).');
+    } finally {
+      finish(A.id);
+      work(['drop', dotted], mainCheckout);
+      work(['drop', folder], mainCheckout);
+      unspawn(typo);
+    }
+  });
+
+  test('a branch whose worktree lost its .git is not described by the main checkout\'s edits', () => {
+    const A = newTask('greet, beside a ghost branch');
+    const n = ++counter;
+    const ghost = join(mainCheckout, '.claude', 'worktrees', `ghostb-${n}`);
+    git(['worktree', 'add', '--no-track', ghost, '-b', `ghostb-${n}`, 'origin/main'], mainCheckout);
+    try {
+      renameSync(join(ghost, '.git'), join(ghost, '.git.bak'));
+      // An uncommitted edit in the MAIN checkout: git run inside the ghost folder walks up to it.
+      rewrite(mainCheckout, 'src/lib.ts', "return 'hello';", "return 'main was here';");
+      rewrite(A.wt, 'src/lib.ts', "return 'hello';", "return 'hi';");
+      expect(overlap(`ghostb-${n}`, A.id)).toEqual([]);
+    } finally {
+      git(['checkout', '--', 'src/lib.ts'], mainCheckout);
+      renameSync(join(ghost, '.git.bak'), join(ghost, '.git'));
+      git(['worktree', 'remove', '--force', ghost], mainCheckout);
+      finish(A.id);
+    }
+  });
+
+  test('"default" in prose is not a function name, and backticks say which words are', () => {
+    const A = newTask('change the default export');
+    const B = newTask('change greet, for the backtick case');
+    const byDefault = work(['park', '--title', 'other should return two by default', '--files', 'src/dflt.ts'], mainCheckout);
+    const marked = work(['park', '--title', 'rounding', '--files', 'src/lib.ts', '--body', '-'], mainCheckout, 'The `price` rounding is off; greet is fine.\n');
+    try {
+      rewrite(A.wt, 'src/dflt.ts', 'return 1;', 'return 3;');
+      rewrite(B.wt, 'src/lib.ts', "return 'hello';", "return 'hey there';");
+      expect(overlap(A.id, byDefault).map((i) => `${i.severity} ${i.kind}`)).toEqual(['LOW same file only']);
+      expect(overlap(B.id, marked).map((i) => `${i.severity} ${i.kind}`)).toEqual(['LOW same file only']);
+    } finally {
+      finish(A.id, B.id);
+      work(['drop', byDefault], mainCheckout);
+      work(['drop', marked], mainCheckout);
+    }
+  });
+
+  test('rewording a constant is a change in behaviour; changing its shape is a change in signature', () => {
+    const reword = newTask('reword the prompt, raise the limit');
+    const reshape = newTask('add a key to the limits');
+    const B = newTask('edit the constants caller');
+    try {
+      rewrite(reword.wt, 'src/consts.ts', "'You are helpful.'", "'You are very helpful.'");
+      rewrite(reword.wt, 'src/consts.ts', 'max: 3', 'max: 4');
+      rewrite(reshape.wt, 'src/consts.ts', 'min: 1 }', 'min: 1, step: 1 }');
+      edit(B.wt, 'src/useConsts.ts', 'export const size');
+      const worded = overlap(reword.id, B.id);
+      expect(worded.map((i) => `${i.severity} ${i.kind} ${i.symbol}`).sort()).toEqual(['LOW changed behaviour LIMITS', 'LOW changed behaviour PROMPT']);
+      expect(overlap(reshape.id, B.id).map((i) => `${i.severity} ${i.kind} ${i.symbol}`)).toEqual(['MED changed signature LIMITS']);
+    } finally {
+      finish(reword.id, reshape.id, B.id);
+    }
+  });
+
+  test('main is read as its commit: a caller it added through a barrel the main checkout lacks is found', () => {
+    const T = newTask('widen price, then main calls it through a new barrel');
+    const original = git(['rev-parse', 'refs/remotes/origin/main'], mainCheckout);
+    const mover = join(tmp, `wt-${++counter}`);
+    try {
+      rewrite(T.wt, 'src/lib.ts', 'price(amount: number)', 'price(amount: number, tax = 0)');
+      commit(T.wt, 'T widens price');
+      git(['worktree', 'add', '--detach', mover, 'origin/main'], mainCheckout);
+      writeFileSync(join(mover, 'src', 'newbarrel.ts'), "export * from './lib.js';\n");
+      writeFileSync(join(mover, 'src', 'caller2.ts'), "import { price } from './newbarrel.js';\n\nexport const c2 = price(1);\n");
+      commit(mover, 'main adds a barrel and a caller through it');
+      git(['update-ref', 'refs/remotes/origin/main', git(['rev-parse', 'HEAD'], mover)], mainCheckout);
+      // The main checkout's disk has neither file; resolved there, the caller vanished.
+      expect(existsSync(join(mainCheckout, 'src', 'newbarrel.ts'))).toBe(false);
+      const hit = integrate([T.id, '--json']).landed.find((i) => i.kind === 'changed signature' && i.symbol === 'price');
+      expect(hit?.callers).toContain('src/caller2.ts');
+    } finally {
+      git(['update-ref', 'refs/remotes/origin/main', original], mainCheckout);
+      finish(T.id);
+    }
+  });
+
+  test('--json before the id still reports that task, not this worktree\'s', () => {
+    const T = newTask('a task asked about with the flag first');
+    try {
+      expect(integrate(['--json', T.id]).task).toBe(T.id);
+    } finally {
+      finish(T.id);
     }
   });
 });

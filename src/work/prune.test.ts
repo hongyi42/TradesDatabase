@@ -107,8 +107,11 @@ beforeAll(() => {
     '#!/usr/bin/env node',
     "const a = process.argv.slice(2); const i = a.indexOf('--head');",
     "const map = JSON.parse(require('fs').readFileSync(process.env.GH_FIXTURE, 'utf8'));",
-    "if (map[a[i + 1]] === 'FAIL') { process.stderr.write('gh: not logged in\\n'); process.exit(1); }",
-    "process.stdout.write(JSON.stringify(map[a[i + 1]] ?? []));",
+    'let v = map[a[i + 1]];',
+    // A commit landing in another worktree WHILE prune is still asking about this one.
+    "if (v && v.commitIn) { require('child_process').execFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'landed during prune'], { cwd: v.commitIn }); v = v.result; }",
+    "if (v === 'FAIL') { process.stderr.write('gh: not logged in\\n'); process.exit(1); }",
+    'process.stdout.write(JSON.stringify(v ?? []));',
     '',
   ].join('\n'), { mode: 0o755 });
 
@@ -117,9 +120,11 @@ beforeAll(() => {
   git(['init', '-b', 'main'], mainCheckout);
   writeFileSync(join(mainCheckout, 'supabase', 'config.toml'), CONFIG);
   writeFileSync(join(mainCheckout, 'README.md'), 'fixture\n');
+  writeFileSync(join(mainCheckout, '.gitignore'), 'node_modules\n.env\n.env.test\n.scratch/\n');
   git(['add', '.'], mainCheckout);
   git(['commit', '-q', '-m', 'fixture'], mainCheckout);
   git(['update-ref', 'refs/remotes/origin/main', 'HEAD'], mainCheckout);
+  writeFileSync(join(mainCheckout, '.env'), 'KEY=main\n');
   // A setting that hides untracked files from plain `git status` — and from git's own check in
   // `worktree remove`. Prune must see them anyway, or an untracked draft is deleted silently.
   git(['config', 'status.showUntrackedFiles', 'no'], mainCheckout);
@@ -171,6 +176,18 @@ beforeAll(() => {
   add('on-main', 'main');
   // The worktree prune will be run FROM, in the case that tests that.
   add('merged-self');
+  // Merged and clean to `git status`, holding IGNORED files. What rebuilds itself may go; what
+  // does not — scratch notes, an edited .env — is somebody's, and `worktree remove` deletes it.
+  mkdirSync(join(add('merged-regenerable'), 'node_modules', 'x'), { recursive: true });
+  writeFileSync(join(wt['merged-regenerable'], 'node_modules', 'x', 'index.js'), '');
+  writeFileSync(join(wt['merged-regenerable'], '.env.test'), 'LOCAL=1\n');
+  writeFileSync(join(wt['merged-regenerable'], '.env'), 'KEY=main\n'); // a copy of the main checkout's
+  mkdirSync(join(add('merged-ignored'), '.scratch'));
+  writeFileSync(join(wt['merged-ignored'], '.scratch', 'notes.md'), 'half a thought\n');
+  writeFileSync(join(add('merged-env-edited'), '.env'), 'KEY=edited\n');
+  // Merged, but git cannot read its status at all: that proves nothing, least of all "clean".
+  add('merged-unreadable');
+  writeFileSync(join(mainCheckout, '.git', 'worktrees', 'merged-unreadable', 'index'), 'not an index');
   // Registered with git, folder gone; and registered, link broken, folder still there.
   rmSync(add('gone'), { recursive: true, force: true });
   renameSync(join(add('orphaned'), '.git'), join(wt.orphaned, '.git.bak'));
@@ -205,6 +222,10 @@ describe('work.mjs prune', () => {
     expect(row(stdout, 'merged-visited')).toMatch(/KEEP.*a session worked here/);
     expect(row(stdout, 'merged-subagent')).toMatch(/KEEP.*a session worked here/);
     expect(row(stdout, 'merged-locked')).toMatch(/KEEP.*locked/);
+    expect(row(stdout, 'merged-regenerable')).toMatch(/REMOVE.*on origin\/main/);
+    expect(row(stdout, 'merged-ignored')).toMatch(/KEEP.*ignored files that removing it would delete: \.scratch\//);
+    expect(row(stdout, 'merged-env-edited')).toMatch(/KEEP.*ignored files that removing it would delete: \.env /);
+    expect(row(stdout, 'merged-unreadable')).toMatch(/KEEP.*git could not read its status/);
     expect(stdout).not.toMatch(/^\s+(REMOVE|KEEP)\s+repo\s/m); // never the main checkout
     expect(git(['worktree', 'list', '--porcelain'], mainCheckout)).toBe(before);
     expect(readFileSync(npxLog, 'utf8')).toBe('');
@@ -217,7 +238,7 @@ describe('work.mjs prune', () => {
   test('--apply removes exactly the REMOVE rows; a stack is stopped by its config, after, and never a shared one', () => {
     const { status, stdout } = prune(['--apply']);
     expect(status).toBe(0);
-    for (const name of ['merged-clean', 'squash-match', 'own-stack', 'shared-merged', 'on-main', 'merged-self']) {
+    for (const name of ['merged-clean', 'squash-match', 'own-stack', 'shared-merged', 'on-main', 'merged-self', 'merged-regenerable']) {
       expect(existsSync(wt[name])).toBe(false);
     }
     for (const name of ['merged-clean', 'squash-match', 'own-stack', 'shared-merged', 'merged-self']) {
@@ -245,9 +266,11 @@ describe('work.mjs prune', () => {
     expect(stdout).toMatch(/removed own-stack — worktree removed; branch own-stack deleted/);
     expect(stdout).toContain('stack fixture-own-stack stopped (its data volumes deleted)');
     for (const name of ['unmerged', 'squash-other', 'squash-ghfail', 'merged-untracked', 'config-edited',
-      'config-staged', 'merged-active', 'merged-live', 'merged-visited', 'merged-subagent', 'merged-locked', 'shared-kept']) {
+      'config-staged', 'merged-active', 'merged-live', 'merged-visited', 'merged-subagent', 'merged-locked', 'shared-kept',
+      'merged-ignored', 'merged-env-edited', 'merged-unreadable']) {
       expect(existsSync(wt[name])).toBe(true);
     }
+    expect(readFileSync(join(wt['merged-ignored'], '.scratch', 'notes.md'), 'utf8')).toBe('half a thought\n');
     // The real edit to config.toml, which a blanket `git checkout` would have thrown away.
     expect(readFileSync(join(wt['config-edited'], 'supabase', 'config.toml'), 'utf8')).toContain('site_url');
   });
@@ -259,12 +282,14 @@ describe('work.mjs prune — a shared stack under a removal that fails', () => {
     mkdirSync(join(repo, 'supabase'), { recursive: true });
     git(['init', '-q', '-b', 'main'], repo);
     writeFileSync(join(repo, 'supabase', 'config.toml'), CONFIG);
+    // A tracked directory, so the worktree is clean — and in pair-2 one git cannot empty:
+    // `status` has nothing to say about it, and `worktree remove` fails part-way on it.
+    mkdirSync(join(repo, 'stuck'));
+    writeFileSync(join(repo, 'stuck', 'file'), 'x');
     git(['add', '.'], repo);
     git(['commit', '-q', '-m', 'fixture'], repo);
     git(['update-ref', 'refs/remotes/origin/main', 'HEAD'], repo);
     git(['switch', '-q', '-c', 'trunk'], repo);
-    // An ignored directory git cannot empty: `status` does not show it, `worktree remove` fails on it.
-    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'stuck/\n');
     const pair = ['pair-1', 'pair-2'].map((name) => {
       const p = join(tmp, name);
       git(['worktree', 'add', '--no-track', p, '-b', name, 'origin/main'], repo);
@@ -272,8 +297,6 @@ describe('work.mjs prune — a shared stack under a removal that fails', () => {
       return p;
     });
     const stuck = join(pair[1], 'stuck');
-    mkdirSync(stuck);
-    writeFileSync(join(stuck, 'file'), 'x');
     chmodSync(stuck, 0o555);
     writeFileSync(npxLog, '');
     try {
@@ -287,5 +310,37 @@ describe('work.mjs prune — a shared stack under a removal that fails', () => {
     } finally {
       chmodSync(stuck, 0o755);
     }
+  });
+});
+
+describe('work.mjs prune — a commit landing between the check and the removal', () => {
+  test('a branch that moved after its merge proof is kept, with the commit that moved it', () => {
+    const repo = join(tmp, 'race-repo');
+    mkdirSync(repo, { recursive: true });
+    git(['init', '-q', '-b', 'main'], repo);
+    writeFileSync(join(repo, 'README.md'), 'race\n');
+    git(['add', '.'], repo);
+    git(['commit', '-q', '-m', 'fixture'], repo);
+    git(['update-ref', 'refs/remotes/origin/main', 'HEAD'], repo);
+    git(['switch', '-q', '-c', 'trunk'], repo);
+    // race-a is merged by ancestry and checked FIRST (worktrees list sorted by path). race-b needs
+    // gh — and the stand-in, answering for race-b, commits in race-a: the gap the check leaves.
+    const [a, b] = ['race-a', 'race-b'].map((name) => {
+      const p = join(tmp, name);
+      git(['worktree', 'add', '--no-track', p, '-b', name, 'origin/main'], repo);
+      return p;
+    });
+    const tipB = commitIn(b, 'race-b-work');
+    const fixture = join(tmp, 'gh-race.json');
+    writeFileSync(fixture, JSON.stringify({ 'race-b': { commitIn: a, result: [{ number: 9, headRefOid: tipB }] } }));
+    const r = spawnSync('node', [CLI, 'prune', '--apply'], { cwd: repo, encoding: 'utf8', input: '', env: { ...env(), GH_FIXTURE: fixture } });
+    expect(r.stdout).toMatch(/REMOVE\s+race-a/); // proven at the time it was checked
+    // The worktree could go (the commit left it clean); the branch, holding that commit, stays.
+    expect(existsSync(a)).toBe(false);
+    expect(git(['log', '-1', '--format=%s', 'race-a'], repo)).toBe('landed during prune');
+    expect(r.stdout).toContain('branch race-a KEPT — it no longer points at the commit proven merged');
+    expect(r.status).toBe(1);
+    // race-b itself went as normal: its proof was about the commit it still points at.
+    expect(git(['branch', '--list', 'race-b'], repo)).toBe('');
   });
 });

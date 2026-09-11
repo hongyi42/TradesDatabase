@@ -318,6 +318,12 @@ function createTask(main, title, now, fm, body) {
 
 // ── argument parsing ──────────────────────────────────────────────────────────
 
+/**
+ * Flags that never take a value. Without this list `integrate --json <id>` read the id as the
+ * flag's value and silently reported this worktree's own task instead.
+ */
+const SWITCHES = new Set(['json', 'proceed', 'apply', 'force', 'for-session']);
+
 function parseArgs(argv) {
   const flags = {};
   const positional = [];
@@ -326,7 +332,7 @@ function parseArgs(argv) {
     if (a.startsWith('--')) {
       const eq = a.indexOf('=');
       if (eq !== -1) flags[a.slice(2, eq)] = a.slice(eq + 1);
-      else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) flags[a.slice(2)] = argv[++i];
+      else if (!SWITCHES.has(a.slice(2)) && i + 1 < argv.length && !argv[i + 1].startsWith('--')) flags[a.slice(2)] = argv[++i];
       else flags[a.slice(2)] = true;
     } else positional.push(a);
   }
@@ -924,8 +930,9 @@ async function cmdSpawn(main, { positional, flags }) {
 
   let items = [];
   let compared = 0;
+  let finding;
   try {
-    const finding = graph.subjectFromTask(main, task.fm, task.body);
+    finding = graph.subjectFromTask(main, task.fm, task.body);
     for (const t of listTasks(main)) {
       if (t.fm.status !== 'active' || !t.fm.worktree || !existsSync(t.fm.worktree)) continue;
       compared++;
@@ -934,8 +941,7 @@ async function cmdSpawn(main, { positional, flags }) {
   } catch (e) {
     fail(`spawn could not check for overlaps: ${e?.message ?? e}`);
   }
-  const order = { HIGH: 0, MED: 1, LOW: 2 };
-  items = items.sort((p, q) => order[p.severity] - order[q.severity] || p.file.localeCompare(q.file));
+  items = items.sort((p, q) => graph.SEVERITY[p.severity] - graph.SEVERITY[q.severity] || p.file.localeCompare(q.file));
   const report = renderOverlaps(items);
   const notes = [
     fetched ? null : `(could not fetch origin — checked against the local ${ref})`,
@@ -943,17 +949,25 @@ async function cmdSpawn(main, { positional, flags }) {
   ].filter(Boolean);
   // A finding's footprint IS its file list. With none, there was nothing to check — and "none
   // found" would be a claim the check never earned, so it stops for the operator like an overlap.
-  // Only when there was something to check it AGAINST: with no active task, there is no overlap
-  // to miss, and the rule is that no overlap proceeds.
+  // So does a path that is not in the repo (a new file, or a typo): what calls it cannot be
+  // checked. Only when there was something to check it AGAINST: with no active task, there is no
+  // overlap to miss, and the rule is that no overlap proceeds.
   const unchecked = compared > 0 && listField(task.fm.files).length === 0;
+  const unknown = compared > 0 ? finding.unknown : [];
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const unknownLine = unknown.length
+    ? `It names ${plural(unknown.length, 'path')} not in ${ref} — ${unknown.join(', ')} — a new file, or a typo? Only a path that exists can be checked for what calls it.`
+    : null;
 
-  if ((items.length || unchecked) && !flags.proceed) {
+  if ((items.length || unchecked || unknown.length) && !flags.proceed) {
     process.stdout.write([
       items.length
         ? `spawn ${id} — STOPPED: ${plural(items.length, 'overlap')} with active tasks. Nothing created.`
-        : `spawn ${id} — STOPPED: it names no files, so nothing could be checked against the active tasks. Nothing created.`,
+        : unchecked
+          ? `spawn ${id} — STOPPED: it names no files, so nothing could be checked against the active tasks. Nothing created.`
+          : `spawn ${id} — STOPPED: part of what it names could not be checked. Nothing created.`,
       ...(items.length ? [report] : []),
+      ...(unknownLine ? [unknownLine] : []),
       ...notes,
       'Re-run with --proceed to create the worktree anyway.',
     ].join('\n') + '\n');
@@ -999,6 +1013,7 @@ async function cmdSpawn(main, { positional, flags }) {
       : unchecked
         ? 'Overlap check: NOT POSSIBLE — the task names no files, so nothing was compared; the operator proceeded (--proceed).'
         : compared ? 'Overlap check: none with any active task.' : 'Overlap check: no other task was active.',
+    ...(unknownLine ? [`${unknownLine} The operator proceeded (--proceed).`] : []),
     ...notes,
   ].join('\n');
   const here = worktreeOf(path);
@@ -1015,6 +1030,7 @@ async function cmdSpawn(main, { positional, flags }) {
     // this, not the report read before, is what the new task's handoff records.
     ...(items.length ? [`Proceeded past ${plural(items.length, 'overlap')}:`, report] : []),
     ...(unchecked ? ['Proceeded without an overlap check: the task names no files.'] : []),
+    ...(unknownLine ? [`Proceeded past: ${unknownLine}`] : []),
     ...notes,
     '',
     'Start a session there — it must be LAUNCHED there, or none of the record\'s hooks fire:',
@@ -1068,6 +1084,7 @@ async function cmdIntegrate(main, cwd, { positional, flags }) {
   // is sometimes the CALLER — the task changed a function and main added a use of it — and then
   // main's commits are in the calling files, not in the file that declares the function.
   for (const item of landed) {
+    if (!item.file) { item.commits = []; continue; } // a `?` row: the check itself, not a change
     const paths = item.changer && item.changer !== moved.label ? (item.callers ?? [item.file]) : [item.file];
     item.commits = (git(['log', '--format=%h %s', '-n', '3', `${moved.base}..${moved.ref}`, '--', ...paths], main) ?? '')
       .split('\n').filter(Boolean);
@@ -1143,10 +1160,16 @@ function projectIdOf(dir) {
 }
 
 /**
- * Whether two project ids can name the same running stack. `supabase start` labels containers
- * with a sanitised id — other characters to `_`, cut to 40 (per the Supabase CLI source read in
- * plan 2's review) — so two ids that differ only past character 40 share one stack. Used only
- * to decide NOT to stop something: erring toward "same" can leave a stack up, never take one down.
+ * Whether two project ids can name the same running stack. The CLI sanitises `project_id` when it
+ * loads config.toml — every run of other characters to `_`, leading `_.-` trimmed, cut to 40 —
+ * and labels containers with that, so two ids that differ only past character 40 share one stack.
+ * Used only to decide NOT to stop something: erring toward "same" can leave a stack up, never
+ * take one down.
+ *
+ * Supabase CLI v2.107.0 (the repo's pin; its npm `stop` proxies to the Go implementation,
+ * https://github.com/supabase/cli/blob/v2.107.0/apps/cli/src/legacy/commands/stop/stop.handler.ts#L5-L14):
+ * sanitizeProjectId, https://github.com/supabase/cli/blob/v2.107.0/apps/cli-go/pkg/config/config.go#L1043-L1053,
+ * applied on load at https://github.com/supabase/cli/blob/v2.107.0/apps/cli-go/pkg/config/config.go#L825-L829.
  */
 function sameStack(x, y) {
   return x === y || stackLabel(x) === stackLabel(y);
@@ -1212,6 +1235,25 @@ function readTail(file, bytes) {
 }
 
 /**
+ * An ignored path in a worktree that costs nothing to lose, because it is rebuilt on demand:
+ * dependencies, build output, Supabase's scratch state, the `.env.test` second-stack.sh writes,
+ * and a `.env` that is a byte-for-byte copy of the main checkout's. Anything else ignored — an
+ * eval run's trajectories, `.scratch/` notes, an edited `.env` — is somebody's, and keeps the
+ * worktree (see cmdPrune).
+ */
+function regenerable(main, path, p) {
+  const bare = p.replace(/\/$/, '');
+  if (bare === 'node_modules' || bare.endsWith('/node_modules') || bare === '.DS_Store' || bare.endsWith('/.DS_Store')) return true;
+  if (['dist', '.env.test', 'supabase/.temp'].includes(bare)) return true;
+  if (bare !== '.env') return false;
+  try {
+    return readFileSync(join(path, '.env')).equals(readFileSync(join(main, '.env')));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * True when the only change to supabase/config.toml is what scripts/second-stack.sh writes: the
  * project_id and the port lines. Anything else in that file is real work, and prune would throw
  * it away with the `git checkout` it needs before `git worktree remove` will agree.
@@ -1231,8 +1273,9 @@ function onlyStackRewrite(path) {
  * squash merge leaves every branch looking unmerged to git), so they pile up holding stacks and
  * stale pictures of the code. This removes a worktree only when nothing can be lost. KEEP, always:
  * the main checkout; the worktree prune is running from; a locked one; one with an active task;
- * one any session worked in during the last day; one with any uncommitted or untracked file (bar
- * a config.toml second-stack.sh rewrote and nothing else); a branch without a merge proof by
+ * one any session worked in during the last day; one git cannot read the status of; one with any
+ * uncommitted or untracked file (bar a config.toml second-stack.sh rewrote and nothing else), or
+ * any ignored one that is not regenerable (see regenerable); a branch without a merge proof by
  * commit. Dry run by default; `--apply` acts, row by row, and exits 1 if any row failed.
  *
  * A stack is stopped only AFTER every worktree using it is gone, from a throwaway folder holding a
@@ -1261,7 +1304,13 @@ function cmdPrune(main, cwd, { flags }) {
     const canonical = worktreeOf(wt.path) ?? wt.path;
     const active = tasks.find((t) => t.fm.status === 'active' && t.fm.worktree === canonical);
     const session = sessionActivityIn(main, wt.path);
-    const status = (gitRaw(['status', '--porcelain', '--untracked-files=all'], wt.path) ?? '').split('\n').filter(Boolean);
+    // Ignored files too (`!!`): `git worktree remove` deletes them with the folder without a word,
+    // and "ignored" here covers eval runs, scratch notes and a hand-edited .env as well as
+    // node_modules. Null is not clean: a status git could not produce proves nothing.
+    const raw = gitRaw(['status', '--porcelain', '--untracked-files=all', '--ignored=matching'], wt.path);
+    const lines = (raw ?? '').split('\n').filter(Boolean);
+    const status = lines.filter((l) => !l.startsWith('!! '));
+    const ignored = lines.filter((l) => l.startsWith('!! ')).map((l) => l.slice(3)).filter((p) => !regenerable(main, wt.path, p));
     const rewritten = status.includes(' M supabase/config.toml') && onlyStackRewrite(wt.path);
     const dirty = status.filter((l) => !(l === ' M supabase/config.toml' && rewritten));
     let proof = null;
@@ -1270,8 +1319,12 @@ function cmdPrune(main, cwd, { flags }) {
     else if (wt.locked) keep('locked (git worktree lock) — unlock it first if it is really finished');
     else if (active) keep(`active task ${active.fm.id}`);
     else if (session && Date.now() - session < LIVE_SESSION_MS) keep(`a session worked here ${ageLabel(session)} ago`);
+    else if (raw === null) keep('git could not read its status — look at it by hand');
     else if (dirty.length) keep(`uncommitted: ${dirty.length} file${dirty.length === 1 ? '' : 's'}`);
-    else if (!(proof = mergeProof(wt, main, def))) {
+    else if (ignored.length) {
+      const shown = ignored.slice(0, 3).join(', ') + (ignored.length > 3 ? ` and ${ignored.length - 3} more` : '');
+      keep(`ignored files that removing it would delete: ${shown} — move them, or delete them by hand`);
+    } else if (!(proof = mergeProof(wt, main, def))) {
       const counts = def ? git(['rev-list', '--left-right', '--count', `${def}...${wt.head}`], main) : null;
       const [behind, ahead] = counts ? counts.split(/\s+/) : ['?', '?'];
       keep(`no merge proof (behind ${behind}, ahead ${ahead}) — decide by hand`);
@@ -1354,8 +1407,9 @@ function cmdPrune(main, cwd, { flags }) {
 /**
  * Stop a removed worktree's stack by running the repo's own Supabase CLI in a throwaway folder
  * holding only a copy of that worktree's config.toml. Not `--project-id`: `start` labels
- * containers with a sanitised, length-capped id while `stop --project-id` matches the raw one, so
- * a long worktree name turns a raw-id stop into a silent no-op. From the config, the CLI works the
+ * containers with a sanitised, length-capped id (see sameStack) while `stop --project-id` filters
+ * on the id exactly as typed (https://github.com/supabase/cli/blob/v2.107.0/apps/cli-go/internal/stop/stop.go#L19-L24),
+ * so a long worktree name turns a raw-id stop into a silent no-op. From the config, the CLI works the
  * id out exactly as `start` did. And never inside a real checkout, where `supabase stop` acts on
  * whatever that checkout's config names — in the main checkout, the PRIMARY stack.
  */
@@ -1400,14 +1454,19 @@ function removeWorktree(main, r, keepBranches) {
   }
   const notes = ['worktree removed'];
   let ok = true;
-  // -D, never -d: `-d` checks the branch against the MAIN checkout's HEAD, not the default
-  // branch, and refuses a squash-merged branch outright. Safe only because of the merge proof —
-  // and never for a branch this clone treats as main, whichever worktree happened to hold it.
+  // Deleted by the COMMIT the merge proof was about, never by name: `update-ref -d <ref> <old>`
+  // deletes only while the branch still points there. A commit landing in the worktree after the
+  // check — from a terminal, or a session whose transcript this could not see — would leave it
+  // clean, so `worktree remove` goes through; `branch -D` would then take that commit with it.
+  // Not `-d` either: it checks against the MAIN checkout's HEAD and refuses a squash merge. And
+  // never a branch this clone treats as main, whichever worktree happened to hold it.
   if (r.wt.branch && keepBranches.has(r.wt.branch)) notes.push(`branch ${r.wt.branch} kept (a main branch)`);
   else if (r.wt.branch) {
-    const deleted = gitRaw(['branch', '-D', r.wt.branch], main) !== null;
-    if (!deleted) ok = false;
-    notes.push(deleted ? `branch ${r.wt.branch} deleted` : `branch ${r.wt.branch} could not be deleted`);
+    const deleted = gitRaw(['update-ref', '-d', `refs/heads/${r.wt.branch}`, r.wt.head], main) !== null;
+    if (deleted) gitRaw(['config', '--remove-section', `branch.${r.wt.branch}`], main); // its upstream settings, if any
+    else ok = false;
+    notes.push(deleted ? `branch ${r.wt.branch} deleted`
+      : `branch ${r.wt.branch} KEPT — it no longer points at the commit proven merged (did a commit land after the check?)`);
   }
   return { ok, removed: true, note: notes.join('; ') };
 }

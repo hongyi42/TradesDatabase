@@ -29,7 +29,9 @@ instead of re-reading everything.
 
    `LANDED ON …` is what main changed since this task's base that the task touches or calls, with
    the commits that did it. `WHOM YOU AFFECT` is which other active tasks overlap this one — they
-   will see it in their pre-edit hook once this lands; mention it to the user.
+   will see it in their pre-edit hook once this lands; mention it to the user. A `?  not checked`
+   row means git could not read part of one side: that section is incomplete, not clean — say so,
+   and do not report "none" from it.
 
 2. **Merge main into the task's branch**, in its worktree: `git merge <label>` — the branch the
    report compared with (`origin/main` in this repo). Merge, never rebase — the branch may

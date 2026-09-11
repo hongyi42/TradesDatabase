@@ -39,6 +39,13 @@ one, and the operator decides (user, 2026-09-10).
    Say exactly that, and ask whether to proceed unchecked — or suggest parking it again with the
    files it will touch, which makes the check possible.
 
+   Two more stops that are not overlaps, and must be said as what they are:
+   - **`?  not checked`** — git could not read part of an active task's checkout (a timeout, a
+     held lock, a broken `.git`). The report is incomplete, not clean. Name the checkout; fixing
+     it and re-running is usually better than proceeding.
+   - **"names N paths not in origin/main"** — a new file the task will create, or a typo in its
+     `files:`. Ask which; for a typo, fix the task's `files:` and re-run.
+
 4. **Exit 1 — an error** (not open, already spawned, the branch exists). Report it as printed; do
    not work around it.
 

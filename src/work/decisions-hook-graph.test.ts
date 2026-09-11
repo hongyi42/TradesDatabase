@@ -149,6 +149,19 @@ describe('the pre-edit hook names what a sibling or main changed', () => {
     }
   });
 
+  test('a sibling dropping the re-export a file imports through is a removal to that file', () => {
+    const sibling = newTask('trim the barrel');
+    const me = newTask('edit the barrel caller');
+    try {
+      // lib.ts is untouched: the break is in the barrel between them, which use2.ts imports from.
+      rewrite(sibling.wt, 'src/barrel.ts', "export * from './lib.js';\n", '');
+      expect(hookContext(edit(me.wt, 'src/use2.ts')))
+        .toContain(`${sibling.id} removed \`export * from './lib.js'\` (src/barrel.ts), which this file imports`);
+    } finally {
+      finish(sibling.id, me.id);
+    }
+  });
+
   test('a body-only change is named as a change in what the function does', () => {
     const sibling = newTask('price rounds now');
     const me = newTask('edit use for the body case');

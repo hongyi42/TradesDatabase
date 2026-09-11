@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { drainOneObservationPing } from './observationPing.js';
 import type { Observation } from '../db/index.js';
 
@@ -66,6 +66,23 @@ describe('drainOneObservationPing (rung 10)', () => {
     // The CLAIMED row, not the one the read returned: the claim is the write
     // that decides which process owns it, and its return is the current row.
     expect(seen).toEqual([claimed]);
+  });
+
+  test("the pass's summary is printed — turns and refusals were thrown away before", async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const summary = { plans: [{ turns: 4, refusals: [{ tool: 'submit_plan', text: 'error: no', count: 3, firstTurn: 1 }] }] };
+      await drainOneObservationPing({
+        ...canRun,
+        list: async () => [obs()],
+        claim: async () => obs({ pinged_at: '2026-09-07T10:00:05.000Z' }),
+        pass: async () => summary,
+      });
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log.mock.calls[0][0]).toBe(`[calls:ping] focused pass obs-1 ${JSON.stringify(summary)}`);
+    } finally {
+      log.mockRestore();
+    }
   });
 
   test('a lost claim runs nothing — another worker already has the row', async () => {

@@ -44,11 +44,21 @@ function gitRaw(args, cwd) {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       maxBuffer: 64 * 1024 * 1024,
-      timeout: 3000,
+      timeout: gitTimeoutMs,
     });
   } catch {
     return null;
   }
+}
+
+let gitTimeoutMs = 3000;
+
+/**
+ * Tighten the per-call bound. The pre-edit hook sets it low: it stands between the session and
+ * every edit, and one wedged sibling (a hung filesystem, a held lock) must cost a second, not three.
+ */
+export function setGitTimeout(ms) {
+  gitTimeoutMs = ms;
 }
 
 function git(args, cwd) {
@@ -122,8 +132,7 @@ function identifiers(text) {
  * `HEAD` is resolved inside the task's own checkout. Asked from the main checkout it would name
  * the main checkout's commit, and a sibling's committed work would vanish from its footprint.
  */
-export function subjectFromTask(main, fm, body = '') {
-  const def = defaultRef(main);
+export function subjectFromTask(main, fm, body = '', def = defaultRef(main)) {
   const at = def ? sha(def, main) : null;
   const files = listField(fm.files);
   if (fm.status === 'open') {
@@ -133,7 +142,11 @@ export function subjectFromTask(main, fm, body = '') {
       label: fm.id, checkout: null, ref: at, base: at, files, mentions: identifiers(`${fm.title ?? ''}\n${body}`), predicted: true,
     };
   }
-  if (fm.worktree && existsSync(fm.worktree)) {
+  // The folder must still BE that checkout. A worktree directory that has lost its `.git` file
+  // still exists, and git run inside it walks up to whatever repository encloses it — for
+  // `.claude/worktrees/x`, the main checkout — whose uncommitted edits would then be blamed on
+  // this task.
+  if (fm.worktree && existsSync(fm.worktree) && git(['rev-parse', '--show-toplevel'], fm.worktree) === fm.worktree) {
     const ref = sha('HEAD', fm.worktree);
     const live = def ? git(['merge-base', 'HEAD', def], fm.worktree) : null;
     return {
@@ -165,8 +178,7 @@ export function subjectFromBranch(main, branch) {
 }
 
 /** What main has changed since `checkout` last took it — the "main moved under you" subject. */
-export function mainSince(main, checkout, fallbackBase) {
-  const def = defaultRef(main);
+export function mainSince(main, checkout, fallbackBase, def = defaultRef(main)) {
   const at = def ? sha(def, main) : null;
   if (!at) return null;
   const base = git(['merge-base', 'HEAD', at], checkout) || fallbackBase || at;
@@ -194,6 +206,8 @@ const GENERATED = new Map([
   ['thoughts/INDEX.md', 'npm run decisions:index'],
   ['thoughts/by-file.json', 'npm run decisions:index'],
 ]);
+
+export const isGenerated = (f) => GENERATED.has(f);
 
 /**
  * Every path a subject has touched: committed since its base, uncommitted in its checkout, and

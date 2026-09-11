@@ -172,14 +172,26 @@ after B merges `origin/main`; nothing changed → no graph lines; a second edit 
 → silent; the `hookSpecificOutput` shape asserted as today.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass (existing hook cases unchanged); new cases pass
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass (existing hook cases unchanged); new cases pass
+      — 3049 passed, 12 skipped; `decisions-hook.test.ts` 13/13 untouched; `decisions-hook-graph.test.ts`
+      13/13. Three review rounds added: a files-list floor that survives a throwing library, a 1.5 s
+      graph budget + 1 s per-call git cap (one wedged sibling: 1.38 s, was 3.3 s; five: 2.4 s, was
+      34 s at eleven), the marker checked before any sibling git work (sentinel-pinned), and orphaned
+      worktree folders no longer blamed for main's edits. Each pinned by a mutation that fails its test.
 
 ### Live verification (agent-executable)
 - Prerequisites: `claude` CLI; everything inside the implementation worktree.
-- [ ] In a probe worktree + probe task, change (uncommitted) the parameters of an exported function
+- [x] In a probe worktree + probe task, change (uncommitted) the parameters of an exported function
       in a `src/db/*.ts` re-exported by `src/db/index.ts`. From the implementation worktree, `claude -p
       --allowedTools Edit` appends a comment to a file importing it **through `../db/index.js`** and quotes
       any "In flight right now" block verbatim → the signature line. Revert; drop and remove the probe.
+      — PASSED (fresh-context verifier): `listManagersWithTelegram` (src/db/technicians.ts) widened in
+      the probe; `src/calls/notify.ts` edited through `../db/index.js`. The session's transcript
+      (cross-channel, not the model's words) carries `hook_additional_context` on `PreToolUse:Edit`:
+      "SIBLING probe-hook-graph · 20260911-probe-hook-graph changed the signature of
+      `listManagersWithTelegram` (src/db/technicians.ts), which this file imports — coordinate before
+      relying on it". Cleanup verified. Side effect found and parked: the probe session's own `touch`
+      and Stop hooks wrote its probe edit into the implementation task's record.
 
 ### Manual verification — none
 

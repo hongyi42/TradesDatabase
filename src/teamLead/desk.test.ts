@@ -53,7 +53,7 @@ function stubDeps(over: Partial<DeskDeps> = {}, seen: SeenLoop = {}) {
     ): Promise<ToolLoopResult> => {
       seen.req = req;
       seen.tools = tools;
-      return { text: 'the office has nothing open for you', turns: 1, calls: [] };
+      return { text: 'the office has nothing open for you', turns: 1, calls: [], stalledWarnings: 0 };
     }) as unknown as NonNullable<DeskDeps['runLoop']>,
     createMessage: (async (input: unknown) => {
       created.push(input);
@@ -131,7 +131,7 @@ describe('the desk — tier decides the toolset (leak-proof by construction)', (
         execute: (name: string, args: Record<string, unknown>) => Promise<unknown>,
       ): Promise<ToolLoopResult> => {
         await execute('spine_read', { sql: 'select 1' });
-        return { text: 'answered from a read', turns: 2, calls: [] };
+        return { text: 'answered from a read', turns: 2, calls: [], stalledWarnings: 0 };
       }) as unknown as NonNullable<DeskDeps['runLoop']>,
     });
     await answerDeskQuestion({ ...baseInput, askerTier: 'manager', managerDesk: true }, deps);
@@ -181,7 +181,7 @@ describe('the desk — transcript and degrade', () => {
 
   test('an empty answer is a failure, not an answer', async () => {
     const deps = stubDeps({
-      runLoop: (async (): Promise<ToolLoopResult> => ({ text: '   ', turns: 1, calls: [] })) as unknown as NonNullable<DeskDeps['runLoop']>,
+      runLoop: (async (): Promise<ToolLoopResult> => ({ text: '   ', turns: 1, calls: [], stalledWarnings: 0 })) as unknown as NonNullable<DeskDeps['runLoop']>,
     });
     const res = await answerDeskQuestion(baseInput, deps);
     expect(res.answer).toBeNull();

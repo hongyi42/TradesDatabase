@@ -11,6 +11,7 @@ vi.mock('@anthropic-ai/sdk', () => ({
   },
 }));
 import {
+  MAX_STALLED_TURNS,
   MAX_TOOL_CALL_MS,
   MAX_TOOL_CALLS_PER_TURN,
   MAX_TOOL_LOOP_BUDGET_MS,
@@ -599,6 +600,118 @@ describe('runToolLoop', () => {
     expect(res.turns).toBe(11);
     expect(res.turns).toBeGreaterThan(MAX_TOOL_LOOP_TURNS);
     expect(execute).toHaveBeenCalledTimes(10);
+  });
+
+  // THE NO-PROGRESS BREAKER (2026-09-11). The live failure: 602 turns of the
+  // same call and the same answer, ~1.5s apart, until the 15-minute clock killed
+  // the tick — $8.67, and the month's key limit with it. These four tests pin
+  // the four things that make the rail safe to have: it fires on repetition, it
+  // TELLS before it stops, it recognises a cycle, and it leaves a model that is
+  // actually learning something completely alone.
+  test('a model repeating itself is TOLD, and the note rides beside the results', async () => {
+    // One new call, then MAX_STALLED_TURNS that learn nothing: the warning lands
+    // on that last turn, and the model gets to finish.
+    const repeats = Array.from({ length: MAX_STALLED_TURNS + 1 }, () =>
+      toolCallBody('spine_read', { sql: 'select 1' }),
+    );
+    serve(...repeats, finalBody('done'));
+    const execute = vi.fn(async () => []);
+
+    const res = await runToolLoop(
+      { system: 's', user: 'u', maxTokens: 128, label: 'planner', maxTurns: null },
+      [READ_TOOL],
+      execute,
+      undefined,
+      { recordUsage: async () => {} },
+    );
+
+    expect(res.text).toBe('done');
+    expect(res.stalledWarnings).toBe(1);
+
+    // The note is a USER message of its own, naming what was repeated. NEVER a
+    // tool result: the planner feeds citable tool results into its quote check,
+    // and machinery's words must not become quotable evidence.
+    const last = sent[sent.length - 1] as { messages: Array<{ role: string; content: unknown }> };
+    const notes = last.messages.filter(
+      (m) => m.role === 'user' && typeof m.content === 'string' && m.content.includes('NO NEW INFORMATION'),
+    );
+    expect(notes).toHaveLength(1);
+    expect(String(notes[0].content)).toContain('spine_read');
+    // The user's clause (2026-09-11): point it somewhere else BEFORE offering the
+    // exits. Pinned because it is a ruling, not phrasing — a later tidy-up that
+    // drops it would quietly turn the note back into "finish or give up", which
+    // closes doors without opening one.
+    expect(String(notes[0].content)).toContain('a different angle');
+    expect(
+      last.messages.some(
+        (m) => m.role === 'tool' && String(m.content).includes('NO NEW INFORMATION'),
+      ),
+    ).toBe(false);
+  });
+
+  test('a model that keeps repeating AFTER being told is stopped, typed as `stalled`', async () => {
+    // The last body repeats forever, so nothing but the breaker can end this.
+    serve(toolCallBody('spine_read', { sql: 'select 1' }));
+    const execute = vi.fn(async () => []);
+
+    await expect(
+      runToolLoop(
+        { system: 's', user: 'u', maxTokens: 128, label: 'planner', maxTurns: null },
+        [READ_TOOL],
+        execute,
+        undefined,
+        { recordUsage: async () => {} },
+      ),
+    ).rejects.toMatchObject({ name: 'ToolLoopLimitError', limit: 'stalled' });
+
+    // One turn of progress, MAX_STALLED_TURNS to the warning, MAX_STALLED_TURNS
+    // more to the stop. Pinned as arithmetic, not a literal: this is the whole
+    // cost of a runaway now, against 620 turns on 2026-09-11.
+    expect(execute).toHaveBeenCalledTimes(2 * MAX_STALLED_TURNS + 1);
+  });
+
+  test('an A→B→A→B cycle is no progress either — the whole call is remembered', async () => {
+    // Neither turn repeats the one BEFORE it, so a previous-turn comparison
+    // would never fire. Both calls were already made, which is what counts.
+    const cycle = Array.from({ length: 2 * (MAX_STALLED_TURNS + 1) }, (_, i) =>
+      toolCallBody('spine_read', { sql: i % 2 === 0 ? 'select 1' : 'select 2' }),
+    );
+    serve(...cycle);
+    const execute = vi.fn(async (_name: string, args: Record<string, unknown>) => [args.sql]);
+
+    await expect(
+      runToolLoop(
+        { system: 's', user: 'u', maxTokens: 128, label: 'planner', maxTurns: null },
+        [READ_TOOL],
+        execute as unknown as ToolExecutor,
+        undefined,
+        { recordUsage: async () => {} },
+      ),
+    ).rejects.toMatchObject({ name: 'ToolLoopLimitError', limit: 'stalled' });
+  });
+
+  test('the same call with a CHANGING answer is progress, never a stall', async () => {
+    // A read re-run after something moved returns something new, and that is a
+    // model working. If this ever fails, the breaker has started policing how
+    // long the planner may think — which build 1b's ruling forbids.
+    const repeats = Array.from({ length: 2 * MAX_STALLED_TURNS + 2 }, () =>
+      toolCallBody('spine_read', { sql: 'select 1' }),
+    );
+    serve(...repeats, finalBody('done'));
+    let n = 0;
+    const execute = vi.fn(async () => [n++]);
+
+    const res = await runToolLoop(
+      { system: 's', user: 'u', maxTokens: 128, label: 'planner', maxTurns: null },
+      [READ_TOOL],
+      execute,
+      undefined,
+      { recordUsage: async () => {} },
+    );
+
+    expect(res.text).toBe('done');
+    expect(res.stalledWarnings).toBe(0);
+    expect(execute).toHaveBeenCalledTimes(2 * MAX_STALLED_TURNS + 2);
   });
 
   // The failure the floor exists for, and the reason it is not cosmetic: WITHOUT

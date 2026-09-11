@@ -647,7 +647,10 @@ export function importersOf(ts, root, file, name) {
 
 const SEVERITY = { HIGH: 0, MED: 1, LOW: 2 };
 
-const describeChange = (c) => (c.change === 'removed' ? 'removed' : c.change === 'added' ? `added, ${c.lines} lines` : `${c.change}, ${c.lines} lines`);
+/** `1 line`, `2 lines` — the sizes are read by people deciding whether to proceed. */
+const lineCountLabel = (n) => `${n} line${n === 1 ? '' : 's'}`;
+
+const describeChange = (c) => (c.change === 'removed' ? 'removed' : `${c.change}, ${lineCountLabel(c.lines)}`);
 
 function listChanges(delta) {
   if (!delta.length) return 'internal code only';
@@ -767,7 +770,7 @@ export function overlaps(main, ts, a, b) {
     for (const { c, from, files, sites } of hits.values()) {
       const where = `called at ${sites} site${sites === 1 ? '' : 's'} in ${files.length} file${files.length === 1 ? '' : 's'} ${y.label} ${y.predicted ? 'names' : 'changes'} (${files.join(', ')})`;
       if (c.change === 'body') {
-        items.push({ severity: 'LOW', kind: 'changed behaviour', file: from, symbol: c.name, detail: `${x.label} changed what it does (${c.lines} lines); ${where}`, sizes: { [x.label]: c.lines, callSites: sites } });
+        items.push({ severity: 'LOW', kind: 'changed behaviour', file: from, symbol: c.name, detail: `${x.label} changed what it does (${lineCountLabel(c.lines)}); ${where}`, sizes: { [x.label]: c.lines, callSites: sites } });
         continue;
       }
       const importers = importersOf(ts, main, from, c.name);
@@ -775,7 +778,7 @@ export function overlaps(main, ts, a, b) {
       if (c.change === 'named') {
         items.push({ severity: 'MED', kind: 'calls what it names', file: from, symbol: c.name, detail: `${x.label} names this file and mentions \`${c.name}\`; ${where}; ${repoWide}`, sizes: { callSites: sites, importers } });
       } else {
-        const what = c.change === 'removed' ? 'removed it' : `changed its signature (${c.lines} lines)`;
+        const what = c.change === 'removed' ? 'removed it' : `changed its signature (${lineCountLabel(c.lines)})`;
         items.push({ severity: 'MED', kind: 'changed signature', file: from, symbol: c.name, detail: `${x.label} ${what}; ${where}; ${repoWide}`, sizes: { [x.label]: c.lines, callSites: sites, importers } });
       }
     }

@@ -22,6 +22,7 @@
 //   node scripts/work.mjs archive <id>     # ...or out of the live record with no document
 //   node scripts/work.mjs board
 //   node scripts/work.mjs overlap <a> <b> [--json]   # where two tasks/branches collide, sized
+//   node scripts/work.mjs spawn <id> [--proceed] [--branch <b>]   # a parked task into its own worktree
 //
 // Failure policy, deliberately two-sided: verbs a PERSON runs report the problem on stderr and
 // exit non-zero, because a silent no-op would read as success. Verbs a HOOK runs (`packet`,
@@ -374,23 +375,37 @@ function cmdPark(main, cwd, { flags }) {
 function cmdClaim(main, cwd, { flags, positional }) {
   const id = positional[0];
   if (!id) fail('claim needs a task id');
-  const task = findTask(main, id);
-  if (!task) fail(`no task ${id}`);
-
   const here = worktreeOf(cwd);
   if (!here) fail('not inside a git worktree');
+  const error = claimInto(main, id, here, Boolean(flags.force));
+  if (error) fail(error);
+  process.stdout.write(`${id} active in ${basename(here)}\n`);
+}
+
+/**
+ * Make `id` the active task of the checkout `here` (a canonical toplevel). Returns an error
+ * message instead of exiting, so `spawn` — which has just created that checkout — can undo what
+ * it built before it says what went wrong.
+ *
+ * `handoff`, when given, is appended in the SAME locked write as the claim: `spawn`'s overlap
+ * report must never be lost between the two, and a task claimed without it would start its
+ * session knowing nothing of what it was told to proceed past.
+ */
+function claimInto(main, id, here, force, handoff = null) {
+  const task = findTask(main, id);
+  if (!task) return `no task ${id}`;
 
   // The mirror of the check below: this task may already belong to a DIFFERENT checkout.
   // Taking it silently would strip that session of its packet, its file list and its board
   // column with no signal anywhere — the loss is invisible to the session it happens to.
-  if (task.fm.status === 'active' && task.fm.worktree && task.fm.worktree !== here && !flags.force) {
-    fail(`${id} is already active in ${basename(task.fm.worktree)} — pass --force to move it here`);
+  if (task.fm.status === 'active' && task.fm.worktree && task.fm.worktree !== here && !force) {
+    return `${id} is already active in ${basename(task.fm.worktree)} — pass --force to move it here`;
   }
 
   const held = activeTaskFor(main, here);
   if (held && held.fm.id !== id) {
-    if (!flags.force) {
-      fail(`${basename(here)} is already active on ${held.fm.id} ("${held.fm.title}") — finish it, or pass --force`);
+    if (!force) {
+      return `${basename(here)} is already active on ${held.fm.id} ("${held.fm.title}") — finish it, or pass --force`;
     }
     // Forcing must RELEASE the incumbent, not just skip the refusal. Two tasks claiming one
     // worktree makes "the active task" ambiguous, and everything downstream — the packet, the
@@ -407,16 +422,25 @@ function cmdClaim(main, cwd, { flags, positional }) {
 
   const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], here) ?? '';
   const base = mergeBase(here);
-  withTaskLock(task.file, () => {
+  // Re-checked inside the lock: another session may have claimed the task since it was read above.
+  const outcome = withTaskLock(task.file, () => {
     const t = findTask(main, id);
-    if (!t) return;
+    if (!t) return `${id} disappeared from the record while it was being claimed`;
+    if (t.fm.status === 'active' && t.fm.worktree && t.fm.worktree !== here && !force) {
+      return `${id} was claimed in ${basename(t.fm.worktree)} a moment ago — pass --force to move it here`;
+    }
     t.fm.status = 'active';
     t.fm.worktree = here;
     t.fm.branch = branch;
     t.fm.base = base;
-    writeTask(t.file, t.fm, t.body);
+    const body = handoff ? `${t.body.replace(/\s*$/, '')}\n\n## Handoff ${new Date().toISOString()}\n\n${handoff}\n` : t.body;
+    writeTask(t.file, t.fm, body);
+    return true;
   });
-  process.stdout.write(`${id} active in ${basename(here)}\n`);
+  // `undefined` is withTaskLock giving up: the claim was NOT written, and saying otherwise would
+  // leave a session working in a checkout the record says nobody holds.
+  if (outcome === undefined) return `could not take the lock on ${id} — another session is writing to it`;
+  return outcome === true ? null : outcome;
 }
 
 function cmdSetStatus(main, { positional }, status) {
@@ -863,6 +887,178 @@ async function cmdOverlap(main, { positional, flags }) {
   process.stdout.write(`${out.join('\n')}\n`);
 }
 
+/** Exit code for a spawn that stopped on overlaps: not an error, and not a success either. */
+const SPAWN_STOPPED = 2;
+
+/**
+ * `spawn <id> [--proceed] [--branch <b>]`: start a parked task in parallel, in its own worktree.
+ *
+ * This is what stops parked findings being serialized behind whatever is in flight. It checks
+ * the finding against EVERY active task first, and on any overlap it stops with nothing created
+ * and shows how big each one is — the operator's call (user, 2026-09-10: "warn, but don't
+ * automatically proceed … the operator should know how big these overlaps are first"). With no
+ * overlap, or with --proceed after reading them, it cuts a worktree from main, claims the task
+ * there, leaves the overlap report as the new session's first handoff, and prints the one command
+ * that starts that session. It never starts a session itself.
+ */
+async function cmdSpawn(main, { positional, flags }) {
+  const id = positional[0];
+  if (!id) fail('spawn needs a task id');
+  const task = findTask(main, id);
+  if (!task) fail(`no task ${id}`);
+  if (task.fm.status !== 'open') fail(`${id} is ${task.fm.status} — only an open (parked) task can be spawned`);
+
+  const fetched = fetchOrigin(main);
+  const graph = await loadGraph();
+  const ts = graph.loadTs();
+  const ref = graph.defaultRef(main);
+  if (!ref) fail('no default branch to spawn from (origin/main, main, …)');
+  const refSha = git(['rev-parse', ref], main) ?? '';
+
+  let items = [];
+  let compared = 0;
+  try {
+    const finding = graph.subjectFromTask(main, task.fm, task.body);
+    for (const t of listTasks(main)) {
+      if (t.fm.status !== 'active' || !t.fm.worktree || !existsSync(t.fm.worktree)) continue;
+      compared++;
+      items.push(...graph.overlaps(main, ts, graph.subjectFromTask(main, t.fm, t.body), finding));
+    }
+  } catch (e) {
+    fail(`spawn could not check for overlaps: ${e?.message ?? e}`);
+  }
+  const order = { HIGH: 0, MED: 1, LOW: 2 };
+  items = items.sort((p, q) => order[p.severity] - order[q.severity] || p.file.localeCompare(q.file));
+  const report = renderOverlaps(items);
+  const notes = [
+    fetched ? null : `(could not fetch origin — checked against the local ${ref})`,
+    ts ? null : '(TypeScript not found beside scripts/ — file-level answers only)',
+  ].filter(Boolean);
+  // A finding's footprint IS its file list. With none, there was nothing to check — and "none
+  // found" would be a claim the check never earned, so it stops for the operator like an overlap.
+  // Only when there was something to check it AGAINST: with no active task, there is no overlap
+  // to miss, and the rule is that no overlap proceeds.
+  const unchecked = compared > 0 && listField(task.fm.files).length === 0;
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+  if ((items.length || unchecked) && !flags.proceed) {
+    process.stdout.write([
+      items.length
+        ? `spawn ${id} — STOPPED: ${plural(items.length, 'overlap')} with active tasks. Nothing created.`
+        : `spawn ${id} — STOPPED: it names no files, so nothing could be checked against the active tasks. Nothing created.`,
+      ...(items.length ? [report] : []),
+      ...notes,
+      'Re-run with --proceed to create the worktree anyway.',
+    ].join('\n') + '\n');
+    process.exit(SPAWN_STOPPED);
+  }
+
+  const slug = id.replace(/^\d{8}-/, '') || id;
+  const path = join(main, '.claude', 'worktrees', slug);
+  const branch = typeof flags.branch === 'string' && flags.branch ? flags.branch : `work/${slug}`;
+  // Every refusal happens BEFORE anything is created, so a refused spawn leaves nothing behind.
+  if (existsSync(path)) fail(`${path} already exists — remove it, or spawn with a different task`);
+  if (parseWorktrees(main).some((w) => w.path === path)) {
+    fail(`${path} is still registered with git though its folder is gone — run \`git worktree prune\` first`);
+  }
+  const stale = activeTaskFor(main, path);
+  if (stale) fail(`${stale.fm.id} is still marked active in ${path} — close it (done/drop) before spawning there`);
+  if (git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], main)) fail(`branch ${branch} already exists — pass --branch <name>`);
+
+  // --no-track: without it the new branch's upstream is main itself, and a bare `git push` from
+  // the spawned session fails because the upstream's name does not match the branch's.
+  try {
+    execFileSync('git', ['worktree', 'add', '--no-track', path, '-b', branch, ref], { cwd: main, stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8' });
+  } catch (e) {
+    const stderr = String(e?.stderr ?? '');
+    // git creates the -b branch BEFORE it checks the path, so a failed add can leave the branch —
+    // unless it failed BECAUSE the branch exists, in which case it is someone else's to keep.
+    if (!/a branch named .* already exists/.test(stderr)) gitRaw(['branch', '-D', branch], main);
+    // The reason, not the preamble: git prints "Preparing worktree (…)" before its fatal line.
+    const lines = stderr.split('\n').map((l) => l.trim()).filter(Boolean);
+    const reason = [...lines].reverse().find((l) => /^(fatal|error):/.test(l)) ?? lines[lines.length - 1] ?? 'no detail';
+    fail(`git worktree add ${path} failed: ${reason}`);
+  }
+  const undo = () => {
+    gitRaw(['worktree', 'remove', '--force', path], main);
+    gitRaw(['branch', '-D', branch], main);
+  };
+
+  const handoff = [
+    `Spawned by \`work.mjs spawn\` into ${path} on ${branch}, from ${ref} ${refSha.slice(0, 7)}.`,
+    '',
+    items.length
+      ? `Overlap check: ${plural(items.length, 'overlap')} with active tasks — the operator read them and proceeded (--proceed):\n\n${report}`
+      : unchecked
+        ? 'Overlap check: NOT POSSIBLE — the task names no files, so nothing was compared; the operator proceeded (--proceed).'
+        : compared ? 'Overlap check: none with any active task.' : 'Overlap check: no other task was active.',
+    ...notes,
+  ].join('\n');
+  const here = worktreeOf(path);
+  const error = here ? claimInto(main, id, here, false, handoff) : 'the new worktree could not be resolved';
+  if (error) {
+    undo();
+    fail(`could not claim ${id} in the new worktree, so it was removed again (worktree and branch): ${error}`);
+  }
+
+  const stack = nextFreeStack(main);
+  process.stdout.write([
+    `spawned ${id} into ${path} on ${branch} (from ${ref} ${refSha.slice(0, 7)})`,
+    // What --proceed went past, as it stands NOW — the overlaps are recomputed on every run, so
+    // this, not the report read before, is what the new task's handoff records.
+    ...(items.length ? [`Proceeded past ${plural(items.length, 'overlap')}:`, report] : []),
+    ...(unchecked ? ['Proceeded without an overlap check: the task names no files.'] : []),
+    ...notes,
+    '',
+    'Start a session there — it must be LAUNCHED there, or none of the record\'s hooks fire:',
+    `  cd ${shellQuote(path)} && claude`,
+    '',
+    `Tests need their own local Supabase stack first: scripts/second-stack.sh ${stack ?? '<N>'} (inside it).`,
+  ].join('\n') + '\n');
+}
+
+/** A path as a shell word: bare when it is safe, single-quoted when it is not. */
+function shellQuote(s) {
+  return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Best-effort `git fetch origin`, bounded so a dead network cannot hang the verb.
+ *
+ * Never allowed to ASK for anything. `stdio: 'ignore'` does not stop git prompting: it opens the
+ * terminal itself for a username, a passphrase or a host key, and when the timeout then kills
+ * `git fetch`, its credential helper survives, still reading that terminal — and swallows the
+ * operator's next typed line. So prompting is switched off at every layer that can do it.
+ */
+function fetchOrigin(main) {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' };
+  if (!env.GIT_SSH_COMMAND && !git(['config', '--get', 'core.sshCommand'], main)) {
+    env.GIT_SSH_COMMAND = 'ssh -o BatchMode=yes';
+  }
+  try {
+    execFileSync('git', ['fetch', '--quiet', 'origin'], { cwd: main, stdio: 'ignore', timeout: 30000, env });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The lowest stack index scripts/second-stack.sh can use without colliding: it shifts the API
+ * port to 54(3+N)21, so every worktree's config.toml says which N it already holds.
+ */
+function nextFreeStack(main) {
+  const used = new Set();
+  for (const wt of parseWorktrees(main)) {
+    let text = '';
+    try { text = readFileSync(join(wt.path, 'supabase', 'config.toml'), 'utf8'); } catch { continue; }
+    const m = /^port = 54(\d)21$/m.exec(text);
+    if (m) used.add(Number(m[1]) - 3);
+  }
+  for (let n = 1; n <= 6; n++) if (!used.has(n)) return n;
+  return null;
+}
+
 // ── the board ─────────────────────────────────────────────────────────────────
 
 /** Parse `git worktree list --porcelain` into one record per checkout. */
@@ -1059,8 +1255,9 @@ switch (verb) {
   case 'archive': cmdArchive(main, args); break;
   case 'board': cmdBoard(main); break;
   case 'overlap': await cmdOverlap(main, args); break;
+  case 'spawn': await cmdSpawn(main, args); break;
   default:
     process.stderr.write('work: usage: park | claim | done | drop | packet | touch | snapshot'
-      + ' | handoff | promote | archive | board | overlap\n');
+      + ' | handoff | promote | archive | board | overlap | spawn\n');
     process.exit(1);
 }

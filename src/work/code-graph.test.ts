@@ -9,9 +9,9 @@
 // because of state an earlier one left behind.
 
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
-  mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync,
+  existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -49,6 +49,18 @@ function work(args: string[], cwd: string, input = ''): string {
   return execFileSync('node', [CLI, ...args], {
     cwd, encoding: 'utf8', input, env: { ...process.env, ...GIT_ENV, HOME: home },
   }).trim();
+}
+
+/** Run the CLI without throwing, for the verbs whose exit code carries meaning (spawn's 2). */
+function workResult(args: string[], cwd: string): { status: number | null; stdout: string; stderr: string } {
+  const r = spawnSync('node', [CLI, ...args], {
+    cwd, encoding: 'utf8', input: '', env: { ...process.env, ...GIT_ENV, HOME: home },
+  });
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+function taskBody(id: string): string {
+  return readFileSync(join(mainCheckout, '.claude', 'work', 'tasks', `${id}.md`), 'utf8');
 }
 
 function overlap(a: string, b: string): Item[] {
@@ -150,6 +162,9 @@ beforeAll(() => {
   writeFileSync(join(mainCheckout, 'src', 'usePass.ts'), "import { greet } from './pass.js';\n\nexport const hi = greet();\n");
   git(['add', '.'], mainCheckout);
   git(['commit', '-m', 'fixture'], mainCheckout);
+  // A configured `origin` (pointing nowhere, so a fetch fails fast): without one, git never gives a
+  // branch cut from origin/main an upstream at all, and spawn's --no-track could not be tested.
+  git(['remote', 'add', 'origin', join(tmp, 'no-such-remote')], mainCheckout);
   git(['update-ref', 'refs/remotes/origin/main', 'HEAD'], mainCheckout);
 });
 
@@ -514,6 +529,186 @@ describe('work.mjs overlap — where two tasks collide, and how badly', () => {
     } finally {
       git(['update-ref', 'refs/remotes/origin/main', original], mainCheckout);
       finish(B.id);
+    }
+  });
+});
+
+describe('work.mjs spawn — a parked task into its own worktree, after a sized overlap check', () => {
+  /** Remove what a successful spawn created, so no later case inherits it. */
+  function unspawn(id: string): void {
+    const slug = id.replace(/^\d{8}-/, '');
+    work(['done', id], mainCheckout);
+    git(['worktree', 'remove', '--force', join(mainCheckout, '.claude', 'worktrees', slug)], mainCheckout);
+    git(['branch', '-D', `work/${slug}`], mainCheckout);
+  }
+
+  test('an overlap stops it, sized, with nothing created — and --proceed then creates it', () => {
+    const A = newTask('rework greet for spawn');
+    const finding = work(['park', '--title', 'greet is rude to returning customers', '--files', 'src/lib.ts'], mainCheckout);
+    const slug = finding.replace(/^\d{8}-/, '');
+    const path = join(mainCheckout, '.claude', 'worktrees', slug);
+    try {
+      rewrite(A.wt, 'src/lib.ts', "return 'hello';", "return 'welcome back';");
+      const before = git(['worktree', 'list'], mainCheckout);
+
+      const stopped = workResult(['spawn', finding], mainCheckout);
+      expect(stopped.status).toBe(2);
+      expect(stopped.stdout).toContain(`spawn ${finding} — STOPPED: 1 overlap with active tasks. Nothing created.`);
+      expect(stopped.stdout).toMatch(/HIGH\s+same function\s+src\/lib\.ts › greet/);
+      expect(stopped.stdout).toContain('Re-run with --proceed');
+      // Nothing created means nothing: no worktree, no branch, and the finding still parked.
+      expect(git(['worktree', 'list'], mainCheckout)).toBe(before);
+      expect(git(['branch', '--list', `work/${slug}`], mainCheckout)).toBe('');
+      expect(taskFiles(finding)).toBe('src/lib.ts');
+      expect(taskBody(finding)).toMatch(/^status: open$/m);
+
+      const created = workResult(['spawn', finding, '--proceed'], mainCheckout);
+      expect(created.status).toBe(0);
+      // It shows what it proceeded past as of NOW, not only the report read before.
+      expect(created.stdout).toMatch(/Proceeded past 1 overlap:\n\s+HIGH\s+same function/);
+      expect(created.stdout).toContain(`cd ${path} && claude`);
+      expect(created.stdout).toContain('scripts/second-stack.sh 1');
+      expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], path)).toBe(`work/${slug}`);
+      // No upstream: with main as upstream, the spawned session's first bare `git push` fails.
+      expect(() => git(['rev-parse', '--abbrev-ref', '@{u}'], path)).toThrow();
+      const body = taskBody(finding);
+      expect(body).toMatch(/^status: active$/m);
+      expect(body).toContain(`worktree: ${realpathSync(path)}`);
+      expect(body).toMatch(/^base: [0-9a-f]{40}$/m);
+      // The new session's packet shows the latest handoff — so it starts knowing what it overlaps.
+      expect(body).toMatch(/## Handoff [^\n]+\n\nSpawned by `work\.mjs spawn`/);
+      expect(body).toContain('the operator read them and proceeded (--proceed)');
+      expect(body).toMatch(/HIGH\s+same function\s+src\/lib\.ts › greet/);
+    } finally {
+      finish(A.id);
+      unspawn(finding);
+    }
+  });
+
+  test('with no overlap it proceeds on its own, and says so in the handoff', () => {
+    const A = newTask('greet again, unrelated to the finding');
+    const finding = work(['park', '--title', 'the row type needs an id', '--files', 'src/db/useDb.ts'], mainCheckout);
+    try {
+      rewrite(A.wt, 'src/lib.ts', "return 'hello';", "return 'yo';");
+      const r = workResult(['spawn', finding], mainCheckout);
+      expect(r.status).toBe(0);
+      expect(taskBody(finding)).toContain('Overlap check: none with any active task.');
+    } finally {
+      finish(A.id);
+      unspawn(finding);
+    }
+  });
+
+  test('a finding that names no files stops too — there was nothing to check, not nothing found', () => {
+    const A = newTask('greet for the no-files case');
+    const finding = work(['park', '--title', 'greet has a typo somewhere'], mainCheckout);
+    try {
+      rewrite(A.wt, 'src/lib.ts', "return 'hello';", "return 'helo';");
+      const stopped = workResult(['spawn', finding], mainCheckout);
+      expect(stopped.status).toBe(2);
+      expect(stopped.stdout).toContain('it names no files, so nothing could be checked');
+      expect(workResult(['spawn', finding, '--proceed'], mainCheckout).status).toBe(0);
+      expect(taskBody(finding)).toContain('Overlap check: NOT POSSIBLE — the task names no files');
+    } finally {
+      finish(A.id);
+      unspawn(finding);
+    }
+  });
+
+  test('with no active task at all, a finding that names no files simply proceeds', () => {
+    const finding = work(['park', '--title', 'nothing else is running'], mainCheckout);
+    try {
+      const r = workResult(['spawn', finding], mainCheckout);
+      expect(r.status).toBe(0);
+      expect(taskBody(finding)).toContain('Overlap check: no other task was active.');
+    } finally {
+      unspawn(finding);
+    }
+  });
+
+  test('when git refuses the worktree, the report carries git\'s reason, not its preamble', () => {
+    const finding = work(['park', '--title', 'bad branch name finding', '--files', 'src/db/useDb.ts'], mainCheckout);
+    try {
+      const r = workResult(['spawn', finding, '--branch', 'bad..name'], mainCheckout);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(/failed: fatal: .*not a valid branch name/);
+      expect(r.stderr).not.toContain('Preparing worktree');
+      expect(existsSync(join(mainCheckout, '.claude', 'worktrees', finding.replace(/^\d{8}-/, '')))).toBe(false);
+    } finally {
+      work(['drop', finding], mainCheckout);
+    }
+  });
+
+  test('a stale task still holding the path is refused before anything is created', () => {
+    const finding = work(['park', '--title', 'stale path finding', '--files', 'src/db/useDb.ts'], mainCheckout);
+    const slug = finding.replace(/^\d{8}-/, '');
+    const path = join(mainCheckout, '.claude', 'worktrees', slug);
+    // An older task once lived at exactly that path (same title, an earlier day), and its
+    // worktree was removed by hand while the record still says it is active there.
+    git(['worktree', 'add', '--no-track', path, '-b', 'stale-owner', 'origin/main'], mainCheckout);
+    const stale = work(['park', '--title', 'the stale owner', '--kind', 'task'], mainCheckout);
+    work(['claim', stale], path);
+    git(['worktree', 'remove', '--force', path], mainCheckout);
+    try {
+      const r = workResult(['spawn', finding, '--proceed'], mainCheckout);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain(`${stale} is still marked active in ${path}`);
+      expect(git(['branch', '--list', `work/${slug}`], mainCheckout)).toBe('');
+      expect(existsSync(path)).toBe(false);
+    } finally {
+      work(['drop', stale], mainCheckout);
+      git(['branch', '-D', 'stale-owner'], mainCheckout);
+      work(['drop', finding], mainCheckout);
+    }
+  });
+
+  test('a worktree still registered after its folder was deleted is refused, leaving no branch', () => {
+    const finding = work(['park', '--title', 'registered ghost finding', '--files', 'src/db/useDb.ts'], mainCheckout);
+    const slug = finding.replace(/^\d{8}-/, '');
+    const path = join(mainCheckout, '.claude', 'worktrees', slug);
+    git(['worktree', 'add', '--no-track', path, '-b', 'ghost-owner', 'origin/main'], mainCheckout);
+    rmSync(path, { recursive: true, force: true }); // git still lists it
+    try {
+      const r = workResult(['spawn', finding, '--proceed'], mainCheckout);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('still registered with git');
+      // git would have created work/<slug> before failing on the path; refusing first means it never runs.
+      expect(git(['branch', '--list', `work/${slug}`], mainCheckout)).toBe('');
+    } finally {
+      git(['worktree', 'prune'], mainCheckout);
+      git(['branch', '-D', 'ghost-owner'], mainCheckout);
+      work(['drop', finding], mainCheckout);
+    }
+  });
+
+  test('a claim that cannot be written undoes the worktree instead of reporting success', () => {
+    const finding = work(['park', '--title', 'locked finding', '--files', 'src/db/useDb.ts'], mainCheckout);
+    const slug = finding.replace(/^\d{8}-/, '');
+    const lock = join(mainCheckout, '.claude', 'work', 'tasks', `${finding}.md.lock`);
+    // Another writer holding the task's lock for longer than the claim will wait.
+    writeFileSync(lock, '99999');
+    try {
+      const r = workResult(['spawn', finding, '--proceed'], mainCheckout);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('could not take the lock');
+      expect(r.stderr).toContain('removed again');
+      expect(existsSync(join(mainCheckout, '.claude', 'worktrees', slug))).toBe(false);
+      expect(git(['branch', '--list', `work/${slug}`], mainCheckout)).toBe('');
+      expect(taskBody(finding)).toMatch(/^status: open$/m);
+    } finally {
+      rmSync(lock, { force: true });
+      work(['drop', finding], mainCheckout);
+    }
+  });
+
+  test('only a parked task can be spawned', () => {
+    const A = newTask('already running');
+    try {
+      const r = workResult(['spawn', A.id], mainCheckout);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('only an open (parked) task can be spawned');
+    } finally {
+      finish(A.id);
     }
   });
 });

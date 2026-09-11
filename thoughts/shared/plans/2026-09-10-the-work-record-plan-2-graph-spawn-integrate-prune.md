@@ -226,13 +226,27 @@ handoff carries the report; a finding naming an untouched file → proceeds with
 spawning an `active` task → exit 1.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass; spawn cases pass
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass; spawn cases pass
+      — 3058 passed, 12 skipped; 9 spawn cases (the plan's 4 plus 5 from three review rounds), each
+      mutation-checked. Review fixes: the fetch can never prompt (GIT_TERMINAL_PROMPT=0, BatchMode
+      ssh — verified by hand in a pty against a 401 server: plain `git fetch` printed "Username for",
+      spawn returned in 0 s, no orphaned helper); every refusal (path exists, registered-but-missing,
+      stale task at the path, branch exists) happens before anything is created; a failed add
+      deletes only a branch it made and shows git's `fatal:` line; claim + handoff are one locked
+      write, and a lock it cannot take undoes the worktree instead of reporting success; a finding
+      that names no files stops as unchecked whenever another task is active.
 
 ### Live verification (agent-executable)
 - Prerequisites: none beyond the repo; everything inside the implementation worktree.
-- [ ] With Phase 2's probe setup, park a probe finding naming the probe's file and mentioning its
+- [x] With Phase 2's probe setup, park a probe finding naming the probe's file and mentioning its
       function → `spawn` stops with HIGH and creates nothing (`git worktree list` before/after);
       `--proceed` → the worktree and its board row exist (`npm run board`). Clean up both probes.
+      — PASSED (fresh-context verifier, on the real repo): exit 2 in 1.45 s with one HIGH row
+      (`src/calls/redact.ts › redactSensitive`); `git worktree list` byte-identical, no `work/*`
+      branch, finding still open; `--proceed` → exit 0, `work/<slug>` with no upstream, task active
+      there with the HIGH row in its handoff, board row present; the two real active tasks
+      contributed nothing, as their footprints predict. Cleanup verified. This ran before the review
+      fixes above, which leave that path unchanged and are pinned by the tests.
 
 ### Manual verification — none
 

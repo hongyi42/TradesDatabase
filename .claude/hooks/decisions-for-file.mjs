@@ -245,7 +245,7 @@ function graphLines(graph, { abs, root, rel, evt, main, siblings, own, siblingLi
   graph.setGitTimeout(1000);
   const def = graph.defaultRef(main); // once per edit, not once per sibling
   const ts = graph.isSymbolFile(rel) ? graph.loadTs() : null;
-  const changes = (c) => (c.change === 'removed' ? 'removed' : `${c.change}, ${c.lines} lines`);
+  const changes = (c) => (c.change === 'removed' ? 'removed' : `${c.change}, ${c.lines} line${c.lines === 1 ? '' : 's'}`);
   const out = [];
 
   const seen = [];
@@ -283,7 +283,7 @@ function graphLines(graph, { abs, root, rel, evt, main, siblings, own, siblingLi
         out.push(`- SIBLING ${basename(fm.worktree)} · ${fm.id} ${c.change === 'removed' ? 'removed' : 'changed the signature of'}`
           + ` \`${c.name}\` (${from}), which this file imports — coordinate before relying on it`);
       } else if (c.change === 'body') {
-        out.push(`- SIBLING ${basename(fm.worktree)} · ${fm.id} changed what \`${c.name}\` does (${c.lines} lines, ${from}),`
+        out.push(`- SIBLING ${basename(fm.worktree)} · ${fm.id} changed what \`${c.name}\` does (${c.lines} line${c.lines === 1 ? '' : 's'}, ${from}),`
           + ' which this file imports');
       }
     }

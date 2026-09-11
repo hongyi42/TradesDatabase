@@ -127,12 +127,18 @@ HIGH with both line counts; (c) A `g`, B `f` → LOW same file only; (d) comment
 mentioning `g` vs A → HIGH; (g) B edits `use2.ts` → MED through the barrel.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint` (new file linted), `npm test`, `node --check scripts/code-graph.mjs`; cases (a)–(g) pass
+- [x] `npm run typecheck`, `npm run lint` (new file linted), `npm test`, `node --check scripts/code-graph.mjs`; cases (a)–(g) pass
+      — 3036 passed, 12 skipped; `code-graph.test.ts` 22/22 (a–g plus 15 from review). Every fix
+      mutation-checked: reverting it fails its own test (13 mutations, all caught).
 
 ### Live verification (agent-executable)
 - Prerequisites: none (read-only git).
-- [ ] `npm run work -- overlap feat/the-decline-verb rescue/route-deeplink-staged` names symbols in research §4.2's
+- [x] `npm run work -- overlap feat/the-decline-verb rescue/route-deeplink-staged` names symbols in research §4.2's
       five shared files in < 5 s (report the time); cross-check one item with `git diff origin/main...<branch> -- <file>`.
+      — PASSED (fresh-context verifier): 1.26–1.51 s; all five files named with symbols; four items
+      cross-checked by hand in git (two HIGH, two MED, incl. a 10-line count and a 5-sites-in-2-files
+      count), no contradictions. It found one real gap, fixed: the rescue branch DELETES
+      `watchers.ts`, which was reported "same file only" — now HIGH `deleted file`.
 
 ### Manual verification — none
 

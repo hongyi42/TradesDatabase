@@ -21,6 +21,7 @@
 //   node scripts/work.mjs promote <id>     # a done/dropped task -> thoughts/shared/findings/
 //   node scripts/work.mjs archive <id>     # ...or out of the live record with no document
 //   node scripts/work.mjs board
+//   node scripts/work.mjs overlap <a> <b> [--json]   # where two tasks/branches collide, sized
 //
 // Failure policy, deliberately two-sided: verbs a PERSON runs report the problem on stderr and
 // exit non-zero, because a silent no-op would read as success. Verbs a HOOK runs (`packet`,
@@ -810,6 +811,58 @@ function cmdTouch(main, flags) {
   });
 }
 
+// ── the code graph ────────────────────────────────────────────────────────────
+
+/**
+ * Imported on demand, never at the top of this file. The graph verbs are the only callers, so a
+ * fault in the graph can never reach `touch`, `packet` or `snapshot` — the verbs a hook runs on
+ * the critical path of every session.
+ */
+const loadGraph = () => import('./code-graph.mjs');
+
+/** A task id from the record, or any branch name — the two things an overlap can be asked about. */
+function subjectFor(graph, main, x) {
+  const task = findTask(main, x);
+  if (task) return graph.subjectFromTask(main, task.fm, task.body);
+  const s = graph.subjectFromBranch(main, x);
+  if (!s) fail(`${x} is neither a task in the record nor a branch`);
+  return s;
+}
+
+/**
+ * The sized overlap report. One block per item, worst first, with the numbers inline — the
+ * operator decides from how BIG an overlap is, so a bare "these overlap" would not be enough.
+ */
+function renderOverlaps(items) {
+  // 19 = the longest kind, "calls what it names". pad() truncates, so narrower cuts it off.
+  return items.map((i) => `  ${pad(i.severity, 5)} ${pad(i.kind, 19)} ${i.file}${i.symbol ? ` › ${i.symbol}` : ''}\n        ${i.detail}`)
+    .join('\n');
+}
+
+async function cmdOverlap(main, { positional, flags }) {
+  const [x, y] = positional;
+  if (!x || !y) fail('overlap needs two task ids or branch names');
+  const graph = await loadGraph();
+  const ts = graph.loadTs();
+  const a = subjectFor(graph, main, x);
+  const b = subjectFor(graph, main, y);
+  let items;
+  try {
+    items = graph.overlaps(main, ts, a, b);
+  } catch (e) {
+    // A person verb reports its problem in one line; a stack trace here would read as a crash.
+    fail(`overlap could not finish: ${e?.message ?? e}`);
+  }
+  if (flags.json) {
+    process.stdout.write(`${JSON.stringify(items)}\n`);
+    return;
+  }
+  const out = [`overlap ${x} × ${y} — ${items.length ? `${items.length} overlap${items.length === 1 ? '' : 's'}` : 'none'}`];
+  if (items.length) out.push(renderOverlaps(items));
+  if (!ts) out.push('(TypeScript not found beside scripts/ — file-level answers only)');
+  process.stdout.write(`${out.join('\n')}\n`);
+}
+
 // ── the board ─────────────────────────────────────────────────────────────────
 
 /** Parse `git worktree list --porcelain` into one record per checkout. */
@@ -1005,8 +1058,9 @@ switch (verb) {
   case 'promote': cmdPromote(main, cwd, args); break;
   case 'archive': cmdArchive(main, args); break;
   case 'board': cmdBoard(main); break;
+  case 'overlap': await cmdOverlap(main, args); break;
   default:
     process.stderr.write('work: usage: park | claim | done | drop | packet | touch | snapshot'
-      + ' | handoff | promote | archive | board\n');
+      + ' | handoff | promote | archive | board | overlap\n');
     process.exit(1);
 }

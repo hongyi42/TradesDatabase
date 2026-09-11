@@ -2,7 +2,7 @@
 date: 2026-09-10
 task: The shared work record, plan 2 — a function-level code graph read by the TypeScript compiler (task footprints from git plus the record, per-function change detection, sized overlaps), the pre-edit hook naming the functions a sibling or main changed, `spawn` (a parked finding into its own worktree after a sized overlap check that stops for the operator), `integrate` (what landed under you, then merge, gates, focused review), `prune` (merged worktrees removed safely), and plan-two / integrate-two retired
 research: thoughts/shared/research/2026-09-09-code-graph-as-source-of-truth.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 

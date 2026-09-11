@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 233 documents · 222 live · 11 superseded.
+Regenerate with `npm run decisions:index`. 236 documents · 225 live · 11 superseded.
 
 ## Superseded — do not build on these
 
@@ -50,10 +50,13 @@ Regenerate with `npm run decisions:index`. 233 documents · 222 live · 11 super
 
 ## Live
 
+- `2026-09-11` `finding` [2026-09-11-a-session-that-enters-a-worktree-writes](shared/findings/2026-09-11-a-session-that-enters-a-worktree-writes.md) — a session that enters a worktree writes its transcript under the MAIN checkout's project folder
+- `2026-09-11` `finding` [2026-09-11-git-prompts-on-the-terminal-despite-stdi](shared/findings/2026-09-11-git-prompts-on-the-terminal-despite-stdi.md) — git prompts on the terminal despite stdio ignore, and worktree add -b makes its branch before checking the pa…
+- `2026-09-11` `finding` [2026-09-11-supabase-stop-project-id-matches-the-id](shared/findings/2026-09-11-supabase-stop-project-id-matches-the-id.md) — supabase stop --project-id matches the id as typed; start labels a sanitised, 40-byte one
 - `2026-09-10` `finding` [2026-09-10-a-running-session-does-not-pick-up-newly](shared/findings/2026-09-10-a-running-session-does-not-pick-up-newly.md) — a running session does not pick up newly added hook EVENTS from settings
 - `2026-09-10` `finding` [2026-09-10-build-the-shared-work-record-plan-2026-0](shared/findings/2026-09-10-build-the-shared-work-record-plan-2026-0.md) — build the shared work record (plan 2026-09-09)
 - `2026-09-10` `finding` [2026-09-10-settings-json-says-hooks-on-one-event-sh](shared/findings/2026-09-10-settings-json-says-hooks-on-one-event-sh.md) — hooks on one event do NOT share stdin (measured); touch cannot see edits made through Bash
-- `2026-09-10` `plan` [2026-09-10-the-work-record-plan-2-graph-spawn-integrate-prune](shared/plans/2026-09-10-the-work-record-plan-2-graph-spawn-integrate-prune.md) `describes 4 deleted files` · _draft_ — The shared work record, plan 2 — a function-level code graph read by the TypeScript compiler (task footprints…
+- `2026-09-10` `plan` [2026-09-10-the-work-record-plan-2-graph-spawn-integrate-prune](shared/plans/2026-09-10-the-work-record-plan-2-graph-spawn-integrate-prune.md) `describes 4 deleted files` — The shared work record, plan 2 — a function-level code graph read by the TypeScript compiler (task footprints…
 - `2026-09-09` `plan` [2026-09-09-one-bot-per-person](shared/plans/2026-09-09-one-bot-per-person.md) · _phase 1 implemented (uncommitted) — ver…_ — Merge the global board bot into each person's own assistant bot — one bot per person, opened as a Main Mini A…
 - `2026-09-09` `plan` [2026-09-09-the-conversation-decides-which](shared/plans/2026-09-09-the-conversation-decides-which.md) — the thread supplies the JOB when a person key found the customer; and the firm's own half of an email convers…
 - `2026-09-09` `plan` [2026-09-09-the-work-record-park-board-and-compaction-survival](shared/plans/2026-09-09-the-work-record-park-board-and-compaction-survival.md) — The shared work record — one place every session reads and writes (tasks and parked findings), a board of wor…

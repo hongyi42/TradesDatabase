@@ -41,6 +41,31 @@ and adds a model call to the inbound path, and both deserve their own review.
   `withThreadJob` precedent (`src/writePath/identityMatch.ts:123-131`): a failed "which" must never
   turn a resolved identity into a 503, because the connector then redelivers and the extractor is
   paid for twice.
+- **The chooser's BASIS is recorded, never laundered** (amendment 2026-09-12, user) — Phase 2 said a
+  named job makes the capture "behave exactly as if the thread had named it". For FILING that is
+  right; for the RECORD it erases the one fact a reader most needs: that a model picked this job,
+  from these candidates, for this reason. `JobChooser` already returns `reason` — Phase 2 threw it
+  away at the fall-through. Why it matters: task `20260912-an-l2-status-flip-reports-to-the-planner`
+  reports every L2 touch as "what changed, on what evidence, how sure". Without the basis, a flip
+  driven by a chooser-filed message reports "job completed, evidence: this message", with no sign
+  the job itself was a model's pick from a list.
+  **Where it lives: on the link.** `job_captures` is `(tenant_id, job_id, capture_id, created_at)`
+  today, with no room for it, and L1 is append-only so the capture cannot be stamped after insert.
+  Add nullable `basis text` and `basis_reason text` (the latter set only for `chooser`), appended to
+  `v_job_captures` so the planner can read them. RECOMMENDED, NOT YET APPROVED — confirm at plan
+  review, since it adds a migration this plan did not previously need.
+- **OPEN — a chooser hit would put back a write a user ruling took out.** `the-door-stops-guessing`
+  Phase 2 dropped the `statusSignal` write for ambiguous captures: "leave it to the planner" (user,
+  2026-09-12). This plan's fall-through sends a chooser-named capture down the normal path, which
+  reaches `updateJobStatus` (`recordFieldNote.ts:905` on PR #235's branch) — so, read literally, a model's pick
+  restores the exact flip that ruling removed. (a) Allow it, with the basis recorded so the flip's
+  report can say a model chose the job; or (b) skip `statusSignal` when the job came from the
+  chooser, keeping that flip the planner's. (b) matches the existing ruling.
+  VERIFIED 2026-09-12 on PR #235's branch — NOT on main, where this code does not exist until #235
+  merges — not inferred: the ambiguous branch at `recordFieldNote.ts:632-636`
+  RETURNS EARLY (`insertCustomerCapture` then `return`) — that early return IS how the ruling removed
+  the write — and `statusSignal` is applied only further down, at `:901-906`. Replacing that return
+  with a fall-through lands a chooser-named capture directly on it.
 - **OPEN — the latency budget is not yet known.** `src/calls/observationPing.ts:18-21` records that
   an in-request *agent pass* was rejected because a connector retries on every timeout. One bounded
   forced-tool call is a different thing, but the number is unmeasured; Phase 1 below measures it
@@ -69,9 +94,9 @@ Nothing calls it yet, so the door is unchanged. You would notice it working by i
 and a recorded p50/p95.
 
 **Phase 2 — wire it into the ambiguous branch.** The door calls the chooser exactly where it would
-otherwise give up. A named job is linked as if the thread had named it; "none" behaves exactly as
-before. You would notice it working by a message clearly about the kitchen tap landing on the kitchen
-tap job, while the bathroom-faucet promise still refuses and asks.
+otherwise give up. A named job is filed on that job, and the link records that a model chose it and
+why; "none" behaves exactly as before. You would notice it working by a message clearly about the
+kitchen tap landing on the kitchen tap job, while the bathroom-faucet promise still refuses and asks.
 
 ## Secrets & env preflight
 
@@ -139,10 +164,20 @@ Calls the chooser where the door would otherwise give up, and links a named job.
 by the first plan, before the customer-link fallback:
 - call `deps.chooseJob ?? defaultJobChooser` with the raw text, the candidates, and
   `fromTheFirm: channel === 'outbound_email'`
-- on a non-null `jobId`, set `job` to that candidate and fall through to the normal path — the
-  capture then behaves exactly as if the thread had named it
+- on a non-null `jobId`, set `job` to that candidate and fall through to the normal path for FILING —
+  but write the link with `basis = 'chooser'` and `basis_reason` = the returned `reason`. It must
+  never be indistinguishable in the record from a thread-named job (see Decisions: the basis is
+  never laundered)
+- whether that fall-through may also apply `statusSignal` is OPEN (see Decisions) — resolve it at
+  plan review before implementing this branch
 - on null, or on a throw, keep the first plan's behaviour unchanged
 - wrap in try/catch and log; never rethrow
+
+**`supabase/migrations/<timestamp>_job_captures_basis.sql`** (new; pending the Decisions approval) —
+add nullable `basis text` and `basis_reason text` to `job_captures`, and append both to
+`v_job_captures` (a view may only APPEND columns under `CREATE OR REPLACE`, so no drop is needed).
+Existing rows stay null. Regenerate types with `npm run gen:types:local` — never the default, which
+points at the pilot. Deploys do not migrate: hand-apply to the pilot before this code ships.
 
 **`docs/onboarding.md:129`** — amend "never a model guess" to hold for the customer dimension and
 name this plan for the job dimension.
@@ -152,7 +187,10 @@ validated, null-on-failure).
 
 ### Automated verification
 - [ ] `npm run typecheck`, `npm run lint`, `npm test` pass
-- [ ] stub chooser names candidate 2 → `job_captures` row on candidate 2, no customer link, no ask
+- [ ] stub chooser names candidate 2 → `job_captures` row on candidate 2, no customer link, no ask,
+      and that row reads `basis = 'chooser'` with the stub's reason
+- [ ] a link written by any path other than the chooser does NOT read `basis = 'chooser'` — the two
+      stay distinguishable in the record, which is the whole point of the amendment
 - [ ] stub returns null → first plan's behaviour exactly (customer link; ask iff committed)
 - [ ] stub returns an unlisted id → treated as null, nothing written
 - [ ] stub throws → customer link, no 503, error logged
@@ -166,8 +204,8 @@ validated, null-on-failure).
 - [ ] Replay the specimen's text end-to-end through `recordFieldNote` with the real chooser.
       Evidence: the `inbound_commitment` observation, its `candidates` list, the customer link, and
       no `job_captures` row.
-- [ ] Replay a kitchen-tap message end-to-end. Evidence: a `job_captures` row on the kitchen tap job
-      and no observation.
+- [ ] Replay a kitchen-tap message end-to-end. Evidence: a `job_captures` row on the kitchen tap job,
+      reading `basis = 'chooser'` with the model's own reason, and no observation.
 
 ### Manual verification
 - [ ] Judge the end-to-end pair together: the same door, two messages, two different and correct

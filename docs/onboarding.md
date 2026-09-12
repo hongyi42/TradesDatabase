@@ -537,8 +537,10 @@ ordinary browser. Drive it from Telegram, or test the handlers through
 [src/telegram/boardApi.test.ts](../src/telegram/boardApi.test.ts).
 
 **Concurrent work:** if you take a second `git worktree` for a parallel feature, give it its own
-Supabase stack with `scripts/second-stack.sh [N]` from inside that worktree — it shifts the ports
-and writes that worktree's `.env.test`. Clean up with `npx supabase stop --no-backup` there.
+Supabase stack with `scripts/second-stack.sh [N]` from inside that worktree — it shifts the ports,
+turns off the services no test reads (analytics, studio, realtime — which keeps the stack at ~0.5 GB
+instead of ~1.6 GB, so four worktrees still fit in the 7.8 GB Docker VM), and writes that worktree's
+`.env.test`. Clean up with `npx supabase stop --no-backup` there.
 
 ---
 

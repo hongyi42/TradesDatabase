@@ -1276,17 +1276,49 @@ function regenerable(main, path, p) {
   }
 }
 
+/** The config.toml sections scripts/second-stack.sh turns off — keep the two in step. */
+const STACK_TRIMMED = new Set(['analytics', 'studio', 'realtime']);
+
 /**
  * True when the only change to supabase/config.toml is what scripts/second-stack.sh writes: the
- * project_id and the port lines. Anything else in that file is real work, and prune would throw
- * it away with the `git checkout` it needs before `git worktree remove` will agree.
+ * project_id, the port lines, and `enabled = false` in the sections it trims. Anything else in
+ * that file is real work, and prune would throw it away with the `git checkout` it needs before
+ * `git worktree remove` will agree — so the trim is matched by SECTION, not by the line alone:
+ * `enabled = false` under `[storage]` or `[auth]` is somebody's edit and keeps the worktree.
  */
 function onlyStackRewrite(path) {
   const diff = gitRaw([...READ_ONLY, 'diff', '--unified=0', '--', 'supabase/config.toml'], path, { timeout: PRUNE_GIT_MS }) ?? '';
-  const changed = diff.split('\n').filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l));
-  // `#?`: the script shifts every line mentioning a port, commented-out ones included
-  // (`# smtp_port = 54325`), so those are part of its rewrite too.
-  return changed.length > 0 && changed.every((l) => /^[+-]\s*#?\s*(project_id|[a-z0-9_]*port)\s*=/.test(l));
+  let file;
+  try {
+    file = readFileSync(join(path, 'supabase', 'config.toml'), 'utf8').split('\n');
+  } catch {
+    return false;
+  }
+  // The section a line of the WORKING file sits in: the nearest `[header]` above it.
+  const sectionAt = (n) => {
+    for (let i = n - 1; i >= 0; i -= 1) {
+      const m = /^\[([^\]]+)\]/.exec(file[i] ?? '');
+      if (m) return m[1];
+    }
+    return '';
+  };
+  let line = 0; // 1-based line number in the working file of the next `+` line
+  let changed = 0;
+  for (const l of diff.split('\n')) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)/.exec(l);
+    if (hunk) { line = Number(hunk[1]); continue; }
+    if (!/^[+-]/.test(l) || /^(\+\+\+|---)/.test(l)) continue;
+    changed += 1;
+    const body = l.slice(1);
+    // `#?`: the script shifts every line mentioning a port, commented-out ones included
+    // (`# smtp_port = 54325`), so those are part of its rewrite too.
+    const stack = /^\s*#?\s*(project_id|[a-z0-9_]*port)\s*=/.test(body)
+      || (l[0] === '-' && body.trim() === 'enabled = true')
+      || (l[0] === '+' && body.trim() === 'enabled = false' && STACK_TRIMMED.has(sectionAt(line)));
+    if (!stack) return false;
+    if (l[0] === '+') line += 1;
+  }
+  return changed > 0;
 }
 
 /**

@@ -127,7 +127,7 @@ function loopReturning(
     };
     const ok = await submit(decisions);
     if (!ok && retry) await submit(retry);
-    return { text: '', turns: 1, calls: [] };
+    return { text: '', turns: 1, calls: [], stalledWarnings: 0 };
   }) as unknown as NonNullable<PlannerDeps['runLoop']>;
 }
 
@@ -662,7 +662,7 @@ describe('runPlanner — when it runs at all', () => {
       runLoop: (async () => {
         call += 1;
         if (call === 1) throw new Error('provider down');
-        return { text: '', turns: 1, calls: [] };
+        return { text: '', turns: 1, calls: [], stalledWarnings: 0 };
       }) as unknown as NonNullable<PlannerDeps['runLoop']>,
     }));
     expect(summary.tenantErrors).toBe(1);
@@ -754,6 +754,62 @@ describe("the planner's inbox (plan 2026-08-31, build 5.5 Phase 1)", () => {
     }));
     expect(loop).not.toHaveBeenCalled();
     expect(summary.skippedNoGaps).toBe(1);
+  });
+
+  // WHICH TOOLS THE TICK CALLED (2026-09-11). The 620-turn runaway recorded
+  // `turns: 620, toolCalls: 620` and nothing about what it called 620 TIMES —
+  // and the answer was unrecoverable afterwards: cost_events keeps per-call
+  // tokens, OpenRouter's generation API keeps metadata, neither keeps the name.
+  test('the tick records which tools it called, and how many times', async () => {
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({ runLoop: loopReturning([]) }));
+    expect(summary.plans[0].toolsUsed).toEqual({ submit_plan: 1 });
+  });
+
+  test('a tool name the model invented counts as (unknown) — never kept verbatim', async () => {
+    // toolsUsed rides into lifecycle_runs, which has NO tenant_id, and a model
+    // may emit ANY string as a tool name. The allowlist is the only thing
+    // between "which tools ran" and a customer's words in a row that outlives
+    // their firm — and it also keeps a looping model from growing the record one
+    // invented bucket at a time.
+    const loop = (async (
+      req: { onResult?: (call: ToolLoopCall) => void },
+      _tools: unknown,
+      execute: (name: string, args: Record<string, unknown>) => Promise<unknown>,
+    ): Promise<ToolLoopResult> => {
+      await execute(SUBMIT_PLAN_TOOL.name, { decisions: [] });
+      req.onResult?.({ turn: 1, name: SUBMIT_PLAN_TOOL.name, args: {}, ok: true, result: '{}' });
+      req.onResult?.({
+        turn: 2,
+        name: 'read_the_note_from_jane_doe_about_her_boiler',
+        args: {},
+        ok: false,
+        result: "error: 'read_the_note…' is not an available tool",
+      });
+      return { text: '', turns: 2, calls: [], stalledWarnings: 0 };
+    }) as unknown as NonNullable<PlannerDeps['runLoop']>;
+
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({ runLoop: loop }));
+    expect(summary.plans[0].toolsUsed).toEqual({ submit_plan: 1, '(unknown)': 1 });
+  });
+
+  test('a tick the loop had to warn says so, even though it went on to plan', async () => {
+    // The near-miss case, and the reason it is recorded rather than only logged:
+    // a tick that was told it was repeating itself and then finished is
+    // identical to a healthy tick in every other field of the record.
+    const loop = (async (
+      req: { onResult?: (call: ToolLoopCall) => void; onStall?: () => void },
+      _tools: unknown,
+      execute: (name: string, args: Record<string, unknown>) => Promise<unknown>,
+    ): Promise<ToolLoopResult> => {
+      req.onStall?.();
+      await execute(SUBMIT_PLAN_TOOL.name, { decisions: [] });
+      req.onResult?.({ turn: 6, name: SUBMIT_PLAN_TOOL.name, args: {}, ok: true, result: '{}' });
+      return { text: '', turns: 6, calls: [], stalledWarnings: 1 };
+    }) as unknown as NonNullable<PlannerDeps['runLoop']>;
+
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({ runLoop: loop }));
+    expect(summary.plans[0].outcome).toBe('planned');
+    expect(summary.plans[0].stalledWarnings).toBe(1);
   });
 
   test('shown messages are marked read AFTER a successful tick, with exactly their ids', async () => {
@@ -1105,7 +1161,7 @@ describe('the code rails on what the model returns', () => {
 
   test('a submit that never arrives yields an empty plan, not a crash', async () => {
     const s = await runPlanner(NOW, 'shadow', baseDeps({
-      runLoop: (async () => ({ text: 'I give up', turns: 3, calls: [] })) as unknown as NonNullable<
+      runLoop: (async () => ({ text: 'I give up', turns: 3, calls: [], stalledWarnings: 0 })) as unknown as NonNullable<
         PlannerDeps['runLoop']
       >,
     }));
@@ -1997,7 +2053,7 @@ describe('live mode — the decision becomes a write, and the write becomes the 
 
     const summary = await runPlanner(NOW, 'live', baseDeps({ runLoop: slowThenThrow }));
 
-    expect(summary.limitHits).toEqual({ budget: 1, turns: 0 });
+    expect(summary.limitHits).toEqual({ budget: 1, turns: 0, stalled: 0 });
     const plan = summary.plans[0];
     expect(plan.outcome).toBe('error');
     expect(plan.ms).toBeGreaterThan(0);
@@ -2011,7 +2067,7 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     let seen: { maxTurns?: number | null; budgetMs?: number } | undefined;
     const capture = (async (req: { maxTurns?: number | null; budgetMs?: number }) => {
       seen = req;
-      return { text: '', turns: 1, calls: [] } as ToolLoopResult;
+      return { text: '', turns: 1, calls: [], stalledWarnings: 0 } as ToolLoopResult;
     }) as unknown as NonNullable<PlannerDeps['runLoop']>;
 
     await runPlanner(NOW, 'live', baseDeps({ runLoop: capture }));
@@ -2037,16 +2093,24 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     const budget = await throwing(
       new ToolLoopLimitError('budget', 'teamLeadPlanner: tool loop exceeded its 90000ms budget'),
     );
-    expect(budget.limitHits).toEqual({ budget: 1, turns: 0 });
+    expect(budget.limitHits).toEqual({ budget: 1, turns: 0, stalled: 0 });
 
     const turns = await throwing(new ToolLoopLimitError('turns', 'teamLeadPlanner: turn ceiling'));
-    expect(turns.limitHits).toEqual({ budget: 0, turns: 1 });
+    expect(turns.limitHits).toEqual({ budget: 0, turns: 1, stalled: 0 });
 
-    // A provider failure must NOT land in either bucket...
+    // A STALL that survived being told (2026-09-11). Unlike `turns` this one is
+    // reachable for the planner — it is not a ceiling, so `maxTurns: null` does
+    // nothing to prevent it — and it is the one a runaway books.
+    const stalled = await throwing(
+      new ToolLoopLimitError('stalled', 'teamLeadPlanner: tool loop made no progress'),
+    );
+    expect(stalled.limitHits).toEqual({ budget: 0, turns: 0, stalled: 1 });
+
+    // A provider failure must NOT land in any of the three...
     const provider = await throwing(new Error('502 from the inference gateway'));
-    expect(provider.limitHits).toEqual({ budget: 0, turns: 0 });
+    expect(provider.limitHits).toEqual({ budget: 0, turns: 0, stalled: 0 });
     // ...but every one of them still trips the existing alarm.
-    for (const s of [budget, turns, provider]) expect(s.tenantErrors).toBe(1);
+    for (const s of [budget, turns, stalled, provider]) expect(s.tenantErrors).toBe(1);
   });
 
   // The fail-safe the whole design rests on: a dead planner degrades to exactly
@@ -4934,7 +4998,7 @@ describe('citing a lookup (build 6 Phase 4)', () => {
                          result: `[{"raw_text":"${found}"}]` });
         const out = (await execute('submit_plan', close(found))) as { accepted: number };
         expect(out.accepted).toBe(1);
-        return { text: '', turns: 2, calls: [] };
+        return { text: '', turns: 2, calls: [], stalledWarnings: 0 };
       },
     }));
     expect(summary.decisions).toBe(1);
@@ -4958,7 +5022,7 @@ describe('citing a lookup (build 6 Phase 4)', () => {
           try {
             await execute('submit_plan', close(fabricated));
           } catch { /* wholly refused — the executor throws so the model can fix it */ }
-          return { text: '', turns: 2, calls: [] };
+          return { text: '', turns: 2, calls: [], stalledWarnings: 0 };
         },
       }));
       expect(summary.decisions, tool).toBe(0);
@@ -4977,7 +5041,7 @@ describe('citing a lookup (build 6 Phase 4)', () => {
           req.onResult?.({ turn: 1, name: tool, args: {}, ok: true,
                            result: JSON.stringify({ rows: [{ raw_text: found }] }) });
           await execute('submit_plan', close(found));
-          return { text: '', turns: 2, calls: [] };
+          return { text: '', turns: 2, calls: [], stalledWarnings: 0 };
         },
       }));
       expect(summary.decisions, tool).toBe(1);
@@ -5012,7 +5076,7 @@ describe('citing a lookup (build 6 Phase 4)', () => {
           expect(String(err)).toContain('appears neither in the evidence');
           seen[`t${Object.keys(seen).length + 1}`] = { accepted: 0, refused: 1 };
         }
-        return { text: '', turns: 2, calls: [] };
+        return { text: '', turns: 2, calls: [], stalledWarnings: 0 };
       },
     }));
     expect(seen.t1).toMatchObject({ accepted: 1, refused: 0 });
@@ -6487,7 +6551,7 @@ describe('rung 10 — inbound requests reach the planner', () => {
     (async (req: { user: string; budgetMs?: number }): Promise<ToolLoopResult> => {
       seen.user = req.user;
       seen.budgetMs = req.budgetMs;
-      return { text: '', turns: 1, calls: [] };
+      return { text: '', turns: 1, calls: [], stalledWarnings: 0 };
     }) as unknown as NonNullable<PlannerDeps['runLoop']>;
 
   test('(10) a focused pass shows ONE item, writes no run marker, and carries its own budget', async () => {

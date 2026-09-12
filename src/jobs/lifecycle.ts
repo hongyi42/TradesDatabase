@@ -225,6 +225,13 @@ export function redactForRecord(summary: LifecycleSummary): Json {
             0,
           )
         : plan.refusals,
+      // `toolsUsed` and `stalledWarnings` are NOT redacted, deliberately. Tool
+      // names are an allowlisted, closed set (planner.ts countTool: anything the
+      // model invented counts as '(unknown)') and the rest is integers — no
+      // customer words, nothing to keep outside the tenant boundary. They are
+      // also the two fields that make a runaway diagnosable after the fact,
+      // which is the whole reason they exist, so counting them away here would
+      // defeat the point.
     }));
   }
   return copy as Json;
@@ -559,7 +566,17 @@ export async function runLifecycle(
       // A per-tenant ERROR is usually a blip — a provider 502, a transient
       // database fault — and waited out. So it only counts as systemic when
       // EVERY firm hit it, the same test the watcher sweep uses above.
-      if (summary.limitHits.budget > 0 || summary.limitHits.turns > 0) ok = false;
+      // ANY of the loop's own limits, `stalled` included (2026-09-11). A stall
+      // that survived being told is as systemic as a budget hit and for the same
+      // reason: same firm, same rows, same prompt, so it repeats every half hour
+      // and never self-heals. One firm is enough — a runaway must not be able to
+      // hide behind nine healthy ones.
+      if (
+        summary.limitHits.budget > 0 ||
+        summary.limitHits.turns > 0 ||
+        summary.limitHits.stalled > 0
+      )
+        ok = false;
       else if (summary.tenants > 0 && summary.tenantErrors === summary.tenants) ok = false;
     } catch (err) {
       teamLeadPlanner = { stepError: msg(err) };

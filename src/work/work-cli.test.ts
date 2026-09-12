@@ -44,12 +44,12 @@ function git(args: string[], cwd: string): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...GIT_ENV } }).trim();
 }
 
-function work(args: string[], cwd: string, input = ''): string {
+function work(args: string[], cwd: string, input = '', env: Record<string, string> = {}): string {
   return execFileSync('node', [CLI, ...args], {
     cwd,
     encoding: 'utf8',
     input,
-    env: { ...process.env, ...GIT_ENV, HOME: home },
+    env: { ...process.env, ...GIT_ENV, HOME: home, ...env },
   }).trim();
 }
 
@@ -428,6 +428,47 @@ describe('work.mjs — the shared work record', () => {
     for (const f of snap.changedFiles) expect(f).not.toMatch(/^rc\//);
     writeFileSync(tracked, original);
     rmSync(join(worktree, 'src', 'dirty.ts'));
+  });
+
+  test('WORK_RECORD_READONLY keeps a probe session out of the task it did not claim', () => {
+    // The case: a `claude -p` verification probe launched INSIDE an implementation worktree,
+    // because that is the only way that worktree's hooks fire at all. On 2026-09-11 such a probe
+    // edited a file, reverted it, and left the edit in the implementation task's files: list and
+    // in its snapshot — both cleaned by hand. files: is an input, not a log (the pre-edit hook's
+    // SIBLING line and every overlap/spawn check read it), so the residue is a false "a sibling
+    // has touched this file" in every other session.
+    const RO = { WORK_RECORD_READONLY: '1' };
+    const id = work(['park', '--title', 'read-only probe', '--kind', 'task'], mainCheckout);
+    work(['claim', id, '--force'], worktree);
+    const snapPath = join(mainCheckout, '.claude', 'work', 'tasks', `${id}.snapshot.json`);
+    const probe = join(worktree, 'src', 'probed.ts');
+    writeFileSync(probe, 'export const p = 1;\n');
+    try {
+      // A baseline snapshot, written the ordinary way, is what the probe must not overwrite —
+      // asserting only "no file appeared" would pass against a task that never had one.
+      work(['snapshot', '--cwd', worktree], mainCheckout);
+      const baseline = readFileSync(snapPath, 'utf8');
+      expect(JSON.parse(baseline).changedFiles).toContain('src/probed.ts');
+
+      const owned = taskFile(id).files;
+      writeFileSync(join(worktree, 'src', 'probe-only.ts'), 'export const q = 1;\n');
+      work(['touch', '--file', probe, '--cwd', worktree], worktree, '', RO);
+      work(['snapshot', '--cwd', worktree], mainCheckout, '', RO);
+      expect(taskFile(id).files).toBe(owned);
+      expect(readFileSync(snapPath, 'utf8')).toBe(baseline);
+
+      // And the other half — without the variable the same two calls DO write. Without this the
+      // test would pass against a touch/snapshot that had simply stopped working.
+      work(['touch', '--file', probe, '--cwd', worktree], worktree, '');
+      work(['snapshot', '--cwd', worktree], mainCheckout);
+      expect(taskFile(id).files).toContain('src/probed.ts');
+      expect(JSON.parse(readFileSync(snapPath, 'utf8')).changedFiles).toContain('src/probe-only.ts');
+    } finally {
+      rmSync(probe, { force: true });
+      rmSync(join(worktree, 'src', 'probe-only.ts'), { force: true });
+      work(['done', id], mainCheckout);
+      work(['claim', claimableId, '--force'], worktree);
+    }
   });
 
   test('handoff appends a stamped section and refuses when nothing is active', () => {

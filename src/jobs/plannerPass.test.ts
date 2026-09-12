@@ -41,7 +41,7 @@ const EMPTY: PlannerSummary = {
   refusedAtApply: 0,
   recorded: 0,
   tenantErrors: 0,
-  limitHits: { budget: 0, turns: 0 },
+  limitHits: { budget: 0, turns: 0, stalled: 0 },
   byAction: {},
   plans: [],
 };

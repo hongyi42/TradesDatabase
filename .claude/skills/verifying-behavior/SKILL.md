@@ -40,6 +40,34 @@ verification steps.
 - It **reports evidence** — actual row values, an accessibility snapshot, a screenshot — never
   "looks good."
 
+### Launching a probe inside a worktree: `WORK_RECORD_READONLY=1`
+
+A probe that has to exercise a worktree's **hooks** must be launched *inside that worktree* —
+hooks come from the directory a session was launched in, so there is no other way to make them
+fire. That session then runs the worktree's record-writing hooks too, and writes into a task it
+does not own. Set the switch:
+
+```bash
+WORK_RECORD_READONLY=1 claude -p "<the probe>"      # run from inside the worktree
+```
+
+`work.mjs touch` and `work.mjs snapshot` become no-ops; every other hook — the `PreToolUse`
+decisions hook, anything under test — still fires, and `packet --for-session` still gives the
+probe its context. Verified 2026-09-12: a var set on the `claude -p` command line reaches the
+hook subprocess (`hook saw: [1]`; empty without it).
+
+Why it matters, from the incident that produced it (2026-09-11): a probe edited a file and
+reverted it, and the edit stuck in the *implementation* task's `files:` list and overwrote its
+`.snapshot.json` — both cleaned by hand. `files:` is an **input**, not a log: the pre-edit hook's
+SIBLING line and every `overlap`/`spawn` check read it, so a probe's footprint becomes a standing
+false "a sibling has touched this file" in every other session.
+
+Two exceptions worth knowing:
+- **Do not set it when the probe is verifying `touch` or `snapshot` themselves** — that grades a
+  disabled feature.
+- It gates a separately launched **process**. An Agent-tool subagent shares the parent's
+  environment, so its edits stay recorded — which is correct: they are the task's edits.
+
 ## 3. Triage every check into one of three buckets
 
 When planning a phase's verification, sort each behavioral check:

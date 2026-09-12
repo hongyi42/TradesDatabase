@@ -17,6 +17,10 @@
 #   N = stack index 1..6 (default 1) → ports 54(3+N)xx (N=1 → 544xx).
 #       Use a different N for each extra concurrent worktree.
 #
+# Re-running it IS the repair path: it renames a stale or oversized project_id
+# and re-shifts the ports to the N you pass, then starts. It refuses while a
+# stack is still up under the old id, since renaming would orphan it.
+#
 # Cleanup for a scratch worktree (stops ONLY this stack, deletes its data):
 #   npx supabase stop --no-backup
 set -euo pipefail
@@ -38,21 +42,80 @@ case "$N" in
 esac
 PORT_PREFIX="54$((3 + N))"
 
+# The project_id has to survive the CLI's own sanitiser unchanged. That sanitiser
+# replaces every run of characters outside [a-zA-Z0-9_.-] with "_", trims leading
+# "_.-", and then CUTS THE RESULT AT 40 BYTES — a plain byte cut that happily
+# leaves the id ending in "-" (sanitizeProjectId, supabase/cli v2.107.0:
+# https://github.com/supabase/cli/blob/v2.107.0/apps/cli-go/pkg/config/config.go#L1036-L1053).
+# Every container is then named supabase_<svc>_<id>, and that name is the hostname
+# the other containers dial. Go's resolver rejects a hostname whose label ends in
+# "-" WITHOUT querying DNS, so a trailing hyphen shows up as auth failing with
+# "no such host" against a db container that is up and healthy, and `start` rolls
+# the whole stack back (hit 2026-09-11: a 40-character worktree directory name).
+# So cap it at 40 here, always ending alphanumeric, and mix in a hash of the full
+# name so two long worktrees sharing a prefix don't silently share one stack.
 SUFFIX="$(basename "$PWD" | tr -cd 'a-zA-Z0-9-')"
 PROJECT_ID="TradesDatabase-${SUFFIX}"
+if [ "${#PROJECT_ID}" -gt 40 ]; then
+  if command -v md5 >/dev/null 2>&1; then
+    HASH="$(printf '%s' "$SUFFIX" | md5 -q)"
+  else
+    HASH="$(printf '%s' "$SUFFIX" | md5sum | cut -d' ' -f1)"
+  fi
+  PROJECT_ID="$(printf '%s' "${PROJECT_ID:0:33}" | sed -E 's/[-_.]+$//')-${HASH:0:6}"
+fi
 
-if grep -q '^project_id = "TradesDatabase"$' supabase/config.toml; then
-  perl -pi -e "s/^project_id = \"TradesDatabase\"\$/project_id = \"${PROJECT_ID}\"/" supabase/config.toml
-  # Shift every 543xx port on port lines (54321→${PORT_PREFIX}21, ...).
-  perl -pi -e "s/\b543(\d\d)\b/${PORT_PREFIX}\$1/g if /port/" supabase/config.toml
-  # Edge-runtime inspector is outside the 543xx range; shift it too.
-  perl -pi -e "s/^inspector_port = 8083\$/inspector_port = 8${N}83/" supabase/config.toml
-  echo "config.toml rewritten: project_id=${PROJECT_ID}, ports ${PORT_PREFIX}xx (leave uncommitted)."
-elif grep -q "^project_id = \"${PROJECT_ID}\"$" supabase/config.toml; then
-  echo "config.toml already configured for ${PROJECT_ID} — skipping rewrite."
-else
-  echo "ERROR: supabase/config.toml has an unexpected project_id; won't rewrite." >&2
-  exit 1
+CURRENT_ID="$(sed -n 's/^project_id = "\(.*\)"$/\1/p' supabase/config.toml | head -1)"
+case "$CURRENT_ID" in
+  "$PROJECT_ID")
+    echo "config.toml already names ${PROJECT_ID}."
+    ;;
+  "TradesDatabase" | TradesDatabase-*)
+    if [ "$CURRENT_ID" != "TradesDatabase" ]; then
+      # Renaming leaves anything still running under the old id orphaned: the CLI
+      # would no longer know those containers belong to this worktree.
+      OLD_LABEL="$(printf '%s' "$CURRENT_ID" | cut -c1-40)"
+      if [ -n "$(docker ps -q --filter "name=^supabase_db_${OLD_LABEL}\$" 2>/dev/null)" ]; then
+        echo "ERROR: a stack is still running as ${OLD_LABEL}; stop it before renaming:" >&2
+        echo "  npx supabase stop --no-backup" >&2
+        exit 1
+      fi
+      echo "NOTE: renaming stale project_id ${CURRENT_ID} → ${PROJECT_ID}."
+    fi
+    perl -pi -e "s/^project_id = \".*\"\$/project_id = \"${PROJECT_ID}\"/" supabase/config.toml
+    ;;
+  *)
+    echo "ERROR: supabase/config.toml has an unexpected project_id ('${CURRENT_ID}'); won't rewrite." >&2
+    exit 1
+    ;;
+esac
+
+# Shift every 54[3-9]xx port onto this stack's prefix (54321→${PORT_PREFIX}21, ...);
+# re-running with a different N moves an already-shifted stack.
+perl -pi -e "s/\b54[3-9](\d\d)\b/${PORT_PREFIX}\$1/g if /port/" supabase/config.toml
+# Edge-runtime inspector is outside the 543xx range; shift it too.
+perl -pi -e "s/^inspector_port = 8\d?83\$/inspector_port = 8${N}83/" supabase/config.toml
+# Turn off the services nothing in this repo talks to. A full stack is ~1.6 GB and the
+# Docker VM holds 7.8 GB, so four of them swap and the suite starts failing somewhere
+# different every run. analytics (Logflare) is the single biggest container in a stack,
+# studio is a browser UI, and nothing subscribes to realtime; storage STAYS (src/calls/
+# reads recordings from it). Measured footprints are in docs/engineering-memory.md.
+perl -pi -e 'BEGIN { $s = "" } $s = $1 if /^\[([^\]]+)\]/; s/^enabled = true$/enabled = false/ if $s =~ /^(analytics|studio|realtime)$/;' supabase/config.toml
+echo "config.toml: project_id=${PROJECT_ID}, ports ${PORT_PREFIX}xx (leave uncommitted)."
+
+# Say what this stack is about to join. The Docker VM is a fixed ~7.8 GB: trimmed stacks
+# cost ~0.5 GB each, full ones ~1.6-2.1 GB, and at four full ones the VM swaps — Postgres
+# and PostgREST then blow their own timeouts and the suite fails somewhere DIFFERENT every
+# run, which reads as a pile of real bugs (2026-09-11). A stack still running analytics is
+# one started before this trim existed, so name those: they are where the room is.
+OTHERS="$(docker ps --format '{{.Names}}' 2>/dev/null | sed -n 's/^supabase_db_//p' | grep -vx "$(printf '%s' "$PROJECT_ID" | cut -c1-40)" || true)"
+FULL="$(docker ps --format '{{.Names}}' 2>/dev/null | sed -n 's/^supabase_analytics_//p' || true)"
+if [ -n "$OTHERS" ]; then
+  echo "Stacks already running: $(printf '%s' "$OTHERS" | tr '\n' ' ')"
+  if [ -n "$FULL" ]; then
+    echo "  Still full (~1.6-2.1 GB each, vs ~0.5 GB trimmed): $(printf '%s' "$FULL" | tr '\n' ' ')"
+    echo "  To trim one, in ITS worktree: npx supabase stop && bash scripts/second-stack.sh <its N>"
+  fi
 fi
 
 npx supabase start

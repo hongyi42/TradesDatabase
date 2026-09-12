@@ -1,6 +1,6 @@
 {
   "recordedAt": "2026-08-12T19:09:54.697Z",
-  "seal": "0c7055be9d10",
+  "seal": "b760f27ccc7b",
   "note": "Measured state, not a target. The gate fails a DROP from this; the hard safety rules fail regardless.",
   "tier1": {
     "casePassRate": 100,

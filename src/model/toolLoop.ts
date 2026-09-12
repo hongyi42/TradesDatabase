@@ -616,7 +616,15 @@ function canonical(value: unknown): string {
 // whose per-turn hazard is already memory, not CPU. sha1 is a fingerprint here,
 // not a security claim: the inputs are this process's own tool results.
 function fingerprint(name: string, args: Record<string, unknown>, result: string): string {
-  return createHash('sha1').update(`${name} ${canonical(args)} ${result}`).digest('hex');
+  // LENGTH-PREFIXED, never separated. A separator has to be a character that
+  // cannot occur in any part, and reaching for one is how a literal NUL got into
+  // this file (2026-09-12): typed as a \u0000 escape, saved as the raw byte by an
+  // editing tool, and thereafter invisible — `grep` answers "Binary file matches"
+  // and shows none of this file's lines, while tsc, eslint, the suite and the
+  // build all pass. Framing each part with its own length needs no such
+  // character, and no two parts can run together into a third reading.
+  const parts = [name, canonical(args), result];
+  return createHash('sha1').update(parts.map((p) => `${p.length}:${p}`).join('')).digest('hex');
 }
 
 // WHAT, not how (the doctrine rule this repo learned the expensive way): it says

@@ -115,7 +115,7 @@ const ssh = (cmd, timeout = TURN_TIMEOUT) =>
 const sq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 /** openshell prints colour; a regex over raw bytes matches the escape, not the value. */
-const stripAnsi = (s) => String(s).replace(/\[[0-9;]*m/g, '');
+const stripAnsi = (s) => String(s).replace(/\x1b\[[0-9;]*m/g, '');
 
 /** The fleet's live inference route. A flip mid-run invalidates every latency. */
 function currentRoute() {

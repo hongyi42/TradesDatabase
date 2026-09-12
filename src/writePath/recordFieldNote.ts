@@ -12,6 +12,7 @@ import {
   getCustomer,
   getJob,
   listJobsForCustomer,
+  insertCustomerCapture,
   updateJobStatus,
   insertJobCapture,
   appendJobCorrespondence,
@@ -455,7 +456,16 @@ export async function recordFieldNote(
   // `null` from createObservation means the once-ever index already holds this
   // capture — a raced redelivery — so there is nothing new to report and the
   // FIRST row keeps the ask.
-  const observeInbound = async (onJob: Job | null): Promise<RecordFieldNoteResult> => {
+  // `candidates` is the OTHER reason a job can be absent (2026-09-12), and the
+  // planner must be able to tell the two apart: no `jobId` and no candidates
+  // means "this customer has no open work — one would have to be opened", while
+  // no `jobId` WITH candidates means "they have these, and which one this is
+  // about could not be told". Passing null for the second case would send the
+  // planner off to open a third job for a customer who already has two.
+  const observeInbound = async (
+    onJob: Job | null,
+    candidates: Job[] = [],
+  ): Promise<RecordFieldNoteResult> => {
     const customer = await getCustomer(customerId);
     const obs = await createObservation({
       tenantId,
@@ -481,7 +491,27 @@ export async function recordFieldNote(
         channel,
         customerName: customer?.name ?? null,
         from: fromOf(input.sourceMeta),
+        // SOMETIMES THESE ARE OUR OWN WORDS, and the direction has to be STATED
+        // — the unmatched path already says so, and the planner keys on this
+        // field and never on the channel name. Without it a promise a manager
+        // typed renders as "the caller's words (outbound_email, from
+        // office@firm.test)", and the planner goes off to ask that manager who
+        // this person is about a message they wrote themselves. Reachable
+        // before today on an outbound commitment to a known customer whose job
+        // had no live trip; the ambiguity branch makes it the common case.
+        ...(channel === 'outbound_email'
+          ? { outbound: true, sentTo: input.fallbackEmail ?? null }
+          : {}),
         ...(onJob ? { jobId: onJob.id, jobTitle: onJob.title } : {}),
+        ...(candidates.length > 0
+          ? {
+              candidates: candidates.map((c) => ({
+                id: c.id,
+                title: c.title,
+                status: c.status,
+              })),
+            }
+          : {}),
         // The extractor's reading, nulls kept — an absent field and a field the
         // model declined to fill are different things to the planner.
         // workPerformed IS here (the planner may want the caller's own account
@@ -540,13 +570,70 @@ export async function recordFieldNote(
 
   // Resolve the job: a matcher-supplied job, else the most recent non-terminal
   // job for the customer, else — for a technician channel only — a new one.
+  //
+  // JUSTIFIED, OR NOT AT ALL — but only where the guess has no grounds
+  // (2026-09-12). Taking the newest non-terminal job came from the 2026-06-20
+  // technician write-path, where the filer is standing at the work and whatever
+  // is open IS what they are talking about. Four more callers were routed
+  // through this function afterwards and inherited a heuristic written for none
+  // of them: on the firm's own outbound mail it filed a dated promise about a
+  // bathroom faucet onto a kitchen-tap job, attached it to that job's booked
+  // trip, and the live-visit rule below then swallowed the ask.
+  //
+  // TWO CALLERS KEEP IT, deliberately. A TECHNICIAN is at the work. And
+  // `decided.*` is a human's answer relayed through record_caller — a guess with
+  // a manager behind it, whose reuse is that tool's stated contract and whose
+  // `bookVisit` arm returns below this point. Removing it for them would mint a
+  // third job from a field note and silently drop an approved trip.
+  //
+  // What is left is the AUTOMATIC path: mail, calls and forms, nobody asked.
+  // There a job is kept only when the thread NAMED it (rung 10b.3) or there is
+  // exactly one candidate — no choice to make. Several and none named is the
+  // guess, and it stops.
   let job: Job | null = match.jobId ? await getJob(match.jobId) : null;
   // Held past the resolution: the filter above files on the most recent job of
   // ANY status, which the non-terminal search has by then discarded.
   let priorJobs: Job[] = [];
+  let candidates: Job[] = [];
+  // `captureId` IS A RE-ENTRY, and it belongs here on its own merits rather
+  // than because `record_caller` happens to send `decided` alongside it. The
+  // planner has already been asked about this capture and its first ask is
+  // still open; taking the new branch would raise a SECOND one and leave the
+  // original item with nothing citing it, so it could never close. The type
+  // permits `captureId` with no `decided`, and a test already exercises that
+  // shape — it passed only because its fixture had one job.
+  const mayGuess = isTechnicianChannel || !!input.decided || !!input.captureId;
   if (!job) {
     priorJobs = await listJobsForCustomer(customerId);
-    job = [...priorJobs].reverse().find((candidate) => !TERMINAL_STATUSES.has(candidate.status)) ?? null;
+    // listJobsForCustomer orders created_at ASCENDING, so the tail is newest.
+    candidates = priorJobs.filter((candidate) => !TERMINAL_STATUSES.has(candidate.status));
+    job = mayGuess
+      ? (candidates[candidates.length - 1] ?? null)
+      : candidates.length === 1
+        ? candidates[0]
+        : null;
+  }
+
+  // THE DOOR KNOWS WHO, NOT WHICH — and says so instead of picking. Ahead of
+  // the `!job` branch below, which reads a null job as "this customer has no
+  // open work at all"; here there is too MUCH open work to choose between, and
+  // the two are different answers that must not share a path.
+  //
+  // ONLY A COMMITMENT ASKS. Ambiguity alone is not worth a manager's second:
+  // the unmatched path narrows outbound to commitments for exactly this reason,
+  // and without the same narrowing every ordinary email from a two-job customer
+  // would become an item somebody has to dismiss. What the firm PROMISED is the
+  // one shape here whose loss costs something outside this database.
+  //
+  // ASK FIRST, LINK SECOND — the ordering rule this file already follows: the
+  // customer link is a "processed" marker captureHasLinkedL2 reads, so writing
+  // it ahead of the ask would let a failure in between bury the promise behind
+  // a duplicate short-circuit forever.
+  if (!mayGuess && candidates.length > 1) {
+    const asked =
+      extracted.visitCommitted === true ? await observeInbound(null, candidates) : null;
+    await insertCustomerCapture({ tenantId, customerId, captureId });
+    return asked ?? { status: 'matched', captureId, customerId };
   }
   // AMENDED 2026-09-07 (user): inbound with no open job ASKS. It used to mint
   // one here and the manager never heard of it — "so the manager can know,

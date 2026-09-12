@@ -37,7 +37,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await pg.query(
     'truncate table customers, jobs, visits, raw_captures, technicians, schedule_events, ' +
-      'observations, job_captures cascade',
+      'observations, job_captures, customer_captures cascade',
   );
   await pg.end();
 });
@@ -60,6 +60,16 @@ async function jobCaptureLinks(jobId: string): Promise<number> {
   const { rows } = await pg.query<{ n: string }>(
     'select count(*)::int as n from job_captures where job_id = $1',
     [jobId],
+  );
+  return Number(rows[0].n);
+}
+
+// The 2026-09-12 link: what the door filed on the PERSON because it could not
+// tell which job. Straight from SQL, like its job-level twin above.
+async function customerCaptureLinks(customerId: string): Promise<number> {
+  const { rows } = await pg.query<{ n: string }>(
+    'select count(*)::int as n from customer_captures where customer_id = $1',
+    [customerId],
   );
   return Number(rows[0].n);
 }
@@ -1586,6 +1596,205 @@ describe('rung 10 — inbound asks before it creates', () => {
     expect(r.observationId).toBeUndefined();
     expect((await listJobsForCustomer(customer.id)).length).toBe(1);
   });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 2026-09-12 — THE DOOR STOPS GUESSING ON THE AUTOMATIC PATH.
+  //
+  // The specimen these pin: the firm emailed a known customer "we'll send a
+  // technician Wednesday 16 September, 10am-12pm" about a dripping BATHROOM
+  // FAUCET. She had two open jobs, a boiler diagnostic and a kitchen tap, and
+  // both carried a booked trip. The door took the newest open job, attached the
+  // promise to that job's trip, and the "a commitment on a live visit asks
+  // nothing" rule swallowed it. Nobody at the firm knew, and nothing was booked.
+  //
+  // Two candidates and nothing naming one is not an answer, so the door stops
+  // producing one. What it still does, untouched, is guess for a TECHNICIAN
+  // (standing at the work) and for anything a manager DECIDED.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  // A customer with an EMAIL on file, because that is the key the specimen
+  // matched on: the firm's own sent mail carries no phone and starts a new
+  // thread, so the recipient's address is the only thing that recognises them.
+  // Created ASCENDING, so `tap` is the newest — the one the old guess took.
+  let twoJobSeq = 0;
+  const twoOpenJobs = async (name: string) => {
+    const phone = `555-9${twoJobSeq}`;
+    const email = `two-jobs-${twoJobSeq++}@example.com`;
+    const customer = await createCustomer({ tenantId, name, phone, email });
+    const boiler = await createJob({ tenantId, customerId: customer.id, title: 'Boiler diagnostic' });
+    const tap = await createJob({ tenantId, customerId: customer.id, title: 'Kitchen tap dripping' });
+    return { customer, phone, email, boiler, tap };
+  };
+
+  test('(15) THE SPECIMEN: an outbound promise with two candidate jobs asks, and names both', async () => {
+    const { customer, email, boiler, tap } = await twoOpenJobs('Delphine Doubled');
+    // THE TRIP THAT DID THE SWALLOWING. Both of Delphine's jobs carried a booked
+    // visit, so whichever way the guess fell, `resolveVisitForNote` attached the
+    // promise to a trip and "a committed capture that landed on a LIVE visit
+    // asks nothing" silenced it. Without a live visit here this test would pass
+    // for the wrong reason — it has to reproduce the suppression it defeats.
+    await createVisit({
+      tenantId,
+      jobId: tap.id,
+      technicianId: null,
+      startsAt: `${DAY}T10:00:00.000Z`,
+      endsAt: `${DAY}T12:00:00.000Z`,
+      status: 'confirmed',
+    });
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'connector:gmail',
+        channel: 'outbound_email',
+        text: "we'll send a technician out on Wednesday 16 September between 10am and 12pm",
+        // On SENT mail the sender is us, so the key is who it went TO.
+        fallbackEmail: email,
+      },
+      stub({
+        visitCommitted: true,
+        touchesOperations: true,
+        followUp: 'Send technician Wednesday 16 September, 10am-12pm, dripping bathroom faucet',
+        attributes: { appointment_window: 'Wed 16 Sep, 10am-12pm' },
+      }),
+    );
+
+    // The customer was recognised — that is what USED to remove the promise's
+    // own door and hand it to the inbound machinery.
+    expect(r.status).toBe('matched');
+    expect(r.customerId).toBe(customer.id);
+    // No job was picked, so no trip could absorb it and no rule could silence it.
+    expect(r.jobId).toBeUndefined();
+    expect(r.visitId).toBeUndefined();
+    expect(await jobCaptureLinks(boiler.id)).toBe(0);
+    expect(await jobCaptureLinks(tap.id)).toBe(0);
+    // It is held at the level the door IS sure of.
+    expect(await customerCaptureLinks(customer.id)).toBe(1);
+
+    // And the ask exists, naming what it could not choose between — never
+    // "no open job", which would send the planner off to open a third.
+    expect(r.observationId).toBeDefined();
+    const obs = await observationsFor(r.captureId);
+    expect(obs).toHaveLength(1);
+    expect(obs[0].kind).toBe('inbound_commitment');
+    const ctx = obs[0].context as Record<string, unknown>;
+    expect(ctx.jobId).toBeUndefined();
+    expect(ctx.candidates).toEqual([
+      { id: boiler.id, title: 'Boiler diagnostic', status: 'open' },
+      { id: tap.id, title: 'Kitchen tap dripping', status: 'open' },
+    ]);
+    // THESE ARE OUR OWN WORDS, and the record has to say so. The planner keys
+    // on this field and never on the channel name: without it the promise
+    // renders as "the caller's words … from office@firm.test", and the planner
+    // asks the manager who wrote it to identify the person they wrote to.
+    expect(ctx.outbound).toBe(true);
+    expect(ctx.sentTo).toBe(email);
+  });
+
+  test('(15b) ON THIS BRANCH TOO, the ask is written before the link', async () => {
+    // The customer link is a "processed" marker captureHasLinkedL2 reads, so
+    // writing it before the observation would make a redelivery a duplicate and
+    // nobody would ever hear about the promise. Same rule as the main path's
+    // ordering test, same technique: force the SECOND write to fail and prove
+    // the first one survived.
+    const { customer, email } = await twoOpenJobs('Ordered Orla');
+    await pg.query(
+      `create or replace function __fail_customer_capture() returns trigger
+         language plpgsql as $$ begin raise exception 'forced link failure'; end $$`,
+    );
+    await pg.query(
+      `create trigger __fail_customer_capture_t before insert on customer_captures
+         for each row execute function __fail_customer_capture()`,
+    );
+    try {
+      await expect(
+        recordFieldNote(
+          {
+            tenantId,
+            technicianRef: 'connector:gmail',
+            channel: 'outbound_email',
+            text: "we'll be out on Wednesday morning",
+            externalId: 'gmail-ambiguous-ordering-1',
+            fallbackEmail: email,
+          },
+          stub({ visitCommitted: true }),
+        ),
+      ).rejects.toThrow(/forced link failure/);
+    } finally {
+      await pg.query('drop trigger if exists __fail_customer_capture_t on customer_captures');
+      await pg.query('drop function if exists __fail_customer_capture()');
+    }
+
+    // The ask outlived the failure — which is the whole point of the ordering.
+    const { rows } = await pg.query<{ kind: string }>(
+      `select o.kind from observations o
+        where exists (select 1 from raw_captures c
+                       where c.id::text = o.subject_ref and c.external_id = $1)`,
+      ['gmail-ambiguous-ordering-1'],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe('inbound_commitment');
+    expect(await customerCaptureLinks(customer.id)).toBe(0);
+  });
+
+  test('(16) ambiguity ALONE does not ask — an uncommitted message is filed on the customer, silently', async () => {
+    const { customer, phone, boiler, tap } = await twoOpenJobs('Chatty Chen');
+    const r = await recordFieldNote(
+      inbound('email', 'just checking in, any news?'),
+      stub({ phone, touchesOperations: true }),
+    );
+    expect(r.jobId).toBeUndefined();
+    expect(await customerCaptureLinks(customer.id)).toBe(1);
+    expect(await jobCaptureLinks(boiler.id)).toBe(0);
+    expect(await jobCaptureLinks(tap.id)).toBe(0);
+    // Waking a manager for every routine email from a two-job customer is how
+    // an ask channel stops being read. Only a PROMISE is worth their second.
+    expect(r.observationId).toBeUndefined();
+    expect(await observationsFor(r.captureId)).toHaveLength(0);
+  });
+
+  test('(17) ONE candidate is not a guess — it still files on the job', async () => {
+    const { customer, job, phone } = await withOpenJob('Single Sam');
+    const r = await recordFieldNote(
+      inbound('email', 'the tap is still dripping'),
+      stub({ phone, touchesOperations: true }),
+    );
+    expect(r.jobId).toBe(job.id);
+    expect(await jobCaptureLinks(job.id)).toBe(1);
+    expect(await customerCaptureLinks(customer.id)).toBe(0);
+  });
+
+  test('(18) a job the THREAD named wins, however many others are open', async () => {
+    const { customer, phone, boiler, tap } = await twoOpenJobs('Threaded Thea');
+    const third = await createJob({ tenantId, customerId: customer.id, title: 'Third thing' });
+    const r = await recordFieldNote(
+      inbound('email', 'about the boiler', { resolved: { customerId: customer.id, jobId: boiler.id } }),
+      stub({ phone, touchesOperations: true }),
+    );
+    expect(r.jobId).toBe(boiler.id);
+    expect(await jobCaptureLinks(boiler.id)).toBe(1);
+    expect(await jobCaptureLinks(tap.id)).toBe(0);
+    expect(await jobCaptureLinks(third.id)).toBe(0);
+    expect(await customerCaptureLinks(customer.id)).toBe(0);
+  });
+
+  test('(19) a TECHNICIAN still guesses — they are standing at the work, and no third job is minted', async () => {
+    const { customer, phone, tap } = await twoOpenJobs('Fieldwork Fay');
+    const tech = await insertTechnician({
+      tenantId,
+      ref: 'guess-keeper-tech',
+      displayName: 'Guess Keeper',
+      seatExempt: true,
+    });
+    const r = await recordFieldNote(
+      { tenantId, technicianRef: tech.ref, channel: 'technician_note', text: 'replaced the washer' },
+      stub({ phone, workPerformed: 'replaced washer' }),
+    );
+    // The newest non-terminal job, exactly as before — NOT a new one. Removing
+    // the heuristic here would mint a third job from a field note.
+    expect(r.jobId).toBe(tap.id);
+    expect((await listJobsForCustomer(customer.id)).length).toBe(2);
+    expect(await customerCaptureLinks(customer.id)).toBe(0);
+  });
 });
 
 // RUNG 10B PHASE 1 — the door hands the matcher two envelope keys it never had.
@@ -2058,6 +2267,94 @@ describe('rung 10b — re-entry by capture id, and what a manager decided', () =
     );
     expect(r.observationId).toBeUndefined();
     expect(await observationsFor(capture.id)).toHaveLength(0);
+  });
+
+  // 2026-09-12 — WHAT A MANAGER DECIDED STILL GUESSES, and must. The door
+  // stopped picking a job by position on the AUTOMATIC path; these two pin that
+  // `decided.*` was deliberately left on the old behaviour. Both were live
+  // regressions in the first draft of that change: without the carve-out, a
+  // customer with two open jobs would have had a THIRD minted here, and an
+  // approved trip would have returned `ok` with nothing booked.
+  const twoOpenFor = async (name: string) => {
+    const customer = await createCustomer({ tenantId, name });
+    const first = await createJob({ tenantId, customerId: customer.id, title: 'first open thing' });
+    const second = await createJob({ tenantId, customerId: customer.id, title: 'second open thing' });
+    return { customer, first, second };
+  };
+
+  test('a re-entry with NO `decided` and TWO open jobs still files — it never asks twice', async () => {
+    // The re-entry carve-out keys on `captureId` ITSELF, not on `decided`
+    // riding along with it. record_caller happens to send both today, but the
+    // type permits a capture id alone — and if that shape took the ambiguity
+    // branch it would raise a SECOND ask on a capture whose first one is still
+    // open, and leave the original item with nothing citing it, so it could
+    // never close. That is the exact double-ask the settled-re-entry rule
+    // exists to forbid.
+    const capture = await parkedCall('yes, Thursday suits us');
+    const { customer, second } = await twoOpenFor('Reentry Rae');
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'phone-line',
+        channel: 'phone_call',
+        text: capture.raw_text,
+        captureId: capture.id,
+        resolved: { customerId: customer.id },
+      },
+      stub({ visitCommitted: true }),
+    );
+    expect(r.jobId).toBe(second.id);
+    expect(await jobCaptureLinks(second.id)).toBe(1);
+    expect(await customerCaptureLinks(customer.id)).toBe(0);
+    // ONE ask about this capture, the one rung 10 already raises here.
+    expect(await observationsFor(capture.id)).toHaveLength(1);
+  });
+
+  test('decided.openJob with TWO open jobs reuses the newest — it does not mint a third', async () => {
+    const capture = await parkedCall('the back boiler is leaking now as well');
+    const { customer, second } = await twoOpenFor('Reuse Rhea');
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'phone-line',
+        channel: 'phone_call',
+        text: capture.raw_text,
+        captureId: capture.id,
+        resolved: { customerId: customer.id },
+        decided: { openJob: { title: 'back boiler leaking' } },
+      },
+      stub({}),
+    );
+    // record_caller's stated contract: the door REUSES a customer's existing
+    // open job rather than minting a second, so `openJob` can be a no-op.
+    expect(r.jobId).toBe(second.id);
+    expect((await listJobsForCustomer(customer.id)).length).toBe(2);
+    expect(await customerCaptureLinks(customer.id)).toBe(0);
+  });
+
+  test('decided.bookVisit:true with TWO open jobs still books the trip', async () => {
+    const capture = await parkedCall('yes, please send someone out');
+    const { customer, second } = await twoOpenFor('Booked Bea');
+    const before = await visitCount();
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'phone-line',
+        channel: 'phone_call',
+        text: capture.raw_text,
+        captureId: capture.id,
+        resolved: { customerId: customer.id },
+        decided: { bookVisit: true },
+      },
+      stub({ visitCommitted: true }),
+    );
+    // A manager said yes. Returning before the booking would report `ok` with
+    // nothing on the calendar — the exact shape this whole rung exists to stop,
+    // and the MCP guard does not catch it (it refuses only at ZERO live jobs).
+    expect(r.visitId).toBeDefined();
+    expect(await visitCount()).toBe(before + 1);
+    expect(r.jobId).toBe(second.id);
+    expect(r.observationId).toBeUndefined();
   });
 
   test('a RETRACTED capture stays terminal, however it is re-entered', async () => {

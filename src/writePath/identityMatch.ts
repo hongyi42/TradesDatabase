@@ -126,7 +126,12 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
   // turn a resolved identity into a 503, and Composio's redelivery would pay for
   // the extractor a SECOND time (the capture has no L2 link yet, so the door's
   // already-processed short-circuit does not catch it). We keep the match and
-  // fall back to the door's own job choice, which is what ran until today. The
+  // fall back to the door's own job choice — which since 2026-09-12 is a
+  // narrower thing than it was: on the automatic path the door no longer guesses
+  // from position, so a thread read that fails for a customer with several open
+  // jobs now ends in "which one could not be told" and an ask, not in a silent
+  // filing on the newest. The fallback still exists; what it falls back TO is
+  // the honest answer rather than a confident one. The
   // THREAD ARM below still propagates: there, the read is the answer, not an
   // aid, and a retry is the only thing that gets it right.
   const withThreadJob = async (customerId: string): Promise<MatchResult> => {

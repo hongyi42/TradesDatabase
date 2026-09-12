@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 239 documents · 228 live · 11 superseded.
+Regenerate with `npm run decisions:index`. 242 documents · 231 live · 11 superseded.
 
 ## Superseded — do not build on these
 
@@ -55,7 +55,10 @@ Regenerate with `npm run decisions:index`. 239 documents · 228 live · 11 super
 - `2026-09-11` `finding` [2026-09-11-git-prompts-on-the-terminal-despite-stdi](shared/findings/2026-09-11-git-prompts-on-the-terminal-despite-stdi.md) — git prompts on the terminal despite stdio ignore, and worktree add -b makes its branch before checking the pa…
 - `2026-09-11` `finding` [2026-09-11-planner-loop-has-no-no-progress-breaker](shared/findings/2026-09-11-planner-loop-has-no-no-progress-breaker.md) — planner loop has no no-progress breaker: one tick repeated the same call ~600x and spent $8.67
 - `2026-09-11` `finding` [2026-09-11-supabase-stop-project-id-matches-the-id](shared/findings/2026-09-11-supabase-stop-project-id-matches-the-id.md) — supabase stop --project-id matches the id as typed; start labels a sanitised, 40-byte one
+- `2026-09-11` `plan` [2026-09-11-the-door-stops-guessing](shared/plans/2026-09-11-the-door-stops-guessing.md) — The door links only what it can justify — a customer-level link, and no positional job guess on the automatic…
+- `2026-09-11` `plan` [2026-09-11-the-model-names-the-job](shared/plans/2026-09-11-the-model-names-the-job.md) `describes 1 deleted file` · _draft_ — On the ambiguous branch only, a model names which of the customer's jobs a message is about — or says it cann…
 - `2026-09-11` `plan` [2026-09-11-the-planner-stops-when-it-stops-learning](shared/plans/2026-09-11-the-planner-stops-when-it-stops-learning.md) — A no-progress breaker for the tool loop — the loop ends a tick that has stopped learning anything (five conse…
+- `2026-09-11` `research` [2026-09-11-re-inventing-the-write-path-door](shared/research/2026-09-11-re-inventing-the-write-path-door.md) `landed` — The inbound/outbound door (recordFieldNote + identityMatch + extract) as it exists today, and what each candi…
 - `2026-09-10` `finding` [2026-09-10-a-running-session-does-not-pick-up-newly](shared/findings/2026-09-10-a-running-session-does-not-pick-up-newly.md) — a running session does not pick up newly added hook EVENTS from settings
 - `2026-09-10` `finding` [2026-09-10-build-the-shared-work-record-plan-2026-0](shared/findings/2026-09-10-build-the-shared-work-record-plan-2026-0.md) — build the shared work record (plan 2026-09-09)
 - `2026-09-10` `finding` [2026-09-10-settings-json-says-hooks-on-one-event-sh](shared/findings/2026-09-10-settings-json-says-hooks-on-one-event-sh.md) — hooks on one event do NOT share stdin (measured); touch cannot see edits made through Bash

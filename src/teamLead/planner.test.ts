@@ -6682,6 +6682,8 @@ describe('rung 10 — inbound requests reach the planner', () => {
     expect(view.block).toContain('attributes {"gateCode":"4412"}');
     expect(view.block).toContain('on file: no open job for this customer');
     expect(view.block).toContain('the firm agreed to come out: yes');
+    // …and with no candidates in context, that IS the whole truth.
+    expect(view.block).not.toContain('could not be told');
     expect(view.block).toContain(`capture id: ${CAP}`);
     // NEVER A WEEKDAY, AND NEVER A CLOCK LABEL. The elapsed label ("noticed 2
     // hours ago") is legitimate and stays — it is what lets the planner say how
@@ -6696,7 +6698,7 @@ describe('rung 10 — inbound requests reach the planner', () => {
     expect(view.block).not.toContain('the visit was due:');
   });
 
-  test('(12b) the new-job kind says a job would have to be opened, and the ask marker shows', () => {
+  test('(12b) an observation that NAMES a job says so, and the ask marker shows', () => {
     const view = buildGapView(
       observationAsGapRow(
         inboundObs({
@@ -6728,6 +6730,44 @@ describe('rung 10 — inbound requests reach the planner', () => {
     // `asked_at` on the gap row would have fed clockLabel into `dateLabels`.
     expect(view.block).not.toContain('the ask went out:');
     expect(view.block).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+  });
+
+  // 2026-09-12 — "CANNOT TELL WHICH" IS NOT "THERE IS NONE". The door stopped
+  // guessing a job from position, so an observation can now arrive with no
+  // jobId for a second reason: the customer has several open jobs and nothing
+  // named one. Rendering that as "no open job for this customer — a job would
+  // have to be opened" would send the planner off to open a THIRD.
+  test('(12c) candidates in context render as "could not be told", never as "no open job"', () => {
+    const view = buildGapView(
+      observationAsGapRow(
+        inboundObs({
+          context: {
+            ...(inboundObs().context as Record<string, unknown>),
+            candidates: [
+              { id: 'job-boiler', title: 'Boiler diagnostic', status: 'open' },
+              { id: 'job-tap', title: 'Kitchen tap dripping', status: 'in_progress' },
+            ],
+          } as never,
+        }),
+      ),
+      Date.parse(NOW),
+      [],
+      false,
+      new Set(),
+      [],
+      [],
+      'UTC',
+      null,
+      null,
+      null,
+      new Map(),
+      { askedAt: null },
+    );
+    expect(view.block).toContain('on file: 2 open jobs, and which one this is about could not be told');
+    expect(view.block).toContain('"Boiler diagnostic" (open)');
+    expect(view.block).toContain('"Kitchen tap dripping" (in_progress)');
+    // The sentence that would have cost a third job.
+    expect(view.block).not.toContain('a job would have to be opened');
   });
 
   test('(13) THE RECORD for a call: the exact citation, the inferred booking, or nothing', async () => {

@@ -95,7 +95,28 @@ esac
 perl -pi -e "s/\b54[3-9](\d\d)\b/${PORT_PREFIX}\$1/g if /port/" supabase/config.toml
 # Edge-runtime inspector is outside the 543xx range; shift it too.
 perl -pi -e "s/^inspector_port = 8\d?83\$/inspector_port = 8${N}83/" supabase/config.toml
+# Turn off the services nothing in this repo talks to. A full stack is ~1.6 GB and the
+# Docker VM holds 7.8 GB, so four of them swap and the suite starts failing somewhere
+# different every run. analytics (Logflare) is the single biggest container in a stack,
+# studio is a browser UI, and nothing subscribes to realtime; storage STAYS (src/calls/
+# reads recordings from it). Measured footprints are in docs/engineering-memory.md.
+perl -pi -e 'BEGIN { $s = "" } $s = $1 if /^\[([^\]]+)\]/; s/^enabled = true$/enabled = false/ if $s =~ /^(analytics|studio|realtime)$/;' supabase/config.toml
 echo "config.toml: project_id=${PROJECT_ID}, ports ${PORT_PREFIX}xx (leave uncommitted)."
+
+# Say what this stack is about to join. The Docker VM is a fixed ~7.8 GB: trimmed stacks
+# cost ~0.5 GB each, full ones ~1.6-2.1 GB, and at four full ones the VM swaps — Postgres
+# and PostgREST then blow their own timeouts and the suite fails somewhere DIFFERENT every
+# run, which reads as a pile of real bugs (2026-09-11). A stack still running analytics is
+# one started before this trim existed, so name those: they are where the room is.
+OTHERS="$(docker ps --format '{{.Names}}' 2>/dev/null | sed -n 's/^supabase_db_//p' | grep -vx "$(printf '%s' "$PROJECT_ID" | cut -c1-40)" || true)"
+FULL="$(docker ps --format '{{.Names}}' 2>/dev/null | sed -n 's/^supabase_analytics_//p' || true)"
+if [ -n "$OTHERS" ]; then
+  echo "Stacks already running: $(printf '%s' "$OTHERS" | tr '\n' ' ')"
+  if [ -n "$FULL" ]; then
+    echo "  Still full (~1.6-2.1 GB each, vs ~0.5 GB trimmed): $(printf '%s' "$FULL" | tr '\n' ' ')"
+    echo "  To trim one, in ITS worktree: npx supabase stop && bash scripts/second-stack.sh <its N>"
+  fi
+fi
 
 npx supabase start
 

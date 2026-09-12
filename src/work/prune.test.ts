@@ -26,19 +26,26 @@ const GIT_ENV = {
 };
 
 // The shape scripts/second-stack.sh actually rewrites: port lines, a commented-out port with a
-// digit in its name, the inspector. A fixture with only project_id once hid a real bug here.
+// digit in its name, the inspector, and `enabled` in the sections it turns off — next to a
+// section it leaves alone, so the same line in the wrong place is not mistaken for the rewrite.
+// A fixture with only project_id once hid a real bug here.
 const CONFIG = [
   'project_id = "fixture"',
   '[api]',
   'port = 54321',
+  '[realtime]',
+  'enabled = true',
   '[inbucket]',
   '# pop3_port = 54326',
+  '[storage]',
+  'enabled = true',
   '[edge_runtime]',
   'inspector_port = 8083',
   '',
 ].join('\n');
-const stackRewrite = (id: string, n: number) => CONFIG
-  .replace('"fixture"', `"${id}"`).replace(/543(\d\d)/g, `54${3 + n}$1`).replace('8083', `8${n}83`);
+const off = (section: string, config: string) => config.replace(`[${section}]\nenabled = true`, `[${section}]\nenabled = false`);
+const stackRewrite = (id: string, n: number) => off('realtime', CONFIG
+  .replace('"fixture"', `"${id}"`).replace(/543(\d\d)/g, `54${3 + n}$1`).replace('8083', `8${n}83`));
 
 let tmp: string;
 let home: string;
@@ -163,6 +170,9 @@ beforeAll(() => {
   writeFileSync(join(add('empty-label'), 'supabase', 'config.toml'), stackRewrite('-+-', 6));
   // Merged with a REAL edit to config.toml, beside the stack rewrite: that edit is work.
   writeFileSync(join(add('config-edited'), 'supabase', 'config.toml'), `${stackRewrite('fixture-edited', 2)}[auth]\nsite_url = "http://x"\n`);
+  // Merged, and the one line the stack rewrite writes — but in a section it never touches.
+  // Turning storage off is somebody's edit; prune reading it as the rewrite would delete it.
+  writeFileSync(join(add('config-off'), 'supabase', 'config.toml'), off('storage', stackRewrite('fixture-off', 5)));
   // Merged, stack rewrite STAGED rather than left as second-stack.sh leaves it.
   writeFileSync(join(add('config-staged'), 'supabase', 'config.toml'), stackRewrite('fixture-staged', 3));
   git(['add', 'supabase/config.toml'], wt['config-staged']);
@@ -222,6 +232,7 @@ describe('work.mjs prune', () => {
     expect(row(stdout, 'squash-ghfail')).toMatch(/KEEP.*no merge proof/); // no answer is not a yes
     expect(row(stdout, 'merged-untracked')).toMatch(/KEEP.*uncommitted: 1 file/);
     expect(row(stdout, 'config-edited')).toMatch(/KEEP.*uncommitted: 1 file/);
+    expect(row(stdout, 'config-off')).toMatch(/KEEP.*uncommitted: 1 file/);
     expect(row(stdout, 'config-staged')).toMatch(/KEEP.*uncommitted: 1 file/);
     expect(row(stdout, 'merged-active')).toMatch(/KEEP.*active task/);
     expect(row(stdout, 'merged-live')).toMatch(/KEEP.*a session worked here 1h ago/);
@@ -271,7 +282,7 @@ describe('work.mjs prune', () => {
     expect(where).not.toBe(wt['own-stack']);
     expect(stdout).toMatch(/removed own-stack — worktree removed; branch own-stack deleted/);
     expect(stdout).toContain('stack fixture-own-stack stopped (its data volumes deleted)');
-    for (const name of ['unmerged', 'squash-other', 'squash-ghfail', 'merged-untracked', 'config-edited',
+    for (const name of ['unmerged', 'squash-other', 'squash-ghfail', 'merged-untracked', 'config-edited', 'config-off',
       'config-staged', 'merged-active', 'merged-live', 'merged-visited', 'merged-subagent', 'merged-locked', 'shared-kept',
       'merged-ignored', 'merged-env-edited', 'merged-unreadable']) {
       expect(existsSync(wt[name])).toBe(true);
@@ -279,6 +290,7 @@ describe('work.mjs prune', () => {
     expect(readFileSync(join(wt['merged-ignored'], '.scratch', 'notes.md'), 'utf8')).toBe('half a thought\n');
     // The real edit to config.toml, which a blanket `git checkout` would have thrown away.
     expect(readFileSync(join(wt['config-edited'], 'supabase', 'config.toml'), 'utf8')).toContain('site_url');
+    expect(readFileSync(join(wt['config-off'], 'supabase', 'config.toml'), 'utf8')).toContain('[storage]\nenabled = false');
   });
 });
 

@@ -26,6 +26,9 @@
 //   node scripts/work.mjs integrate [<id>] [--json]   # before landing: what moved under you, whom you affect
 //   node scripts/work.mjs prune [--apply]            # remove worktrees whose work is provably finished
 //
+// Env: WORK_RECORD_READONLY=1 turns `touch` and `snapshot` into no-ops, for a session that must
+// run a worktree's hooks without OWNING its task — see recordIsReadOnly at the entry point.
+//
 // Failure policy, deliberately two-sided: verbs a PERSON runs report the problem on stderr and
 // exit non-zero, because a silent no-op would read as success. Verbs a HOOK runs (`packet`,
 // `touch` — see HOOK_VERBS) must never cost the user an edit, so every failure is a silent
@@ -1665,6 +1668,34 @@ function cmdBoard(main) {
 // a git repository", which for a hook is an ordinary condition rather than a mistake.
 const HOOK_VERBS = new Set(['packet', 'touch', 'snapshot']);
 
+/**
+ * A session that must run a worktree's hooks WITHOUT owning its task sets WORK_RECORD_READONLY.
+ *
+ * The case this exists for: a `claude -p` verification probe, launched inside an implementation
+ * worktree because that is the only way that worktree's hooks fire at all. Measured 2026-09-11 —
+ * the probe edited a file, reverted it, and left behind a `files:` entry on the IMPLEMENTATION
+ * task plus a `.snapshot.json` overwritten with the probe's edit. Both had to be cleaned by hand.
+ *
+ * Why that is not cosmetic: `files:` is an INPUT, not a log. The pre-edit hook's SIBLING line and
+ * every `overlap`/`spawn` check read it, so one probe's footprint becomes a standing false "a
+ * sibling has touched this file" in every other session, and can stop a spawn on a file the task
+ * never changed. So the gate covers exactly the two verbs a hook WRITES with; `packet` only
+ * reads, and a read-only session should still get its context.
+ *
+ * Two things it deliberately does not do. A probe verifying `touch` or `snapshot` THEMSELVES must
+ * not set it — it would be grading a disabled feature. And it gates a separately launched
+ * PROCESS: an Agent-tool subagent shares the parent's environment, so its edits stay recorded,
+ * which is right, because they are the task's edits.
+ *
+ * Forgiving about the value on purpose. The failure mode of this switch is SILENT — a probe that
+ * sets `=true` and is not believed goes right back to corrupting the record with nothing on
+ * screen to say so — so anything set and not plainly negative counts as on.
+ */
+function recordIsReadOnly() {
+  const v = process.env.WORK_RECORD_READONLY;
+  return Boolean(v) && !['0', 'false', 'no'].includes(v.trim().toLowerCase());
+}
+
 /** The hook payload, parsed once by resolveCwd — stdin can only be read to EOF once. */
 let hookPayload = null;
 
@@ -1718,12 +1749,14 @@ switch (verb) {
     } else cmdPacket(main, cwd, args);
     break;
   case 'touch':
-    // Runs after every edit in every session: swallow everything.
-    try { cmdTouch(main, args.flags); } catch { /* never cost the user an edit */ }
+    // Runs after every edit in every session: swallow everything. Silent under the read-only
+    // switch too — PostToolUse output lands in the transcript of a session that did not ask.
+    try { if (!recordIsReadOnly()) cmdTouch(main, args.flags); } catch { /* never cost the user an edit */ }
     break;
   case 'snapshot':
-    // Runs on every Stop and before every compaction: same policy.
-    try { cmdSnapshot(main, cwd); } catch { /* never block a turn from ending */ }
+    // Runs on every Stop and before every compaction: same policy, and the silence matters more
+    // here — output on a Stop hook CONTINUES the turn.
+    try { if (!recordIsReadOnly()) cmdSnapshot(main, cwd); } catch { /* never block a turn from ending */ }
     break;
   case 'handoff': cmdHandoff(main, cwd, args); break;
   case 'promote': cmdPromote(main, cwd, args); break;

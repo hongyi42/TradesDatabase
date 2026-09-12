@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 238 documents · 227 live · 11 superseded.
+Regenerate with `npm run decisions:index`. 239 documents · 228 live · 11 superseded.
 
 ## Superseded — do not build on these
 
@@ -51,6 +51,7 @@ Regenerate with `npm run decisions:index`. 238 documents · 227 live · 11 super
 ## Live
 
 - `2026-09-11` `finding` [2026-09-11-a-session-that-enters-a-worktree-writes](shared/findings/2026-09-11-a-session-that-enters-a-worktree-writes.md) — a session that enters a worktree writes its transcript under the MAIN checkout's project folder
+- `2026-09-11` `finding` [2026-09-11-four-concurrent-supabase-stacks-do-not-f](shared/findings/2026-09-11-four-concurrent-supabase-stacks-do-not-f.md) — four concurrent Supabase stacks do not fit in the Docker VM, and the suite stops being a signal
 - `2026-09-11` `finding` [2026-09-11-git-prompts-on-the-terminal-despite-stdi](shared/findings/2026-09-11-git-prompts-on-the-terminal-despite-stdi.md) — git prompts on the terminal despite stdio ignore, and worktree add -b makes its branch before checking the pa…
 - `2026-09-11` `finding` [2026-09-11-planner-loop-has-no-no-progress-breaker](shared/findings/2026-09-11-planner-loop-has-no-no-progress-breaker.md) — planner loop has no no-progress breaker: one tick repeated the same call ~600x and spent $8.67
 - `2026-09-11` `finding` [2026-09-11-supabase-stop-project-id-matches-the-id](shared/findings/2026-09-11-supabase-stop-project-id-matches-the-id.md) — supabase stop --project-id matches the id as typed; start labels a sanitised, 40-byte one

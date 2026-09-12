@@ -2,6 +2,7 @@ import type { Database, Json } from './database.types.js';
 import { getClient } from './client.js';
 import { captureHasVisitNote } from './visits.js';
 import { captureHasJobCapture, TERMINAL_JOB_STATUSES } from './jobs.js';
+import { captureHasCustomerCapture } from './customers.js';
 // CYCLE, deliberate and safe: observations.ts imports isUniqueViolation from
 // here. Both directions use only hoisted function declarations from inside
 // function bodies — nothing is read at module-evaluation time — so ESM's live
@@ -187,15 +188,21 @@ export async function captureHasLinkedL2(captureId: string): Promise<boolean> {
   //     was asked instead. That ask IS the processing, and it is the only trace
   //     such a capture leaves; without this arm every redelivery would re-run
   //     the extractor and (the once-ever index aside) re-ping the planner.
-  // Started together, settled together: three independent reads on the write
-  // path's hottest branch, and awaiting them in series adds two round trips to
+  //   customer_captures — the door knew WHO but not WHICH job, so it linked the
+  //     level it was sure of. Without this arm a capture the door deliberately
+  //     declined to file on a job would read as an unprocessed orphan and be
+  //     re-extracted on every redelivery — paying the model to re-reach the same
+  //     "I cannot tell" it already recorded.
+  // Started together, settled together: four independent reads on the write
+  // path's hottest branch, and awaiting them in series adds three round trips to
   // every redelivery (the listAssignments/listJobs idiom in the planner).
-  const [note, jobLink, observed] = await Promise.all([
+  const [note, jobLink, observed, customerLink] = await Promise.all([
     captureHasVisitNote(captureId),
     captureHasJobCapture(captureId),
     captureHasObservation(captureId),
+    captureHasCustomerCapture(captureId),
   ]);
-  return note || jobLink || observed;
+  return note || jobLink || observed || customerLink;
 }
 
 // Captures directly stamped with a job_id, newest first. (Tech notes resolved via

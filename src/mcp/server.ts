@@ -202,6 +202,9 @@ const SPINE_VIEW_CATALOG =
   'reported a trip, and v_job_captures on v_job_captures.capture_id = v_captures.id for a call ' +
   'or email that landed on a job with no trip. Filtering v_captures ' +
   'by job_id alone reads as "nobody said anything" on exactly the jobs where somebody did. ' +
+  'And a message can belong to NO job at all: when the record knew who wrote but not which work ' +
+  'they meant, the only link is v_customer_captures, so a question about a PERSON must join that ' +
+  'too or it misses everything they sent that nobody could file; ' +
   '(5) These are the words people actually said, so they may be QUOTED — copied exactly as they ' +
   'came back, never tidied up. (For the assistant that closes gaps: a quote must be findable in ' +
   "either these results or the gap's own evidence lines, and a lookup you list AFTER your " +
@@ -211,6 +214,10 @@ const SPINE_VIEW_CATALOG =
   'v_job_captures(job_id, capture_id, customer_id, created_at) — which CALL OR EMAIL landed on ' +
   'which job when no trip was on the calendar to carry it; the other half of the same bridge, ' +
   'and where a customer chasing an open job shows up; ' +
+  'v_customer_captures(customer_id, capture_id, created_at) — a message placed on the PERSON but ' +
+  'not on any job, because which job it was about could not be told. Read it when a customer ' +
+  'looks quiet on every job and you want what they actually sent; a row here means the record ' +
+  'knows WHO wrote and is not claiming to know WHICH work it concerns; ' +
   'v_nudges(id, kind, status, subject_ref, technician_ref, technician_name, job_id, question, ' +
   'resolution, answered_by_capture_id, not_before, escalate_after, created_at, queued_at, ' +
   'asked_at, resolved_at, serve_count, attempts) — questions the assistant has asked and how ' +

@@ -805,6 +805,27 @@ const ctxStr = (n: Nudge, k: string): string | null => {
   return typeof c[k] === 'string' && (c[k] as string).length > 0 ? (c[k] as string) : null;
 };
 
+// The door's candidate jobs, rendered one per entry: `"Kitchen tap dripping"
+// (in_progress)`. Defensive about the shape because `context` is JSONB with no
+// schema behind it — a row written by an older build, or by anything but the
+// door, must degrade to an empty list rather than throw inside the gap block
+// and take the whole planner pass down with it.
+// NOTHING IS EVER DROPPED, only degraded. Filtering unreadable entries out
+// would shrink the list to empty and send the render down the "no open job for
+// this customer — a job would have to be opened" arm, which is the one sentence
+// that must never appear for a customer who HAS open jobs. An entry we cannot
+// read is still evidence that one exists.
+const ctxList = (n: Nudge, k: string): string[] => {
+  const raw = ((n.context ?? {}) as Record<string, unknown>)[k];
+  if (!Array.isArray(raw)) return [];
+  return raw.map((entry) => {
+    if (!entry || typeof entry !== 'object') return '(unreadable)';
+    const { title, status } = entry as { title?: unknown; status?: unknown };
+    const name = typeof title === 'string' && title.length > 0 ? `"${title}"` : '(untitled)';
+    return typeof status === 'string' ? `${name} (${status})` : name;
+  });
+};
+
 function hoursBetween(fromIso: string, toMs: number): number {
   const ms = toMs - Date.parse(fromIso);
   return Number.isNaN(ms) ? 0 : Math.round((ms / 3_600_000) * 10) / 10;
@@ -1556,11 +1577,21 @@ export function buildGapView(
     }
     // No customer, so nothing to have on file. The line would print "no open job
     // for this customer" about a customer that does not exist.
+    //
+    // THREE STATES, NOT TWO (2026-09-12). An absent job id used to mean one
+    // thing — nobody has open work — and the door now has a second reason to
+    // send one: it knew WHO wrote but could not tell WHICH of several open jobs
+    // they meant, and refuses to guess. Collapsing that into "no open job" would
+    // have the planner open a third job for a customer who already has two.
     if (!unmatched) {
+      const candidates = ctxList(n, 'candidates');
       lines.push(
         jobId
           ? `  on file: open job ${ctxStr(n, 'jobTitle') ?? '(untitled)'} (job id ${jobId})`
-          : '  on file: no open job for this customer — a job would have to be opened',
+          : candidates.length > 0
+            ? `  on file: ${candidates.length} open jobs, and which one this is about could not be ` +
+              `told — ${candidates.join('; ')}`
+            : '  on file: no open job for this customer — a job would have to be opened',
       );
     }
     // READ FROM THE CONTEXT, not off the kind's name. `inbound_unmatched` carries

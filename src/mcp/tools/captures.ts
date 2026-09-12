@@ -23,10 +23,12 @@ import {
   getOpenReviewItem,
   getRawCapture,
   getRawCaptureByExternalId,
+  insertCustomerCapture,
   insertJobCapture,
   insertVisitNote,
   isFactBundle,
   isUniqueViolation,
+  listCustomerCapturesForCapture,
   listJobCapturesForCapture,
   listObservationsByStatus,
   listRawCapturesForCustomer,
@@ -773,10 +775,12 @@ async function handleRetractCapture(toolCtx: ToolContext): Promise<unknown> {
         });
         retractionId = row.id;
         // The retraction FOLLOWS its target onto EVERY link it has — the trip
-        // (rung 9b, visit_notes) and the job (rung 10, job_captures). The target
-        // reached them through those links, so the retraction has to travel the
-        // same roads or it lands on the record with no connection to the thing
-        // it neutralizes — invisible to every reader that walks the link.
+        // (rung 9b, visit_notes), the job (rung 10, job_captures) and the
+        // CUSTOMER (2026-09-12, customer_captures, for a capture the door could
+        // place on a person but not on a job). The target reached them through
+        // those links, so the retraction has to travel the same roads or it
+        // lands on the record with no connection to the thing it neutralizes —
+        // invisible to every reader that walks the link.
         // Advisory: a retraction that is written but not linked is still a valid
         // retraction, so this must never fail the confirm.
         try {
@@ -792,6 +796,14 @@ async function handleRetractCapture(toolCtx: ToolContext): Promise<unknown> {
           for (const link of await listJobCapturesForCapture(target.id)) {
             if (link.tenant_id !== tenantId) continue; // same id-only-FK guard
             await insertJobCapture({ tenantId, jobId: link.job_id, captureId: row.id });
+          }
+          for (const link of await listCustomerCapturesForCapture(target.id)) {
+            if (link.tenant_id !== tenantId) continue; // same id-only-FK guard
+            await insertCustomerCapture({
+              tenantId,
+              customerId: link.customer_id,
+              captureId: row.id,
+            });
           }
           // AND THE ASK DIES WITH IT (rung 10). An inbound observation carries
           // its own verbatim copy of the caller's words in `context.words`, and

@@ -194,6 +194,82 @@ export async function findCustomersByEmail(tenantId: string, email: string): Pro
   return (data ?? []).filter((row) => (row.email ?? '').trim().toLowerCase() === wanted);
 }
 
+// THE CUSTOMER-LEVEL LINK — the job_captures twin, one rung up
+// (20260912100000_customer_captures.sql). It records the one thing the door is
+// always sure of and previously had nowhere to put: WHO a capture belongs to,
+// when it cannot say WHICH job. Idempotent by primary key — a redelivery is a
+// NO-OP, not an error (the insertJobCapture idiom). `ignoreDuplicates` is what
+// makes that `ON CONFLICT DO NOTHING`, and it must never become DO UPDATE: the
+// customer_captures_append_only trigger would raise on it.
+export interface InsertCustomerCaptureInput {
+  tenantId: string;
+  customerId: string;
+  captureId: string;
+}
+
+export async function insertCustomerCapture(input: InsertCustomerCaptureInput): Promise<void> {
+  const { error } = await getClient()
+    .from('customer_captures')
+    .upsert(
+      { tenant_id: input.tenantId, customer_id: input.customerId, capture_id: input.captureId },
+      { onConflict: 'customer_id,capture_id', ignoreDuplicates: true },
+    );
+  if (error) throw new Error(`insertCustomerCapture failed: ${error.message}`);
+}
+
+// True if this capture is linked to any customer — the fourth "already
+// processed" marker captureHasLinkedL2 reads, so a capture held ONLY at customer
+// level is not re-extracted on every redelivery. Fleet-wide by capture id,
+// exactly like captureHasJobCapture: holding the id is proof enough of tenancy.
+export async function captureHasCustomerCapture(captureId: string): Promise<boolean> {
+  const { data, error } = await getClient()
+    .from('customer_captures')
+    .select('capture_id')
+    .eq('capture_id', captureId)
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`captureHasCustomerCapture failed: ${error.message}`);
+  return !!data;
+}
+
+// Which customers a capture is linked to — the listJobCapturesForCapture twin,
+// and for the same reason: a retraction has to follow its target onto every
+// link, or it lands on the record with no connection to what it neutralizes.
+export async function listCustomerCapturesForCapture(
+  captureId: string,
+): Promise<{ customer_id: string; tenant_id: string }[]> {
+  const { data, error } = await getClient()
+    .from('customer_captures')
+    .select('customer_id, tenant_id')
+    .eq('capture_id', captureId);
+  if (error) throw new Error(`listCustomerCapturesForCapture failed: ${error.message}`);
+  return data ?? [];
+}
+
+// The captures linked to this customer. Ids only: getCustomerContext already
+// owns the fetch-and-dedup of capture rows (it does the same for jobs' and
+// visits' source captures), so returning rows here would duplicate that and
+// re-fetch what it may already hold.
+//
+// `tenant_id` RIDES ALONG so the caller can re-check it. This is keyed on the
+// CUSTOMER, but the link's tenant is a separate column on a separate row, and
+// nothing in the schema forces the two to agree — so a link row belonging to
+// another firm would otherwise hand this customer's context another firm's
+// verbatim capture text, and `getRawCapture` is fleet-wide by id. The
+// v_job_captures migration states the rule this follows: every TypeScript
+// reader re-checks. Not reachable today, which is exactly why it is asserted
+// rather than assumed (the retraction walk's own guard, server.ts).
+export async function listLinkedCapturesForCustomer(
+  customerId: string,
+): Promise<{ capture_id: string; tenant_id: string }[]> {
+  const { data, error } = await getClient()
+    .from('customer_captures')
+    .select('capture_id, tenant_id')
+    .eq('customer_id', customerId);
+  if (error) throw new Error(`listLinkedCapturesForCustomer failed: ${error.message}`);
+  return data ?? [];
+}
+
 // Loose search across name/phone/address for the agent's find_customer tool.
 // Commas/parens are stripped because they're PostgREST `.or()` syntax characters.
 export async function searchCustomers(tenantId: string, query: string): Promise<Customer[]> {

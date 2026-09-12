@@ -1,4 +1,4 @@
-import { getCustomer, type Customer } from './customers.js';
+import { getCustomer, listLinkedCapturesForCustomer, type Customer } from './customers.js';
 import { getTenant } from './tenants.js';
 import { listJobsForCustomer, type Job } from './jobs.js';
 import { listVisitsForCustomer, type VisitWithTechnician } from './visits.js';
@@ -82,11 +82,18 @@ export async function getCustomerContext(
   customerId: string,
   opts: { includeRetracted?: boolean } = {},
 ): Promise<CustomerContext> {
-  const [customer, jobs, recentVisits, capturesByCustomer] = await Promise.all([
+  const [customer, jobs, recentVisits, capturesByCustomer, linkedCaptures] = await Promise.all([
     getCustomer(customerId),
     listJobsForCustomer(customerId),
     listVisitsForCustomer(customerId),
     listRawCapturesForCustomer(customerId),
+    // THE THIRD SOURCE (2026-09-12). The two above reach a capture only through
+    // the L1 customer_id STAMP or through a job/visit's source_capture_id — and
+    // an inbound capture has neither when the door knew who wrote but not which
+    // job it was about. Without this the customer_captures link would be
+    // write-only: the message would be filed correctly and still invisible
+    // here, which is worse than the guess it replaced, not better.
+    listLinkedCapturesForCustomer(customerId),
   ]);
 
   // Upcoming schedule, tenant-scoped by the CUSTOMER's own tenant (the caller
@@ -133,9 +140,19 @@ export async function getCustomerContext(
   const byId = new Map<string, RawCapture>();
   for (const capture of capturesByCustomer) byId.set(capture.id, capture);
 
+  // THE LINK'S OWN TENANT IS THE ONLY PROOF THIS CAPTURE IS OURS. `customer_id`
+  // is an id-only foreign key, so a link row carrying another firm's tenant_id
+  // would otherwise pull their verbatim words into this customer's context via
+  // the fleet-wide getRawCapture below. With no customer row there is nothing to
+  // check against, so nothing is taken — the safe direction.
+  const linkedCaptureIds = linkedCaptures
+    .filter((link) => !!customer && link.tenant_id === customer.tenant_id)
+    .map((link) => link.capture_id);
+
   const sourceIds = [
     ...jobs.map((j) => j.source_capture_id),
     ...recentVisits.map((v) => v.source_capture_id),
+    ...linkedCaptureIds,
   ].filter((id): id is string => !!id && !byId.has(id));
 
   const fetched = await Promise.all([...new Set(sourceIds)].map((id) => getRawCapture(id)));

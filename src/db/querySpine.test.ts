@@ -314,7 +314,7 @@ describe('query_spine — bounds', () => {
 });
 
 describe('query_spine — the view surface is closed', () => {
-  test('spine_reader holds SELECT on exactly the seventeen views and nothing else', async () => {
+  test('spine_reader holds SELECT on exactly the eighteen views and nothing else', async () => {
     // A new table must not become readable by default. This is the test that
     // fails when someone adds a grant without thinking.
     // v_money_events added 2026-08-15 (money-ledger plan, manager-only money
@@ -341,6 +341,9 @@ describe('query_spine — the view surface is closed', () => {
     // trip"; this answers "which call or email landed on this job when no trip
     // was on the calendar" — the shape that used to link nothing at all, so a
     // customer chasing an open job read as silence.
+    // v_customer_captures added 2026-09-12: the third link level. A message the
+    // door could place on a PERSON but not on a job appears here and nowhere
+    // else — it is how "we know who wrote, not which work" is readable at all.
     // v_visit_participants added 2026-09-06 (rung 9c): v_schedule stays ONE ROW
     // PER TRIP with the crew as arrays, so `count(*)` keeps counting trips —
     // this view is where a question about PEOPLE ("how many visits did Ben go
@@ -352,6 +355,7 @@ describe('query_spine — the view surface is closed', () => {
     expect(rows.map((r) => r.table_name)).toEqual([
       'v_cancelled_visits',
       'v_captures',
+      'v_customer_captures',
       'v_customers',
       'v_firm_profile',
       'v_job_captures',

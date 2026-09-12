@@ -350,6 +350,70 @@ describe('context spine schema', () => {
     expect(rows[0].def).not.toContain('DELETE');
   });
 
+  // THE THIRD LINK LEVEL (2026-09-12). Same posture as job_captures above and
+  // for the same reason — a new table gets nothing from the one-time deny-all
+  // sweep, and auto_expose_new_tables re-grants SELECT to the publishable keys
+  // unless the migration revokes it. Both halves, or the Data API has a door.
+  test('customer_captures is closed to the Data API', async () => {
+    const { rows } = await client.query<{ relrowsecurity: boolean }>(
+      `select relrowsecurity from pg_class where oid = 'public.customer_captures'::regclass`,
+    );
+    expect(rows[0].relrowsecurity, 'RLS on, no policy → anon/authenticated get zero rows').toBe(true);
+    const { rows: grants } = await client.query<{ grantee: string }>(
+      `select distinct grantee from information_schema.role_table_grants
+        where table_schema = 'public' and table_name = 'customer_captures'
+          and grantee in ('anon','authenticated')`,
+    );
+    expect(grants).toEqual([]);
+  });
+
+  // A LINK, ONCE MADE, IS NEVER RE-POINTED — and DELETE stays open, or the
+  // `on delete cascade` on customer_id would RAISE instead of cascading and a
+  // customer would become undeletable the moment they emailed. That is the
+  // "L1 pins L2" trap, and it is why this asserts the trigger is UPDATE-only.
+  test('customer_captures is append-only on UPDATE, and its customer cascade still works', async () => {
+    const { rows } = await client.query<{ def: string }>(
+      `select pg_get_triggerdef(oid) as def from pg_trigger
+        where tgrelid = 'public.customer_captures'::regclass and not tgisinternal`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].def).toContain('BEFORE UPDATE');
+    expect(rows[0].def).not.toContain('DELETE');
+
+    // AND THE CASCADE IS EXERCISED, not inferred from the trigger definition.
+    // "A customer stays deletable" is the invariant this table was written
+    // around — the L1-pins-L2 trap is what happens when a link makes its parent
+    // undeletable — and a trigger that merely lacks the word DELETE does not
+    // prove it. Rolled back, so nothing persists.
+    await client.query('begin');
+    try {
+      const { rows: made } = await client.query<{ customer_id: string; capture_id: string }>(
+        `with t as (select id from tenants limit 1),
+              c as (insert into customers (tenant_id, name)
+                    select id, '__cascade_probe__' from t returning id, tenant_id),
+              r as (insert into raw_captures (tenant_id, channel, raw_text)
+                    select tenant_id, 'email', '__cascade_probe__' from c returning id)
+         insert into customer_captures (tenant_id, customer_id, capture_id)
+         select c.tenant_id, c.id, r.id from c, r
+         returning customer_id, capture_id`,
+      );
+      const { customer_id, capture_id } = made[0];
+      await client.query('delete from customers where id = $1', [customer_id]);
+      const { rows: links } = await client.query(
+        'select 1 from customer_captures where customer_id = $1',
+        [customer_id],
+      );
+      expect(links, 'the link cascades away with its customer').toEqual([]);
+      const { rows: captures } = await client.query(
+        'select 1 from raw_captures where id = $1',
+        [capture_id],
+      );
+      expect(captures, 'the evidence itself survives — L1 is forever').toHaveLength(1);
+    } finally {
+      await client.query('rollback');
+    }
+  });
+
   // The L1 invariant: raw_captures is append-only. The whole probe runs inside a
   // transaction that is rolled back, so nothing persists (and DELETE is blocked
   // by the same trigger, so a committed probe row could not be cleaned up).

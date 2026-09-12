@@ -740,3 +740,29 @@ export async function recordCallerThroughTheDoor<T>(run: () => Promise<T>): Prom
     throw err;
   }
 }
+
+// GROUNDING_LEAN=1 strips the derived date/schedule crutches added for the
+// GLM-era seat model — get_team_schedule counts/windowCoverByDay/countsNote,
+// get_customer_context upcomingVisits/openWorkNote — while keeping the `now`
+// rider, resolve_date, and every correctness filter (the v_schedule status
+// filter is a bug fix, not a crutch, and is untouched). Date-eval Arm B
+// (2026-08-23): measure a frontier model WITHOUT the scaffolding. Read per
+// CALL, not at module load, so the eval window flips it via Render env with
+// no build, and tests toggle it around individual calls. Never set it in
+// normal operation.
+export const leanGrounding = () =>
+  process.env.GROUNDING_LEAN === '1' || process.env.GROUNDING_BARE === '1';
+
+// Read a non-negative-integer env override, falling back to the safe default
+// for anything that isn't one. Bare `Number(process.env.X ?? d)` returns NaN on
+// a malformed value (e.g. "512px"), and every `count >= NaN` / `len > NaN`
+// comparison is then false — silently DISABLING the web caps that compensate
+// for shipping fetch without a confirm gate. A typo must fall back to the
+// documented limit, never turn the guard off.
+export function safeEnvInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  if (trimmed === '') return fallback; // Number('') is 0 — would block everything
+  const n = Number(trimmed);
+  return Number.isInteger(n) && n >= 0 ? n : fallback;
+}

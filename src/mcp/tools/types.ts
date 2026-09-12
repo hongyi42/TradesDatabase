@@ -12,7 +12,6 @@
 // tier a tool belongs to (`base` / `admin` / `teamLead`); it never decides
 // whether the caller has passed one.
 import type { Technician } from '../../db/technicians.js';
-import type { JsonSchemaObject } from '../../model/forcedTool.js';
 import type { RequestIdentity } from '../identity.js';
 import type { ServerDeps } from '../server.js';
 
@@ -20,7 +19,11 @@ import type { ServerDeps } from '../server.js';
 export interface ToolDef {
   name: string;
   description: string;
-  inputSchema: JsonSchemaObject;
+  // Permissive on purpose: these literals are not `as const`, so `type: 'object'`
+  // widens to `string` exactly as it did when the tables lived in the hub — which
+  // is why TEAM_LEAD_TOOL_SCHEMAS has always cast to JsonSchemaObject. Declaring
+  // the narrow type here would reject every existing definition.
+  inputSchema: Record<string, unknown>;
 }
 
 /**

@@ -26,6 +26,9 @@
 //   node scripts/work.mjs integrate [<id>] [--json]   # before landing: what moved under you, whom you affect
 //   node scripts/work.mjs prune [--apply]            # remove worktrees whose work is provably finished
 //
+// Env: WORK_RECORD_READONLY=1 turns `touch` and `snapshot` into no-ops, for a session that must
+// run a worktree's hooks without OWNING its task — see recordIsReadOnly at the entry point.
+//
 // Failure policy, deliberately two-sided: verbs a PERSON runs report the problem on stderr and
 // exit non-zero, because a silent no-op would read as success. Verbs a HOOK runs (`packet`,
 // `touch` — see HOOK_VERBS) must never cost the user an edit, so every failure is a silent
@@ -1273,17 +1276,49 @@ function regenerable(main, path, p) {
   }
 }
 
+/** The config.toml sections scripts/second-stack.sh turns off — keep the two in step. */
+const STACK_TRIMMED = new Set(['analytics', 'studio', 'realtime']);
+
 /**
  * True when the only change to supabase/config.toml is what scripts/second-stack.sh writes: the
- * project_id and the port lines. Anything else in that file is real work, and prune would throw
- * it away with the `git checkout` it needs before `git worktree remove` will agree.
+ * project_id, the port lines, and `enabled = false` in the sections it trims. Anything else in
+ * that file is real work, and prune would throw it away with the `git checkout` it needs before
+ * `git worktree remove` will agree — so the trim is matched by SECTION, not by the line alone:
+ * `enabled = false` under `[storage]` or `[auth]` is somebody's edit and keeps the worktree.
  */
 function onlyStackRewrite(path) {
   const diff = gitRaw([...READ_ONLY, 'diff', '--unified=0', '--', 'supabase/config.toml'], path, { timeout: PRUNE_GIT_MS }) ?? '';
-  const changed = diff.split('\n').filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l));
-  // `#?`: the script shifts every line mentioning a port, commented-out ones included
-  // (`# smtp_port = 54325`), so those are part of its rewrite too.
-  return changed.length > 0 && changed.every((l) => /^[+-]\s*#?\s*(project_id|[a-z0-9_]*port)\s*=/.test(l));
+  let file;
+  try {
+    file = readFileSync(join(path, 'supabase', 'config.toml'), 'utf8').split('\n');
+  } catch {
+    return false;
+  }
+  // The section a line of the WORKING file sits in: the nearest `[header]` above it.
+  const sectionAt = (n) => {
+    for (let i = n - 1; i >= 0; i -= 1) {
+      const m = /^\[([^\]]+)\]/.exec(file[i] ?? '');
+      if (m) return m[1];
+    }
+    return '';
+  };
+  let line = 0; // 1-based line number in the working file of the next `+` line
+  let changed = 0;
+  for (const l of diff.split('\n')) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)/.exec(l);
+    if (hunk) { line = Number(hunk[1]); continue; }
+    if (!/^[+-]/.test(l) || /^(\+\+\+|---)/.test(l)) continue;
+    changed += 1;
+    const body = l.slice(1);
+    // `#?`: the script shifts every line mentioning a port, commented-out ones included
+    // (`# smtp_port = 54325`), so those are part of its rewrite too.
+    const stack = /^\s*#?\s*(project_id|[a-z0-9_]*port)\s*=/.test(body)
+      || (l[0] === '-' && body.trim() === 'enabled = true')
+      || (l[0] === '+' && body.trim() === 'enabled = false' && STACK_TRIMMED.has(sectionAt(line)));
+    if (!stack) return false;
+    if (l[0] === '+') line += 1;
+  }
+  return changed > 0;
 }
 
 /**
@@ -1665,6 +1700,34 @@ function cmdBoard(main) {
 // a git repository", which for a hook is an ordinary condition rather than a mistake.
 const HOOK_VERBS = new Set(['packet', 'touch', 'snapshot']);
 
+/**
+ * A session that must run a worktree's hooks WITHOUT owning its task sets WORK_RECORD_READONLY.
+ *
+ * The case this exists for: a `claude -p` verification probe, launched inside an implementation
+ * worktree because that is the only way that worktree's hooks fire at all. Measured 2026-09-11 —
+ * the probe edited a file, reverted it, and left behind a `files:` entry on the IMPLEMENTATION
+ * task plus a `.snapshot.json` overwritten with the probe's edit. Both had to be cleaned by hand.
+ *
+ * Why that is not cosmetic: `files:` is an INPUT, not a log. The pre-edit hook's SIBLING line and
+ * every `overlap`/`spawn` check read it, so one probe's footprint becomes a standing false "a
+ * sibling has touched this file" in every other session, and can stop a spawn on a file the task
+ * never changed. So the gate covers exactly the two verbs a hook WRITES with; `packet` only
+ * reads, and a read-only session should still get its context.
+ *
+ * Two things it deliberately does not do. A probe verifying `touch` or `snapshot` THEMSELVES must
+ * not set it — it would be grading a disabled feature. And it gates a separately launched
+ * PROCESS: an Agent-tool subagent shares the parent's environment, so its edits stay recorded,
+ * which is right, because they are the task's edits.
+ *
+ * Forgiving about the value on purpose. The failure mode of this switch is SILENT — a probe that
+ * sets `=true` and is not believed goes right back to corrupting the record with nothing on
+ * screen to say so — so anything set and not plainly negative counts as on.
+ */
+function recordIsReadOnly() {
+  const v = process.env.WORK_RECORD_READONLY;
+  return Boolean(v) && !['0', 'false', 'no'].includes(v.trim().toLowerCase());
+}
+
 /** The hook payload, parsed once by resolveCwd — stdin can only be read to EOF once. */
 let hookPayload = null;
 
@@ -1718,12 +1781,14 @@ switch (verb) {
     } else cmdPacket(main, cwd, args);
     break;
   case 'touch':
-    // Runs after every edit in every session: swallow everything.
-    try { cmdTouch(main, args.flags); } catch { /* never cost the user an edit */ }
+    // Runs after every edit in every session: swallow everything. Silent under the read-only
+    // switch too — PostToolUse output lands in the transcript of a session that did not ask.
+    try { if (!recordIsReadOnly()) cmdTouch(main, args.flags); } catch { /* never cost the user an edit */ }
     break;
   case 'snapshot':
-    // Runs on every Stop and before every compaction: same policy.
-    try { cmdSnapshot(main, cwd); } catch { /* never block a turn from ending */ }
+    // Runs on every Stop and before every compaction: same policy, and the silence matters more
+    // here — output on a Stop hook CONTINUES the turn.
+    try { if (!recordIsReadOnly()) cmdSnapshot(main, cwd); } catch { /* never block a turn from ending */ }
     break;
   case 'handoff': cmdHandoff(main, cwd, args); break;
   case 'promote': cmdPromote(main, cwd, args); break;

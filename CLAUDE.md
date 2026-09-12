@@ -174,8 +174,11 @@ main (never rebase), run the gates, and review only those items.
 
 Each extra worktree gets its **own local Supabase stack** via `scripts/second-stack.sh [N]` (run
 inside the worktree; `spawn` prints a free N): it rewrites that worktree's `supabase/config.toml` — unique `project_id`,
-ports shifted 543xx→54(3+N)xx, leave uncommitted — starts the stack, and generates `.env.test`,
-so `npm test` and `npm run seed:local` target that stack automatically (`testEnvGuard` is
-host-based and port-agnostic, so the pilot-DB protection still holds). Note: a fresh worktree has
+ports shifted 543xx→54(3+N)xx, `analytics`/`studio`/`realtime` off, leave uncommitted — starts the
+stack, and generates `.env.test`, so `npm test` and `npm run seed:local` target that stack
+automatically (`testEnvGuard` is host-based and port-agnostic, so the pilot-DB protection holds). Note: a fresh worktree has
 no `.env`, so key-gated live-model tests are skipped there; copy `.env` in if a phase needs them.
-Scratch-stack cleanup: `npx supabase stop --no-backup` inside the worktree.
+Scratch-stack cleanup: `npx supabase stop --no-backup` inside the worktree. **The trim is what lets
+four worktrees coexist**: the Docker VM is a fixed 7.8 GB, a full stack is 1.5–2.1 GB and a trimmed
+one 0.5 GB; at four full ones the VM swaps and the suite fails somewhere different every run rather
+than failing honestly (docs/engineering-memory.md §5).

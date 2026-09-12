@@ -6698,7 +6698,7 @@ describe('rung 10 — inbound requests reach the planner', () => {
     expect(view.block).not.toContain('the visit was due:');
   });
 
-  test('(12b) the new-job kind says a job would have to be opened, and the ask marker shows', () => {
+  test('(12b) an observation that NAMES a job says so, and the ask marker shows', () => {
     const view = buildGapView(
       observationAsGapRow(
         inboundObs({
@@ -6737,7 +6737,7 @@ describe('rung 10 — inbound requests reach the planner', () => {
   // jobId for a second reason: the customer has several open jobs and nothing
   // named one. Rendering that as "no open job for this customer — a job would
   // have to be opened" would send the planner off to open a THIRD.
-  test('(12b) candidates in context render as "could not be told", never as "no open job"', () => {
+  test('(12c) candidates in context render as "could not be told", never as "no open job"', () => {
     const view = buildGapView(
       observationAsGapRow(
         inboundObs({

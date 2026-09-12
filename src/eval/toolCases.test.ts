@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { BADGE_TOOLS } from '../mcp/tools/surface.expected.js';
 import {
   SPINE_TOOL_NAMES,
   TEAM_LEAD_ONLY_TOOL_NAMES,
@@ -56,8 +57,10 @@ function seatSharedToolNames(): string[] {
 describe('tool cases — the corpus covers the surface', () => {
   it('reads a plausible tool surface out of the server', () => {
     const names = spineToolNames();
-    // 17 technician + 26 admin. If this number moves, the surface moved.
-    expect(names.length).toBe(43); // set_promise out (rung 9a); solver verbs + set_visit_locks out (rung 8); open_job IN (rung 10)
+    // By NAME, not by count (2026-09-12): this was `toBe(43)`, one of five counts
+    // every tool-adding feature had to move — see src/mcp/tools/surface.expected.ts.
+    // BADGE_TOOLS is the expectation, written independently of the tool tables.
+    expect([...names].sort()).toEqual([...BADGE_TOOLS].sort());
     expect(new Set(names).size).toBe(names.length);
   });
 

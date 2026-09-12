@@ -7297,7 +7297,7 @@ describe('rung 10 — inbound requests reach the planner', () => {
     expect(PLANNER_SYSTEM).toContain('`record_caller`');
   });
 
-  test('(15a) the doctrine keeps the id in the NOTE and puts the ask at the front', () => {
+  test('(15a) the doctrine keeps the id in the NOTE and asks for a text a person can read', () => {
     // USER, 2026-09-10, on the real message sent at 19:05:16: the content was
     // right and the shape was not — one long sentence carrying the symptom, its
     // history, the severity and the customer's preference before the question
@@ -7316,11 +7316,22 @@ describe('rung 10 — inbound requests reach the planner', () => {
     // ask's own recipe listed "who got in touch, what they want, and the
     // question", in that order, which outranked the general rule. User ruling:
     // a short WHAT line, no rail. Pinned so neither permissive wording returns.
+    //
+    // 2026-09-12, SECOND LIVE MISS (956142a9, GLM 5.3 on 53cb6aa): "Sam — someone
+    // new just emailed in: ... Want me to set them up?" — one block, with the
+    // question-first rule in the prompt. USER RULING, same day: where the question
+    // sits was never the problem, and pinning it there is "genuinely very
+    // constraining". The problem is that the text is hard for a person to read.
+    // So the rule is READABILITY, modelled on the seat agents' own voice (their
+    // clause 1a: short and plain, short paragraphs with a blank line between),
+    // and the recipe's order is back to what it was.
     expect(PLANNER_SYSTEM).toContain('THE ID GOES IN THE NOTE, NEVER IN THE TEXT');
-    expect(PLANNER_SYSTEM).toContain('LEAD WITH THE ASK, ON ITS OWN LINE');
-    expect(PLANNER_SYSTEM).toContain('the question, then who got in touch');
+    expect(PLANNER_SYSTEM).toContain('MAKE IT EASY TO READ ON A PHONE');
+    expect(PLANNER_SYSTEM).toContain('its own short paragraph with a blank line between them');
+    expect(PLANNER_SYSTEM).not.toContain('LEAD WITH THE ASK');
+    expect(PLANNER_SYSTEM).not.toContain('THE FIRST LINE OF A TEXT IS THE QUESTION');
     expect(PLANNER_SYSTEM).not.toContain('A LINE BREAK IS ALLOWED');
-    expect(PLANNER_SYSTEM).not.toContain('what they want, and the question');
+    expect(PLANNER_SYSTEM).not.toContain('it is still a sentence or two');
   });
 
   test('(15b) the doctrine says look before you close on a message — and nothing more', () => {

@@ -7308,9 +7308,19 @@ describe('rung 10 — inbound requests reach the planner', () => {
     // BOTH halves are doctrine by decision — there is no rail refusing a uuid
     // in a chat message — so these three lines are the whole of what holds the
     // rule, and deleting one silently un-decides it.
+    //
+    // 2026-09-12, THE SHAPE HALF FAILED LIVE. All four chat texts to a manager
+    // after #226 deployed had no line break and the question last; none carried
+    // a uuid. The rail and delivery both keep breaks, so the model never wrote
+    // one. Two causes in the doctrine: a break was only ALLOWED, and the inbound
+    // ask's own recipe listed "who got in touch, what they want, and the
+    // question", in that order, which outranked the general rule. User ruling:
+    // a short WHAT line, no rail. Pinned so neither permissive wording returns.
     expect(PLANNER_SYSTEM).toContain('THE ID GOES IN THE NOTE, NEVER IN THE TEXT');
-    expect(PLANNER_SYSTEM).toContain('LEAD WITH THE ASK');
-    expect(PLANNER_SYSTEM).toContain('A LINE BREAK IS ALLOWED');
+    expect(PLANNER_SYSTEM).toContain('LEAD WITH THE ASK, ON ITS OWN LINE');
+    expect(PLANNER_SYSTEM).toContain('the question, then who got in touch');
+    expect(PLANNER_SYSTEM).not.toContain('A LINE BREAK IS ALLOWED');
+    expect(PLANNER_SYSTEM).not.toContain('what they want, and the question');
   });
 
   test('(15b) the doctrine says look before you close on a message — and nothing more', () => {

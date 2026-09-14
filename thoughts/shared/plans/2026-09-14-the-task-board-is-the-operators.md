@@ -59,6 +59,22 @@ Mine (implementation detail), with reasons:
   (taught form), `node *work.mjs park *`, `node *work.mjs" park *` and `npm run work -- park *`.
   So `handoff`/`spawn`/`done` cannot match. An ask rule "isn't a security boundary" (permissions
   doc, "What a Bash rule doesn't match"): it is the backstop, and A is the gate.
+  *(Amended by the operator at the final review, 2026-09-14: THREE rules, each STARTING with the
+  park — `node "$(git rev-parse --path-format=absolute --git-common-dir)/../scripts/work.mjs" park *`,
+  `node scripts/work.mjs park *`, `npm run work -- park *` — and `/park` now writes its park as that
+  ONE command. The two `node *work.mjs…` rules let the leading `*` span quoted text, so a `node -e`
+  or a handoff that merely MENTIONED a park was prompted, and a review subagent's was denied.
+  Operator: "only fire when something is actually being parked"; a park spelled another way going
+  unprompted is accepted, because `/park` telling the session to ask is enough. MEASURED while
+  applying it (`claude -p`, v2.1.270, default and auto, throwaway repos): the taught two-line form
+  `W=…` + `node "$W" park` was matched by NEITHER `node "$W" park *` nor the rule with the value
+  written in; only the wide `node *work.mjs park *` caught it, and that rule also denied the
+  `node -e` mention. So Phase 2's pass on that form came from the wide rule. With the final three
+  rules: the one-line park (heredoc body included), the path park and the npm park are denied; the
+  mention, the handoff quoting a park, and the board run.)*
+- **Final review, operator 2026-09-14: an in-place fix on a file a SIBLING task is changing stays
+  an in-place fix.** Rejected: "ask when the pre-edit hook names a sibling". It is named in the
+  report, and a collision surfaces at `/integrate`.
 - **A codified test pins every CLI line in the commands to the rules.** The live probe, not the
   test's approximate matcher, is the truth for multi-line heredoc commands.
 - **An answered question is closed with `done` + `promote`, not `archive`.** The answer must reach
@@ -188,7 +204,7 @@ the user" in its stop list.
 ### Automated verification
 - [x] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` pass
 - [x] `grep -rn "Do not fix it here\|mid-task → \`/park\`\|Find something out of scope mid-task\|serialized behind\|Parking is the whole action\|Never fix the thing you are parking" .claude/commands CLAUDE.md docs/onboarding.md` prints nothing
-- [x] `grep -n 'node "\$W" park --title' .claude/commands/park.md` still prints the write line
+- [x] `grep -n 'node "\$W" park --title' .claude/commands/park.md` still prints the write line *(superseded at the final review: the write line is now the one-line `node "$(git rev-parse …)/../scripts/work.mjs" park --title`, pinned by `src/work/park-approval.test.ts`, which refuses `$W` on it)*
 - [x] `npm run decisions:index` run; `thoughts/INDEX.md` still lists the 2026-09-09 plan as live (not superseded); output committed
 
 ### Live verification (agent-executable)
@@ -215,7 +231,8 @@ spelling live.
 
 ### Changes required
 
-**`.claude/settings.json`** — in `"permissions"` (`:2-23`), beside `"allow"`:
+**`.claude/settings.json`** — in `"permissions"` (`:2-23`), beside `"allow"` (as first built; the
+final review replaced this with the three park-first rules in Decisions, re-probed below):
 ```json
 "ask": ["Bash(node \"$W\" park *)", "Bash(node *work.mjs park *)", "Bash(node *work.mjs\" park *)", "Bash(npm run work -- park *)"]
 ```
@@ -258,6 +275,13 @@ spelling live.
 
       If a spelling slips through, fix the rules and the test together and re-run. Delete the
       throwaway repo. — PASSED 2026-09-14: default+Bash and auto both denied exactly (1)-(4) in `permission_denials`, (5) ran, (6) failed with "no active task", no task file; CONTROL with `ask: []` wrote all four probe files and denied nothing.
+      — RE-PROBED 2026-09-14 at the final review, with the three park-first rules and `/park`'s
+      one-line form (default+Bash and auto, same result): denied the one-line park with a heredoc
+      body, `node scripts/work.mjs park` and `npm run work -- park`; ran `node -e` with a park in its
+      string, a one-line `handoff` whose heredoc body is a park command, and `npm run work -- board`.
+      The two-line `W=` + `node "$W" park` ran UNPROMPTED — which is why `/park` no longer teaches
+      it. Isolation repos: `node *work.mjs park *` alone denied the two-line park AND the `node -e`
+      mention; `node *work.mjs" park *` alone denied only the one-line park.
 
 ### Manual verification
 - [x] The operator restarts this session inside the worktree (`cd <worktree> && claude`), so Phase 3 runs with the new rule. — DONE 2026-09-14: Phase 3 runs in a fresh session launched in the worktree, after `f7c7361` put the ask rules in `settings.json`.
@@ -298,4 +322,4 @@ Each is closed or kept, answered questions are saved, and the "fix now" set beco
 
 ### Manual verification
 - [x] The operator saw Claude Code's approve/deny prompt for the fix task's park (live proof of Phase 2). If none was parked: `/park` a throwaway title, see the prompt, answer No. — CONFIRMED by the operator 2026-09-14: "Yes, I approved it" (the `node "$W" park … --body - <<'EOF'` heredoc form).
-- [ ] The operator confirms the phase report's outcome for each item.
+- [x] The operator confirms the phase report's outcome for each item. — CONFIRMED 2026-09-14: "Yes, the outcomes matches."

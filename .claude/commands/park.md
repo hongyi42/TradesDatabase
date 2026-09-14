@@ -27,6 +27,9 @@ every worktree, and the pre-edit hook shows it to whoever next touches its files
    A consequence of your own change is yours to raise. It is never "out of scope": if it needs a
    decision, ask, however big the fix would be.
 
+   In a session that must not edit code (`/research`, `/plan`), the small no-decision cell is not
+   open to you: a plan puts the fix in the plan, and otherwise you ask.
+
    A **lesson** — a vendor's contract, a trap, something true that has nothing to fix — is not
    parked either. Write it in this task's `/handoff` (which makes its promotion call yes) or in
    `docs/engineering-memory.md`.
@@ -50,11 +53,12 @@ every worktree, and the pre-edit hook shows it to whoever next touches its files
 
 4. **Write it**, passing the body on stdin so newlines survive. Claude Code shows the operator an
    approval prompt for this command (a `permissions.ask` rule in `.claude/settings.json`); that is
-   expected, not an error:
+   expected, not an error. Write it exactly in this ONE-command form — not the `W=…` then
+   `node "$W"` form the other commands use: the prompt's rule does not see a park that runs
+   through a variable set in the same command (measured 2026-09-14), so that form parks unprompted.
 
    ```bash
-   W="$(git rev-parse --path-format=absolute --git-common-dir)/../scripts/work.mjs"
-   node "$W" park --title "<title>" --kind <finding|task> --files "<a.ts,b.ts>" --body - <<'EOF'
+   node "$(git rev-parse --path-format=absolute --git-common-dir)/../scripts/work.mjs" park --title "<title>" --kind <finding|task> --files "<a.ts,b.ts>" --body - <<'EOF'
    <body>
    EOF
    ```

@@ -42,6 +42,12 @@ import {
   type ServerDeps,
 } from './server.js';
 import {
+  MANAGER_ONLY_TOOLS,
+  MANAGER_TOOLS_EXPECTED,
+  TEAM_LEAD_ONLY_TOOLS,
+  TECHNICIAN_TOOLS,
+} from './tools/surface.expected.js';
+import {
   createPendingNudge,
   listNudgesByStatus,
   markNudgeAsked,
@@ -169,32 +175,31 @@ async function clientFor(
   return { client: isolated, callWith };
 }
 
+/**
+ * The surface assertion, by NAME rather than by count (2026-09-12).
+ *
+ * `sees` is exact — it is the whole catalog for that tier, so an extra door fails
+ * here the way a missing one does. `blind` names the doors that must NOT be in it:
+ * that half is the tier boundary, and it is what the old `toHaveLength` was really
+ * guarding without ever saying so. See src/mcp/tools/surface.expected.ts for why
+ * the counts went away.
+ */
+function expectSurface(actual: string[], sees: readonly string[], blind: readonly string[]): void {
+  // `blind` FIRST, deliberately: a tier leak is the failure worth naming, and the
+  // exact-set check below would otherwise report it as an unreadable array diff.
+  const leaked = actual.filter((n) => blind.includes(n));
+  expect(leaked, `tools this badge must not see: ${leaked.join(', ')}`).toEqual([]);
+  expect([...actual].sort()).toEqual([...sees].sort());
+}
+
 describe('MCP server', () => {
-  test('lists the technician tool surface (exactly 17 tools)', async () => {
+  test('lists the technician tool surface, by name', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
-    expect(names).toEqual(
-      expect.arrayContaining([
-        'record_field_note',
-        'find_customer',
-        'get_customer_context',
-        'get_job',
-        'resolve_date',
-        'list_recent_captures',
-        'brief_customer',
-        'answer_customer_question',
-        'web_search',
-        'read_webpage',
-        'send_email',
-        'retract_capture',
-        'record_standing_fact',
-        'get_schedule',
-        'inform_team_lead', // the planner's inbox, inbound half (build 5.5)
-        'ask_team_lead', // the Q&A desk (build 5.5 Phase 2)
-        'inform_teammate', // seat-to-seat informs (build 5.5 Phase 3)
-      ]),
-    );
-    expect(names).toHaveLength(17);
+    // Exactly the technician catalog, and none of the doors above it: a manager
+    // tool or a team-lead tool appearing here is a tier leak, named rather than
+    // counted.
+    expectSurface(names, TECHNICIAN_TOOLS, [...MANAGER_ONLY_TOOLS, ...TEAM_LEAD_ONLY_TOOLS]);
   });
 
   test('EVAL_FAKE_NOW anchors resolve_date for ONE tenant only (date-eval any-hour regime)', async () => {
@@ -2189,7 +2194,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       // the seat cannot see is a door it will not use, which is how the
       // 2026-09-08 answer went through record_field_note instead.
       expect(mgrTools).toContain('record_caller');
-      expect(mgrTools).toHaveLength(43);
+      expectSurface(mgrTools, MANAGER_TOOLS_EXPECTED, [...TEAM_LEAD_ONLY_TOOLS, 'get_schedule']);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -2466,10 +2471,10 @@ describe('send_email tool (outbound seam stubbed)', () => {
       stubs,
     );
     try {
-      // Technician surface count including send_email: exactly 17.
+      // The technician surface, send_email included.
       const tools = (await techClient.listTools()).tools.map((t) => t.name);
       expect(tools).toContain('send_email');
-      expect(tools).toHaveLength(17);
+      expectSurface(tools, TECHNICIAN_TOOLS, [...MANAGER_ONLY_TOOLS, ...TEAM_LEAD_ONLY_TOOLS]);
 
       // Staging requires the full payload.
       const missing = await callWith('send_email', { to: 'cust@example.com' });
@@ -2592,7 +2597,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(43); // base minus get_schedule + 26 admin + record_caller
+        expectSurface(mgrTools, MANAGER_TOOLS_EXPECTED, [...TEAM_LEAD_ONLY_TOOLS, 'get_schedule']);
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',

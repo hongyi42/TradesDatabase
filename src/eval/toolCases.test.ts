@@ -1,69 +1,66 @@
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { BADGE_TOOLS } from '../mcp/tools/surface.expected.js';
+import {
+  SPINE_TOOL_NAMES,
+  TEAM_LEAD_ONLY_TOOL_NAMES,
+  TEAM_LEAD_TOOL_SCHEMAS,
+} from '../mcp/server.js';
 import { buildToolCases, confirmIdOf, toolsCovered, type CaseContext, type ToolOutcome } from './toolCases.js';
 
 const cases = buildToolCases();
 
 /**
- * The spine's BADGE-reachable tool names, read out of the server source at test
- * time.
+ * The spine's BADGE-reachable tool names, and the team lead's own, read from the
+ * server's REAL tool tables.
  *
  * Deliberately derived rather than hardcoded: a hardcoded list would have to be
  * edited by the same person adding a tool, which is exactly when it stops being a
- * check. Read this way, adding a 45th tool FAILS this test until the eval covers
- * it — the coverage gate maintains itself.
+ * check. Derived this way, adding a 44th tool FAILS the coverage test below until
+ * the eval covers it — the coverage gate maintains itself.
  *
- * TEAM_LEAD_TOOLS is deliberately OUTSIDE this slice (plan 2026-08-19, Phase 1):
- * those names dispatch only for the `spine:` namespace and are refused to every
- * badge, so a tier-1 agent case for one could not be written. The slice ends at
- * that block by NAME rather than at MANAGER_TOOLS, so the exclusion is stated
- * rather than a side effect of where the declaration happens to sit.
+ * Until 2026-09-12 these were scraped out of src/mcp/server.ts with a regex over
+ * its source text. That broke when the tool registry was split by domain: the
+ * definitions now live in src/mcp/tools/<domain>.ts and the hub only aggregates,
+ * so the regex found an almost empty file. Importing the aggregates is both the
+ * fix and what the scrape was approximating — and it cannot silently under-report
+ * a tool contributed through a spread.
+ *
+ * TEAM_LEAD_TOOLS is deliberately OUTSIDE the badge slice (plan 2026-08-19,
+ * Phase 1): those names dispatch only for the `spine:` namespace and are refused
+ * to every badge, so a tier-1 agent case for one could not be written.
  */
-function namesBetween(startMarker: string, endMarker: string): string[] {
-  const src = readFileSync('src/mcp/server.ts', 'utf8');
-  const start = src.indexOf(startMarker);
-  const end = src.indexOf(endMarker);
-  // Loud, not silent: a renamed marker makes indexOf return -1, and slice(a, -1)
-  // would quietly return a surface one character short of the truth.
-  if (start < 0) throw new Error(`marker not found in server.ts: ${startMarker}`);
-  if (end <= start) throw new Error(`marker not found after ${startMarker}: ${endMarker}`);
-  return [...src.slice(start, end).matchAll(/^ {4}name: '([a-z_]+)',$/gm)].map((m) => m[1]);
-}
-
 function spineToolNames(): string[] {
-  return namesBetween('const TOOLS = [', "// The TEAM LEAD's own surface");
+  return [...SPINE_TOOL_NAMES];
 }
 
 /**
- * The team lead's own tools. Reachable by no badge EXCEPT the names shared with
- * the manager seat (rung 10b.2) — `record_caller` is dispatchable by an active
- * manager, so "no badge can call these" is no longer true of the whole array.
+ * The team lead's own tools, in the order the planner is handed them. Reachable
+ * by no badge EXCEPT the names shared with the manager seat (rung 10b.2) —
+ * `record_caller` is dispatchable by an active manager, so "no badge can call
+ * these" is no longer true of the whole array.
  */
 function teamLeadToolNames(): string[] {
-  return namesBetween('const TEAM_LEAD_TOOLS = [', 'export const TEAM_LEAD_TOOL_SCHEMAS');
+  return TEAM_LEAD_TOOL_SCHEMAS.map((t) => t.name);
 }
 
 /**
- * Team-lead names an active MANAGER badge may also dispatch (rung 10b.2), read
- * OUT OF server.ts the way every other surface here is. An earlier version of
- * this compared a hand-written literal to itself and would have passed while the
- * real set grew — decorative, and exactly the drift this file exists to catch.
+ * Team-lead names an active MANAGER badge may also dispatch (rung 10b.2), derived
+ * the way every other surface here is — the team-lead array minus the names the
+ * gate keeps `spine:`-only. An earlier version compared a hand-written literal to
+ * itself and would have passed while the real set grew: decorative, and exactly
+ * the drift this file exists to catch.
  */
 function seatSharedToolNames(): string[] {
-  const src = readFileSync('src/mcp/server.ts', 'utf8');
-  const marker = 'const SEAT_SHARED_TEAM_LEAD_TOOLS = new Set([';
-  const start = src.indexOf(marker);
-  if (start < 0) throw new Error(`marker not found in server.ts: ${marker}`);
-  const end = src.indexOf('])', start);
-  if (end <= start) throw new Error(`unterminated ${marker}`);
-  return [...src.slice(start + marker.length, end).matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+  return teamLeadToolNames().filter((n) => !TEAM_LEAD_ONLY_TOOL_NAMES.has(n));
 }
 
 describe('tool cases — the corpus covers the surface', () => {
   it('reads a plausible tool surface out of the server', () => {
     const names = spineToolNames();
-    // 17 technician + 26 admin. If this number moves, the surface moved.
-    expect(names.length).toBe(43); // set_promise out (rung 9a); solver verbs + set_visit_locks out (rung 8); open_job IN (rung 10)
+    // By NAME, not by count (2026-09-12): this was `toBe(43)`, one of five counts
+    // every tool-adding feature had to move — see src/mcp/tools/surface.expected.ts.
+    // BADGE_TOOLS is the expectation, written independently of the tool tables.
+    expect([...names].sort()).toEqual([...BADGE_TOOLS].sort());
     expect(new Set(names).size).toBe(names.length);
   });
 

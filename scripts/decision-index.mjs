@@ -13,7 +13,7 @@
 // "which decisions govern the file about to be edited?".
 //
 //   node scripts/decision-index.mjs           # regenerate both artifacts
-//   node scripts/decision-index.mjs --check    # exit 1 if they are stale (for CI / hooks)
+//   node scripts/decision-index.mjs --check    # exit 1 if a regenerate would change them (full checkout only; see CHECK)
 
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -29,14 +29,25 @@ const HOOK_OUT = join(THOUGHTS, 'by-file.json');
 const MAX_PER_FILE = 4;
 
 // `--check` computes everything and compares instead of writing. Until 2026-09-14 it wrote all three
-// artifacts and printed "OK" whatever it found, so as a CI or hook gate it could never fail.
+// artifacts and printed "OK" whatever it found, so it could never fail.
+// WHAT IT CAN AND CANNOT GATE: the `landed` and `drift` marks are computed from THIS checkout's
+// `origin/main` and history, so a shallow clone (no history) or a `git fetch` that moves main
+// reports STALE with no document changed. It answers "would a regenerate here change the tracked
+// files?" in a full, fetched checkout — a pre-commit check, not a CI gate on a shallow clone.
 const CHECK = process.argv.includes('--check');
 const stale = [];
+const written = [];
+// POSIX in messages whatever the platform, like every other path this script emits.
+const shown = (path) => relative(ROOT, path).split(sep).join('/');
 function emit(path, text) {
-  const current = existsSync(path) ? readFileSync(path, 'utf8') : null;
+  // CRLF-tolerant, like the readers below: a checkout with core.autocrlf is not "changed".
+  const current = existsSync(path) ? readFileSync(path, 'utf8').replace(/\r\n/g, '\n') : null;
   if (current === text) return;
-  if (CHECK) stale.push(relative(ROOT, path));
-  else writeFileSync(path, text);
+  if (CHECK) stale.push(shown(path));
+  else {
+    writeFileSync(path, text);
+    written.push(shown(path));
+  }
 }
 
 // A doc is "about" a source file if it names it this many times. One passing mention is
@@ -622,7 +633,7 @@ if (CHECK) {
     console.log(`thoughts index OK — ${docs.length} docs, ${superseded.length} superseded`);
   }
 } else {
-  console.log(`Wrote ${relative(ROOT, MD_OUT)} and ${relative(ROOT, HOOK_OUT)}`);
+  console.log(written.length > 0 ? `Wrote ${written.join(', ')}` : 'Index unchanged — nothing written');
   console.log(`  ${docs.length} documents · ${live.length} live · ${superseded.length} superseded`);
   console.log(`  ${Object.keys(byFile).length} source files have decisions attached`);
   const drifted = docs.filter((d) => d.drift >= DRIFT_LOUD).length;

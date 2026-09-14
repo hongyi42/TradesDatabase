@@ -188,15 +188,38 @@ describe('decision-index.mjs — promoted findings', () => {
     expect(fresh.status, fresh.stderr).toBe(0);
     expect(fresh.stdout).toContain('thoughts index OK');
 
+    // Both generated files made stale, so "writes nothing" is checked on each, not just one.
     const indexPath = join(tmp, 'thoughts', 'INDEX.md');
-    const staleText = `${index}\n<!-- hand edit the generator would undo -->\n`;
-    writeFileSync(indexPath, staleText);
-    const stale = check();
-    expect(stale.status).toBe(1);
-    expect(stale.stderr).toContain('thoughts/INDEX.md');
-    expect(readFileSync(indexPath, 'utf8')).toBe(staleText);
+    const byFilePath = join(tmp, 'thoughts', 'by-file.json');
+    const byFileText = readFileSync(byFilePath, 'utf8');
+    const staleIndex = `${index}\n<!-- hand edit the generator would undo -->\n`;
+    const staleByFile = '{}\n';
+    try {
+      writeFileSync(indexPath, staleIndex);
+      writeFileSync(byFilePath, staleByFile);
+      const stale = check();
+      expect(stale.status).toBe(1);
+      expect(stale.stderr).toContain('thoughts/INDEX.md');
+      expect(stale.stderr).toContain('thoughts/by-file.json');
+      expect(readFileSync(indexPath, 'utf8')).toBe(staleIndex);
+      expect(readFileSync(byFilePath, 'utf8')).toBe(staleByFile);
+    } finally {
+      writeFileSync(indexPath, index);
+      writeFileSync(byFilePath, byFileText);
+    }
+  });
 
-    writeFileSync(indexPath, index);
+  test('a CRLF copy of an unchanged index is not stale', () => {
+    // A checkout with core.autocrlf holds the same text with CRLF line ends.
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+    const indexPath = join(tmp, 'thoughts', 'INDEX.md');
+    try {
+      writeFileSync(indexPath, index.replace(/\n/g, '\r\n'));
+      const r = spawnSync('node', [CLI, '--check'], { cwd: tmp, encoding: 'utf8', env });
+      expect(r.status, r.stderr).toBe(0);
+    } finally {
+      writeFileSync(indexPath, index);
+    }
   });
 
   test('a dropped finding is kept but filed with the reversed decisions', () => {

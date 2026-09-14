@@ -63,7 +63,10 @@ Mine (implementation detail), with reasons:
   test's approximate matcher, is the truth for multi-line heredoc commands.
 - **An answered question is closed with `done` + `promote`, not `archive`.** The answer must reach
   the next editor of those files, and archive is unindexed. `dropped` would index as superseded.
-  A pure drop is `drop` + `archive`.
+  A pure drop is `drop` + `archive`. *(Exception, operator 2026-09-14 in Phase 3: an item whose
+  written premise turned out WRONG is `done` + `archive` once its leftover is folded elsewhere, since
+  promoting it would show the wrong claim before every edit of its files. Used once: the
+  ambiguity-ask finding, whose "cannot be closed" was false and whose leftover went to rung 10d.)*
 - **Cross-task writes use the lock.** An answer that belongs to another active task goes in via
   `node "$W" handoff --cwd <its worktree>`, which runs under `withTaskLock` (`work.mjs:626-644`),
   never a direct edit.
@@ -257,7 +260,7 @@ spelling live.
       throwaway repo. — PASSED 2026-09-14: default+Bash and auto both denied exactly (1)-(4) in `permission_denials`, (5) ran, (6) failed with "no active task", no task file; CONTROL with `ask: []` wrote all four probe files and denied nothing.
 
 ### Manual verification
-- [ ] The operator restarts this session inside the worktree (`cd <worktree> && claude`), so Phase 3 runs with the new rule.
+- [x] The operator restarts this session inside the worktree (`cd <worktree> && claude`), so Phase 3 runs with the new rule. — DONE 2026-09-14: Phase 3 runs in a fresh session launched in the worktree, after `f7c7361` put the ask rules in `settings.json`.
 
 ---
 
@@ -287,12 +290,12 @@ Each is closed or kept, answered questions are saved, and the "fix now" set beco
 - Commit any promoted findings with `npm run decisions:index`.
 
 ### Automated verification
-- [ ] `npm run board` shows only kept items, plus the fix task if one was created
-- [ ] every promoted finding exists under `thoughts/shared/findings/` and appears in `thoughts/INDEX.md` after `npm run decisions:index`
+- [x] `npm run board` shows only kept items, plus the fix task if one was created — DONE 2026-09-14: 4 kept (10d, 10c, status-flip report, timestamp branding) + `20260914-fix-the-small-board-findings-listjobsfor` (open) + the 2 active tasks.
+- [x] every promoted finding exists under `thoughts/shared/findings/` and appears in `thoughts/INDEX.md` after `npm run decisions:index` — DONE: `2026-09-14-the-link-views-expose-basis-reason-but-c` and `2026-09-12-an-ambiguous-non-commitment-reply-is-inv`; both attach in `thoughts/by-file.json` (link-views gained `src/db/jobs.ts` + `src/db/visits.ts` in review, because a directory path attaches to nothing).
 
 ### Live verification (agent-executable)
 - (none; every outcome is the operator's choice)
 
 ### Manual verification
-- [ ] The operator saw Claude Code's approve/deny prompt for the fix task's park (live proof of Phase 2). If none was parked: `/park` a throwaway title, see the prompt, answer No.
+- [x] The operator saw Claude Code's approve/deny prompt for the fix task's park (live proof of Phase 2). If none was parked: `/park` a throwaway title, see the prompt, answer No. — CONFIRMED by the operator 2026-09-14: "Yes, I approved it" (the `node "$W" park … --body - <<'EOF'` heredoc form).
 - [ ] The operator confirms the phase report's outcome for each item.

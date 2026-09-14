@@ -52,9 +52,15 @@ and adds a model call to the inbound path, and both deserve their own review.
   **Where it lives: on the link.** `job_captures` is `(tenant_id, job_id, capture_id, created_at)`
   today, with no room for it, and L1 is append-only so the capture cannot be stamped after insert.
   Add nullable `basis text` and `basis_reason text` (the latter set only for `chooser`), appended to
-  `v_job_captures` so the planner can read them. RECOMMENDED, NOT YET APPROVED — confirm at plan
-  review, since it adds a migration this plan did not previously need.
-- **OPEN — a chooser hit would put back a write a user ruling took out.** `the-door-stops-guessing`
+  `v_job_captures` so the planner can read them. **APPROVED (user, 2026-09-14): "I would record why
+  the model picked the job."**
+  Only the chooser writes a basis; every other path leaves both columns null. Recording a basis for
+  every path (thread, single candidate, technician, decided) would be more complete, but it is not
+  what was approved and it is the natural shape of `20260912-an-l2-status-flip-reports-to-the-planner`
+  rather than of this plan. The link is append-only on UPDATE, so the basis must be written AT insert
+  — there is no later moment to add it.
+- **RESOLVED — a chooser hit does NOT flip the job's status** (user, 2026-09-14: "the chooser should
+  not be allowed to flip because that is the planner's job"). Option (b) below. `the-door-stops-guessing`
   Phase 2 dropped the `statusSignal` write for ambiguous captures: "leave it to the planner" (user,
   2026-09-12). This plan's fall-through sends a chooser-named capture down the normal path, which
   reaches `updateJobStatus` (`recordFieldNote.ts:905` on PR #235's branch) — so, read literally, a model's pick
@@ -65,7 +71,17 @@ and adds a model call to the inbound path, and both deserve their own review.
   merges — not inferred: the ambiguous branch at `recordFieldNote.ts:632-636`
   RETURNS EARLY (`insertCustomerCapture` then `return`) — that early return IS how the ruling removed
   the write — and `statusSignal` is applied only further down, at `:901-906`. Replacing that return
-  with a fall-through lands a chooser-named capture directly on it.
+  with a fall-through lands a chooser-named capture directly on it, so Phase 2 must skip that block
+  explicitly when the job came from the chooser.
+- **A chooser-picked job does NOT silence a promise either** (inferred 2026-09-14 from the user's
+  reason for the ruling above — confirm or overrule). Falling through reaches `resolveVisitForNote`,
+  which attaches the capture to the picked job's one live visit, and then "a committed capture that
+  landed on a LIVE visit asks nothing" (`recordFieldNote.ts:792-797`) suppresses the ask. That is the
+  specimen's own failure — and `the-door-stops-guessing` closed it for exactly this case by always
+  asking when there are several candidates. Without this carve-out, "we'll come Wednesday about the
+  kitchen tap" to a customer whose tap job has a Tuesday trip would be swallowed again. Deciding that
+  the planner need not hear about a promise is the planner's call, not a model's pick. So on the
+  chooser path a commitment asks even when a live visit attached, and the ask carries the basis.
 - **OPEN — the latency budget is not yet known.** `src/calls/observationPing.ts:18-21` records that
   an in-request *agent pass* was rejected because a connector retries on every timeout. One bounded
   forced-tool call is a different thing, but the number is unmeasured; Phase 1 below measures it
@@ -95,8 +111,10 @@ and a recorded p50/p95.
 
 **Phase 2 — wire it into the ambiguous branch.** The door calls the chooser exactly where it would
 otherwise give up. A named job is filed on that job, and the link records that a model chose it and
-why; "none" behaves exactly as before. You would notice it working by a message clearly about the
-kitchen tap landing on the kitchen tap job, while the bathroom-faucet promise still refuses and asks.
+why; "none" behaves exactly as before. A model's pick is trusted to FILE a message and nothing more:
+it never moves the job's status, and it never silences a promise — both stay the planner's. You
+would notice it working by a message clearly about the kitchen tap landing on the kitchen tap job,
+while the bathroom-faucet promise still refuses and asks.
 
 ## Secrets & env preflight
 
@@ -158,7 +176,7 @@ Calls the chooser where the door would otherwise give up, and links a named job.
 
 ### Changes required
 
-**`src/writePath/recordFieldNote.ts:168`** — add `chooseJob?: JobChooser` to the `deps` parameter.
+**`src/writePath/recordFieldNote.ts:169`** — add `chooseJob?: JobChooser` to the `deps` parameter.
 
 **`src/writePath/recordFieldNote.ts`** — in the `!mayGuess && candidates.length > 1` branch created
 by the first plan, before the customer-link fallback:
@@ -168,14 +186,28 @@ by the first plan, before the customer-link fallback:
   but write the link with `basis = 'chooser'` and `basis_reason` = the returned `reason`. It must
   never be indistinguishable in the record from a thread-named job (see Decisions: the basis is
   never laundered)
-- whether that fall-through may also apply `statusSignal` is OPEN (see Decisions) — resolve it at
-  plan review before implementing this branch
+- hold a `jobFromChooser` flag (`{ reason: string } | null`) and use it at TWO later sites:
+  - the ask at `:792-797` — when set, a commitment asks even if `visit` is non-null (Decisions:
+    a model's pick does not silence a promise)
+  - the `statusSignal` block at `:901-906` — when set, skip it entirely (Decisions: no flip)
+- `observeInbound`'s context gains `jobBasis: 'chooser'` and `jobBasisReason` when set, so the ask is
+  not laundered either; `src/teamLead/planner.ts`'s "on file: open job …" line appends
+  `— chosen by a model from N candidates: <reason>` when `jobBasis` is present
 - on null, or on a throw, keep the first plan's behaviour unchanged
 - wrap in try/catch and log; never rethrow
 
-**`supabase/migrations/<timestamp>_job_captures_basis.sql`** (new; pending the Decisions approval) —
-add nullable `basis text` and `basis_reason text` to `job_captures`, and append both to
-`v_job_captures` (a view may only APPEND columns under `CREATE OR REPLACE`, so no drop is needed).
+**`supabase/migrations/<timestamp>_job_captures_basis.sql`** (new) — add nullable `basis text` and
+`basis_reason text` to `job_captures`, and append both to `v_job_captures` (a view may only APPEND
+columns under `CREATE OR REPLACE`, so no drop is needed). Constrain the vocabulary so it tracks what
+actually gates: `check (basis is null or basis = 'chooser')` and
+`check (basis_reason is null or basis is not null)` — a new basis value is then a deliberate
+migration, not a typo that silently reads as "no basis".
+
+**`src/db/jobs.ts:468`** — `insertJobCapture` takes optional `basis` / `basisReason` and writes them at
+insert. Its `ignoreDuplicates` upsert means a SECOND link write can never add a basis to an existing
+row — correct, because the append-only trigger forbids it anyway, and the redelivery short-circuit
+(`captureHasLinkedL2`) stops the door before a second write. The retraction walk copies links without
+a basis, which is right: a retraction row is not a model's pick.
 Existing rows stay null. Regenerate types with `npm run gen:types:local` — never the default, which
 points at the pilot. Deploys do not migrate: hand-apply to the pilot before this code ships.
 
@@ -191,6 +223,14 @@ validated, null-on-failure).
       and that row reads `basis = 'chooser'` with the stub's reason
 - [ ] a link written by any path other than the chooser does NOT read `basis = 'chooser'` — the two
       stay distinguishable in the record, which is the whole point of the amendment
+- [ ] **no flip**: stub names the in_progress candidate, extractor says `statusSignal: 'completed'` →
+      the job is STILL `in_progress`
+- [ ] **no silenced promise**: stub names a candidate that has a confirmed visit, `visitCommitted:
+      true` → an `inbound_commitment` IS raised, its context carries `jobBasis: 'chooser'` and the
+      reason. Mutation-check it against the plain `!visit` rule — this is the specimen's failure
+      trying to come back through a new door
+- [ ] the migration's check constraints refuse `basis = 'guess'` and a reason with no basis
+- [ ] the planner renders "chosen by a model from N candidates" for a chooser-based ask
 - [ ] stub returns null → first plan's behaviour exactly (customer link; ask iff committed)
 - [ ] stub returns an unlisted id → treated as null, nothing written
 - [ ] stub throws → customer link, no 503, error logged

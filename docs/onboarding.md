@@ -561,7 +561,8 @@ implementing. Both artifacts get committed alongside the code they describe — 
 decision history of this project, with citations, and it is genuinely the best place to find out
 *why* something is the way it is.
 
-Work in parallel? **Park, spawn, integrate.** Something out of scope mid-task → `/park` it.
+Work in parallel? **Park, spawn, integrate.** Big work needing the operator's decision, approved
+by them → `/park` it (small fixes are made in place; decisions are asked).
 Something parked that can start now → `/spawn <id>`: it checks the item against every active task
 function by function, stops and shows how big any overlap is so you can decide, and otherwise cuts
 it its own worktree and prints the `scripts/second-stack.sh` line for its own Supabase stack. Before a task

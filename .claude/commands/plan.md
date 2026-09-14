@@ -27,7 +27,7 @@ This should be either:
 
 6. **Write the plan** — use the structure below. Be specific: include exact file paths, function names, type signatures, and code snippets where it removes ambiguity. The implementer will work from this document alone. When specifying each phase's verification, triage every check per the `verifying-behavior` skill — codifiable → a codified test (e.g. Vitest), agent-executable live E2E → declare its MCP/credential prerequisites, genuinely human → manual — so the cheapest sufficient check is chosen and any missing capability surfaces here, at review time. Likewise, enumerate every secret/env var each phase needs in the Secrets & env preflight section — a missing key must surface at plan review, not mid-implementation.
 
-7. **Adversarial plan review** — after writing the plan, spawn a subagent (Task tool, fresh context) to review it. Give the subagent only the plan path and the research doc path, and this instruction: *"Review this implementation plan as a staff engineer. Read the plan, the research doc, and every file the plan says to modify. Report only gaps that would cause the implementation to fail or break existing behavior: files that don't exist, wrong function signatures, missed callers, missing edge cases, phases that leave the codebase broken, and verification steps that wouldn't actually catch failures. Do not report style preferences."* Fix valid findings in the plan, then present it to the user. Mention in your summary what the reviewer caught.
+7. **Adversarial plan review** — after writing the plan, spawn a subagent (Task tool, fresh context) to review it. Give the subagent only the plan path and the research doc path, and this instruction: *"Review this implementation plan as a staff engineer. Read the plan, the research doc, and every file the plan says to modify. Report only gaps that would cause the implementation to fail or break existing behavior: files that don't exist, wrong function signatures, missed callers, missing edge cases, phases that leave the codebase broken, and verification steps that wouldn't actually catch failures. Do not report style preferences."* Fix valid findings in the plan — a finding this plan causes belongs in the plan, never on the board unless the user asks; if fixing it needs the user's decision, present it as a decision brief and wait, before presenting the plan (never leave it `OPEN` in the plan) — then present it to the user. Mention in your summary what the reviewer caught.
 
 ## Output
 
@@ -57,7 +57,7 @@ What this plan accomplishes and why.
 
 ## Decisions
 Every decision this plan rests on — one bullet each, in plain language:
-- **<decision>** — the options considered, which was chosen (or `OPEN — needs user input`), and why.
+- **<decision>** — the options considered, which was chosen (or `OPEN — needs user input`, only when the user chose to leave it open), and why.
 User-made choices from the decision brief go here too, so the record survives the chat.
 
 ## Plain-language walkthrough
@@ -128,6 +128,7 @@ After writing the plan, print its path, then present in chat: the Decisions sect
 - Do not implement anything.
 - If the right approach is unclear, document the uncertainty explicitly and propose two options — do not guess.
 - Every file path and line number must be exact (verify by reading the file if needed).
+- Never `/park` a consequence of this plan unless the user asks you to. Something unrelated you notice while planning is asked about (fold it into this plan, park it, or leave it), since a planning session cannot fix it in place; a lesson (a trap or a contract, nothing to fix) goes in `docs/engineering-memory.md` instead.
 - Keep the plan under 300 lines including the Decisions and Plain-language walkthrough sections. If it exceeds that, the scope is too large — split it or flag it.
 
 ## Final step — refresh the decision index

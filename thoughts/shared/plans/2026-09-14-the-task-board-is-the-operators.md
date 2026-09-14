@@ -22,7 +22,8 @@ only its `:258-259` ("park it and continue") is overturned; its record/board/hoo
 Operator, 2026-09-14 (research Decision Points and the plan brief; also in the task file):
 - **Big but needing no operator decision does not exist.** Big → ask → park.
 - **A small fix found mid-implement** gets its own commit on the same branch and is named in the
-  phase report. No separate PR, no board entry. `implement.md:24` and `:41` are reworded so it is
+  phase report (review added: unless it shares a file with uncommitted phase edits — hunks of one
+  file cannot be split without interactive staging). No separate PR, no board entry. `implement.md:24` and `:41` are reworded so it is
   not a violation.
 - **Plan review:** what the plan causes goes into the plan. Product questions are asked before the
   plan is presented.
@@ -42,17 +43,18 @@ Operator, 2026-09-14 (research Decision Points and the plan brief; also in the t
   still shows.
 - **Docs contradict `CLAUDE.md:36-41`.** The hooks doc now says settings-file hook edits "are
   normally picked up automatically by the file watcher" (https://code.claude.com/docs/en/hooks,
-  "Hook locations"). Decision: record the divergence in engineering memory and keep the restart
+  "Disable or remove hooks"). Decision: record the divergence in engineering memory and keep the restart
   advice.
 - **`supersedes: nothing` plus an amendment note.** `decision-index.mjs:434-441` marks a named
   document wholly superseded, and the hook would label the still-valid work-record plan "do not
   build on this".
 
 Mine (implementation detail), with reasons:
-- **C is a permission rule, not a PreToolUse hook.** Hooks doc, "Decision control": a hook's
-  `ask` is `deny` in `auto` and runs unprompted in `bypassPermissions`. Permission-modes doc,
-  "Actions no mode auto-approves": "Tools matched by an explicit ask rule" prompt in every mode.
-  No `defaultMode` is set, and Pro/Max defaults to auto.
+- **C is a permission rule, not a PreToolUse hook.** Permission-modes doc, "Actions no mode
+  auto-approves": "Tools matched by an explicit ask rule" prompt in every mode, `bypassPermissions`
+  included. A hook's `ask` prompts in auto (hooks doc, "PreToolUse decision control") but is not on
+  that list, and it would run a process on every Bash call. *(Corrected in implementation: this
+  bullet first quoted a WebFetch summary saying a hook's ask is `deny` in auto — not in the raw doc.)*
 - **Four rule spellings, each with `park` right after the script reference:** `node "$W" park *`
   (taught form), `node *work.mjs park *`, `node *work.mjs" park *` and `npm run work -- park *`.
   So `handoff`/`spawn`/`done` cannot match. An ask rule "isn't a security boundary" (permissions
@@ -131,12 +133,10 @@ notes the amendment in the old plan. No code changes.
   you are parking"). Keep `:57-58`.
 
 **`.claude/commands/implement.md`**
-- `:20` becomes: "**Something the plan did not cover.** A small fix needing no decision: fix it on
-  this branch as its own commit, before touching that file again for the phase (if the file already
-  has uncommitted phase edits, it rides in the phase commit), and name it in the phase report.
-  Anything that needs the user's decision, including a side effect of this change: ask
-  (`AskUserQuestion`) and act on the answer. Park only work the user approves onto the board
-  (`/park`). A consequence of this change is never out of scope."
+- `:20` becomes (as landed, after review): a small no-decision fix is made on this branch and
+  named in the report, committed apart from the phase's changes (gates once, over both) unless it
+  shares a file with uncommitted phase edits; anything too big to fix in place, or needing the
+  user's decision, incl. a side effect of this change, is asked; park only what the user approves.
 - `:24`: the reviewer also gets `git show <sha>` for each in-place fix commit, and "nothing outside
   the phase's scope changed" gains "except those fixes, which are reviewed for correctness only".
   After "Fix the findings", add: "a finding that needs the user's decision is asked, not parked;
@@ -183,21 +183,21 @@ needs the operator's yes; small fixes are made in place."
 the user" in its stop list.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` pass
-- [ ] `grep -rn "Do not fix it here\|mid-task → \`/park\`\|Find something out of scope mid-task\|serialized behind\|Parking is the whole action\|Never fix the thing you are parking" .claude/commands CLAUDE.md docs/onboarding.md` prints nothing
-- [ ] `grep -n 'node "\$W" park --title' .claude/commands/park.md` still prints the write line
-- [ ] `npm run decisions:index` run; `thoughts/INDEX.md` still lists the 2026-09-09 plan as live (not superseded); output committed
+- [x] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` pass
+- [x] `grep -rn "Do not fix it here\|mid-task → \`/park\`\|Find something out of scope mid-task\|serialized behind\|Parking is the whole action\|Never fix the thing you are parking" .claude/commands CLAUDE.md docs/onboarding.md` prints nothing
+- [x] `grep -n 'node "\$W" park --title' .claude/commands/park.md` still prints the write line
+- [x] `npm run decisions:index` run; `thoughts/INDEX.md` still lists the 2026-09-09 plan as live (not superseded); output committed
 
 ### Live verification (agent-executable)
 - Prerequisites: none (Agent tool only).
-- [ ] A fresh-context subagent gets only the rewritten command files and five scenarios, graded
+- [x] A fresh-context subagent gets only the rewritten command files and five scenarios, graded
       against these answers:
-      (a) mid-implement, a one-line sort tiebreak in a file this phase touches → fix in place, own commit;
+      (a) mid-implement, a one-line sort tiebreak in a file this phase has uncommitted edits in → fix in place, riding with those edits, named in the report;
       (b) plan review finds that the column this plan adds leaks retracted text → into the plan, asked before presenting;
       (c) `/code-review` finds that the question this branch builds cannot be acted on → ask;
       (d) mid-implement, an RPI-sized gap unrelated to this change → ask; park only on a yes;
       (e) the user says "park this: <an idea not on the board>" → park without asking first.
-      Record its answers with the line each cites.
+      Record its answers with the line each cites. — PASSED 2026-09-14, twice (5/5, then 6/6 on the final text with an added "user parks four small fixes" case); wording gaps it found were fixed.
 
 ### Manual verification
 - (none)

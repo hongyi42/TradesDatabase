@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 242 documents · 231 live · 11 superseded.
+Regenerate with `npm run decisions:index`. 243 documents · 232 live · 11 superseded.
 
 ## Superseded — do not build on these
 
@@ -51,6 +51,7 @@ Regenerate with `npm run decisions:index`. 242 documents · 231 live · 11 super
 ## Live
 
 - `2026-09-14` `plan` [2026-09-11-the-model-names-the-job](shared/plans/2026-09-11-the-model-names-the-job.md) · _draft_ — The extractor names which of a customer's jobs a message concerns, or none — and the door files on that answe…
+- `2026-09-14` `plan` [2026-09-14-a-reply-keeps-the-models-doubt](shared/plans/2026-09-14-a-reply-keeps-the-models-doubt.md) · _draft_ — A reply on a thread whose job a model picked inherits that doubt — it cannot flip status or silence a promise…
 - `2026-09-11` `finding` [2026-09-11-a-session-that-enters-a-worktree-writes](shared/findings/2026-09-11-a-session-that-enters-a-worktree-writes.md) — a session that enters a worktree writes its transcript under the MAIN checkout's project folder
 - `2026-09-11` `finding` [2026-09-11-four-concurrent-supabase-stacks-do-not-f](shared/findings/2026-09-11-four-concurrent-supabase-stacks-do-not-f.md) — four concurrent Supabase stacks do not fit in the Docker VM, and the suite stops being a signal
 - `2026-09-11` `finding` [2026-09-11-git-prompts-on-the-terminal-despite-stdi](shared/findings/2026-09-11-git-prompts-on-the-terminal-despite-stdi.md) — git prompts on the terminal despite stdio ignore, and worktree add -b makes its branch before checking the pa…

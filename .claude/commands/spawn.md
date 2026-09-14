@@ -36,8 +36,10 @@ one, and the operator decides (user, 2026-09-10).
    proceed. Only on an explicit yes, re-run with `--proceed`.
 
    If it stopped because the task **names no files**, there is no report: nothing could be checked.
-   Say exactly that, and ask whether to proceed unchecked — or suggest adding the files it will
-   touch to the task's `files:` and re-running, which makes the check possible.
+   Say exactly that, and ask whether to proceed unchecked — or suggest naming the files it will
+   touch and re-running, which makes the check possible. No verb edits `files:`; on the operator's
+   yes, edit that one line of `<main checkout>/.claude/work/tasks/<id>.md` directly — safe while the
+   item is `open`, because only a claim gives it a writer, and `spawn` claims only after this check.
 
    Two more stops that are not overlaps, and must be said as what they are:
    - **`?  not checked`** — git could not read part of an active task's checkout (a timeout, a

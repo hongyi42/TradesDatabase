@@ -19,6 +19,12 @@
       "Bash(npm test*)",
       "Bash(npx tsc*)",
       "Bash(curl -s http://localhost*)"
+    ],
+    "ask": [
+      "Bash(node \"$W\" park *)",
+      "Bash(node *work.mjs park *)",
+      "Bash(node *work.mjs\" park *)",
+      "Bash(npm run work -- park *)"
     ]
   },
   "hooks": {

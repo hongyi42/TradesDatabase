@@ -228,12 +228,12 @@ spelling live.
   and `npm run board` / `npm run work -- overlap a b` do not.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` pass
-- [ ] Temporarily edit `park.md`'s write line to `node "$W"  park` (two spaces). `npx vitest run src/work/park-approval.test.ts` must FAIL. Revert, and it passes.
+- [x] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` pass
+- [x] Temporarily edit `park.md`'s write line to `node "$W"  park` (two spaces). `npx vitest run src/work/park-approval.test.ts` must FAIL. Revert, and it passes. — DONE: 1 failed | 4 passed with two spaces; 5 passed reverted.
 
 ### Live verification (agent-executable)
 - Prerequisites: `claude` CLI logged in; the scratchpad directory.
-- [ ] Build a throwaway `git init` repo in the scratchpad containing:
+- [x] Build a throwaway `git init` repo in the scratchpad containing:
       - `scripts/work.mjs` (copied);
       - `package.json` `{"scripts":{"work":"node scripts/work.mjs"}}`;
       - `.claude/settings.json` = `{"permissions":{"ask":[<the four rules read from the real file>]}}`.
@@ -254,7 +254,7 @@ spelling live.
       - (6) failed with work.mjs's own "no active task", not a denial.
 
       If a spelling slips through, fix the rules and the test together and re-run. Delete the
-      throwaway repo.
+      throwaway repo. — PASSED 2026-09-14: default+Bash and auto both denied exactly (1)-(4) in `permission_denials`, (5) ran, (6) failed with "no active task", no task file; CONTROL with `ask: []` wrote all four probe files and denied nothing.
 
 ### Manual verification
 - [ ] The operator restarts this session inside the worktree (`cd <worktree> && claude`), so Phase 3 runs with the new rule.

@@ -167,7 +167,7 @@ function ensureRecord(main) {
 
 /**
  * Tolerant `key: value` frontmatter, deliberately the same shape the decision index parses
- * (scripts/decision-index.mjs:54-75) so the two records read alike. Split on the FIRST colon so
+ * (`parseFrontmatter` in scripts/decision-index.mjs) so the two records read alike. Split on the FIRST colon so
  * titles and prose may contain colons freely.
  */
 function parseFrontmatter(text) {

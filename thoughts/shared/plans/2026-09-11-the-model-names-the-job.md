@@ -142,9 +142,14 @@ which is where the pick lives.
 - **All phases:** `OPENROUTER_API_KEY` (or `INFERENCE_API_KEY`) in `.env` — *already required*
   (`src/model/forcedTool.ts:115-117`); present in this worktree. The eval pins `z-ai/glm-5.3`
   EXPLICITLY rather than inheriting the default, so a later change to `DEFAULT_OPENAI_MODEL` cannot
-  move the baseline silently. That IS production: every model call the pilot billed in the 30 days to
-  2026-09-14 is `openrouter` / `glm-5.3-*` (1,516 calls; the anthropic and fireworks SKUs stop at
-  2026-08-29 and 2026-08-26), and it matches `forcedTool.ts:91`.
+  move the baseline silently. That IS production, for a structural reason and not just a count:
+  `toolLoop.ts:483` (the planner) and `forcedTool.ts:117` (the extractor) both call
+  `resolveOpenAiEndpoint()`, which reads the ONE variable `INFERENCE_MODEL` — there is no separate
+  planner model, so the two cannot diverge. Confirmed against the pilot's own billing with the planner
+  excluded: `cost_events.metadata->>'lane'` is `'planner'`/`'desk'` for those callers and NULL for the
+  extractor's, and the no-lane bucket is 230 `glm-5.3` calls whose latest (2026-09-14 21:03) is two
+  hours after the planner's. Render's API exposes no env read — `get_service` returns none and the only
+  env tool is a write — which is why this was answered from what ran rather than from config.
 
 ---
 

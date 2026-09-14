@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 243 documents · 232 live · 11 superseded.
+Regenerate with `npm run decisions:index`. 245 documents · 234 live · 11 superseded.
 
 ## Superseded — do not build on these
 
@@ -50,6 +50,7 @@ Regenerate with `npm run decisions:index`. 243 documents · 232 live · 11 super
 
 ## Live
 
+- `2026-09-14` `finding` [2026-09-14-calls-worker-auto-deploys-on-every-merge](shared/findings/2026-09-14-calls-worker-auto-deploys-on-every-merge.md) — Calls-worker auto-deploys on every merge to main, so code can reach it before its migration
 - `2026-09-11` `finding` [2026-09-11-a-session-that-enters-a-worktree-writes](shared/findings/2026-09-11-a-session-that-enters-a-worktree-writes.md) — a session that enters a worktree writes its transcript under the MAIN checkout's project folder
 - `2026-09-11` `finding` [2026-09-11-four-concurrent-supabase-stacks-do-not-f](shared/findings/2026-09-11-four-concurrent-supabase-stacks-do-not-f.md) — four concurrent Supabase stacks do not fit in the Docker VM, and the suite stops being a signal
 - `2026-09-11` `finding` [2026-09-11-git-prompts-on-the-terminal-despite-stdi](shared/findings/2026-09-11-git-prompts-on-the-terminal-despite-stdi.md) — git prompts on the terminal despite stdio ignore, and worktree add -b makes its branch before checking the pa…
@@ -62,6 +63,7 @@ Regenerate with `npm run decisions:index`. 243 documents · 232 live · 11 super
 - `2026-09-11` `research` [2026-09-11-re-inventing-the-write-path-door](shared/research/2026-09-11-re-inventing-the-write-path-door.md) `landed` — The inbound/outbound door (recordFieldNote + identityMatch + extract) as it exists today, and what each candi…
 - `2026-09-10` `finding` [2026-09-10-a-running-session-does-not-pick-up-newly](shared/findings/2026-09-10-a-running-session-does-not-pick-up-newly.md) — a running session does not pick up newly added hook EVENTS from settings
 - `2026-09-10` `finding` [2026-09-10-build-the-shared-work-record-plan-2026-0](shared/findings/2026-09-10-build-the-shared-work-record-plan-2026-0.md) — build the shared work record (plan 2026-09-09)
+- `2026-09-10` `finding` [2026-09-10-planner-s-manager-facing-copy-needs-a-fo](shared/findings/2026-09-10-planner-s-manager-facing-copy-needs-a-fo.md) `drift 15` — planner's manager-facing copy needs a formatting pass
 - `2026-09-10` `finding` [2026-09-10-settings-json-says-hooks-on-one-event-sh](shared/findings/2026-09-10-settings-json-says-hooks-on-one-event-sh.md) — hooks on one event do NOT share stdin (measured); touch cannot see edits made through Bash
 - `2026-09-10` `plan` [2026-09-10-the-work-record-plan-2-graph-spawn-integrate-prune](shared/plans/2026-09-10-the-work-record-plan-2-graph-spawn-integrate-prune.md) `describes 4 deleted files` — The shared work record, plan 2 — a function-level code graph read by the TypeScript compiler (task footprints…
 - `2026-09-09` `plan` [2026-09-09-one-bot-per-person](shared/plans/2026-09-09-one-bot-per-person.md) · _phase 1 implemented (uncommitted) — ver…_ — Merge the global board bot into each person's own assistant bot — one bot per person, opened as a Main Mini A…

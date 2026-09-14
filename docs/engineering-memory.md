@@ -270,29 +270,29 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L6440 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L6463 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L6510 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L6547 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L6579 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L6584 · Every member row stores the FULL grouped message in question.
-- L6588 · The attribution stamp is an audit link, not a gate.
-- L6592 · The derived stamp requires a capture a badge-holder SPOKE
-- L6596 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L6602 · The follow-up loop has two halves and both had to be written down.
-- L6608 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L6682 · Batching works.
-- L6684 · The follow-up leg works, including the half that fails silently.
-- L6688 · Both attribution paths fired, each in its designed case.
-- L6692 · Escalation fired correctly
-- L6693 · The planner's group-aware pacing is the result worth keeping.
+- L6451 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L6474 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L6521 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L6558 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L6590 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L6595 · Every member row stores the FULL grouped message in question.
+- L6599 · The attribution stamp is an audit link, not a gate.
+- L6603 · The derived stamp requires a capture a badge-holder SPOKE
+- L6607 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L6613 · The follow-up loop has two halves and both had to be written down.
+- L6619 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L6693 · Batching works.
+- L6695 · The follow-up leg works, including the half that fails silently.
+- L6699 · Both attribution paths fired, each in its designed case.
+- L6703 · Escalation fired correctly
+- L6704 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L7045 · Evals:
-- L7052 · Runbooks:
-- L7057 · Decision history with citations:
-- L7061 · This file
+- L7056 · Evals:
+- L7063 · Runbooks:
+- L7068 · Decision history with citations:
+- L7072 · This file
 
 <!-- INDEX:END -->
 
@@ -6263,6 +6263,17 @@ applied 1 · recorded 1`, 2 turns / 3 tool calls / 9.7s. No deploy was involved;
 **Auto-deploy is now OFF on both services** (`autoDeploy: no`, `autoDeployTrigger: off` on
 `srv-d8uqmdegvqtc73bfn83g` and `crn-d93iq7a8qa3s73ap6260`). **Keep it off.** A merge to `main` must
 never be able to ship code to an unmigrated database, and no PR is "too small" to do it.
+
+**BUT NOT ON CALLS-WORKER — it bit on 2026-09-12.** `Calls-worker` (`srv-d9qelh710e5c739hb8vg`) and
+`Calls-purge` still auto-deploy on commit, so for those two **the merge IS the deploy**. #236 merged
+at 20:38:53Z and Calls-worker went live on `53cb6aa` at 20:39Z carrying #235, whose
+`customer_captures` migration was not on the pilot; a redelivered call and a known caller with an
+ambiguous job both threw in `recordFieldNote` until it was hand-applied at 20:51Z. And Calls-worker
+is not "just calls": the planner's FOCUSED pass for a new inbound item runs there
+(`runWorker.ts` → `observationPing` → `runFocusedObservationPass`), so a planner prompt change is live
+on the inbound path at merge while `lifecycle-heart` waits for its manual deploy. **Apply a migration
+to the pilot BEFORE merging its PR**, not before deploying. Turning these two off is an open user
+call. Finding: `thoughts/shared/findings/2026-09-14-calls-worker-auto-deploys-on-every-merge.md`.
 
 **One exception to migration-first: a DROP goes code-first.** See the header of
 `20260905100000_drop_assignment_locks.sql` — applying a column drop before the deploy breaks the

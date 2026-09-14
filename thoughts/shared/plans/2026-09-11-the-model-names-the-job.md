@@ -15,9 +15,9 @@ concerned a bathroom faucet and the candidates were a boiler and a kitchen tap �
 which no count can say.
 
 **REWRITTEN 2026-09-14** (user: "We are going to fold it"); the separate-chooser design, last at
-commit `6e45a08`, is rejected below. **Lands with**
-`thoughts/shared/plans/2026-09-14-a-reply-keeps-the-models-doubt.md`: without it, both rulings hold
-for the message the model read and fail on the customer's reply.
+commit `6e45a08`, is rejected below. Phase 4 was briefly a second plan and was folded back on the
+user's instruction — the split was only ever the line limit, and the two halves are one guarantee:
+without Phase 4 the rulings hold for the message the model read and fail on the customer's reply.
 
 ## Decisions
 
@@ -65,6 +65,34 @@ for the message the model read and fail on the customer's reply.
   fields — `EXTRACTION_SYSTEM` says a visit "already handled must NOT set visitCommitted"
   (`extract.ts:123-125`), and a job list nearby could read that way: the Delphine failure, returned.
   So fixtures run WITH and WITHOUT candidates and all three gated fields are scored both ways.
+- **A REPLY CARRIES THE DOUBT FORWARD** (user, 2026-09-14). Without Phase 4 a reply to a model-picked
+  message arrives "thread-named": `findCustomersByThread` builds a thread's job from earlier messages'
+  links and `withThreadJob` hands it back as `match.jobId`, so it could flip status, its promise is
+  silenced by `!visit`, and its link reads as grounded — and replying to the firm's own mail is the
+  common next message. REJECTED: having the thread lookup ignore basis-bearing links and re-pick. Less
+  code, but a model may answer differently the second time and split one conversation across two jobs.
+  The thread proves the conversation, not the pick: the reply gets the same job AND the same doubt.
+- **An email the ASSISTANT sent is not evidence** (review fix, 2026-09-14). `send_email` stamps
+  `raw_captures.job_id` from an id the agent typed (`src/mcp/tools/comms.ts:335-365`), checked only
+  against the recipient's customer — and once Phase 3 lands, the id the agent reads is the model's
+  pick. Treating that stamp as grounding launders the pick through the firm's own reply: message 1 is
+  model-picked, the assistant replies naming that job, the customer's reply arrives grounded and can
+  flip and silence. The assistant's send also leaves no `inherited` link, because the door never runs
+  it (`isAgentWrittenCapture`, `src/db/rawCaptures.ts:58` — `sentVia` / `toolSlug`).
+- **The grounding rule, therefore.** A thread's job is `'model'` when at least one `model` or
+  `inherited` link reaches it AND no independent evidence does. Independent evidence is: a link with a
+  null basis; a stamp (arm a) on a capture that `isAgentWrittenCapture` rejects; or an L2 row created
+  from a thread capture (arm d, `jobs.source_capture_id`). An agent-written stamp is ignored either
+  way — it neither grounds a pick nor creates doubt on its own.
+- **New `ThreadIdentity` fields are OPTIONAL, present only when the basis is `'model'`** — the way
+  `withThreadJob` spreads `jobId` (`identityMatch.ts:152`). `src/mcp/server.test.ts:2835` asserts
+  `toContainEqual({ customerId, jobId })`, which ignores `undefined` keys but fails on `null` ones.
+- **Traceable, not nested.** `jobBasisCaptureId` / `jobBasisReason` come from the EARLIEST model link
+  by `captured_at`; an inherited reason copies the ORIGINAL — `inherited from capture <id>: <reason>` —
+  so message 3 does not read `inherited from … inherited from …`.
+- **The caps are unchanged.** Same rows, same `.limit(THREAD_ROW_CAP + 1)`. The refuse-when-full rule
+  is what makes "every link reaching it" computable; a refused thread returns `[]`, and the message
+  simply becomes a candidates case.
 - **Parked, not fixed:** the link views carry no `retracted` flag while `basis_reason` is model text
   about a customer's message (`20260914-the-link-views-expose-basis-reason-but-c`); `listJobsForCustomer`
   has no tiebreak, which also makes PR #235's "newest open job" rule order-dependent on equal
@@ -96,12 +124,27 @@ including on messages that now carry the list.
 still be open, and the link records that a model picked it and why. It never moves status, and a
 promise still reaches the planner.
 
+**Phase 4 — the reply keeps the doubt.** When the customer answers on the same thread, the reply goes
+on the same job and is treated as a model's pick too, so it cannot flip or silence what the first
+message could not. The doubt lifts only when something that is not a model's guess points at the same
+job. An email the assistant itself sent does not count: the job it named was copied from the record,
+which is where the pick lives.
+
+```
+  msg 1  firm:     "we'll come about the tap"   → model picks tap     → link basis=model
+  msg 2  assistant replies naming that job      → stamp, agent-written → IGNORED
+  msg 3  customer: "can you do Thursday?"       → thread → same job, doubt carried
+                                                  → no flip, asks, link basis=inherited
+```
+
 ## Secrets & env preflight
 
 - **All phases:** `OPENROUTER_API_KEY` (or `INFERENCE_API_KEY`) in `.env` — *already required*
-  (`src/model/forcedTool.ts:115-117`); present in this worktree. **Phase 1 also** needs the model the
-  production extractor uses: read `INFERENCE_MODEL` from the Render service (the name only) and pin it
-  in the eval. Locally it is unset and falls back to `z-ai/glm-5.3` (`forcedTool.ts:91`).
+  (`src/model/forcedTool.ts:115-117`); present in this worktree. The eval pins `z-ai/glm-5.3`
+  EXPLICITLY rather than inheriting the default, so a later change to `DEFAULT_OPENAI_MODEL` cannot
+  move the baseline silently. That IS production: every model call the pilot billed in the 30 days to
+  2026-09-14 is `openrouter` / `glm-5.3-*` (1,516 calls; the anthropic and fireworks SKUs stop at
+  2026-08-29 and 2026-08-26), and it matches `forcedTool.ts:91`.
 
 ---
 
@@ -254,6 +297,51 @@ catalog lists name `basis, basis_reason`. **`docs/onboarding.md:129`, `docs/engi
 
 ---
 *Pause after this phase — its manual list is non-empty.*
+
+## Phase 4: A reply on the thread keeps the doubt
+
+### What this phase does
+Makes `findCustomersByThread` know, per job, whether only a model's pick reaches it, and has the door
+treat such a reply exactly as Phase 3 treats the pick.
+
+### Changes required
+
+**`src/db/rawCaptures.ts:703`** — `ThreadIdentity` gains optional `jobBasis?: 'model'`,
+`jobBasisReason?: string`, `jobBasisCaptureId?: string`.
+
+**`src/db/rawCaptures.ts:737`** — restructure: the single `jobIds` set (`:774`) becomes a map from job
+id to `{ grounded: boolean; modelLinks: { captureId; reason; capturedAt }[] }`.
+- arm (a) `:776` also selects `metadata`; a stamp grounds only when `!isAgentWrittenCapture(metadata)`.
+- arms (b) `:787` and (c) `:801` also select `capture_id, basis, basis_reason` — on (c) from
+  `visit_notes` itself, not the `visits!inner` embed; a null basis grounds, a non-null one is recorded.
+- arm (d) `:819` grounds.
+- The final loop (`:870-886`) and dedupe (`:889-894`) read the map; a job gets the optional fields only
+  when it is not grounded and has a model link, taken from the earliest by `captured_at` (select it).
+
+**`src/writePath/identityMatch.ts:137-153`** — `withThreadJob` copies the adopted job's optional basis
+fields into `MatchResult`, only when present.
+
+**`src/writePath/recordFieldNote.ts`** — `match.jobBasis === 'model'` sets `jobFromModel` exactly as Phase 3 does; that capture's link writes `basis: 'inherited'` and the copied original reason.
+
+### Automated verification
+- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass; `server.test.ts:2835` unchanged and green
+- [ ] msg 1 model-picks the tap job (trip attached); msg 2 on the thread with `statusSignal: 'completed'`
+      and `visitCommitted: true` → not flipped, asked, `basis='inherited'` naming msg 1
+- [ ] msg 3 inherits again, reason copied from msg 1, not nested
+- [ ] **the laundering case:** msg 1 model-picked; an agent-written capture on the thread stamped with
+      that job; the customer's reply → still inherits the doubt
+- [ ] a null-basis link, a non-agent stamp, or an arm-(d) row on the same job → grounded, and the reply
+      behaves as thread-named does today
+- [ ] a thread over `THREAD_ROW_CAP` still refuses (returns `[]`)
+
+### Live verification (agent-executable)
+- [ ] none — deterministic, covered above
+
+### Manual verification
+- [ ] none
+
+---
+*Automated checks suffice; continue.*
 
 ## Deploy note
 

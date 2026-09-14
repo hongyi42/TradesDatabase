@@ -29,7 +29,7 @@ grounded. Replying to the firm's own mail is the common next message.
   split one conversation across two jobs. This plan builds (A); (B) replaces the Phase 1 rule with
   "skip basis-bearing links in arms (b) and (c)".
 - **An email the ASSISTANT sent is not evidence** (review fix, 2026-09-14). `send_email` stamps
-  `raw_captures.job_id` from an id the agent typed (`src/mcp/server.ts:3962-3990`), checked only
+  `raw_captures.job_id` from an id the agent typed (`src/mcp/tools/comms.ts:335-365`, moved there by #239), checked only
   against the recipient's customer — and after the model plan, the id the agent reads is the model's
   pick. Treating that stamp as grounding launders the pick through the firm's own reply: message 1 is
   model-picked, the assistant replies naming that job, the customer's reply arrives grounded and can
@@ -41,7 +41,7 @@ grounded. Replying to the firm's own mail is the common next message.
   from a thread capture (arm d, `jobs.source_capture_id`). An agent-written stamp is ignored either
   way — it neither grounds a pick nor creates doubt on its own.
 - **New `ThreadIdentity` fields are OPTIONAL, present only when the basis is `'model'`** — the way
-  `withThreadJob` spreads `jobId` (`identityMatch.ts:152`). `src/mcp/server.test.ts:2830` asserts
+  `withThreadJob` spreads `jobId` (`identityMatch.ts:152`). `src/mcp/server.test.ts:2835` asserts
   `toContainEqual({ customerId, jobId })`, which ignores `undefined` keys but fails on `null` ones.
 - **Traceable, not nested.** `jobBasisCaptureId` / `jobBasisReason` come from the EARLIEST model link
   by `captured_at`; an inherited reason copies the ORIGINAL — `inherited from capture <id>: <reason>` —
@@ -89,7 +89,7 @@ id to `{ grounded: boolean; modelLinks: { captureId; reason; capturedAt }[] }`.
 - arms (b) `:787` and (c) `:801` also select `capture_id, basis, basis_reason` — on (c) from
   `visit_notes` itself, not the `visits!inner` embed; a null basis grounds, a non-null one is recorded.
 - arm (d) `:819` grounds.
-- The final loop (`:866-886`) and dedupe (`:888-894`) read the map; a job gets the optional fields only
+- The final loop (`:870-886`) and dedupe (`:889-894`) read the map; a job gets the optional fields only
   when it is not grounded and has a model link, taken from the earliest by `captured_at` (select it).
 
 **`src/writePath/identityMatch.ts:137-153`** — `withThreadJob` copies the adopted job's optional basis
@@ -99,7 +99,7 @@ fields into `MatchResult`, only when present.
 model plan does; that capture's link writes `basis: 'inherited'` and the copied original reason.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass; `server.test.ts:2830` unchanged and green
+- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass; `server.test.ts:2835` unchanged and green
 - [ ] msg 1 model-picks the tap job (trip attached); msg 2 on the thread with `statusSignal: 'completed'`
       and `visitCommitted: true` → not flipped, asked, `basis='inherited'` naming msg 1
 - [ ] msg 3 inherits again, reason copied from msg 1, not nested

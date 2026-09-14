@@ -8,7 +8,7 @@ supersedes: nothing
 
 ## Overview
 
-Builds on `thoughts/shared/plans/2026-09-11-the-door-stops-guessing.md` (PR #235, not yet on main),
+Builds on `thoughts/shared/plans/2026-09-11-the-door-stops-guessing.md` (PR #235, merged 2026-09-12),
 which created the branch this fills: `!mayGuess && candidates.length > 1` — a known customer, several
 open jobs, nothing naming one. There the door gives up. A count is a weak test: the Delphine promise
 concerned a bathroom faucet and the candidates were a boiler and a kitchen tap — "none of these",
@@ -37,7 +37,7 @@ for the message the model read and fail on the customer's reply.
   that id is still in its own fresh `candidates`. A second `listJobsForCustomer` seconds later can
   differ in membership, and in order — it sorts on `created_at` with no tiebreak (`jobs.ts:149`) — so
   indexing the fresh list could file on the wrong job under a `basis='model'` that looks grounded. No
-  list shown → any `jobChoice` is ignored. Models copy UUIDs wrong (`UUID_RE` at `server.ts:2740`,
+  list shown → any `jobChoice` is ignored. Models copy UUIDs wrong (`UUID_RE` at `src/mcp/tools/shared.ts:723`,
   `webhook.ts:39`, `nudgeDecisions.ts:78`), so no id is ever asked for.
 - **Bounded, and truncation falls back** (review fix). The extractor runs at `maxTokens: 1024` on
   default `medium` reasoning (`forcedTool.ts:39`), already listed as unmeasured truncation risk in
@@ -227,7 +227,7 @@ set, so no write names a column the pilot lacks before the migration.
   `:901-906` is skipped.
 
 **`src/teamLead/planner.ts:1590`** — ` — chosen by a model from N open jobs: <reason>`, plus
-` (already on a booked trip)` with `attachedVisitId`. **`src/mcp/server.ts:851`** — the two view
+` (already on a booked trip)` with `attachedVisitId`. **`src/mcp/server.ts:212-214`** — the two view
 catalog lists name `basis, basis_reason`. **`docs/onboarding.md:129`, `docs/engineering-memory.md`** —
 "never a model guess" holds for the customer; the job may be a model's answer from a numbered list.
 
@@ -257,5 +257,5 @@ catalog lists name `basis, basis_reason`. **`docs/onboarding.md:129`, `docs/engi
 
 ## Deploy note
 
-Deploys run NO migrations. Hand-apply PR #235's `customer_captures` migration, then `link_basis`, to
-the pilot BEFORE the code. Never `db push`.
+Deploys run NO migrations. Hand-apply PR #235's `customer_captures` migration if it is not already on the pilot,
+then `link_basis`, BEFORE the code. Never `db push`.

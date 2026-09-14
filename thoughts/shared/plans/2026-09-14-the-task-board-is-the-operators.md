@@ -2,7 +2,7 @@
 date: 2026-09-14
 task: The task board is the operator's — sessions fix small things in place and ask about decisions; nothing is parked without the operator's yes, and a permission prompt backs that up
 research: thoughts/shared/research/2026-09-14-the-task-board-is-the-operators.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 

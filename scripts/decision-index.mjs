@@ -28,6 +28,17 @@ const HOOK_OUT = join(THOUGHTS, 'by-file.json');
 // A session can absorb a few decisions before the reminder becomes noise it learns to skip.
 const MAX_PER_FILE = 4;
 
+// `--check` computes everything and compares instead of writing. Until 2026-09-14 it wrote all three
+// artifacts and printed "OK" whatever it found, so as a CI or hook gate it could never fail.
+const CHECK = process.argv.includes('--check');
+const stale = [];
+function emit(path, text) {
+  const current = existsSync(path) ? readFileSync(path, 'utf8') : null;
+  if (current === text) return;
+  if (CHECK) stale.push(relative(ROOT, path));
+  else writeFileSync(path, text);
+}
+
 // A doc is "about" a source file if it names it this many times. One passing mention is
 // noise; the hook would drown the session in irrelevant history otherwise.
 const MENTION_FLOOR = 2;
@@ -518,7 +529,7 @@ for (const d of live) {
 }
 md.push('');
 
-writeFileSync(MD_OUT, `${md.join('\n')}`);
+emit(MD_OUT, `${md.join('\n')}`);
 
 // Machine view for the pre-edit hook: source file → the decisions that govern it.
 const byFile = {};
@@ -598,13 +609,18 @@ for (const [file, list] of Object.entries(byFile)) {
       durableFirm: e.durableFirm ?? false,
     }));
 }
-writeFileSync(HOOK_OUT, `${JSON.stringify(hookView)}\n`);
+emit(HOOK_OUT, `${JSON.stringify(hookView)}\n`);
 
 const { text: memoryOut, written: tocWritten } = injectMemoryToc(memoryEntries, memoryClean);
-if (tocWritten && memoryOut !== readFileSync(ENG_MEM, 'utf8')) writeFileSync(ENG_MEM, memoryOut);
+if (tocWritten) emit(ENG_MEM, memoryOut);
 
-if (process.argv.includes('--check')) {
-  console.log(`thoughts index OK — ${docs.length} docs, ${superseded.length} superseded`);
+if (CHECK) {
+  if (stale.length > 0) {
+    console.error(`thoughts index STALE — ${stale.join(', ')}; run npm run decisions:index and commit the result`);
+    process.exitCode = 1;
+  } else {
+    console.log(`thoughts index OK — ${docs.length} docs, ${superseded.length} superseded`);
+  }
 } else {
   console.log(`Wrote ${relative(ROOT, MD_OUT)} and ${relative(ROOT, HOOK_OUT)}`);
   console.log(`  ${docs.length} documents · ${live.length} live · ${superseded.length} superseded`);

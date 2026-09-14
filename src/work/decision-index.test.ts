@@ -5,11 +5,11 @@
 // behaviour under test IS the file scanning and the ranking, and a mocked filesystem would
 // assert our assumptions back at us.
 //
-// Only the finding-specific behaviour is covered here. The rest of the index predates this and
-// has no tests; adding them is not this phase's job.
+// Only the finding-specific behaviour is covered here, plus `--check` (2026-09-14). The rest of the
+// index predates this and has no tests; adding them is not this phase's job.
 
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync,
 } from 'node:fs';
@@ -176,6 +176,27 @@ describe('decision-index.mjs — promoted findings', () => {
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
+  });
+
+  test('--check passes on a fresh index, fails on a stale one, and writes nothing either way', () => {
+    // Until 2026-09-14 --check regenerated all three artifacts and printed "OK" regardless, so the
+    // gate its header advertised could never fail. Run AFTER the fixture tree was indexed above.
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+    const check = () => spawnSync('node', [CLI, '--check'], { cwd: tmp, encoding: 'utf8', env });
+
+    const fresh = check();
+    expect(fresh.status, fresh.stderr).toBe(0);
+    expect(fresh.stdout).toContain('thoughts index OK');
+
+    const indexPath = join(tmp, 'thoughts', 'INDEX.md');
+    const staleText = `${index}\n<!-- hand edit the generator would undo -->\n`;
+    writeFileSync(indexPath, staleText);
+    const stale = check();
+    expect(stale.status).toBe(1);
+    expect(stale.stderr).toContain('thoughts/INDEX.md');
+    expect(readFileSync(indexPath, 'utf8')).toBe(staleText);
+
+    writeFileSync(indexPath, index);
   });
 
   test('a dropped finding is kept but filed with the reversed decisions', () => {

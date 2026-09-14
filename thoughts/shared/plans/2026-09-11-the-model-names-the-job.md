@@ -1,6 +1,6 @@
 ---
-date: 2026-09-11
-task: On the ambiguous branch only, a model names which of the customer's jobs a message is about — or says it cannot
+date: 2026-09-14
+task: The extractor names which of a customer's jobs a message concerns, or none — and the door files on that answer without letting it flip status or silence a promise, on this message or any reply
 research: thoughts/shared/research/2026-09-11-re-inventing-the-write-path-door.md
 status: draft
 supersedes: nothing
@@ -8,248 +8,281 @@ supersedes: nothing
 
 ## Overview
 
-Builds directly on `thoughts/shared/plans/2026-09-11-the-door-stops-guessing.md`, which must land
-first: it creates the branch this plan fills in — `!mayGuess && candidates.length > 1`, where the
-door has a known customer, several non-terminal jobs, and nothing naming which one a message is
-about. That plan files such a capture under the customer and asks only when the firm committed.
+Builds on `thoughts/shared/plans/2026-09-11-the-door-stops-guessing.md` (PR #235, not yet on main),
+which created the branch this fills: `!mayGuess && candidates.length > 1` — a known customer, several
+open jobs, nothing naming one. There the door gives up: it files under the customer and asks only if
+the firm committed. A count is a weak test. The Delphine promise concerned a bathroom faucet and the
+candidates were a boiler and a kitchen tap; the truth is "none of these", which no count can say.
 
-A count of candidates is a weak test. In the specimen that prompted all of this, the promise was
-about a dripping bathroom faucet while the candidates were a boiler diagnostic and a kitchen tap —
-the true statement is not "two candidates" but "about none of them", which no count can express, and
-which is invisible when the customer has exactly one open job. This plan asks a model that question.
-
-Split out of the first plan rather than carried as its phase 3: it crosses a recorded doctrine line
-and adds a model call to the inbound path, and both deserve their own review.
+**REWRITTEN 2026-09-14** (user: "We are going to fold it"). The previous design in this file, last at
+commit `6e45a08`, added a SEPARATE chooser model call. It is rejected in Decisions below.
 
 ## Decisions
 
-- **A SECOND model call, not a field on the main extractor** — the extractor runs at
-  `src/writePath/recordFieldNote.ts:297`, before identity resolves at `:320`, so it cannot be shown
-  the customer's jobs without reordering the whole door. A separate call pays only on the ambiguous
-  branch and leaves every `deps.extract` stub in `recordFieldNote.test.ts` (2113 lines) valid.
-- **Crosses the deterministic line for the JOB dimension only** — `docs/onboarding.md:129` says
-  identity matching decides "which existing customer/job" and is "never a model guess". Customer
-  identity stays deterministic code; the job choice becomes a model judgment bounded by a supplied
-  candidate list. User decision, 2026-09-11. The doc must be amended in the same commit or it
-  contradicts the code.
-- **The model may only choose from the list** — a returned id that is not a candidate is treated as
-  "none" and never written. The failure mode this forbids is a hallucinated job id reaching a
-  foreign key.
-- **"None" is a first-class answer**, not an error — it falls back to the first plan's behaviour
-  (customer link, ask if committed), which is already correct.
-- **A chooser failure must not cost the capture** — try/catch, fall back to "none". The
-  `withThreadJob` precedent (`src/writePath/identityMatch.ts:123-131`): a failed "which" must never
-  turn a resolved identity into a 503, because the connector then redelivers and the extractor is
-  paid for twice.
-- **The chooser's BASIS is recorded, never laundered** (amendment 2026-09-12, user) — Phase 2 said a
-  named job makes the capture "behave exactly as if the thread had named it". For FILING that is
-  right; for the RECORD it erases the one fact a reader most needs: that a model picked this job,
-  from these candidates, for this reason. `JobChooser` already returns `reason` — Phase 2 threw it
-  away at the fall-through. Why it matters: task `20260912-an-l2-status-flip-reports-to-the-planner`
-  reports every L2 touch as "what changed, on what evidence, how sure". Without the basis, a flip
-  driven by a chooser-filed message reports "job completed, evidence: this message", with no sign
-  the job itself was a model's pick from a list.
-  **Where it lives: on the link.** `job_captures` is `(tenant_id, job_id, capture_id, created_at)`
-  today, with no room for it, and L1 is append-only so the capture cannot be stamped after insert.
-  Add nullable `basis text` and `basis_reason text` (the latter set only for `chooser`), appended to
-  `v_job_captures` so the planner can read them. **APPROVED (user, 2026-09-14): "I would record why
-  the model picked the job."**
-  Only the chooser writes a basis; every other path leaves both columns null. Recording a basis for
-  every path (thread, single candidate, technician, decided) would be more complete, but it is not
-  what was approved and it is the natural shape of `20260912-an-l2-status-flip-reports-to-the-planner`
-  rather than of this plan. The link is append-only on UPDATE, so the basis must be written AT insert
-  — there is no later moment to add it.
-- **RESOLVED — a chooser hit does NOT flip the job's status** (user, 2026-09-14: "the chooser should
-  not be allowed to flip because that is the planner's job"). Option (b) below. `the-door-stops-guessing`
-  Phase 2 dropped the `statusSignal` write for ambiguous captures: "leave it to the planner" (user,
-  2026-09-12). This plan's fall-through sends a chooser-named capture down the normal path, which
-  reaches `updateJobStatus` (`recordFieldNote.ts:905` on PR #235's branch) — so, read literally, a model's pick
-  restores the exact flip that ruling removed. (a) Allow it, with the basis recorded so the flip's
-  report can say a model chose the job; or (b) skip `statusSignal` when the job came from the
-  chooser, keeping that flip the planner's. (b) matches the existing ruling.
-  VERIFIED 2026-09-12 on PR #235's branch — NOT on main, where this code does not exist until #235
-  merges — not inferred: the ambiguous branch at `recordFieldNote.ts:632-636`
-  RETURNS EARLY (`insertCustomerCapture` then `return`) — that early return IS how the ruling removed
-  the write — and `statusSignal` is applied only further down, at `:901-906`. Replacing that return
-  with a fall-through lands a chooser-named capture directly on it, so Phase 2 must skip that block
-  explicitly when the job came from the chooser.
-- **A chooser-picked job does NOT silence a promise either** (inferred 2026-09-14 from the user's
-  reason for the ruling above — confirm or overrule). Falling through reaches `resolveVisitForNote`,
-  which attaches the capture to the picked job's one live visit, and then "a committed capture that
-  landed on a LIVE visit asks nothing" (`recordFieldNote.ts:792-797`) suppresses the ask. That is the
-  specimen's own failure — and `the-door-stops-guessing` closed it for exactly this case by always
-  asking when there are several candidates. Without this carve-out, "we'll come Wednesday about the
-  kitchen tap" to a customer whose tap job has a Tuesday trip would be swallowed again. Deciding that
-  the planner need not hear about a promise is the planner's call, not a model's pick. So on the
-  chooser path a commitment asks even when a live visit attached, and the ask carries the basis.
-- **OPEN — the latency budget is not yet known.** `src/calls/observationPing.ts:18-21` records that
-  an in-request *agent pass* was rejected because a connector retries on every timeout. One bounded
-  forced-tool call is a different thing, but the number is unmeasured; Phase 1 below measures it
-  before Phase 2 wires it in.
+- **Folded into the extractor — no second model call** (user, 2026-09-14). REJECTED: a chooser call
+  after identity resolves. It read the message a second time without the extractor's reading, while
+  the extractor read it without the candidates, so the two decisions never met; and it put a second
+  model call inside the webhook's delivery timeout. The user's 2026-08-22 direction to collapse
+  model-call stages names the same defect: the win is coherence, not cost.
+- **Identity from ENVELOPE keys before extraction.** The extractor runs at `recordFieldNote.ts:298`,
+  before identity at `:321`, because identity reads its phone and address. But three of the four keys
+  are envelope facts — email (sender, or recipient on sent mail), thread id, caller id. A pre-match
+  calls the existing `matchIdentity` with `extracted: { phone: input.fallbackPhone }`, so there is
+  still ONE deterministic identity implementation.
+- **The pre-match only decides whether to show candidates.** The real `matchIdentity` still runs after
+  extraction, unchanged. The model's answer is used only if that customer equals the pre-match's; an
+  extracted phone resolving someone else voids it.
+- **An address-only identity gets no candidates, deliberately.** It needs the extractor first, so it
+  keeps PR #235's behaviour. Weakest key, least common path, and still at most one model call.
+- **Candidates go in the USER message; `EXTRACTION_SYSTEM` stays byte-identical.** The
+  `renderExtractionUser` idiom — a label appears only where it says something new, and
+  `extract.test.ts` pins that an ordinary message passes through BARE. Every extraction that shows no
+  candidates sees today's prompt exactly. This is what contains the risk of adding a task to the
+  highest-volume model call; the only shared change is two optional schema fields.
+- **The model answers with a NUMBER from the shown list, never an id.** Models copy UUIDs wrong —
+  `UUID_RE` rails exist at `src/mcp/server.ts:2740`, `src/inbound/webhook.ts:39` and
+  `src/db/nudgeDecisions.ts:78` for that trap. The door maps `1..N` to a candidate; anything else is
+  "none", so a hallucinated id can never reach a foreign key.
+- **Candidates show title and status only**, not visit dates — dates are this repo's most repeated
+  extraction hazard, and titles are what tell jobs apart.
+- **A model's pick FILES and decides nothing else** (user, 2026-09-14). (1) No status flip: "the
+  chooser should not be allowed to flip because that is the planner's job". (2) A commitment on a
+  model-picked job still asks when a live visit attached — deciding the planner need not hear about a
+  promise is the planner's call (inferred from (1); treated as confirmed when `/implement` was run).
+- **The basis is recorded on the link actually written** (user, 2026-09-14: "I would record why the
+  model picked the job"). A pick lands as `job_captures` with no live trip and `visit_notes` with one —
+  the specimen's shape — so BOTH gain nullable `basis` / `basis_reason`, written at insert only (both
+  are append-only on UPDATE). CHECK `basis in ('model','inherited')`.
+- **OPEN — what a reply on the same thread inherits** (recommended (A); user has not yet chosen).
+  `findCustomersByThread` builds a thread's job from earlier messages' links and `withThreadJob` hands
+  it back as `match.jobId`, so a reply to a model-picked message arrives "thread-named": it could flip
+  status, its promise is silenced by `!visit`, and its link reads as grounded. Replying to the firm's
+  own mail is the common next message. (A) CARRY THE DOUBT FORWARD: same job, inherits the model
+  basis, records `basis='inherited'`. (B) DISTRUST: the thread lookup skips basis-bearing links and the
+  reply is re-picked. (A) keeps a conversation on one job; (B) is less code but a model may answer
+  differently the second time. Phase 4 builds (A).
+- **No extraction eval existed, so the gate is built first.** `defaultExtractor`'s only other caller
+  is `server.ts`, and `extract.test.ts` pins wording, not outputs. Phase 1 measures today's extractor
+  before anything changes, so "no regression" has a number.
+- **Known, not fixed here:** `basis_reason` is model text about a customer's message, and the link
+  views carry no `retracted` flag the way `v_captures` does; `matchIdentity` runs twice on the
+  automatic path (a few indexed reads).
 
 ## Plain-language walkthrough
 
-**Today (after the first plan).** When the door cannot tell which of a customer's jobs a message is
-about, it files the message under the customer and asks a manager if a promise was made. Correct, but
-blunt: it gives up whenever there is more than one candidate, even when the answer is obvious from
-the words.
+**Today (after PR #235).** When a customer with several open jobs writes and nothing says which job,
+the door gives up and files under the customer. Safe — but it gives up even when the words are clear.
 
 ```
-  several candidates, none named
-        │
-        ├─ BEFORE (first plan)  ─► give up: file under the customer
-        │
-        └─ AFTER (this plan)    ─► show the model the message + the candidate list
-                                     ├─ "it's the kitchen tap"  ─► file on that job
-                                     └─ "none of these"          ─► give up, as before
+  BEFORE (PR #235)                          AFTER
+  extract ─► who? ─► which job?             who? (from the envelope) ─► their open jobs
+                      └─ several ─► give up                                    │
+                                                extract, SHOWN "1. boiler  2. kitchen tap"
+                                                ├─ "2"    ─► file on the tap job, marked as a model's pick
+                                                └─ none   ─► give up, exactly as before
 ```
 
-**Phase 1 — build the chooser and measure it, wired to nothing.** A small module that takes a message
-and a list of jobs and returns one id or null, plus a measurement of what the call costs in latency.
-Nothing calls it yet, so the door is unchanged. You would notice it working by its own tests passing
-and a recorded p50/p95.
+**Phase 1 — measure the extractor before touching it.** Nothing tests what it actually returns, only
+its wording. So: hand-written messages with the right answers written down, run against the live
+model, agreement recorded. That number is the bar every later phase must meet.
 
-**Phase 2 — wire it into the ambiguous branch.** The door calls the chooser exactly where it would
-otherwise give up. A named job is filed on that job, and the link records that a model chose it and
-why; "none" behaves exactly as before. A model's pick is trusted to FILE a message and nothing more:
-it never moves the job's status, and it never silences a promise — both stay the planner's. You
-would notice it working by a message clearly about the kitchen tap landing on the kitchen tap job,
-while the bathroom-faucet promise still refuses and asks.
+**Phase 2 — show it the jobs.** Work out the customer from the envelope, list their open jobs, and
+show them as a numbered list only when there are several. It answers with a number or nothing.
+Nothing uses the answer yet. You would see it work by the Phase 1 score not dropping.
+
+**Phase 3 — file on the answer.** A named job gets the message, and the link records that a model
+picked it and why. It never moves the job's status, and a promise on it still reaches the planner.
+
+**Phase 4 — the reply keeps the doubt.** When the customer answers on the same thread, the reply goes
+on the same job and is treated as a model's pick too — so it cannot flip or silence what the first
+message could not.
 
 ## Secrets & env preflight
 
-- **Phase 1:** `INFERENCE_API_KEY` (or `OPENROUTER_API_KEY`), optionally `INFERENCE_MODEL`, in
-  `.env` — *already required* by the existing extractor (`src/model/forcedTool.ts:115-117`). A fresh
-  worktree has no `.env`; copy one in or the key-gated live checks silently skip.
-- **Phase 2:** same, and only for the live check.
+- **Phases 1–3:** `OPENROUTER_API_KEY` (or `INFERENCE_API_KEY`) in `.env` — *already required*
+  (`src/model/forcedTool.ts:115-117`). Present in this worktree since 2026-09-14.
+- **Phase 4:** none — deterministic.
 
 ---
 
-## Phase 1: The chooser, and what it costs
+## Phase 1: A measured baseline
 
 ### What this phase does
-Adds `src/writePath/chooseJob.ts` and its tests, and measures the added latency. Nothing calls it.
+Adds a key-gated live eval of the extractor's OUTPUTS on labelled messages, and records today's score.
 
 ### Changes required
 
-**`src/writePath/chooseJob.ts`** (new, ~80 lines)
-- `export interface JobCandidate { id: string; title: string | null; status: string }`
-- `export type JobChooser = (input: { text: string; candidates: JobCandidate[]; fromTheFirm: boolean }, ctx?: CostContext) => Promise<{ jobId: string | null; reason: string }>`
-- `export const defaultJobChooser: JobChooser` — one `runForcedTool` call mirroring `defaultExtractor`
-  (`src/writePath/extract.ts:227`), `maxTokens: 256`, `label: 'chooseJob'`.
-- Export `CHOOSE_JOB_SYSTEM` and `CHOOSE_JOB_TOOL` so tests pin the prompt and schema — the
-  `EXTRACTION_SYSTEM` precedent (`extract.ts:101-103`), whose comment records why: a field silently
-  dropped from the schema fails open with nothing to notice it.
-- The system prompt must state: choose only from the listed ids; return null when the message
-  concerns work none of them covers; **a promise to attend is about the work it names, not the
-  nearest open job**; `fromTheFirm` means the text is the firm's own outbound mail.
-- **Validate the returned id against the candidate list inside the module** — an unlisted id returns
-  `{ jobId: null }`, so no caller can be handed one.
+**`src/writePath/extract.eval.test.ts`** (new) — skips without a key, like the repo's other
+key-gated live tests, so a keyless `npm test` is unaffected.
+- ~8 hand-written fixtures, never taken from the pilot: a firm commitment; a customer only asking; a
+  thank-you; "the job's done"; the firm's own reply (`fromTheFirm`); a reschedule inside a thread; a
+  quote request; a wrong number.
+- Labels only for the fields the door gates on: `visitCommitted`, `touchesOperations`, `statusSignal`.
+- Each fixture 3×; print per-field agreement out of 24.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass
-- [ ] new `src/writePath/chooseJob.test.ts` with a stubbed `runForcedTool`: a listed id passes
-      through; an unlisted id becomes null; a malformed/absent id becomes null
-- [ ] a test pins `CHOOSE_JOB_TOOL`'s schema and the candidate-only sentence in `CHOOSE_JOB_SYSTEM`
+- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass (the eval skips when keyless)
 
 ### Live verification (agent-executable)
-- Prerequisites: `.env` with `INFERENCE_API_KEY` / `OPENROUTER_API_KEY`; key-gated, skipped without.
-- [ ] The specimen: its real text against its two real candidates ("Boiler diagnostic", "Kitchen tap
-      dripping"). Evidence: `jobId: null` with a reason naming the bathroom faucet as matching
-      neither. **Run 3 times, report all three** — one pass proves nothing about a model.
-- [ ] The inverse: a message plainly about the kitchen tap. Evidence: it returns that id, 3 runs.
-      Without this pair, a chooser that always says "none" passes the test above.
-- [ ] Record p50/p95 wall-clock over those 6 calls and write the numbers into this plan's Decisions
-      section, closing the OPEN latency item.
+- Prerequisites: `.env` with the key.
+- [ ] Run the eval. Evidence: the per-field agreement table, written into this plan's Decisions as
+      the baseline.
 
 ### Manual verification
-- [ ] Read the six reasons and judge whether the refusals are for the right reason rather than by
-      luck, and whether the hit is confident rather than a coin flip that landed well.
+- [ ] Check the labels. A baseline scored against wrong labels makes every later comparison worthless.
 
 ---
 *Pause after this phase — its manual list is non-empty.*
 
-## Phase 2: Wire it into the ambiguous branch
+## Phase 2: The extractor is shown the jobs
 
 ### What this phase does
-Calls the chooser where the door would otherwise give up, and links a named job.
+Resolves the customer from envelope keys before extraction and, when they have several open jobs,
+passes them as a numbered list. The answer comes back but nothing acts on it.
 
 ### Changes required
 
-**`src/writePath/recordFieldNote.ts:169`** — add `chooseJob?: JobChooser` to the `deps` parameter.
+**`src/writePath/extract.ts`**
+- `ExtractedFields` gains `jobChoice?: number | null` and `jobChoiceReason?: string | null`.
+- `EXTRACTION_TOOL.inputSchema` declares both. `jobChoice`: "ONLY when a CANDIDATE JOBS list is shown:
+  the number of the one job this message concerns. Omit it if the message concerns none of them."
+- `Extractor`'s `context` gains `candidates?: { title: string | null; status: string }[]`.
+- `renderExtractionUser`, when `candidates` is non-empty, renders ahead of the latest message:
+  `CANDIDATE JOBS for this customer — which ONE does the latest message concern? Answer by number, or
+  leave it out if none:` then `1. "Boiler diagnostic" (open)`.
+- `EXTRACTION_SYSTEM`: unchanged.
 
-**`src/writePath/recordFieldNote.ts`** — in the `!mayGuess && candidates.length > 1` branch created
-by the first plan, before the customer-link fallback:
-- call `deps.chooseJob ?? defaultJobChooser` with the raw text, the candidates, and
-  `fromTheFirm: channel === 'outbound_email'`
-- on a non-null `jobId`, set `job` to that candidate and fall through to the normal path for FILING —
-  but write the link with `basis = 'chooser'` and `basis_reason` = the returned `reason`. It must
-  never be indistinguishable in the record from a thread-named job (see Decisions: the basis is
-  never laundered)
-- hold a `jobFromChooser` flag (`{ reason: string } | null`) and use it at TWO later sites:
-  - the ask at `:792-797` — when set, a commitment asks even if `visit` is non-null (Decisions:
-    a model's pick does not silence a promise)
-  - the `statusSignal` block at `:901-906` — when set, skip it entirely (Decisions: no flip)
-- `observeInbound`'s context gains `jobBasis: 'chooser'` and `jobBasisReason` when set, so the ask is
-  not laundered either; `src/teamLead/planner.ts`'s "on file: open job …" line appends
-  `— chosen by a model from N candidates: <reason>` when `jobBasis` is present
-- on null, or on a throw, keep the first plan's behaviour unchanged
-- wrap in try/catch and log; never rethrow
-
-**`supabase/migrations/<timestamp>_job_captures_basis.sql`** (new) — add nullable `basis text` and
-`basis_reason text` to `job_captures`, and append both to `v_job_captures` (a view may only APPEND
-columns under `CREATE OR REPLACE`, so no drop is needed). Constrain the vocabulary so it tracks what
-actually gates: `check (basis is null or basis = 'chooser')` and
-`check (basis_reason is null or basis is not null)` — a new basis value is then a deliberate
-migration, not a typo that silently reads as "no basis".
-
-**`src/db/jobs.ts:468`** — `insertJobCapture` takes optional `basis` / `basisReason` and writes them at
-insert. Its `ignoreDuplicates` upsert means a SECOND link write can never add a basis to an existing
-row — correct, because the append-only trigger forbids it anyway, and the redelivery short-circuit
-(`captureHasLinkedL2`) stops the door before a second write. The retraction walk copies links without
-a basis, which is right: a retraction row is not a model's pick.
-Existing rows stay null. Regenerate types with `npm run gen:types:local` — never the default, which
-points at the pilot. Deploys do not migrate: hand-apply to the pilot before this code ships.
-
-**`docs/onboarding.md:129`** — amend "never a model guess" to hold for the customer dimension and
-name this plan for the job dimension.
-
-**`docs/engineering-memory.md`** — record the amendment and its bound (candidate-list only,
-validated, null-on-failure).
+**`src/writePath/recordFieldNote.ts`**
+- Hoist `isTechnicianChannel` (`:447`) above the extraction at `:298`.
+- Before `:298`, when `!isTechnicianChannel && !input.resolved && !input.decided && !input.captureId`:
+  pre-match via `matchIdentity({ …, extracted: { phone: input.fallbackPhone ?? null }, email, threadId })`.
+  On `matched` with no `jobId`, read `listJobsForCustomer`, keep non-terminal (ascending, as `:606`),
+  and pass them as `candidates` when there are more than one. try/catch: a failed pre-match extracts
+  without candidates, never fails the capture.
+- Keep the pre-match customer id and the exact ordered list for Phase 3.
 
 ### Automated verification
 - [ ] `npm run typecheck`, `npm run lint`, `npm test` pass
-- [ ] stub chooser names candidate 2 → `job_captures` row on candidate 2, no customer link, no ask,
-      and that row reads `basis = 'chooser'` with the stub's reason
-- [ ] a link written by any path other than the chooser does NOT read `basis = 'chooser'` — the two
-      stay distinguishable in the record, which is the whole point of the amendment
-- [ ] **no flip**: stub names the in_progress candidate, extractor says `statusSignal: 'completed'` →
-      the job is STILL `in_progress`
-- [ ] **no silenced promise**: stub names a candidate that has a confirmed visit, `visitCommitted:
-      true` → an `inbound_commitment` IS raised, its context carries `jobBasis: 'chooser'` and the
-      reason. Mutation-check it against the plain `!visit` rule — this is the specimen's failure
-      trying to come back through a new door
-- [ ] the migration's check constraints refuse `basis = 'guess'` and a reason with no basis
-- [ ] the planner renders "chosen by a model from N candidates" for a chooser-based ask
-- [ ] stub returns null → first plan's behaviour exactly (customer link; ask iff committed)
-- [ ] stub returns an unlisted id → treated as null, nothing written
-- [ ] stub throws → customer link, no 503, error logged
-- [ ] a spy asserts the chooser is NOT called when the job is justified, when `mayGuess` is true, or
-      when `candidates.length <= 1` — the cost boundary
-- [ ] the specimen test from the first plan still passes: the live chooser is not in play there, and
-      a stub returning null must leave that assertion untouched
+- [ ] `extract.test.ts` pins still hold; `renderExtractionUser('x')` is still BARE; with candidates the
+      numbered block precedes the latest message; the schema declares both new fields
+- [ ] a spy extractor receives candidates for a two-job customer matched on email, and does NOT for:
+      a technician channel, `resolved`, `decided`, a re-entry, a thread-named job, one candidate, an
+      address-only identity
+- [ ] a pre-match that throws still extracts, without candidates
 
 ### Live verification (agent-executable)
-- Prerequisites: local stack seeded with two non-terminal jobs; `.env` for the live chooser.
-- [ ] Replay the specimen's text end-to-end through `recordFieldNote` with the real chooser.
-      Evidence: the `inbound_commitment` observation, its `candidates` list, the customer link, and
-      no `job_captures` row.
-- [ ] Replay a kitchen-tap message end-to-end. Evidence: a `job_captures` row on the kitchen tap job,
-      reading `basis = 'chooser'` with the model's own reason, and no observation.
+- Prerequisites: `.env` with the key.
+- [ ] Re-run the Phase 1 eval. Evidence: no field more than 1 of 24 below baseline; a dip is re-run
+      once before it counts.
+- [ ] Candidate fixtures, 3× each: the specimen against "Boiler diagnostic" / "Kitchen tap dripping" →
+      `jobChoice` absent; a kitchen-tap message → `2`. Evidence: all six results and reasons.
 
 ### Manual verification
-- [ ] Judge the end-to-end pair together: the same door, two messages, two different and correct
-      outcomes. This is the behaviour the whole arc exists to produce.
+- [ ] Read the six `jobChoiceReason`s: refusing for the right reason, naming confidently not luckily.
 
 ---
 *Pause after this phase — its manual list is non-empty.*
+
+## Phase 3: The door files on the answer, and nothing else
+
+### What this phase does
+Uses a valid answer to pick the job, records that a model picked it, and keeps both rulings.
+
+### Changes required
+
+**`supabase/migrations/<timestamp>_link_basis.sql`** (new) — on `job_captures` AND `visit_notes`: add
+`basis text`, `basis_reason text`; `check (basis is null or basis in ('model','inherited'))`;
+`check (basis_reason is null or basis is not null)`. Append both to `v_job_captures` and
+`v_visit_notes` via `CREATE OR REPLACE`, each view's tenant re-check copied verbatim. Then
+`npm run gen:types:local`.
+
+**`src/db/jobs.ts:468`, `src/db/visits.ts:1368`** — `insertJobCapture` / `insertVisitNote` take
+optional `basis` / `basisReason` and send those keys ONLY when set, so no write names a column the
+pilot lacks before the migration is applied.
+
+**`src/writePath/recordFieldNote.ts`**
+- At `:632`, before `:633`: if `extracted.jobChoice` is an integer in `1..candidates.length` and the
+  resolved `customerId` equals the pre-match customer, set `job = candidates[jobChoice - 1]` and
+  `jobFromModel = { reason: extracted.jobChoiceReason ?? '' }`, then SKIP `:633-636` entirely.
+- The ask at `:792-797`: when `jobFromModel`, a commitment asks even if `visit` is set, via
+  `observeInbound(job, candidates)` whose context gains `jobBasis`, `jobBasisReason` and, when a trip
+  attached, `attachedVisitId`.
+- The links at `:824` / `:890`: `basis: 'model'`, `basisReason` when `jobFromModel`.
+- The status block at `:901-906`: skipped when `jobFromModel`.
+
+**`src/teamLead/planner.ts:1590`** — the `open job …` line appends
+` — chosen by a model from N open jobs: <reason>`, and ` (already on a booked trip)` with `attachedVisitId`.
+
+**`src/mcp/server.ts:851`** — the `v_job_captures(…)` and `v_visit_notes(…)` catalog lists name
+`basis, basis_reason`.
+
+**`docs/onboarding.md:129`, `docs/engineering-memory.md`** — "never a model guess" holds for the
+customer; the job may be a model's answer, bounded by a numbered list and recorded as such.
+
+### Automated verification
+- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass
+- [ ] `jobChoice: 2`, uncommitted, candidate 2 has no trip → `job_captures` on it, `basis='model'`
+- [ ] same with a confirmed visit on candidate 2 → a `visit_notes` link with `basis='model'`
+- [ ] **no flip:** the chosen job is `in_progress`, `statusSignal: 'completed'` → still `in_progress`
+- [ ] **no silenced promise:** chosen job has a visit, `visitCommitted: true` → `inbound_commitment`
+      with `jobBasis`, reason, `attachedVisitId`. Mutation-check against the plain `!visit` rule.
+- [ ] `jobChoice` of `0`, `3` of 2, `1.5`, `"2"` → none, PR #235 behaviour
+- [ ] pre-match customer ≠ final customer → answer ignored
+- [ ] every other link path writes a null basis; the CHECKs refuse `'guess'` and a reason without basis
+- [ ] the existing specimen test passes unchanged (its stub leaves `jobChoice` unset)
+- [ ] the planner renders the model-choice line
+
+### Live verification (agent-executable)
+- Prerequisites: local stack; `.env`.
+- [ ] Live extractor, local stack: the specimen → ask, customer link, no job link; a kitchen-tap
+      message → a `basis='model'` link on the tap job carrying the model's reason. Evidence: the rows.
+
+### Manual verification
+- [ ] Judge the pair together: one door, two messages, two different and correct outcomes.
+
+---
+*Pause after this phase — its manual list is non-empty.*
+
+## Phase 4: A reply on the thread keeps the doubt
+
+### What this phase does
+Builds option (A) of the OPEN decision: the thread lookup reports whether its job came only from a
+model's pick, and the door treats that reply exactly like the pick. Replace with (B) if the user
+chooses it: arms (b)/(c) skip basis-bearing links, and the test is that the reply is re-picked.
+
+### Changes required
+
+**`src/db/rawCaptures.ts:703`** — `ThreadIdentity` gains `jobBasis: 'model' | null`,
+`jobBasisReason`, `jobBasisCaptureId`.
+
+**`src/db/rawCaptures.ts:737`** — arms (b) and (c) also select `capture_id, basis, basis_reason`. A job
+is `'model'` only when EVERY link reaching it on the thread carries a basis and no stamp (arm a) names
+it; one null-basis link or stamp is independent evidence and grounds it.
+
+**`src/writePath/identityMatch.ts:137-154`** — `withThreadJob` copies the adopted job's basis into
+`MatchResult`.
+
+**`src/writePath/recordFieldNote.ts`** — `match.jobBasis === 'model'` sets `jobFromModel` as Phase 3
+does; that link writes `basis: 'inherited'`, `basisReason: 'inherited from capture <id>: <reason>'`.
+
+### Automated verification
+- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass
+- [ ] two messages on one thread: msg 1 model-picks the tap job (trip attached); msg 2 with
+      `statusSignal: 'completed'` and `visitCommitted: true` → not flipped, asked, `basis='inherited'`
+      naming msg 1
+- [ ] a third message inherits again
+- [ ] a null-basis link or a stamp on the same job clears the doubt — msg 2 behaves as thread-named
+
+### Live verification (agent-executable)
+- [ ] none — deterministic, fully covered above
+
+### Manual verification
+- [ ] none
+
+---
+*Automated checks suffice; continue.*
+
+## Deploy note
+
+Deploys run NO migrations. Hand-apply PR #235's `customer_captures` migration, then this plan's
+`link_basis` migration, to the pilot BEFORE the code. Never `db push`.

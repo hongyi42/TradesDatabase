@@ -9,7 +9,7 @@ import {
   isAgentWrittenCapture,
   listL2CitingCapture,
 } from '../db/rawCaptures.js';
-import { createCustomer } from '../db/customers.js';
+import { createCustomer, insertCustomerCapture } from '../db/customers.js';
 import { appendJobCorrespondence, createJob, insertJobCapture } from '../db/jobs.js';
 import { createVisit, insertVisitNote, updateVisitStatus } from '../db/visits.js';
 import { upsertJobTypeDuration } from '../db/jobTypeDurations.js';
@@ -9084,6 +9084,36 @@ describe('rung 10 — job links and correspondence', () => {
     const links = await pg.query<{ capture_id: string }>(
       'select capture_id from job_captures where job_id = $1',
       [job.id],
+    );
+    expect(links.rows.map((r) => r.capture_id).sort()).toEqual(
+      [cap.id, done.data.retractionId as string].sort(),
+    );
+  });
+
+  test('a retraction FOLLOWS its target onto the CUSTOMER link when there is no job', async () => {
+    // The door files a capture on customer_captures when it knows WHO wrote but
+    // not WHICH job. In the #239 merge this loop sat in an empty-HEAD conflict
+    // hunk, and a suite that tested it only through src/db would have passed with
+    // it dropped. Driven through the MCP server so that cannot happen again.
+    const customer = await createCustomer({ tenantId, name: 'Customer Link Cust', phone: '555-7790' });
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp', // the calling identity — retraction is the author's
+      rawText: 'filed on the customer, no job named',
+    });
+    await insertCustomerCapture({ tenantId, customerId: customer.id, captureId: cap.id });
+
+    const staged = await call('retract_capture', { captureId: cap.id, reason: 'wrong customer' });
+    expect(staged.isError).toBe(false);
+    const done = await call('retract_capture', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('retracted');
+
+    // The link loop runs inside a swallow-and-log try, so the tool reports
+    // success even if it never ran: only the table can tell.
+    const links = await pg.query<{ capture_id: string }>(
+      'select capture_id from customer_captures where customer_id = $1',
+      [customer.id],
     );
     expect(links.rows.map((r) => r.capture_id).sort()).toEqual(
       [cap.id, done.data.retractionId as string].sort(),

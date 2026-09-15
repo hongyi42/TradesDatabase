@@ -314,14 +314,39 @@ export async function captureHasLinkedVisit(captureId: string): Promise<boolean>
 // derivable from the fetched list alone: a tech-note capture usually has NULL
 // customer_id/job_id stamps (identity resolves after L1, which is immutable),
 // so its retraction may not appear in the same stamped list.
+//
+// CHUNKED, because callers hand it every capture id a customer's context holds
+// and L1 only grows. One `in.()` builds the whole id list into the URL, and the
+// API gateway in front of PostgREST refuses a request past 8192 bytes with a
+// 414 ("URI too long") that failed the entire read. Measured for THIS query
+// through the LOCAL stack's gateway (2026-09-14): 150 ids = 5,929 bytes passes,
+// 214 = 8,425 bytes is refused (postgrest-js percent-encodes the parens and
+// commas, so the wall sits near 205 ids, lower than the 215 bisected for
+// findCustomersByThread below). The hosted gateway's limit is not verified;
+// 150 keeps ~2.2 KB of headroom against the local one.
+// Deduped first: postgrest-js dedupes within one `.in()` but not across chunks,
+// so a repeated id would otherwise return its retraction twice. One retraction
+// per target (uq_raw_captures_one_retraction) keeps each chunk ≤150 rows, under
+// PostgREST's silent 1000-row cap. Chunks run in parallel: these are seat and
+// planner reads, and the result is a set, so order across chunks is irrelevant.
+const RETRACTION_CHUNK = 150;
 export async function findRetractionsFor(captureIds: string[]): Promise<RawCapture[]> {
-  if (captureIds.length === 0) return [];
-  const { data, error } = await getClient()
-    .from('raw_captures')
-    .select()
-    .in('retracts_capture_id', captureIds);
-  if (error) throw new Error(`findRetractionsFor failed: ${error.message}`);
-  return data ?? [];
+  const ids = [...new Set(captureIds)];
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += RETRACTION_CHUNK) {
+    chunks.push(ids.slice(i, i + RETRACTION_CHUNK));
+  }
+  const pages = await Promise.all(
+    chunks.map(async (chunk) => {
+      const { data, error } = await getClient()
+        .from('raw_captures')
+        .select()
+        .in('retracts_capture_id', chunk);
+      if (error) throw new Error(`findRetractionsFor failed: ${error.message}`);
+      return data ?? [];
+    }),
+  );
+  return pages.flat();
 }
 
 // The planner's evidence read (plan 2026-08-19, Phase 3): what actually LANDED

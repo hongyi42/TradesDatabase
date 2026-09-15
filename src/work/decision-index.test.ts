@@ -78,6 +78,18 @@ beforeAll(() => {
     '## Notes', '', 'Decided against.', '',
   ].join('\n'));
 
+  // A busy file whose four slots are wanted by PROSE mentions from docs/, each seeded at
+  // mentions 100 — the shape that hid src/mcp/server.ts's tool-registry finding (2026-09-14).
+  write('src/busy.ts', 'export const busy = 3;\n');
+  for (let i = 1; i <= 4; i++) {
+    write(`docs/busy-${i}.md`, `# Busy ${i}\n\n- src/busy.ts is mentioned in passing.\n`);
+  }
+  write('thoughts/shared/findings/2026-09-10-a-finding-on-a-busy-file.md', [
+    '---', 'date: 2026-09-10', 'task: a finding on a busy file', 'status: complete',
+    'origin: 20260910-something', 'files: src/busy.ts', 'supersedes: nothing', '---', '',
+    '## Notes', '', 'The prose never names the file a second time.', '',
+  ].join('\n'));
+
   execFileSync('node', [CLI], {
     cwd: tmp,
     encoding: 'utf8',
@@ -109,6 +121,16 @@ describe('decision-index.mjs — promoted findings', () => {
     // mentions alone it loses every tiebreak. It is here because it ranks above a plain doc.
     expect(byFile['src/foo.ts']).toHaveLength(4);
     expect(byFile['src/foo.ts'][0].kind).toBe('finding');
+  });
+
+  test('a finding outranks prose mentions from docs/, which are seeded at mentions 100', () => {
+    // Sharing a rank with a prose mention, the finding lost every tiebreak on mentions and
+    // MAX_PER_FILE dropped it — so the hook never showed it on the file its trap bites.
+    const list = byFile['src/busy.ts'];
+    expect(list).toHaveLength(4);
+    expect(list[0].kind).toBe('finding');
+    expect(list[0].where).toContain('a-finding-on-a-busy-file');
+    expect(list.slice(1).map((e) => e.kind)).toEqual(['doc', 'doc', 'doc']);
   });
 
   test('a finding attaches to any repo path it names, not just the src/*.ts prose shape', () => {

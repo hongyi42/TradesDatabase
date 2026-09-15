@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import { getClient } from './client.js';
 import {
@@ -101,6 +102,21 @@ describe('folding primitives', () => {
     expect(await findRetractionsFor([])).toEqual([]);
     const found = await findRetractionsFor([target.id, other.id]);
     expect(found.map((r) => r.id)).toEqual([retraction.id]);
+  });
+
+  test('findRetractionsFor reads past the 8192-byte URL wall, once per retraction', async () => {
+    // Callers pass every capture id a customer's context holds, and L1 only
+    // grows. One `in.()` past ~205 ids builds a URL PostgREST refuses with 414,
+    // which failed the whole read.
+    const first = await note();
+    const last = await note();
+    const rFirst = await retractionOf(first);
+    const rLast = await retractionOf(last);
+    const filler = Array.from({ length: 498 }, () => randomUUID());
+    // 501 ids, and first.id repeated at the end so it lands in a SECOND chunk:
+    // the retraction must still come back once, as a single `in.()` returned it.
+    const found = await findRetractionsFor([first.id, ...filler, last.id, first.id]);
+    expect(found.map((r) => r.id).sort()).toEqual([rFirst.id, rLast.id].sort());
   });
 
   test('foldRetractions drops the target and all retraction rows, keeps the rest', async () => {

@@ -3796,6 +3796,7 @@ export type Database = {
           p_recent_jobs?: number
           p_snippet_chars?: number
           p_tenant: string
+          p_terminal_statuses?: string[]
         }
         Returns: Json
       }

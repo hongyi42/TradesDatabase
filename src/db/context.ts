@@ -14,7 +14,7 @@
 import { getClient } from './client.js';
 import type { Customer } from './customers.js';
 import { getTenant } from './tenants.js';
-import { foldRetractedCorrespondence, type Job } from './jobs.js';
+import { TERMINAL_JOB_STATUSES, foldRetractedCorrespondence, type Job } from './jobs.js';
 import { listUpcomingVisitsForCustomer, participantIdsOf, participantsOf } from './visits.js';
 import { foldRetractedFacts } from './standingFacts.js';
 import { summarizeMoney, type MoneyEvent, type MoneySummary } from './moneyEvents.js';
@@ -91,8 +91,12 @@ export type JobContents = Job & {
 
 export interface CustomerContents {
   customer: Customer;
+  // Up to ten jobs: every LIVE job first (not paid, cancelled or declined),
+  // then the newest finished ones — so work still open, unbooked or unpaid is
+  // never pushed off the page by newer finished jobs.
   jobs: JobContents[];
   jobsTotal: number;
+  // How many jobs are on file but not on the page.
   olderJobs: number;
   // Captures filed on the customer with no job anywhere on the record (the
   // door knew WHO, not WHICH).
@@ -431,6 +435,8 @@ async function readContents(
     p_tenant: tenantId,
     p_customer: customerId,
     p_caller_tier: tier,
+    // The one definition of "finished work", derived from the job state machine.
+    p_terminal_statuses: [...TERMINAL_JOB_STATUSES],
   });
   if (error) throw new Error(`customer_contents failed: ${error.message}`);
   if (data === null || typeof data !== 'object' || Array.isArray(data)) return null;

@@ -1390,17 +1390,21 @@ describe('the size cap at the door', () => {
     await createJob({ tenantId, customerId: customer.id, title: 'Cap job one' });
     await createJob({ tenantId, customerId: customer.id, title: 'Cap job two' });
     const before = process.env.SPINE_RESULT_CAP_CHARS;
-    process.env.SPINE_RESULT_CAP_CHARS = '400';
+    process.env.SPINE_RESULT_CAP_CHARS = '600';
     try {
       const res = await call('get_customer_context', { customerId: customer.id });
       expect(res.isError).toBe(false);
-      // `call` already JSON.parsed the text — so the cut object parses.
+      // `call` already JSON.parsed the text — so the cut object parses, and it
+      // fits its own limit (escaping the embedded text must not push it over).
+      expect(res.text.length).toBeLessThanOrEqual(600);
       expect(res.data.truncated).toBe(true);
-      expect(res.data.limit).toBe(400);
-      expect(res.data.chars).toBeGreaterThan(400);
-      expect(res.data.partial).toHaveLength(400);
+      expect(res.data.limit).toBe(600);
+      expect(res.data.chars).toBeGreaterThan(600);
+      expect(res.data.partial.length).toBeGreaterThan(0);
       expect(res.data.partial.startsWith('{"customer":')).toBe(true);
       expect(res.data.note).toContain('get_capture');
+      // The `now` rider rides on the cut object, not lost off the tail.
+      expect(typeof res.data.now).toBe('string');
     } finally {
       if (before === undefined) delete process.env.SPINE_RESULT_CAP_CHARS;
       else process.env.SPINE_RESULT_CAP_CHARS = before;

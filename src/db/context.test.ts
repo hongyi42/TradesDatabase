@@ -179,6 +179,24 @@ describe('getCustomerContents', () => {
     expect(otherContents.upcomingVisits.map((u) => u.visitId)).toEqual([theirRow.id]);
   });
 
+  test('live work is never pushed off the page: an old open job outranks eleven newer finished ones', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Busy Cust' });
+    const oldOpen = await createJob({ tenantId, customerId: customer.id, title: 'Old open job' });
+    for (let i = 0; i < 11; i++) {
+      const done = await createJob({ tenantId, customerId: customer.id, title: `Finished ${i}` });
+      await pg.query("update jobs set status = 'paid' where id = $1", [done.id]);
+    }
+    const contents = (await getCustomerContents(tenantId, customer.id, 'manager'))!;
+    expect(contents.jobsTotal).toBe(12);
+    expect(contents.jobs).toHaveLength(10);
+    expect(contents.olderJobs).toBe(2);
+    // The live job leads; the rest are the newest finished ones.
+    expect(contents.jobs[0].id).toBe(oldOpen.id);
+    expect(contents.jobs.slice(1).every((j) => j.status === 'paid')).toBe(true);
+    // The sort key never leaks into the job row.
+    expect((contents.jobs[0] as unknown as Record<string, unknown>).finished).toBeUndefined();
+  });
+
   test('listRawCapturesForCustomer returns newest first', async () => {
     const customer = await createCustomer({ tenantId, name: 'Order Cust' });
     const older = await appendRawCapture({

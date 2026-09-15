@@ -91,10 +91,12 @@ const BASE_TOOLS = [
     name: 'get_customer_context',
     description:
       'The CONTENTS PAGE for a customer — fixed size, never their whole history. It carries the ' +
-      'profile and standing facts; the 10 most recent jobs, each with status, attributes, ' +
+      'profile and standing facts; up to 10 jobs — every job still in progress, unbooked or ' +
+      'unpaid first, then the newest finished ones — each with status, attributes, ' +
       'noteCount (notes you may read), restrictedCount (notes on file but outside your view), ' +
       "lastCaptureAt, lastVisitAt and `newest` — the newest note's first 200 characters with its " +
-      'captureId; olderJobs says how many more jobs exist; customerLevelNotes is what was filed ' +
+      'captureId; olderJobs says how many more (finished) jobs are on file but not shown — ' +
+      'get_job(jobId) reads one; customerLevelNotes is what was filed ' +
       'on the customer with no job. To READ a job\'s notes call list_recent_captures(jobId) — it ' +
       'pages; for one note\'s full words call get_capture(captureId). Answer from what is on the ' +
       'page when it is enough, and open only what you need. ' +
@@ -397,6 +399,10 @@ async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> 
         // Absence in words, and the way onward: a page is not the history.
         note:
           (contents.jobsTotal === 0 ? 'No jobs on file for this customer. ' : '') +
+          (contents.olderJobs > 0
+            ? `${contents.olderJobs} more job${contents.olderJobs === 1 ? '' : 's'} on file not shown ` +
+              '(live work is always shown first). '
+            : '') +
           'This is the contents page. list_recent_captures(jobId) pages a job\'s notes; ' +
           'get_capture(captureId) gives one note in full.',
       };

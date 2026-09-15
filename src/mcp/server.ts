@@ -906,10 +906,20 @@ export function createServer(deps: ServerDeps = {}): Server {
         }
       }
       // THE SIZE CAP AT THE DOOR (plan 2026-09-15-the-retrieval-layer-1, Phase
-      // 4): a result over the limit is cut and SAYS so — the `now` rider and
-      // the board link ride inside `partial`; the cap object is not
-      // re-decorated, because a decoration must never break a committed result.
-      return { content: [{ type: 'text' as const, text: capToolResult(JSON.stringify(grounded)) }] };
+      // 4): a result over the limit is cut and SAYS so. The decorations sit at
+      // the END of the serialized result — the first thing a cut would drop —
+      // so they are carried onto the cut object itself: a capped schedule read
+      // still ends with its board link, and a capped read still re-grounds `now`.
+      const carry: Record<string, unknown> = {};
+      if (grounded && typeof grounded === 'object' && !Array.isArray(grounded)) {
+        const g = grounded as Record<string, unknown>;
+        for (const key of ['boardLink', 'boardNote', 'now']) {
+          if (g[key] !== undefined) carry[key] = g[key];
+        }
+      }
+      return {
+        content: [{ type: 'text' as const, text: capToolResult(JSON.stringify(grounded), undefined, carry) }],
+      };
     } catch (err) {
       return {
         content: [{ type: 'text' as const, text: err instanceof Error ? err.message : String(err) }],

@@ -175,7 +175,11 @@ create or replace function customer_contents(
   p_customer uuid,
   p_caller_tier text,
   p_recent_jobs int default 10,
-  p_snippet_chars int default 200
+  p_snippet_chars int default 200,
+  -- The statuses with no way forward (paid, cancelled, declined). Passed IN from
+  -- src/db/jobs.ts TERMINAL_JOB_STATUSES, which derives them from the job state
+  -- machine, so the database never hand-lists a copy that could drift.
+  p_terminal_statuses text[] default '{}'::text[]
 )
 returns jsonb
 language plpgsql
@@ -200,15 +204,19 @@ begin
   select count(*) into v_jobs_total
     from jobs where customer_id = p_customer and tenant_id = p_tenant;
 
-  -- The jobs block: the p_recent_jobs newest, each with its counts, its newest
-  -- visible note's opening, its last completed trip, and its money rows (minus
-  -- any that cite a retracted capture — the fold covers money too).
-  select coalesce(jsonb_agg(x.job_json order by x.created_at desc, x.id desc), '[]'::jsonb)
+  -- The jobs block: p_recent_jobs jobs, LIVE WORK FIRST, then the newest
+  -- finished ones — so an old job that is still open, unbooked or unpaid is
+  -- never pushed off the page by newer finished work (review finding: its
+  -- openWorkNote and money would otherwise vanish, and "absent" reads as
+  -- "nothing recorded"). Each job carries its counts, its newest visible note's
+  -- opening, its last completed trip, and its money rows (minus any that cite a
+  -- retracted capture — the fold covers money too).
+  select coalesce(jsonb_agg(x.job_json order by x.finished, x.created_at desc, x.id desc), '[]'::jsonb)
     into v_jobs
     from (
-      select j.created_at, j.id,
+      select j.finished, j.created_at, j.id,
              jsonb_build_object(
-               'job', to_jsonb(j),
+               'job', to_jsonb(j) - 'finished',  -- the sort key is not a job column
                'note_count', stats.note_count,
                'restricted_count', stats.restricted_count,
                'last_capture_at', stats.last_capture_at,
@@ -225,9 +233,10 @@ begin
                                  where m.job_id = j.id and m.tenant_id = j.tenant_id
                                    and (m.source_capture_id is null or capture_is_live(m.source_capture_id)))
              ) as job_json
-        from (select * from jobs
+        from (select jobs.*, (jobs.status::text = any(coalesce(p_terminal_statuses, '{}'::text[]))) as finished
+                from jobs
                where customer_id = p_customer and tenant_id = p_tenant
-               order by created_at desc, id desc
+               order by finished, created_at desc, id desc
                limit v_recent) j
         cross join lateral (
           select count(*) filter (where capture_visible(c.channel, c.sensitivity, p_caller_tier)) as note_count,
@@ -530,7 +539,7 @@ revoke all on function capture_is_live(uuid) from public, anon, authenticated;
 revoke all on function capture_visible(capture_channel, text, text) from public, anon, authenticated;
 revoke all on function capture_scope_found(uuid, text, uuid) from public, anon, authenticated;
 revoke all on function capture_scope_members(uuid, text, uuid) from public, anon, authenticated;
-revoke all on function customer_contents(uuid, uuid, text, int, int) from public, anon, authenticated;
+revoke all on function customer_contents(uuid, uuid, text, int, int, text[]) from public, anon, authenticated;
 revoke all on function captures_page(uuid, text, uuid, text, timestamptz, uuid, int, int, boolean) from public, anon, authenticated;
 revoke all on function capture_full(uuid, uuid, text, boolean) from public, anon, authenticated;
 revoke all on function search_captures(uuid, text, uuid, text, text, int, int) from public, anon, authenticated;
@@ -538,7 +547,7 @@ grant execute on function capture_is_live(uuid) to service_role;
 grant execute on function capture_visible(capture_channel, text, text) to service_role;
 grant execute on function capture_scope_found(uuid, text, uuid) to service_role;
 grant execute on function capture_scope_members(uuid, text, uuid) to service_role;
-grant execute on function customer_contents(uuid, uuid, text, int, int) to service_role;
+grant execute on function customer_contents(uuid, uuid, text, int, int, text[]) to service_role;
 grant execute on function captures_page(uuid, text, uuid, text, timestamptz, uuid, int, int, boolean) to service_role;
 grant execute on function capture_full(uuid, uuid, text, boolean) to service_role;
 grant execute on function search_captures(uuid, text, uuid, text, text, int, int) to service_role;

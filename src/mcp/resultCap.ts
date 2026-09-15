@@ -21,29 +21,46 @@ export const DEFAULT_RESULT_CAP_CHARS = 20_000;
 export const resultCapChars = (): number =>
   safeEnvInt(process.env.SPINE_RESULT_CAP_CHARS, DEFAULT_RESULT_CAP_CHARS);
 
-export interface CappedResult {
-  truncated: true;
-  chars: number;
-  limit: number;
-  note: string;
-  partial: string;
-}
-
 // The serialized result, unchanged when it fits; otherwise a small, still-valid
-// JSON object that says how big it was, where it was cut, and how to ask for
-// less. `partial` is the head of the original text — enough for the model to
-// see what it was looking at, not enough to flood it. A cap of 0 disables the
-// backstop (an operator's explicit choice, not a default).
-export function capToolResult(text: string, cap: number = resultCapChars()): string {
+// JSON object that says how big it was, that it was cut, and how to ask for
+// less. The object as a whole fits the limit — `partial` is the longest head
+// of the original text whose ESCAPED form still fits, because quoting the
+// already-serialized text inside a string doubles its quotes and backslashes
+// (review finding: a plain slice at `cap` produced ~25k characters against a
+// 20k limit).
+//
+// `carry` holds the hub's decorations — the `now` rider, the board link and
+// its instruction — which sit at the END of a serialized result and so would
+// be the first thing a cut drops. They ride on the cut object itself instead.
+//
+// A cap of 0 disables the backstop (an operator's explicit choice, never the
+// fallback). A cap too small for even the envelope returns the envelope with an
+// empty `partial`: the announcement matters more than the limit at that size.
+export function capToolResult(
+  text: string,
+  cap: number = resultCapChars(),
+  carry: Record<string, unknown> = {},
+): string {
   if (cap <= 0 || text.length <= cap) return text;
-  const capped: CappedResult = {
-    truncated: true,
-    chars: text.length,
-    limit: cap,
-    note:
-      `This result was ${text.length} characters, over the ${cap}-character limit, and was cut. ` +
-      'Ask for less: one job, one page (`before`), one note (get_capture), or search_captures.',
-    partial: text.slice(0, cap),
-  };
-  return JSON.stringify(capped);
+  const envelope = (partial: string): string =>
+    JSON.stringify({
+      truncated: true,
+      chars: text.length,
+      limit: cap,
+      note:
+        `This result was ${text.length} characters, over the ${cap}-character limit, and was cut. ` +
+        'Ask for less: one job, one page (`before`), one note (get_capture), or search_captures.',
+      ...carry,
+      partial,
+    });
+  // Binary search on the head length: escaping only grows a string, so the
+  // envelope's length is monotone in the head's length.
+  let lo = 0;
+  let hi = Math.min(text.length, cap);
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (envelope(text.slice(0, mid)).length <= cap) lo = mid;
+    else hi = mid - 1;
+  }
+  return envelope(text.slice(0, lo));
 }

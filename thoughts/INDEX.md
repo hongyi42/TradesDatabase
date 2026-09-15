@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 252 documents · 241 live · 11 superseded.
+Regenerate with `npm run decisions:index`. 253 documents · 242 live · 11 superseded.
 
 ## Superseded — do not build on these
 
@@ -50,6 +50,7 @@ Regenerate with `npm run decisions:index`. 252 documents · 241 live · 11 super
 
 ## Live
 
+- `2026-09-15` `plan` [2026-09-15-the-retrieval-layer-1-captures-and-the-customer-read](shared/plans/2026-09-15-the-retrieval-layer-1-captures-and-the-customer-read.md) `describes 1 deleted file` · _draft_ — The retrieval layer, plan 1 of 4 — captures and the customer read: one membership definition in the database,…
 - `2026-09-15` `research` [2026-09-15-the-retrieval-and-delivery-layer](shared/research/2026-09-15-the-retrieval-and-delivery-layer.md) `not landed` — The retrieval-and-delivery layer — how every tool (technician, manager, planner) and every pushed prompt bloc…
 - `2026-09-14` `finding` [2026-09-14-calls-worker-auto-deploys-on-every-merge](shared/findings/2026-09-14-calls-worker-auto-deploys-on-every-merge.md) — Calls-worker auto-deploys on every merge to main, so code can reach it before its migration
 - `2026-09-14` `finding` [2026-09-14-the-link-views-expose-basis-reason-but-c](shared/findings/2026-09-14-the-link-views-expose-basis-reason-but-c.md) — the link views expose basis_reason but carry no retracted flag, so a retracted message's model reasoning stay…

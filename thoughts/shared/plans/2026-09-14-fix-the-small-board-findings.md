@@ -286,14 +286,14 @@ test('a finding outranks prose mentions from docs/, which are seeded at mentions
 merging main; never merge by-file.json by hand.
 
 ### Automated verification
-- [ ] Red first: with ONLY the test changes, `npx vitest run src/work/decision-index.test.ts` fails
+- [x] Red first: with ONLY the test changes, `npx vitest run src/work/decision-index.test.ts` fails
       on `list[0].kind` (a `doc`).
-- [ ] After the change all tests in that file pass, including `--check` and CRLF.
-- [ ] `npm run decisions:index`, then
+- [x] After the change all tests in that file pass, including `--check` and CRLF.
+- [x] `npm run decisions:index`, then
       `node -e 'const j=require("./thoughts/by-file.json");console.log(j["src/mcp/server.ts"].map(e=>e.kind+" "+e.where))'`
       lists `thoughts/shared/findings/2026-09-11-split-src-mcp-server-ts-s-tool-registry.md`.
-- [ ] `node scripts/decision-index.mjs --check` exits 0 after the regenerate is committed.
-- [ ] `npm run typecheck`, `npm run lint`, full `npm test`, `npm run build` pass. Stage by name — never
+- [x] `node scripts/decision-index.mjs --check` exits 0 after the regenerate is committed.
+- [x] `npm run typecheck`, `npm run lint`, full `npm test`, `npm run build` pass. Stage by name — never
       `git add -A`: supabase/config.toml holds the uncommitted second-stack rewrite.
 
 ### Live / manual verification

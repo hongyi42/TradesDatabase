@@ -556,7 +556,10 @@ for (const d of docs) {
       // it loses every tiebreak and MAX_PER_FILE drops it. That is silent and backwards: 52 of
       // this repo's 96 attached files are already at the cap, and they are exactly the busy
       // files a finding is most likely to be about. A dropped one keeps `superseded` and stays
-      // last, because somebody decided against it.
+      // last, because somebody decided against it. It also ranks ABOVE a prose mention from
+      // docs/: those are seeded `mentions: 100` below, so sharing their rank lost every tiebreak
+      // too — src/mcp/server.ts hid its tool-registry finding behind two passing doc references
+      // that way until 2026-09-14.
       statusClass: d.kind === 'finding' && d.statusClass !== 'superseded' ? 'finding' : d.statusClass,
       supersededBy: d.supersededBy,
       drift: d.drift,
@@ -600,8 +603,8 @@ for (const list of Object.values(byFile)) {
 // The hook's view: hardest-won facts first, then the documents that are most about this file.
 // Superseded documents are kept but ranked last and labelled — knowing a decision was reversed
 // is worth more than not knowing the document exists.
-const RANK = { rule: 0, memory: 1, doc: 2, finding: 2, superseded: 4 };
-const rank = (e) => RANK[e.statusClass] ?? 3;
+const RANK = { rule: 0, memory: 1, finding: 2, doc: 3, superseded: 5 };
+const rank = (e) => RANK[e.statusClass] ?? 4; // plan/research: complete, unknown, draft, other
 const hookView = {};
 for (const [file, list] of Object.entries(byFile)) {
   hookView[file] = [...list]

@@ -61,6 +61,7 @@ import {
 } from '../../writePath/identityMatch.js';
 import {
   AUDIT_CHANNELS,
+  OUTSIDE_VIEW_NOTE,
   TECH_CHANNELS,
   UUID_RE,
   callerTierOf,
@@ -73,6 +74,7 @@ import {
   resolutionFrom,
   retractedResult,
   stagedNotePreview,
+  viewerIdOf,
 } from './shared.js';
 import type {
   StagedNoteDetail,
@@ -134,7 +136,7 @@ const BASE_TOOLS = [
       "ONE PAGE of the notes on a job (jobId) or across a customer's whole record (customerId), " +
       'newest first — 20 per page by default, each note cut to 600 characters (textTruncated ' +
       'says so; get_capture(captureId) gives the full words). Retracted notes are gone. The ' +
-      'result says totalVisible and restrictedCount (notes on file but outside your view), and ' +
+      'result says totalVisible and restrictedCount (notes on file here that you may not read), and ' +
       'when hasMore is true, `next` is the cursor: call again with `before` set to it for the ' +
       'older page. Managers may pass includeRetracted:true for the full labeled trail.',
     inputSchema: {
@@ -698,19 +700,37 @@ async function handleListRecentCaptures(toolCtx: ToolContext): Promise<unknown> 
       // THE LAYER DOES THE REST (plan 2026-09-15-the-retrieval-layer-1): every
       // attachment kind, the retraction fold, the tier gate, the tenant check on
       // the scoped parent, a total order and the page cut — one call, one query.
-      const page = await listCapturesPage(tenantId, scope, scopeId, callerTierOf(toolCtx), {
-        ...decodeCursor(str('before')),
-        limit: intArg(args, 'limit'),
-        textChars: intArg(args, 'textChars'),
-        includeRetracted,
-      });
+      const page = await listCapturesPage(
+        tenantId,
+        scope,
+        scopeId,
+        callerTierOf(toolCtx),
+        {
+          ...decodeCursor(str('before')),
+          limit: intArg(args, 'limit'),
+          textChars: intArg(args, 'textChars'),
+          includeRetracted,
+        },
+        viewerIdOf(toolCtx),
+      );
       // A cross-tenant (or unknown) parent reads as an unknown scope — the same
       // answer as an empty one, said in words rather than as a bare [].
       const note = !page.scopeFound
         ? `no such ${scope} on this firm`
+        : !page.inView
+          // Her own notes stay readable wherever they sit (operator, 2026-09-15).
+          ? page.captures.length > 0
+            // Not "yours": a note also filed on work in her view passes too.
+            ? `${OUTSIDE_VIEW_NOTE} The notes shown here are ones you may read anyway — your own, ` +
+              'or ones also filed on work in your view.' +
+              (page.hasMore ? ' More of them are older — call again with before=next.' : '')
+            : OUTSIDE_VIEW_NOTE
         : page.captures.length === 0
           ? page.restrictedCount > 0
-            ? `no notes you may read here — ${page.restrictedCount} on file are outside your view`
+            // Restricted = on a record she may open, closed to her by its content
+            // (channel, manager_only, a hidden tag). "Outside your view" is kept
+            // for a job or customer she may not open at all (OUTSIDE_VIEW_NOTE).
+            ? `no notes you may read here — ${page.restrictedCount} on file are closed to you (a manager can open them)`
             : 'no notes on file here yet'
           : page.hasMore
             // No remaining count: totalVisible is the whole scope, not what is
@@ -718,6 +738,7 @@ async function handleListRecentCaptures(toolCtx: ToolContext): Promise<unknown> 
             ? `more older notes — call again with before=next (${page.totalVisible} you may read in all)`
             : 'that is every note you may read here';
       return {
+        ...(page.inView ? {} : { inView: false }),
         captures: page.captures,
         hasMore: page.hasMore,
         next: encodeCursor(page.next),
@@ -740,7 +761,13 @@ async function handleGetCapture(toolCtx: ToolContext): Promise<unknown> {
       if (includeRetracted && !activeManager) {
         throw new Error('includeRetracted requires a manager badge');
       }
-      const capture = await getCaptureFull(tenantId, captureId, callerTierOf(toolCtx), includeRetracted);
+      const capture = await getCaptureFull(
+        tenantId,
+        captureId,
+        callerTierOf(toolCtx),
+        includeRetracted,
+        viewerIdOf(toolCtx),
+      );
       // One answer for wrong-tenant, hidden and retracted — a distinct error
       // would confirm the id exists.
       if (!capture) {
@@ -754,17 +781,30 @@ async function handleSearchCaptures(toolCtx: ToolContext): Promise<unknown> {
       const query = str('query');
       if (!query || !query.trim()) throw new Error('query is required — a word, code or number');
       const { scope, scopeId } = scopeOf('search_captures', str);
-      const found = await searchCaptures(tenantId, scope, scopeId, query, callerTierOf(toolCtx), {
-        limit: intArg(args, 'limit'),
-      });
+      const found = await searchCaptures(
+        tenantId,
+        scope,
+        scopeId,
+        query,
+        callerTierOf(toolCtx),
+        { limit: intArg(args, 'limit') },
+        viewerIdOf(toolCtx),
+      );
       const note = !found.scopeFound
         ? `no such ${scope} on this firm`
+        : !found.inView
+          ? found.count > 0
+            ? `${OUTSIDE_VIEW_NOTE} Only notes you may read anyway were searched — your own, or ` +
+              'ones also filed on work in your view.'
+            : OUTSIDE_VIEW_NOTE
         : found.count === 0
           ? `nothing you may read here mentions "${found.query}"`
           : found.more
             ? `more matches exist — narrow the query, or raise limit`
             : `${found.count} match${found.count === 1 ? '' : 'es'} — get_capture(captureId) for the full words`;
-      return { ...found, note };
+      // inView rides the result only when it is false (the list_recent_captures shape).
+      const { inView, ...rest } = found;
+      return { ...rest, ...(inView ? {} : { inView: false }), note };
 }
 
 async function handleRetractCapture(toolCtx: ToolContext): Promise<unknown> {

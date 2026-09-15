@@ -24,6 +24,10 @@ The request flow (ask, desk relay, `grant_access`, message back) is parked task
   customers of her own jobs that are not terminal (`TERMINAL_JOB_STATUSES`: paid, cancelled,
   declined; completed/invoiced still count). In view: own jobs + every non-terminal job of a served
   customer + granted. Customers in view: customers of own jobs + granted.
+- **Her own notes, always (operator, 2026-09-15, Phase 1 review).** A TECHNICIAN-channel capture
+  stamped with her ref is in her scope wherever it sits, filed or not; authorship lifts scope only
+  (content rules still apply). Technician channels only: inbound mail, send/audit and phone-line rows
+  also carry a ref. Pages/search on an out-of-view scope return `in_view:false` plus those notes.
 - **Outside the view = name + id, in words (operator 2B).** `find_customer`/`get_customer_context`
   → `{id, name, inView:false, note}`; `get_job` → `{id, inView:false, note}`; page/search on an
   out-of-view scope → `inView:false`, no rows; `get_capture` keeps its one `found:false`.
@@ -231,9 +235,9 @@ on file are outside your view". `handleListRecentCaptures` (`:709-719`) / `handl
   'whole_firm'}, 'test')`; `afterAll` resets to `null` (tenants are never truncated).
 
 ### Automated verification
-- [ ] `npx supabase db reset` applies; `technician_view_of` + 5-arg `capture_visible` in the regenerated types.
-- [ ] `npx vitest run src/db/technicianView.test.ts src/db/retrievalLayer.test.ts src/db/context.test.ts` — twice in a row (no leftover roster rows).
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` (Phase 0 count + new tests).
+- [x] `npx supabase db reset` applies; `technician_view_of` + 5-arg `capture_visible` in the regenerated types.
+- [x] `npx vitest run src/db/technicianView.test.ts src/db/retrievalLayer.test.ts src/db/context.test.ts` — twice in a row (29 passed both runs).
+- [x] `npm run typecheck`, `npm run lint`, `npm test` (3185 passed = Phase 0's 3169 + 16 new).
 - Live / Manual verification: none this phase (the pilot apply is Phase 3).
 
 ---

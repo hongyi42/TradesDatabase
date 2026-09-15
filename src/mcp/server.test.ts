@@ -25,6 +25,7 @@ import {
 import { createHost } from '../db/hosts.js';
 import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
 import { createTenant, setTenantSeats } from '../db/tenants.js';
+import { setTechnicianViewRule } from '../db/technicianView.js';
 import { PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
 import { createObservation } from '../db/observations.js';
@@ -104,6 +105,12 @@ beforeAll(async () => {
   const tech = await insertTechnician({ tenantId, ref: 'tech-mcp', displayName: 'Tech MCP' });
   await setTechnicianState(tech.id, 'active');
   techMcpId = tech.id;
+  // THE FIRM'S RULE at its widest (plan 2026-09-15-the-retrieval-layer-2): the
+  // suites below were written before the technician limited view, and what they
+  // test as `tech-mcp` is the CONTENT gate (option A), not scope. Whole-firm keeps
+  // them testing exactly that; 'the technician limited view' block resets the
+  // rule to the default and tests scope itself.
+  await setTechnicianViewRule(tenantId, { jobScope: 'whole_firm' }, 'server.test');
 
   const server = createServer({
     // Identity is injected here (the gateway/env source in prod); the agent never
@@ -131,6 +138,8 @@ afterAll(async () => {
   );
   // Restore the seed capacity (2/5) so post-suite live checks see known values.
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
+  // Tenants are never truncated, so the firm's rule would outlive the suite.
+  await setTechnicianViewRule(tenantId, null, 'server.test');
   await pg.end();
 });
 

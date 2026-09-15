@@ -34,6 +34,142 @@ export type Database = {
   }
   public: {
     Tables: {
+      access_grants: {
+        Row: {
+          created_at: string
+          customer_id: string | null
+          expires_at: string | null
+          granted_by: string
+          id: string
+          job_id: string | null
+          opens: string
+          reason: string
+          requested_by: string | null
+          revoke_reason: string | null
+          revoked_at: string | null
+          revoked_by: string | null
+          technician_id: string
+          tenant_id: string
+        }
+        Insert: {
+          created_at?: string
+          customer_id?: string | null
+          expires_at?: string | null
+          granted_by: string
+          id?: string
+          job_id?: string | null
+          opens: string
+          reason: string
+          requested_by?: string | null
+          revoke_reason?: string | null
+          revoked_at?: string | null
+          revoked_by?: string | null
+          technician_id: string
+          tenant_id: string
+        }
+        Update: {
+          created_at?: string
+          customer_id?: string | null
+          expires_at?: string | null
+          granted_by?: string
+          id?: string
+          job_id?: string | null
+          opens?: string
+          reason?: string
+          requested_by?: string | null
+          revoke_reason?: string | null
+          revoked_at?: string | null
+          revoked_by?: string | null
+          technician_id?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "access_grants_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "access_grants_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "access_grants_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "access_grants_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "access_grants_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_money_events"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "access_grants_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "access_grants_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "access_grants_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "access_grants_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "access_grants_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "access_grants_technician_id_fkey"
+            columns: ["technician_id"]
+            isOneToOne: false
+            referencedRelation: "technicians"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "access_grants_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       call_ingest: {
         Row: {
           attempts: number
@@ -147,6 +283,55 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "call_numbers_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      capture_tags: {
+        Row: {
+          capture_id: string
+          created_at: string
+          reason: string | null
+          source: string
+          tag: string
+          tenant_id: string
+        }
+        Insert: {
+          capture_id: string
+          created_at?: string
+          reason?: string | null
+          source: string
+          tag: string
+          tenant_id: string
+        }
+        Update: {
+          capture_id?: string
+          created_at?: string
+          reason?: string | null
+          source?: string
+          tag?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "capture_tags_capture_id_fkey"
+            columns: ["capture_id"]
+            isOneToOne: false
+            referencedRelation: "raw_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "capture_tags_capture_id_fkey"
+            columns: ["capture_id"]
+            isOneToOne: false
+            referencedRelation: "v_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "capture_tags_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
             referencedRelation: "tenants"
@@ -2223,6 +2408,50 @@ export type Database = {
           },
         ]
       }
+      technician_view_rules: {
+        Row: {
+          created_at: string
+          hidden_tags: string[] | null
+          job_scope: string | null
+          set_by: string | null
+          technician_channels:
+            | Database["public"]["Enums"]["capture_channel"][]
+            | null
+          tenant_id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          hidden_tags?: string[] | null
+          job_scope?: string | null
+          set_by?: string | null
+          technician_channels?:
+            | Database["public"]["Enums"]["capture_channel"][]
+            | null
+          tenant_id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          hidden_tags?: string[] | null
+          job_scope?: string | null
+          set_by?: string | null
+          technician_channels?:
+            | Database["public"]["Enums"]["capture_channel"][]
+            | null
+          tenant_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "technician_view_rules_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: true
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       technicians: {
         Row: {
           availability: Json | null
@@ -3110,6 +3339,7 @@ export type Database = {
           id: string | null
           name: string | null
           phone: string | null
+          phone_key: string | null
           postal_code: string | null
           state: string | null
         }
@@ -3121,6 +3351,7 @@ export type Database = {
           id?: string | null
           name?: string | null
           phone?: string | null
+          phone_key?: string | null
           postal_code?: string | null
           state?: string | null
         }
@@ -3132,6 +3363,7 @@ export type Database = {
           id?: string | null
           name?: string | null
           phone?: string | null
+          phone_key?: string | null
           postal_code?: string | null
           state?: string | null
         }
@@ -3719,16 +3951,46 @@ export type Database = {
       }
     }
     Functions: {
+      capture_content_open: {
+        Args: {
+          p_capture: string
+          p_channel: Database["public"]["Enums"]["capture_channel"]
+          p_sensitivity: string
+          p_tier: string
+          p_view: Database["public"]["CompositeTypes"]["technician_view"]
+        }
+        Returns: boolean
+      }
       capture_full: {
         Args: {
           p_caller_tier: string
           p_capture: string
           p_include_retracted?: boolean
           p_tenant: string
+          p_terminal_statuses?: string[]
+          p_viewer?: string
         }
         Returns: Json
       }
+      capture_in_scope: {
+        Args: {
+          p_capture: string
+          p_tier: string
+          p_view: Database["public"]["CompositeTypes"]["technician_view"]
+        }
+        Returns: boolean
+      }
       capture_is_live: { Args: { p_capture: string }; Returns: boolean }
+      capture_restricted: {
+        Args: {
+          p_capture: string
+          p_channel: Database["public"]["Enums"]["capture_channel"]
+          p_sensitivity: string
+          p_tier: string
+          p_view: Database["public"]["CompositeTypes"]["technician_view"]
+        }
+        Returns: boolean
+      }
       capture_scope_found: {
         Args: { p_scope: string; p_scope_id: string; p_tenant: string }
         Returns: boolean
@@ -3740,14 +4002,25 @@ export type Database = {
           via: string[]
         }[]
       }
-      capture_visible: {
-        Args: {
-          p_channel: Database["public"]["Enums"]["capture_channel"]
-          p_sensitivity: string
-          p_tier: string
-        }
-        Returns: boolean
-      }
+      capture_visible:
+        | {
+            Args: {
+              p_channel: Database["public"]["Enums"]["capture_channel"]
+              p_sensitivity: string
+              p_tier: string
+            }
+            Returns: boolean
+          }
+        | {
+            Args: {
+              p_capture: string
+              p_channel: Database["public"]["Enums"]["capture_channel"]
+              p_sensitivity: string
+              p_tier: string
+              p_view: Database["public"]["CompositeTypes"]["technician_view"]
+            }
+            Returns: boolean
+          }
       captures_page: {
         Args: {
           p_before_at?: string
@@ -3758,7 +4031,9 @@ export type Database = {
           p_scope: string
           p_scope_id: string
           p_tenant: string
+          p_terminal_statuses?: string[]
           p_text_chars?: number
+          p_viewer?: string
         }
         Returns: Json
       }
@@ -3800,6 +4075,7 @@ export type Database = {
           p_snippet_chars?: number
           p_tenant: string
           p_terminal_statuses?: string[]
+          p_viewer?: string
         }
         Returns: Json
       }
@@ -3824,8 +4100,24 @@ export type Database = {
           p_scope_id: string
           p_snippet_chars?: number
           p_tenant: string
+          p_terminal_statuses?: string[]
+          p_viewer?: string
         }
         Returns: Json
+      }
+      technician_view_of: {
+        Args: {
+          p_technician: string
+          p_tenant: string
+          p_terminal_statuses: string[]
+        }
+        Returns: Database["public"]["CompositeTypes"]["technician_view"]
+        SetofOptions: {
+          from: "*"
+          to: "technician_view"
+          isOneToOne: true
+          isSetofReturn: false
+        }
       }
       tenant_cost_detail: {
         Args: { p_period_start: string; p_tenant_id: string }
@@ -3837,6 +4129,20 @@ export type Database = {
           sku: string
           unit: string
         }[]
+      }
+      view_has_customer: {
+        Args: {
+          p_customer: string
+          p_view: Database["public"]["CompositeTypes"]["technician_view"]
+        }
+        Returns: boolean
+      }
+      view_has_job: {
+        Args: {
+          p_job: string
+          p_view: Database["public"]["CompositeTypes"]["technician_view"]
+        }
+        Returns: boolean
       }
       working_hours_between: {
         Args: { from_ts: string; to_ts: string; tz: string }
@@ -3897,7 +4203,17 @@ export type Database = {
       visit_status: "proposed" | "confirmed" | "cancelled" | "completed"
     }
     CompositeTypes: {
-      [_ in never]: never
+      technician_view: {
+        tenant_id: string | null
+        all_scope: boolean | null
+        job_ids: string[] | null
+        customer_ids: string[] | null
+        notes_job_ids: string[] | null
+        notes_customer_ids: string[] | null
+        channels: Database["public"]["Enums"]["capture_channel"][] | null
+        hidden_tags: string[] | null
+        technician_ref: string | null
+      }
     }
   }
 }

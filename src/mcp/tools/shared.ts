@@ -64,6 +64,17 @@ export const callerTierOf = (ctx: ToolContext): CallerTier =>
       ? 'manager'
       : 'technician';
 
+// The technician's roster id, for the limited view (plan 2026-09-15-the-
+// retrieval-layer-2). A badge with no roster row has none — and sees nothing.
+export const viewerIdOf = (ctx: ToolContext): string | null => ctx.caller?.id ?? null;
+
+// What a technician's seat is told about something outside her view. Plain, and
+// honest about the one way in: the request flow (a later task) will carry the ask.
+export const OUTSIDE_VIEW_NOTE =
+  'outside your view — you see the customers whose current work you have a trip on. Only a ' +
+  'manager can open this one; say so, and do not guess what it holds. Notes you wrote ' +
+  'yourself there stay readable: list_recent_captures shows them.';
+
 // GROUNDING_BARE=1 (date-eval bare-clock arm, 2026-08-23): the model's ONLY
 // date help is the firm-local `now` rider. Read at module load — the flag
 // rides a deploy — and it implies GROUNDING_LEAN (see leanGrounding). It

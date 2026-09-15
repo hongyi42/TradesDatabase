@@ -31,6 +31,7 @@ import {
   getOpenReviewItem,
   getRawCapture,
   getTechnician,
+  isOutsideView,
   listJobsForCustomer,
   listL2CitingCapture,
   listMoneyEventsForJob,
@@ -68,12 +69,14 @@ import type {
   ResolvedIdentity,
 } from '../../writePath/recordFieldNote.js';
 import {
+  OUTSIDE_VIEW_NOTE,
   UUID_RE,
   callerTierOf,
   inboundAskFor,
   leanGrounding,
   recordCallerThroughTheDoor,
   refuseNameAsAddress,
+  viewerIdOf,
 } from './shared.js';
 import type {
   DomainTools,
@@ -96,7 +99,7 @@ const BASE_TOOLS = [
       'The CONTENTS PAGE for a customer — fixed size, never their whole history. It carries the ' +
       'profile and standing facts; up to 10 jobs — every job still in progress, unbooked or ' +
       'unpaid first, then the newest finished ones — each with status, attributes, ' +
-      'noteCount (notes you may read), restrictedCount (notes on file but outside your view), ' +
+      'noteCount (notes you may read), restrictedCount (notes on file here that you may not read — a manager can open them), ' +
       'retractedCount (managers: notes retracted as recorded in error — ' +
       'list_recent_captures(jobId, includeRetracted: true) shows each with its reason), ' +
       "lastCaptureAt, lastVisitAt and `newest` — the newest note's first 200 characters with its " +
@@ -371,9 +374,20 @@ async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> 
       // customer's history. The tenant guard is inside the read: a cross-tenant
       // (or unknown) id reads as no such customer — in words, so the model does
       // not read a blank as a failed lookup and retry.
-      const contents = await getCustomerContents(tenantId, customerId, callerTierOf(toolCtx));
+      const contents = await getCustomerContents(
+        tenantId,
+        customerId,
+        callerTierOf(toolCtx),
+        viewerIdOf(toolCtx),
+      );
       if (!contents) {
         return { customer: null, jobs: [], note: 'no such customer on this firm' };
+      }
+      // THE TECHNICIAN LIMITED VIEW (plan 2): a customer she does not serve is
+      // named, and nothing read with it — in words, so the seat says so instead
+      // of reading an empty page as an empty record.
+      if (isOutsideView(contents)) {
+        return { customer: contents.customer, inView: false, jobs: [], note: OUTSIDE_VIEW_NOTE };
       }
       // Served steering at the exact decision point (the B03 flake, 2026-08-14):
       // asked "when is the next OPENING for X's work?", the model reads this
@@ -404,6 +418,7 @@ async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> 
           ...(callerTierOf(toolCtx) === 'technician' ? { retractedCount: undefined } : {}),
         })),
         olderJobs: contents.olderJobs,
+        ...(callerTierOf(toolCtx) === 'technician' ? { jobsOutsideView: contents.jobsOutsideView } : {}),
         customerLevelNotes: contents.customerLevel,
         upcomingVisits: contents.upcomingVisits,
         ...(Object.keys(moneyByJob).length > 0 ? { moneyByJob } : {}),
@@ -422,6 +437,10 @@ async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> 
           (contents.olderJobs > 0
             ? `${contents.olderJobs} more job${contents.olderJobs === 1 ? '' : 's'} on file not shown ` +
               '(live work is always shown first). '
+            : '') +
+          (contents.jobsOutsideView > 0
+            ? `${contents.jobsOutsideView} more job${contents.jobsOutsideView === 1 ? '' : 's'} on file ` +
+              'for this customer are outside your view (only a manager can open them). '
             : '') +
           'This is the contents page. list_recent_captures(jobId) pages a job\'s notes; ' +
           'get_capture(captureId) gives one note in full.',

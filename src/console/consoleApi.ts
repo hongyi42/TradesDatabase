@@ -20,6 +20,7 @@ import {
   createCustomer,
   getTenant,
   JOB_PRIORITIES,
+  phoneKey,
   searchCustomers,
   type JobPriority,
 } from '../db/index.js';
@@ -337,10 +338,12 @@ async function handleNewJob(
     // name, same phone. Anything less exact stays a new record, because two
     // households really can share a name.
     const phone = str(c, 'phone') ?? null;
+    // Same NUMBER, not the same spelling of it (phone_key); a value with no
+    // number in it still has to match exactly, so no phone ≠ some phone.
     const twin = (await searchCustomers(auth.tenantId, name)).find(
       (existing) =>
         existing.name.trim().toLowerCase() === name.trim().toLowerCase() &&
-        (existing.phone ?? null) === phone,
+        (phoneKey(existing.phone) ?? existing.phone ?? null) === (phoneKey(phone) ?? phone),
     );
     if (twin) {
       customerId = twin.id;

@@ -144,6 +144,17 @@ describe('query_spine — tenant isolation', () => {
     },
   );
 
+  test('the planner finds a customer by NUMBER through v_customers.phone_key, whatever the spelling', async () => {
+    // The code lookups moved onto phone_key (20260916130100); spine_read reads
+    // v_customers, so without the column a planner query on a caller's +1
+    // number missed the same customer the matcher now finds.
+    const spelled = await createCustomer({ tenantId: tenantA, name: 'QS Spelled A', phone: '(206) 555-0170' });
+    const r = await run(tenantA, "select id, phone from v_customers where phone_key = '2065550170'");
+    const rows = r.rows[0].result as Array<{ id: string; phone: string }>;
+    expect(rows.map((c) => c.id)).toContain(spelled.id);
+    expect(rows.find((c) => c.id === spelled.id)?.phone).toBe('(206) 555-0170');
+  });
+
   test('a query that tries to widen the filter still only gets its own tenant', async () => {
     // `or true` is the shape an adversarial or confused query takes. The view's
     // WHERE is applied before this predicate can matter.
@@ -376,9 +387,11 @@ describe('query_spine — the view surface is closed', () => {
 
   // BUILD 7 FINAL REVIEW, and the highest-severity finding of the build.
   //
-  // `to_agent` bodies are the PLANNER'S OWN WORDS — its send text and the desk
-  // answers written in its name. `spine_read` is in CITABLE_TOOLS, so a view
-  // without this filter lets the planner read its own prose back and quote it
+  // The PLANNER'S OWN WORDS are its `to_agent` send text AND the desk answers
+  // written in its name — which are `to_planner`, kind 'desk' (desk.ts), so the
+  // direction filter alone never caught them (fixed 2026-09-15 by
+  // 20260916130000_desk_answers_not_citable). `spine_read` is in CITABLE_TOOLS, so a view
+  // without these filters lets the planner read its own prose back and quote it
   // into an evidence-basis close: exactly the laundering build 6 Phase 4 found
   // by live probe and shut. The same build excludes desk pairs from `readText`
   // and keeps `read_memory` out of CITABLE_TOOLS for that one reason, so a view
@@ -388,6 +401,7 @@ describe('query_spine — the view surface is closed', () => {
       `select pg_get_viewdef('v_office_messages'::regclass, true) as def`,
     );
     expect(def.rows[0].def).toContain("direction = 'to_planner'");
+    expect(def.rows[0].def).toContain("'desk'");
 
     // Asserted against real rows too, not just the definition: a filter can be
     // present and wrong.
@@ -401,7 +415,9 @@ describe('query_spine — the view surface is closed', () => {
     await pg.query(
       `insert into office_messages (tenant_id, direction, kind, from_ref, to_ref, technician_id, body)
        values ($1,'to_planner','inform','qs-office-rail','spine:team-lead',$2,'INBOUND probe body'),
-              ($1,'to_agent','inform','spine:team-lead','qs-office-rail',$2,'OUTBOUND planner prose')`,
+              ($1,'to_agent','inform','spine:team-lead','qs-office-rail',$2,'OUTBOUND planner prose'),
+              -- The desk's answer: to_planner like the inbox, but the planner's own words.
+              ($1,'to_planner','desk','spine:team-lead','qs-office-rail',$2,'DESK answer prose')`,
       [tenantId, tech.rows[0].id],
     );
     try {

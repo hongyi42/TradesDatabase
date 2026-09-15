@@ -135,7 +135,7 @@ const TOOLS = [
 // fix to the direction-comes-from-kind warning, lands on one tool and not the
 // other.
 const SPINE_VIEW_CATALOG =
-  'It CANNOT write, and it can only read these sixteen views (nothing else exists to it): ' +
+  'It CANNOT write, and it can only read these eighteen views (nothing else exists to it): ' +
   'v_schedule(visit_id, local_day, local_weekday, starts_at, ends_at, completed_at, status, ' +
   'stage, technician_refs, technician_names, job_id, ' +
   'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
@@ -169,7 +169,10 @@ const SPINE_VIEW_CATALOG =
   'created_at); ' +
   'v_jobs(id, title, job_type, status, priority, duration_minutes, price_cents, created_at, ' +
   'updated_at, customer_id, customer_name); ' +
-  'v_customers(id, name, phone, email, address_line1, city, state, postal_code, created_at); ' +
+  'v_customers(id, name, phone, email, address_line1, city, state, postal_code, created_at, ' +
+  "phone_key) — look a number up by phone_key, never by phone: phone is stored however it " +
+  "was written, and phone_key is its digits with a leading US 1 dropped (for " +
+  "'+1 (206) 555-0170' ask phone_key = '2065550170'); " +
   'v_time_off(technician_ref, technician_name, starts_on, ends_on, reason); ' +
   'v_money_events(id, job_id, job_title, customer_id, customer_name, kind, amount_cents, ' +
   'currency, occurred_at, actor_ref, corrects_event_id, method, external_ref) — the money ' +
@@ -228,10 +231,11 @@ const SPINE_VIEW_CATALOG =
   'ids come from, and dismiss_reason is what you said when you set one aside. `author` says ' +
   "which of the two noticed it: 'detector' (the automatic checks) or 'planner'; " +
   'v_office_messages(id, direction, kind, from_ref, to_ref, body, tier, nudge_id, in_reply_to, ' +
-  'status, via, created_at, read_at, delivered_at) — every message between the office and the ' +
-  "seats, BOTH ways and however old: direction 'to_planner' is what a seat told you, " +
-  "'to_agent' is what you sent. The block in your briefing shows only the unread ones; this is " +
-  'where the rest of them live, including every one you have already read; ' +
+  'status, via, created_at, read_at, delivered_at) — every message a seat has sent the office, ' +
+  "however old (direction is always 'to_planner'). What the office sent is NOT here, and " +
+  'neither are the desk answers given in its name. The block in your ' +
+  'briefing shows only the unread ones; this is where the rest of them live, including every ' +
+  'one you have already read; ' +
   // The roster TRAIL (build 6.5 Phase 1). v_team says who is here NOW; this
   // says how the team got that way — and it is the only honest source for
   // when somebody left, because technicians.updated_at is bumped by any edit.
@@ -752,8 +756,8 @@ async function dispatch(
       // The tenant is NOT taken from args and never interpolated into the SQL:
       // it goes to the function as a separate parameter, from the verified HMAC
       // identity. Everything the model wrote stays inside p_sql, where it runs
-      // as spine_reader — a role with no write privilege and SELECT on five
-      // views only. See the migration header and
+      // as spine_reader — a role with no write privilege and SELECT on the
+      // spine views only. See the migration header and
       // thoughts/shared/plans/2026-08-04-query-spine-design.md.
       const sql = str('sql');
       if (!sql) throw new Error('sql is required');

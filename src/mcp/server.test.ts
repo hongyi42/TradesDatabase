@@ -378,6 +378,14 @@ describe('MCP server', () => {
     expect(Array.isArray(rows.data)).toBe(true);
   });
 
+  test('find_customer never shows the phone MATCH key, only the phone as written', async () => {
+    await createCustomer({ tenantId, name: 'Keyless Kim', phone: '(206) 555-0181' });
+    const found = await call('find_customer', { query: 'Keyless Kim' });
+    expect(found.data).toHaveLength(1);
+    expect(found.data[0].phone).toBe('(206) 555-0181');
+    expect(found.data[0]).not.toHaveProperty('phone_key');
+  });
+
   test('an ambiguous note asks who, then RECORDS on the answer (no third call)', async () => {
     // FIRM-local today (seed tenant tz = America/Los_Angeles): the matcher
     // consults the capture's firm-local day, so the fixture must book there.
@@ -836,6 +844,9 @@ describe('MCP server', () => {
     const { isError, data } = await call('get_customer_context', { customerId: customer.id });
     expect(isError).toBe(false);
     expect(data.customer.id).toBe(customer.id);
+    // The phone as written, never the generated matching key beside it.
+    expect(data.customer.phone).toBe('555-3300');
+    expect(data.customer).not.toHaveProperty('phone_key');
     const block = data.jobs.find((j: { id: string }) => j.id === job.id);
     expect(block.title).toBe('J'); // the job row, spread
     expect(block.noteCount).toBe(1);
@@ -975,6 +986,13 @@ describe('MCP server', () => {
         state: 'invited',
         seat_exempt: false, // no seatExempt arg = a normal seat-occupying add
       });
+      // The confirm result goes into the model's context: never the badge hash,
+      // the Composio handles or the Telegram id (list_team projects them out too).
+      for (const key of Object.keys(added.data)) {
+        expect(key).not.toMatch(
+          /^(badge_hash|composio_|telegram_user_id|connected_email|host_id|tenant_id)/,
+        );
+      }
 
       // Duplicate display name now fails at STAGE time (dup pre-check) —
       // before any yes is spent on it.
@@ -4863,6 +4881,74 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
     }
   });
 
+  test('a staged unschedule is REFUSED when the visit moved before the yes', async () => {
+    // Moves keep the visit id (rung 9b), and the confirm used to cancel by id
+    // alone: the manager approved cancelling Wednesday 09:00 and lost Thursday
+    // 13:00. The staged time is the thing approved, so it is checked at the yes.
+    const moving = await createCustomer({ tenantId, name: 'Moving Mo' });
+    const steady = await createCustomer({ tenantId, name: 'Steady Sal' });
+    const { client: mgrClient, callWith } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const booked = await callWith('book_visit', {
+        customerId: moving.id,
+        technicianRef: 'tech-mcp',
+        date: '2026-12-09',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      expect(booked.data.status).toBe('booked');
+      const visitId = booked.data.visitId as string;
+      const staged = await callWith('unschedule_visit', { visitId, reason: 'customer cancelled' });
+      expect(staged.data.status).toBe('needs_confirmation');
+      // The snapshot is WALL-CLOCK text: list_pending_reviews hands this detail
+      // to the model, and a raw '+00:00' timestamp there is the 2026-07-22 defect.
+      const snap = await pg.query<{ expected: unknown }>(
+        `select detail->'expected' as expected from review_items where id = $1`,
+        [staged.data.confirmId],
+      );
+      expect(snap.rows[0].expected).toEqual({ startsAt: '2026-12-09 09:00', endsAt: '2026-12-09 10:00' });
+      const moved = await callWith('move_visit', {
+        visitId,
+        date: '2026-12-10',
+        startTime: '13:00',
+        reason: 'customer asked for Thursday',
+      });
+      expect(moved.data.status).toBe('moved');
+
+      const refused = await callWith('unschedule_visit', { confirmId: staged.data.confirmId });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('moved');
+      const row = await pg.query<{ status: string; starts_at: Date }>(
+        'select status, starts_at from visits where id = $1',
+        [visitId],
+      );
+      expect(row.rows[0].status).toBe('confirmed');
+      expect(row.rows[0].starts_at.toISOString().slice(0, 10)).toBe('2026-12-10');
+
+      // With no move in between, the same flow still cancels.
+      const steadyBooked = await callWith('book_visit', {
+        customerId: steady.id,
+        technicianRef: 'tech-mcp',
+        date: '2026-12-11',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      expect(steadyBooked.data.status).toBe('booked');
+      const steadyStaged = await callWith('unschedule_visit', {
+        visitId: steadyBooked.data.visitId,
+        reason: 'customer cancelled',
+      });
+      const done = await callWith('unschedule_visit', { confirmId: steadyStaged.data.confirmId });
+      expect(done.isError).toBe(false);
+      expect(done.data.status).toBe('unscheduled');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
   test('an impossible booking is refused on the call (unknown tech, overlap)', async () => {
     const customer = await createCustomer({ tenantId, name: 'Impossible Iva' });
     const { client: mgrClient, callWith } = await clientFor({
@@ -5193,7 +5279,7 @@ describe('schedule-input verbs (Plan 3a)', () => {
       expect(write.isError).toBe(true);
       expect(write.text).toContain('query_spine rejected that query');
 
-      // A base table is invisible; only the five views exist to this role.
+      // A base table is invisible; only the spine views exist to this role.
       const base = await callWith('query_spine', { sql: 'select * from customers' });
       expect(base.isError).toBe(true);
       expect(base.text).toMatch(/permission denied/i);
@@ -7008,6 +7094,68 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
       await mgrClient.close();
     }
   });
+
+  test('a job closed elsewhere before the yes dismisses the pending cancel instead of leaving it open', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Closed Elsewhere Cleo' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'gutter clean' });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const stage = await callWith('cancel_job', { jobId: job.id, reason: 'duplicate' });
+      expect(stage.data.status).toBe('needs_confirmation');
+      // Cancelled on the console in the meantime.
+      await pg.query(`update jobs set status = 'cancelled' where id = $1`, [job.id]);
+      const confirm = await callWith('cancel_job', { confirmId: stage.data.confirmId });
+      expect(confirm.isError).toBe(true);
+      expect(confirm.text).toContain('it already is');
+      const item = await pg.query<{ status: string }>('select status from review_items where id = $1', [
+        stage.data.confirmId,
+      ]);
+      expect(item.rows[0].status).toBe('dismissed');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('the yes covers what was SHOWN: a visit booked after the preview refuses the cancel', { timeout: 30_000 }, async () => {
+    // The terminal verb cancelled every live visit AT yes-time, so a visit booked
+    // (or moved) between the preview and the yes died without anyone approving it.
+    const customer = await createCustomer({ tenantId, name: 'Shown Shay' });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const first = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'fence repair',
+        date: '2027-02-03',
+        startTime: '09:00',
+        endTime: '11:00',
+      });
+      expect(first.data.status).toBe('booked');
+      const jobId = first.data.jobId as string;
+      const stage = await callWith('cancel_job', { jobId, reason: 'customer went elsewhere' });
+      expect((stage.data.preview as { visits: unknown[] }).visits).toHaveLength(1);
+
+      const second = await callWith('book_visit', {
+        jobId,
+        date: '2027-02-04',
+        startTime: '09:00',
+        endTime: '11:00',
+      });
+      expect(second.data.status).toBe('booked');
+
+      const refused = await callWith('cancel_job', { confirmId: stage.data.confirmId });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('visits changed');
+      const job = await pg.query<{ status: string }>('select status from jobs where id = $1', [jobId]);
+      expect(job.rows[0].status).toBe('open');
+      const live = await pg.query<{ n: number }>(
+        `select count(*)::int as n from visits where job_id = $1 and status = 'confirmed'`,
+        [jobId],
+      );
+      expect(live.rows[0].n).toBe(2);
+    } finally {
+      await mgrClient.close();
+    }
+  });
 });
 
 describe('record_money_event + money reads (money-ledger plan phase 2)', () => {
@@ -7665,9 +7813,11 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
       'record_caller',
     ]);
     const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
-    // the catalog — fourteen since v_roster_events (build 6.5 Phase 1); the
+    // the catalog — eighteen, matching querySpine.test.ts's grant list; the
     // count and the list must move together or the description lies to the model
-    expect(desc).toContain('sixteen views'); // +v_visit_participants, rung 9c
+    expect(desc).toContain('eighteen views'); // it said sixteen while listing 18 (fixed 2026-09-15)
+    // v_office_messages is the inbox only — the catalog must not promise the planner's own messages
+    expect(desc).not.toContain('BOTH ways');
     // v_schedule's crew columns are ARRAYS now, and its singular one is gone —
     // an agent told `technician_ref` there would write SQL against a column
     // that does not exist and get a 42703 instead of an answer. (The singular

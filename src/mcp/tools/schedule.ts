@@ -86,6 +86,7 @@ import {
   previewUnscheduleVisit,
   spanMinutes,
   unscheduleVisit,
+  wallClock,
 } from '../../schedule/booking.js';
 import {
   isRealDateISO,
@@ -1279,6 +1280,11 @@ async function handleUnscheduleVisit(toolCtx: ToolContext): Promise<unknown> {
         const reason = str('reason')?.trim();
         if (!visitId) throw new Error('visitId is required');
         if (!reason) throw new Error('reason is required — say why the visit is being unscheduled');
+        // WHAT IS BEING APPROVED is this visit at THIS time. Moves keep the id
+        // (rung 9b), so the yes re-checks the time against this snapshot. Read
+        // BEFORE the preview: a move landing between the two reads then refuses
+        // at the yes instead of becoming the approved time.
+        const snapshot = await getVisitForTenant(visitId, tenantId);
         const preview = await previewUnscheduleVisit(tenantId, visitId);
         // Doctrine (2026-07-17, verdict computed in booking.ts): cancelling an
         // UNPROMISED visit is internal + reversible (the job stays open;
@@ -1319,6 +1325,13 @@ async function handleUnscheduleVisit(toolCtx: ToolContext): Promise<unknown> {
             visitId,
             reason,
             preview: preview as unknown as Json,
+            // Wall-clock slices, never the raw column: list_pending_reviews
+            // returns this detail to the model, and raw `+00:00` timestamps
+            // there are the 2026-07-22 defect (see get_team_schedule's note).
+            expected: {
+              startsAt: wallClock(snapshot?.starts_at),
+              endsAt: wallClock(snapshot?.ends_at),
+            },
             stagedAt: new Date().toISOString(),
           } as unknown as Json,
         });
@@ -1338,13 +1351,42 @@ async function handleUnscheduleVisit(toolCtx: ToolContext): Promise<unknown> {
       if (!item) {
         throw new Error('confirmation not found — call unschedule_visit again with visitId + reason to restage');
       }
-      const d = (item.detail ?? {}) as { visitId?: string; reason?: string; stagedAt?: string };
+      const d = (item.detail ?? {}) as {
+        visitId?: string;
+        reason?: string;
+        stagedAt?: string;
+        expected?: { startsAt?: string | null; endsAt?: string | null };
+      };
       if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
         throw new Error('confirmation expired — restage the unschedule and confirm again');
       }
       if (!d.visitId || !d.reason) {
         throw new Error('staged unschedule is malformed — restage with visitId + reason');
+      }
+      // The yes approved THIS visit at the staged time. If it moved, lost its
+      // time, or is gone, cancelling now would cancel something nobody saw.
+      // Checked HERE so a refusal dismisses the token before it is consumed; the
+      // cancel below repeats the check atomically (unscheduleVisit's
+      // `expectedTimes`), because a move can still land between this read and
+      // the update.
+      const expected = d.expected;
+      if (!expected || expected.startsAt === undefined) {
+        // Staged before the snapshot existed: fail closed, the 15-minute window bounds it.
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'staged before the time check existed');
+        throw new Error('this confirmation predates a safety check — nothing was cancelled; restage the unschedule and confirm again');
+      }
+      const now = await getVisitForTenant(d.visitId, tenantId);
+      if (!now) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'visit no longer found');
+        throw new Error('visit NOT unscheduled: it no longer exists for this firm — nothing was cancelled');
+      }
+      if (wallClock(now.starts_at) !== expected.startsAt || wallClock(now.ends_at) !== expected.endsAt) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'visit moved while the confirmation was pending');
+        throw new Error(
+          'visit NOT unscheduled: it moved (or lost its time) since the manager approved — nothing was ' +
+            'cancelled; restage to see its current time',
+        );
       }
       const consumed = await resolveReviewItem(
         item.id,
@@ -1362,6 +1404,9 @@ async function handleUnscheduleVisit(toolCtx: ToolContext): Promise<unknown> {
           visitId: d.visitId,
           reason: d.reason,
           actorRef: subjectRef,
+          // The approved times, enforced on the UPDATE itself: a move landing
+          // after the check above makes the cancel match no row.
+          expectedTimes: { startsAt: now.starts_at, endsAt: now.ends_at },
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

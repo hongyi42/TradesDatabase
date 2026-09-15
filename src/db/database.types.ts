@@ -380,6 +380,7 @@ export type Database = {
           lng: number | null
           name: string
           phone: string | null
+          phone_key: string | null
           postal_code: string | null
           source_capture_id: string | null
           state: string | null
@@ -399,6 +400,7 @@ export type Database = {
           lng?: number | null
           name: string
           phone?: string | null
+          phone_key?: string | null
           postal_code?: string | null
           source_capture_id?: string | null
           state?: string | null
@@ -418,6 +420,7 @@ export type Database = {
           lng?: number | null
           name?: string
           phone?: string | null
+          phone_key?: string | null
           postal_code?: string | null
           source_capture_id?: string | null
           state?: string | null

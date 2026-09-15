@@ -1384,6 +1384,34 @@ describe('spine tool_call cost counter', () => {
   });
 });
 
+describe('the size cap at the door', () => {
+  test('a result over SPINE_RESULT_CAP_CHARS is cut and says so, and the cut is still valid JSON', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Cap Cust', phone: '555-3377' });
+    await createJob({ tenantId, customerId: customer.id, title: 'Cap job one' });
+    await createJob({ tenantId, customerId: customer.id, title: 'Cap job two' });
+    const before = process.env.SPINE_RESULT_CAP_CHARS;
+    process.env.SPINE_RESULT_CAP_CHARS = '400';
+    try {
+      const res = await call('get_customer_context', { customerId: customer.id });
+      expect(res.isError).toBe(false);
+      // `call` already JSON.parsed the text — so the cut object parses.
+      expect(res.data.truncated).toBe(true);
+      expect(res.data.limit).toBe(400);
+      expect(res.data.chars).toBeGreaterThan(400);
+      expect(res.data.partial).toHaveLength(400);
+      expect(res.data.partial.startsWith('{"customer":')).toBe(true);
+      expect(res.data.note).toContain('get_capture');
+    } finally {
+      if (before === undefined) delete process.env.SPINE_RESULT_CAP_CHARS;
+      else process.env.SPINE_RESULT_CAP_CHARS = before;
+    }
+    // Back at the default, the same read comes through whole.
+    const whole = await call('get_customer_context', { customerId: customer.id });
+    expect(whole.data.truncated).toBeUndefined();
+    expect(whole.data.jobs).toHaveLength(2);
+  });
+});
+
 describe('the drill-down reads: a page, a note, a search', () => {
   test('list_recent_captures pages with a cursor the model copies back, newest first, text cut', async () => {
     const customer = await createCustomer({ tenantId, name: 'Pager Cust', phone: '555-3344' });

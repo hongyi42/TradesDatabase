@@ -348,8 +348,8 @@ wrong — the intake call IS in scope via `created_customer`. `corpus.ts` Q01: `
 **Docs** — `docs/doorman-runbook.md:371-376` (17 names again), `docs/nemoclaw-tech-agent.md:286,309-310,323-324`.
 
 ### Automated verification
-- [ ] `grep -rn "listRawCapturesForJob\|listRawCapturesForCustomer" src/mcp` returns nothing.
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`; `npx vitest run src/eval/toolCases.test.ts`.
+- [x] `grep -rn "listRawCapturesForJob\|listRawCapturesForCustomer" src/mcp` returns nothing.
+- [x] `npm run typecheck`, `npm run lint`, `npm test` (3,130 passed); `npx vitest run src/eval/toolCases.test.ts`.
 
 ### Live / Manual verification
 - [ ] none
@@ -374,11 +374,11 @@ partial: text.slice(0, cap)})`.
 inside `partial`; the cap object is not re-decorated.
 
 ### Automated verification
-- [ ] `src/mcp/resultCap.test.ts`: under / at / over; valid JSON out; `safeEnvInt` fallback on a
+- [x] `src/mcp/resultCap.test.ts`: under / at / over; valid JSON out; `safeEnvInt` fallback on a
       malformed value.
-- [ ] `server.test.ts`: set `process.env.SPINE_RESULT_CAP_CHARS = '400'` around ONE call (restore in
+- [x] `server.test.ts`: set `process.env.SPINE_RESULT_CAP_CHARS = '400'` around ONE call (restore in
       `finally`), `get_customer_context` on a two-job customer → `truncated:true`, parseable JSON.
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`.
+- [x] `npm run typecheck`, `npm run lint`, `npm test` (3,135 passed), `npm run build`.
 
 ### Live / Manual verification
 - [ ] none

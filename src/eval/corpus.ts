@@ -733,7 +733,11 @@ export function buildCorpus(): Scenario[] {
     turns: (ctx) => [`give me a quick brief on ${ctx.world.edges.richHistoryCustomer} before I go.`],
     // The seat briefs ITSELF from the contents page (brief_customer was retired,
     // plan 2026-09-15-the-retrieval-layer-1): the read is what must happen.
-    graders: () => [gradeToolChoice({ required: ['get_customer_context'] })],
+    graders: () => [
+      gradeToolChoice({
+        requiredOneOf: [['get_customer_context', 'list_recent_captures', 'get_capture']],
+      }),
+    ],
   });
 
   add({

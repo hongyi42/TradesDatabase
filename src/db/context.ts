@@ -200,6 +200,228 @@ export async function getCustomerContents(
   };
 }
 
+// ---- the drill-down reads: one page, one capture, one search ----------------
+
+export type CaptureScope = 'job' | 'customer' | 'customer_level';
+
+export interface PageCapture {
+  captureId: string;
+  channel: CaptureChannel;
+  capturedAt: string;
+  technicianRef: string | null;
+  // How it is attached: the arms of capture_membership that reached it.
+  via: string[];
+  text: string;
+  textTruncated: boolean;
+  textChars: number;
+  // Set on a retraction row (audit path only): what it retracts.
+  retractsCaptureId: string | null;
+  // Set on a retracted capture (audit path only): the retraction that hit it.
+  retracted: { id: string; reason: string | null; by: string | null; at: string } | null;
+}
+
+export interface CapturesPage {
+  scopeFound: boolean;
+  captures: PageCapture[];
+  hasMore: boolean;
+  // Both halves of the keyset cursor, or neither: the next page is
+  // "(captured_at, id) before this row".
+  next: { beforeAt: string; beforeId: string } | null;
+  totalVisible: number;
+  restrictedCount: number;
+}
+
+export interface CaptureFull {
+  captureId: string;
+  channel: CaptureChannel;
+  capturedAt: string;
+  technicianRef: string | null;
+  rawText: string | null;
+  retractsCaptureId: string | null;
+  memberships: { customerId: string | null; jobId: string | null; visitId: string | null; via: string }[];
+  retracted: { id: string; reason: string | null; by: string | null; at: string } | null;
+}
+
+export interface CaptureSearch {
+  scopeFound: boolean;
+  query: string;
+  matches: { captureId: string; channel: CaptureChannel; capturedAt: string; technicianRef: string | null; snippet: string }[];
+  count: number;
+  more: boolean;
+  note?: string;
+}
+
+interface RawPageRow {
+  id: string;
+  channel: CaptureChannel;
+  captured_at: string;
+  technician_ref: string | null;
+  via: string[];
+  text: string | null;
+  text_truncated: boolean;
+  text_chars: number;
+  retracts_capture_id: string | null;
+  retracted: { id: string; reason: string | null; by: string | null; at: string } | null;
+}
+interface RawPage {
+  scope_found: boolean;
+  captures: RawPageRow[];
+  has_more: boolean;
+  next_before_at: string | null;
+  next_before_id: string | null;
+  total_visible: number;
+  restricted_count: number;
+}
+
+// One page of a scope's captures, newest first. The cursor is a total order
+// (captured_at, id), so a page boundary never repeats or skips a row; both
+// halves travel together (the database ignores a lone id and treats a lone
+// timestamp as a strict cut, so the wrapper refuses half a cursor).
+export async function listCapturesPage(
+  tenantId: string,
+  scope: CaptureScope,
+  scopeId: string,
+  tier: CallerTier,
+  opts: {
+    beforeAt?: string;
+    beforeId?: string;
+    limit?: number;
+    textChars?: number;
+    includeRetracted?: boolean;
+  } = {},
+): Promise<CapturesPage> {
+  if ((opts.beforeAt === undefined) !== (opts.beforeId === undefined)) {
+    throw new Error('listCapturesPage: a cursor is both beforeAt and beforeId, or neither');
+  }
+  const { data, error } = await getClient().rpc('captures_page', {
+    p_tenant: tenantId,
+    p_scope: scope,
+    p_scope_id: scopeId,
+    p_caller_tier: tier,
+    ...(opts.beforeAt !== undefined ? { p_before_at: opts.beforeAt } : {}),
+    ...(opts.beforeId !== undefined ? { p_before_id: opts.beforeId } : {}),
+    ...(opts.limit !== undefined ? { p_limit: opts.limit } : {}),
+    ...(opts.textChars !== undefined ? { p_text_chars: opts.textChars } : {}),
+    ...(opts.includeRetracted ? { p_include_retracted: true } : {}),
+  });
+  if (error) throw new Error(`captures_page failed: ${error.message}`);
+  const raw = data as unknown as RawPage;
+  return {
+    scopeFound: raw.scope_found,
+    captures: raw.captures.map((r) => ({
+      captureId: r.id,
+      channel: r.channel,
+      capturedAt: r.captured_at,
+      technicianRef: r.technician_ref,
+      via: r.via,
+      text: r.text ?? '',
+      textTruncated: r.text_truncated,
+      textChars: r.text_chars,
+      retractsCaptureId: r.retracts_capture_id,
+      retracted: r.retracted,
+    })),
+    hasMore: raw.has_more,
+    next:
+      raw.has_more && raw.next_before_at && raw.next_before_id
+        ? { beforeAt: raw.next_before_at, beforeId: raw.next_before_id }
+        : null,
+    totalVisible: raw.total_visible,
+    restrictedCount: raw.restricted_count,
+  };
+}
+
+interface RawFull {
+  id: string;
+  channel: CaptureChannel;
+  captured_at: string;
+  technician_ref: string | null;
+  raw_text: string | null;
+  retracts_capture_id: string | null;
+  memberships: { customer_id: string | null; job_id: string | null; visit_id: string | null; via: string }[];
+  retracted: { id: string; reason: string | null; by: string | null; at: string } | null;
+}
+
+// One capture, full words. Null when it is not on this tenant, not visible to
+// the tier, or retracted without the audit flag — one answer for all three,
+// so a distinct error cannot confirm that an id exists.
+export async function getCaptureFull(
+  tenantId: string,
+  captureId: string,
+  tier: CallerTier,
+  includeRetracted = false,
+): Promise<CaptureFull | null> {
+  const { data, error } = await getClient().rpc('capture_full', {
+    p_tenant: tenantId,
+    p_capture: captureId,
+    p_caller_tier: tier,
+    p_include_retracted: includeRetracted,
+  });
+  if (error) throw new Error(`capture_full failed: ${error.message}`);
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) return null;
+  const raw = data as unknown as RawFull;
+  return {
+    captureId: raw.id,
+    channel: raw.channel,
+    capturedAt: raw.captured_at,
+    technicianRef: raw.technician_ref,
+    rawText: raw.raw_text,
+    retractsCaptureId: raw.retracts_capture_id,
+    memberships: raw.memberships.map((m) => ({
+      customerId: m.customer_id,
+      jobId: m.job_id,
+      visitId: m.visit_id,
+      via: m.via,
+    })),
+    retracted: raw.retracted,
+  };
+}
+
+interface RawSearch {
+  scope_found: boolean;
+  query: string;
+  matches: { id: string; channel: CaptureChannel; captured_at: string; technician_ref: string | null; snippet: string }[];
+  count: number;
+  more: boolean;
+  note?: string;
+}
+
+// Keyword search inside a scope: word forms (full-text) or a bare substring
+// (codes, part numbers). Snippets, never whole notes; get_capture opens one.
+export async function searchCaptures(
+  tenantId: string,
+  scope: 'job' | 'customer',
+  scopeId: string,
+  query: string,
+  tier: CallerTier,
+  opts: { limit?: number; snippetChars?: number } = {},
+): Promise<CaptureSearch> {
+  const { data, error } = await getClient().rpc('search_captures', {
+    p_tenant: tenantId,
+    p_scope: scope,
+    p_scope_id: scopeId,
+    p_query: query,
+    p_caller_tier: tier,
+    ...(opts.limit !== undefined ? { p_limit: opts.limit } : {}),
+    ...(opts.snippetChars !== undefined ? { p_snippet_chars: opts.snippetChars } : {}),
+  });
+  if (error) throw new Error(`search_captures failed: ${error.message}`);
+  const raw = data as unknown as RawSearch;
+  return {
+    scopeFound: raw.scope_found,
+    query: raw.query,
+    matches: raw.matches.map((m) => ({
+      captureId: m.id,
+      channel: m.channel,
+      capturedAt: m.captured_at,
+      technicianRef: m.technician_ref,
+      snippet: m.snippet,
+    })),
+    count: raw.count,
+    more: raw.more,
+    ...(raw.note ? { note: raw.note } : {}),
+  };
+}
+
 async function readContents(
   tenantId: string,
   customerId: string,

@@ -375,8 +375,9 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://172.17.0.1:3001/ \
   `inform_team_lead`, `ask_team_lead`, `inform_teammate` (`brief_customer` and
   `answer_customer_question` were retired 2026-09-15; `src/mcp/tools/surface.expected.ts` is the
   authority by name). (A badge whose roster row is
-  an ACTIVE `tier='manager'` lists **41** as of rung 9a, 2026-09-05 — `server.test.ts` pins both
-  counts and is the authority when this line drifts — `get_schedule` is REMOVED (2026-07-19: it is the technician route view; a
+  an ACTIVE `tier='manager'` lists **42** as of 2026-09-15 — `surface.expected.ts`'s
+  `MANAGER_TOOLS_EXPECTED` pins the list by name and is the authority when this line drifts —
+  `get_schedule` and `search_captures` are REMOVED (2026-07-19: it is the technician route view; a
   manager's only schedule read is get_team_schedule, which includes visits they hold, and
   schedule viewing lives on the dispatch board) while the 8 seat/lifecycle-management tools are
   added: add/deactivate/reactivate technician seat, bind_telegram, list_team,

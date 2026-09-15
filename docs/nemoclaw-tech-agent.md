@@ -285,7 +285,7 @@ this line is how the model knows what today is between `resolve_date` calls; it 
 every call, so sessions crossing midnight stay grounded. It states what today IS —
 `resolve_date` remains the only sanctioned way to compute any OTHER date (eval:
 date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). Array-shaped results
-(e.g. `list_recent_captures`) keep their shape and carry no rider.
+(e.g. `find_customer`) keep their shape and carry no rider.
 - The agent calls `record_field_note({ text, channel })`. **If identity resolves to a customer or
   job that already exists, this call RECORDS** — L1 + L2 in one step, `status: 'recorded'`
   (plan ②, 2026-08-21). Idempotency comes from a content stamp

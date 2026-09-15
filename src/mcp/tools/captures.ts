@@ -17,7 +17,7 @@ import {
   findFoldImpact,
   findOpenReviewItem,
   findRetractionsFor,
-  foldRetractions,
+  getCaptureFull,
   getCustomer,
   getJob,
   getOpenReviewItem,
@@ -28,15 +28,15 @@ import {
   insertVisitNote,
   isFactBundle,
   isUniqueViolation,
+  listCapturesPage,
   listCustomerCapturesForCapture,
   listJobCapturesForCapture,
   listObservationsByStatus,
-  listRawCapturesForCustomer,
-  listRawCapturesForJob,
   listVisitNotesForCapture,
   readJobNote,
   resolveOpenReviewItemFor,
   resolveReviewItem,
+  searchCaptures,
   setObservationStatus,
   trySetCustomerAttribute,
   trySetJobAttribute,
@@ -62,6 +62,8 @@ import {
 import {
   AUDIT_CHANNELS,
   TECH_CHANNELS,
+  UUID_RE,
+  callerTierOf,
   commitNote,
   currentFactValue,
   encodeFactValue,
@@ -127,18 +129,69 @@ const BASE_TOOLS = [
   {
     name: 'list_recent_captures',
     description:
-      'List raw captures for a job (jobId) or a customer (customerId), newest first. Retracted ' +
-      'captures are hidden; managers may pass includeRetracted:true for the full labeled trail.',
+      "ONE PAGE of the notes on a job (jobId) or across a customer's whole record (customerId), " +
+      'newest first — 20 per page by default, each note cut to 600 characters (textTruncated ' +
+      'says so; get_capture(captureId) gives the full words). Retracted notes are gone. The ' +
+      'result says totalVisible and restrictedCount (notes on file but outside your view), and ' +
+      'when hasMore is true, `next` is the cursor: call again with `before` set to it for the ' +
+      'older page. Managers may pass includeRetracted:true for the full labeled trail.',
     inputSchema: {
       type: 'object',
       properties: {
         jobId: { type: 'string' },
         customerId: { type: 'string' },
+        before: {
+          type: 'string',
+          description: 'The `next` value from the previous page, copied exactly. Omit for the newest page.',
+        },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Notes per page (default 20).' },
+        textChars: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 2000,
+          description: 'Characters of each note to include (default 600).',
+        },
         includeRetracted: {
           type: 'boolean',
           description: 'Manager badges only: include retracted captures, labeled with their retraction.',
         },
       },
+    },
+  },
+  {
+    name: 'get_capture',
+    description:
+      'One note in full — the whole text of a capture whose id you got from get_customer_context ' +
+      '(`newest.captureId`), list_recent_captures, or search_captures. Use it when the opening ' +
+      'was not enough. found:false means no such note on this firm, or one outside your view.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        captureId: { type: 'string' },
+        includeRetracted: {
+          type: 'boolean',
+          description: 'Manager badges only: return a retracted capture, labeled with its retraction.',
+        },
+      },
+      required: ['captureId'],
+    },
+  },
+  {
+    name: 'search_captures',
+    description:
+      'Find notes by KEYWORD inside one job (jobId) or one customer\'s whole record (customerId): ' +
+      'word forms ("leaking" finds "leak") and bare codes or numbers ("4321"). Returns matching ' +
+      'snippets with their captureId — open one with get_capture for the full words. Use it when ' +
+      'the contents page does not answer and you would otherwise page through notes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'A word, phrase, code or number to look for.' },
+        jobId: { type: 'string' },
+        customerId: { type: 'string' },
+        limit: { type: 'integer', minimum: 1, maximum: 25, description: 'Matches to return (default 10).' },
+      },
+      required: ['query'],
     },
   },
   {
@@ -590,51 +643,123 @@ async function handleRecordFieldNote(toolCtx: ToolContext): Promise<unknown> {
       return out;
 }
 
+// A scope argument pair, resolved once for the three drill-down reads: jobId
+// wins, customerId next, neither is an error in words.
+function scopeOf(
+  toolName: string,
+  str: (k: string) => string | undefined,
+): { scope: 'job' | 'customer'; scopeId: string } {
+  const jobId = str('jobId');
+  const customerId = str('customerId');
+  if (jobId) return { scope: 'job', scopeId: jobId };
+  if (customerId) return { scope: 'customer', scopeId: customerId };
+  throw new Error(`${toolName} requires jobId or customerId`);
+}
+
+// A positive whole number from the args, else undefined (the layer applies
+// its own clamps; a non-number here must not silently become the default).
+function intArg(args: Record<string, unknown>, key: string): number | undefined {
+  const v = args[key];
+  if (v === undefined) return undefined;
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) {
+    throw new Error(`${key} must be a positive whole number`);
+  }
+  return v;
+}
+
+// The cursor as one string the model copies back: "<captured_at>|<id>".
+const encodeCursor = (next: { beforeAt: string; beforeId: string } | null): string | null =>
+  next ? `${next.beforeAt}|${next.beforeId}` : null;
+function decodeCursor(before: string | undefined): { beforeAt: string; beforeId: string } | undefined {
+  if (before === undefined) return undefined;
+  const at = before.lastIndexOf('|');
+  const beforeAt = at > 0 ? before.slice(0, at) : '';
+  const beforeId = at > 0 ? before.slice(at + 1) : '';
+  if (!beforeAt || !UUID_RE.test(beforeId) || Number.isNaN(Date.parse(beforeAt))) {
+    throw new Error('before must be the `next` value from a previous page, copied exactly');
+  }
+  return { beforeAt, beforeId };
+}
+
 async function handleListRecentCaptures(toolCtx: ToolContext): Promise<unknown> {
-  const { args, tenantId, str, activeManager, dropSensitive } = toolCtx;
-      const jobId = str('jobId');
-      const customerId = str('customerId');
+  const { args, tenantId, str, activeManager } = toolCtx;
+      const { scope, scopeId } = scopeOf('list_recent_captures', str);
       // Audit toggle is manager-only (user decision 2026-07-06): technicians
       // always get the folded view.
       const includeRetracted = args.includeRetracted === true;
       if (includeRetracted && !activeManager) {
         throw new Error('includeRetracted requires a manager badge');
       }
-      // Tenant guard via the parent: captures inherit the job's/customer's tenant,
-      // so verifying the parent gates the whole list (a mismatch reads as empty).
-      let rows;
-      if (jobId) {
-        const job = await getJob(jobId);
-        if (!job || job.tenant_id !== tenantId) return [];
-        rows = dropSensitive(await listRawCapturesForJob(jobId));
-      } else if (customerId) {
-        const customer = await getCustomer(customerId);
-        if (!customer || customer.tenant_id !== tenantId) return [];
-        rows = dropSensitive(await listRawCapturesForCustomer(customerId));
-      } else {
-        throw new Error('list_recent_captures requires jobId or customerId');
-      }
-      const retractions = await findRetractionsFor(rows.map((r) => r.id));
-      if (!includeRetracted) return foldRetractions(rows, retractions);
-      // Manager full trail: retracted rows labeled with their retraction (at
-      // most one per target — unique index); retraction rows stamped into
-      // this list appear as-is.
-      const byTarget = new Map(retractions.map((r) => [r.retracts_capture_id, r]));
-      return rows.map((row) => {
-        const retraction = byTarget.get(row.id);
-        return retraction
-          ? {
-              ...row,
-              retracted: true,
-              retraction: {
-                id: retraction.id,
-                reason: retraction.raw_text,
-                by: retraction.technician_ref,
-                at: retraction.captured_at,
-              },
-            }
-          : row;
+      // THE LAYER DOES THE REST (plan 2026-09-15-the-retrieval-layer-1): every
+      // attachment kind, the retraction fold, the tier gate, the tenant check on
+      // the scoped parent, a total order and the page cut — one call, one query.
+      const page = await listCapturesPage(tenantId, scope, scopeId, callerTierOf(toolCtx), {
+        ...decodeCursor(str('before')),
+        limit: intArg(args, 'limit'),
+        textChars: intArg(args, 'textChars'),
+        includeRetracted,
       });
+      // A cross-tenant (or unknown) parent reads as an unknown scope — the same
+      // answer as an empty one, said in words rather than as a bare [].
+      const note = !page.scopeFound
+        ? `no such ${scope} on this firm`
+        : page.captures.length === 0
+          ? page.restrictedCount > 0
+            ? `no notes you may read here — ${page.restrictedCount} on file are outside your view`
+            : 'no notes on file here yet'
+          : page.hasMore
+            // No remaining count: totalVisible is the whole scope, not what is
+            // past this page's cursor (a number here was wrong from page 2 on).
+            ? `more older notes — call again with before=next (${page.totalVisible} you may read in all)`
+            : 'that is every note you may read here';
+      return {
+        captures: page.captures,
+        hasMore: page.hasMore,
+        next: encodeCursor(page.next),
+        totalVisible: page.totalVisible,
+        restrictedCount: page.restrictedCount,
+        note,
+      };
+}
+
+async function handleGetCapture(toolCtx: ToolContext): Promise<unknown> {
+  const { args, tenantId, str, activeManager } = toolCtx;
+      const captureId = str('captureId');
+      if (!captureId) throw new Error('captureId is required');
+      // UUID-SHAPED FIRST (the record_caller precedent): a malformed id would
+      // reach a uuid-typed parameter and come back as a raw database error.
+      if (!UUID_RE.test(captureId)) {
+        return { found: false, note: 'no such note on this firm, or it is outside your view' };
+      }
+      const includeRetracted = args.includeRetracted === true;
+      if (includeRetracted && !activeManager) {
+        throw new Error('includeRetracted requires a manager badge');
+      }
+      const capture = await getCaptureFull(tenantId, captureId, callerTierOf(toolCtx), includeRetracted);
+      // One answer for wrong-tenant, hidden and retracted — a distinct error
+      // would confirm the id exists.
+      if (!capture) {
+        return { found: false, note: 'no such note on this firm, or it is outside your view' };
+      }
+      return { found: true, ...capture };
+}
+
+async function handleSearchCaptures(toolCtx: ToolContext): Promise<unknown> {
+  const { args, tenantId, str } = toolCtx;
+      const query = str('query');
+      if (!query || !query.trim()) throw new Error('query is required — a word, code or number');
+      const { scope, scopeId } = scopeOf('search_captures', str);
+      const found = await searchCaptures(tenantId, scope, scopeId, query, callerTierOf(toolCtx), {
+        limit: intArg(args, 'limit'),
+      });
+      const note = !found.scopeFound
+        ? `no such ${scope} on this firm`
+        : found.count === 0
+          ? `nothing you may read here mentions "${found.query}"`
+          : found.more
+            ? `more matches exist — narrow the query, or raise limit`
+            : `${found.count} match${found.count === 1 ? '' : 'es'} — get_capture(captureId) for the full words`;
+      return { ...found, note };
 }
 
 async function handleRetractCapture(toolCtx: ToolContext): Promise<unknown> {
@@ -1364,6 +1489,8 @@ export const capturesTools = {
   handlers: {
     record_field_note: handleRecordFieldNote,
     list_recent_captures: handleListRecentCaptures,
+    get_capture: handleGetCapture,
+    search_captures: handleSearchCaptures,
     retract_capture: handleRetractCapture,
     record_standing_fact: handleRecordStandingFact,
     read_job_note: handleReadJobNote,

@@ -26,17 +26,19 @@
 export const TECHNICIAN_TOOLS = [
   'ask_team_lead', // the Q&A desk (build 5.5 Phase 2)
   'find_customer',
-  'get_customer_context',
+  'get_capture', // one note in full (the retrieval layer, 2026-09-15)
+  'get_customer_context', // the contents page (2026-09-15)
   'get_job',
   'get_schedule', // the technician route view — hidden from managers, see below
   'inform_team_lead', // the planner's inbox, inbound half (build 5.5)
   'inform_teammate', // seat-to-seat informs (build 5.5 Phase 3)
-  'list_recent_captures',
+  'list_recent_captures', // one page of notes (2026-09-15)
   'read_webpage',
   'record_field_note',
   'record_standing_fact',
   'resolve_date',
   'retract_capture',
+  'search_captures', // keyword search — technicians only, hidden from managers, see below
   'send_email',
   'web_search',
 ] as const;
@@ -100,15 +102,17 @@ export const TEAM_LEAD_ONLY_TOOLS = TEAM_LEAD_TOOLS_EXPECTED.filter(
 );
 
 /**
- * The manager catalog: the base surface MINUS get_schedule, PLUS the admin tools,
- * PLUS the shared team-lead doors (user decision 2026-07-19). get_schedule is the
- * technician driving-route view; hiding it leaves managers exactly one schedule
- * read — get_team_schedule, which includes visits they hold themselves — so the
- * misroute that reported "your week is completely clear" while an unassigned visit
- * existed (live, 2026-07-18) is structurally impossible.
+ * The manager catalog: the base surface MINUS get_schedule and search_captures,
+ * PLUS the admin tools, PLUS the shared team-lead doors (user decision
+ * 2026-07-19). get_schedule is the technician driving-route view; hiding it
+ * leaves managers exactly one schedule read — get_team_schedule, which includes
+ * visits they hold themselves — so the misroute that reported "your week is
+ * completely clear" while an unassigned visit existed (live, 2026-07-18) is
+ * structurally impossible. search_captures is the technician's keyword search
+ * (operator ruling 2026-09-15); a manager searches with query_spine.
  */
 export const MANAGER_TOOLS_EXPECTED = [
-  ...TECHNICIAN_TOOLS.filter((n) => n !== 'get_schedule'),
+  ...TECHNICIAN_TOOLS.filter((n) => n !== 'get_schedule' && n !== 'search_captures'),
   ...MANAGER_ONLY_TOOLS,
   ...SEAT_SHARED_TOOLS,
 ];

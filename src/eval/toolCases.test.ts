@@ -188,7 +188,7 @@ describe('tool cases — no step can fire with a missing confirmId', () => {
             { id: 'v', date: '2026-08-20' },
           ]),
         ),
-        captures: { 'cap-rich-intake': 'cap' },
+        captures: { 'cap-rich-intake': 'cap', 'cap-rich-note-1': 'cap' },
         technicians: { 'tech-jane': 'tj' },
       },
       anchor: '2026-08-12',

@@ -226,11 +226,33 @@ export function buildToolCases(): ToolCase[] {
     tenant: 'main',
     badge: 'manager-sam',
     args: (ctx) => ({ customerId: customerId(ctx.tenant, 'edge-rich') }),
-    // A technician note, NOT the intake call: an intake capture is written before
-    // its customer exists, so it carries no customer_id and correctly does not
-    // appear in a customer-scoped list. (It is still reachable as the customer's
-    // source_capture_id, which is how the retract-fold in W03 finds it.)
+    // The technician note reaches the page through its job; since the
+    // retrieval layer (2026-09-15) the customer scope ALSO includes the intake
+    // call, reached through `created_customer` (customers.source_capture_id) —
+    // every attachment kind counts, not just the customer_id stamp.
     check: all(ok, mentions('Replaced the run capacitor')),
+  });
+
+  one({
+    id: 'R16',
+    family: 'reads',
+    title: 'get_capture opens one note in full',
+    tool: 'get_capture',
+    tenant: 'main',
+    badge: 'tech-jane',
+    args: (ctx) => ({ captureId: captureId(ctx.tenant, 'cap-rich-note-1') }),
+    check: all(ok, mentions('Replaced the run capacitor', 'recommend full replacement')),
+  });
+
+  one({
+    id: 'R17',
+    family: 'reads',
+    title: "search_captures finds a note by keyword inside the customer's record",
+    tool: 'search_captures',
+    tenant: 'main',
+    badge: 'tech-jane',
+    args: (ctx) => ({ customerId: customerId(ctx.tenant, 'edge-rich'), query: 'capacitor' }),
+    check: all(ok, mentions('capacitor', 'captureId')),
   });
 
   one({

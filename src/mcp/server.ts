@@ -436,8 +436,10 @@ export const TEAM_LEAD_ONLY_TOOL_NAMES = new Set(
 // …PLUS the shared team-lead doors (rung 10b.2). Taken FROM `TEAM_LEAD_TOOLS`
 // rather than re-declared: one schema, two catalogs, so a reworded description
 // can never drift between what the planner reads and what the seat reads.
+// …and MINUS search_captures (operator ruling 2026-09-15): keyword search is
+// the technician's read; a manager searches with query_spine over v_captures.
 const MANAGER_TOOLS = [
-  ...TOOLS.filter((t) => t.name !== 'get_schedule'),
+  ...TOOLS.filter((t) => t.name !== 'get_schedule' && t.name !== 'search_captures'),
   ...ADMIN_TOOLS,
   ...TEAM_LEAD_TOOLS.filter((t) => SEAT_SHARED_TEAM_LEAD_TOOLS.has(t.name)),
 ];
@@ -654,6 +656,15 @@ async function dispatch(
     throw new Error(
       'get_schedule is the technician route view — managers use get_team_schedule ' +
         '(it includes visits you hold yourself) or the dispatch board',
+    );
+  }
+  // Same inverse gate for the technician's keyword search (operator ruling
+  // 2026-09-15): listed only to technicians, refused here so a stale catalog
+  // cannot reach it either.
+  if (name === 'search_captures' && activeManager) {
+    throw new Error(
+      "search_captures is the technician's keyword search — managers search with " +
+        'query_spine over v_captures (join v_job_captures / v_visit_notes / v_customer_captures)',
     );
   }
   // Sensitivity filter: manager-only L1 rows (e.g. payment agent_actions from

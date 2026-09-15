@@ -205,8 +205,9 @@ export async function captureHasLinkedL2(captureId: string): Promise<boolean> {
   return note || jobLink || observed || customerLink;
 }
 
-// Captures directly stamped with a job_id, newest first. (Tech notes resolved via
-// L2.source_capture_id won't appear here — getCustomerContext unions those in.)
+// Captures directly stamped with a job_id, newest first — ONE of the six ways a
+// capture attaches to a job. The full union is the database's capture_membership
+// view (migration 20260916120000), which the seat readers go through.
 export async function listRawCapturesForJob(jobId: string): Promise<RawCapture[]> {
   const { data, error } = await getClient()
     .from('raw_captures')

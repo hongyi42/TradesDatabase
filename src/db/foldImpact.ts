@@ -179,8 +179,10 @@ export async function findFoldImpact(tenantId: string, captureId: string): Promi
       technicianIds: participantIdsOf(v, tenantId),
     },
     // WHAT "DISAPPEARS" HAS TO MEAN: the reader actually stops showing it.
-    // `src/db/context.ts` folds `recentVisits` — past work evidence — and does
-    // NOT fold `upcomingVisits`, so a CONFIRMED trip keeps its place on the
+    // The contents page (customer_contents, migration 20260916120000) reads
+    // `last_visit_at` over live-sourced completed trips only — past work
+    // evidence — and `src/db/context.ts` does NOT fold `upcomingVisits`, so a
+    // CONFIRMED trip keeps its place on the
     // schedule whatever is retracted. That is the rung-9b rule stated out loud:
     // never tell anyone a booked visit is going away.
     //

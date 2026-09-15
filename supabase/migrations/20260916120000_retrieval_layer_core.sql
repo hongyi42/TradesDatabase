@@ -213,9 +213,13 @@ begin
                'restricted_count', stats.restricted_count,
                'last_capture_at', stats.last_capture_at,
                'newest', newest.snip,
+               -- A trip MINTED by a since-retracted note goes with the note
+               -- (the old recentVisits fold); a booked trip a note merely
+               -- reported keeps its place (rung 9b).
                'last_visit_at', (select max(v.completed_at) from visits v
                                   where v.job_id = j.id and v.tenant_id = j.tenant_id
-                                    and v.status = 'completed'),
+                                    and v.status = 'completed'
+                                    and (v.source_capture_id is null or capture_is_live(v.source_capture_id))),
                'money_events', (select coalesce(jsonb_agg(to_jsonb(m) order by m.id), '[]'::jsonb)
                                   from money_events m
                                  where m.job_id = j.id and m.tenant_id = j.tenant_id

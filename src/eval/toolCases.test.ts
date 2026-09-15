@@ -127,8 +127,6 @@ describe('tool cases — the corpus covers the surface', () => {
     // Every tool that reaches a model or a third party must be marked, or a run
     // without keys reports real failures that are really just absent capability.
     const externalTools = [
-      'brief_customer',
-      'answer_customer_question',
       'web_search',
       'read_webpage',
       'send_email',

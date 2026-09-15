@@ -22,17 +22,18 @@ import {
   setNudgeAnsweredBy,
 } from '../../db/index.js';
 import type {
+  CallerTier,
   CaptureChannel,
   FoldImpact,
   Json,
   TechnicianTier,
 } from '../../db/index.js';
 import type {
-  BriefFocus,
-} from '../../synthesis/index.js';
-import type {
   ExtractedFields,
 } from '../../writePath/extract.js';
+import type {
+  ToolContext,
+} from './types.js';
 import type {
   MatchResult,
 } from '../../writePath/identityMatch.js';
@@ -50,8 +51,18 @@ import {
 } from 'node:crypto';
 
 export const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
-export const BRIEF_FOCUSES: BriefFocus[] = ['next_visit', 'full_history'];
 export const TIERS: TechnicianTier[] = ['manager', 'technician'];
+
+// Who is asking, for the retrieval layer's tier gate. From the VERIFIED
+// identity the hub established, never from a tool argument: the planner is the
+// `spine:` namespace, a manager is an ACTIVE manager roster row (the same
+// predicate as the admin-tool gate), and everyone else is a technician.
+export const callerTierOf = (ctx: ToolContext): CallerTier =>
+  ctx.identity.technicianRef.startsWith('spine:')
+    ? 'planner'
+    : ctx.activeManager
+      ? 'manager'
+      : 'technician';
 
 // GROUNDING_BARE=1 (date-eval bare-clock arm, 2026-08-23): the model's ONLY
 // date help is the firm-local `now` rider. Read at module load — the flag

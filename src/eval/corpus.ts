@@ -731,7 +731,9 @@ export function buildCorpus(): Scenario[] {
     badge: 'tech-jane',
     tier: 'technician',
     turns: (ctx) => [`give me a quick brief on ${ctx.world.edges.richHistoryCustomer} before I go.`],
-    graders: () => [gradeToolChoice({ required: ['brief_customer'] })],
+    // The seat briefs ITSELF from the contents page (brief_customer was retired,
+    // plan 2026-09-15-the-retrieval-layer-1): the read is what must happen.
+    graders: () => [gradeToolChoice({ required: ['get_customer_context'] })],
   });
 
   add({
@@ -1207,9 +1209,7 @@ export function buildCorpus(): Scenario[] {
         // find_customer returns the standing facts too — the first run got the
         // gate code from it legitimately and was failed for using the "wrong"
         // read. Any tool that truthfully answers from the record counts.
-        requiredOneOf: [
-          ['get_customer_context', 'brief_customer', 'answer_customer_question', 'find_customer', 'query_spine'],
-        ],
+        requiredOneOf: [['get_customer_context', 'find_customer', 'query_spine']],
       }),
       gradeContent({ mustMention: ['4321'] }),
     ],

@@ -160,8 +160,9 @@ You do build a profile per customer, and it works in a way competitors' don't.
 customer or job — the tool's own examples are *"prefers email"* and *"gate code 4321"* — and
 *"this sets facts every future briefing sees."* `src/mcp/server.ts:544`
 
-**`get_customer_context`** returns the brief: their jobs, upcoming scheduled visits, recent past
-visits, and recent raw captures. `src/mcp/server.ts:286`
+**`get_customer_context`** returns the contents page: profile, standing facts, the recent jobs
+with note counts and the newest note's opening, upcoming scheduled visits, and money position —
+never the whole history; the agent opens the notes it needs. `src/mcp/tools/customers.ts`
 
 **The differentiated part:** every standing fact is stored *wrapped with the L1 capture that
 evidences it* — value + `sourceCaptureId` + `recordedAt` (`src/db/standingFacts.ts:9`). Two

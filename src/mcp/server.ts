@@ -29,10 +29,6 @@ import {
   enablePairing as liveEnablePairing,
 } from '../composio/offboarding.js';
 import type { Extractor } from '../writePath/extract.js';
-import {
-  type Briefer,
-  type Answerer,
-} from '../synthesis/index.js';
 import { identityFromEnv, type RequestIdentity } from './identity.js';
 import { type ComputeRoutes } from '../routes/googleRoutes.js';
 import { runSpineQuery } from '../db/querySpine.js';
@@ -73,8 +69,6 @@ export { attributeAnswerToGap, openQuestionsFor, oneShotNoteStamp, refuseNameAsA
 // the agent cannot address another firm's data or claim another technician.
 export interface ServerDeps {
   extract?: Extractor; // injectable so tests don't call the live model
-  brief?: Briefer; // injectable briefing synthesizer (same reason)
-  answer?: Answerer; // injectable Q&A synthesizer (same reason)
   identity?: RequestIdentity; // gateway-pinned tenant + technician for this request
   // Composio pairing seams — injectable so tests never need COMPOSIO_API_KEY.
   connectLink?: typeof liveCreateConnectLink;
@@ -91,7 +85,7 @@ export interface ServerDeps {
   webSearch?: typeof braveWebSearch; // Brave seam — tests never need BRAVE_API_KEY
   fetchPage?: typeof fetchPageText; // fetch seam — tests never hit the network
   // The Q&A desk seam (build 5.5 Phase 2) — injectable so a dispatch test
-  // never calls the live model (the brief/answer synthesizer precedent).
+  // never calls the live model (the extractor precedent).
   deskAnswer?: typeof answerDeskQuestion;
   // Cost-ledger seam. Injectable for the same reason as the rest: without it
   // every hermetic dispatch test would start writing to the real database.

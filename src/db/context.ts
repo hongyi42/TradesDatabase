@@ -1,29 +1,39 @@
-import { getCustomer, listLinkedCapturesForCustomer, type Customer } from './customers.js';
+// The customer read, through the retrieval layer (plan
+// 2026-09-15-the-retrieval-layer-1-captures-and-the-customer-read).
+//
+// This module used to assemble a customer's WHOLE record in TypeScript — every
+// job, every visit, every capture's full text, one HTTP request per linked
+// capture, the retraction fold re-applied here — and hand it to a model as one
+// bundle. The operator ruled 2026-09-14 that a model is never given a customer's
+// captures in bulk: it gets a TABLE OF CONTENTS and drills in. The rules
+// (which captures belong, the fold, the tier gate, order, paging) now live once
+// in the database (migration 20260916120000_retrieval_layer_core.sql); this file
+// only calls them and applies the two folds that stay in TypeScript because
+// their one definition is here: standing facts and correspondence citing a
+// retracted capture (foldRetractedFacts / foldRetractedCorrespondence).
+import { getClient } from './client.js';
+import type { Customer } from './customers.js';
 import { getTenant } from './tenants.js';
-import { listJobsForCustomer, type Job } from './jobs.js';
-import { listVisitsForCustomer, type VisitWithTechnician } from './visits.js';
-import {
-  listUpcomingVisitsForCustomer,
-  participantIdsOf,
-  participantsOf,
-} from './visits.js';
+import { foldRetractedCorrespondence, type Job } from './jobs.js';
+import { listUpcomingVisitsForCustomer, participantIdsOf, participantsOf } from './visits.js';
+import { foldRetractedFacts } from './standingFacts.js';
+import { summarizeMoney, type MoneyEvent, type MoneySummary } from './moneyEvents.js';
+import type { CaptureChannel } from './rawCaptures.js';
 import { localDateISO } from '../schedule/availability.js';
 import { spineNowIso } from '../evalClock.js';
+
 // Full weekday name, matching resolve_date's phrase convention ("Monday
 // 2026-08-03") — the label the agent is told to say verbatim. fit.ts's
 // weekdayLabel is the short form used by schedule grids; a phrase spoken to a
 // person gets the full word.
 const weekdayFull = (dateISO: string): string =>
   new Date(`${dateISO}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
-import {
-  findRetractionsFor,
-  foldRetractions,
-  getRawCapture,
-  listRawCapturesForCustomer,
-  type RawCapture,
-} from './rawCaptures.js';
-import { factSourceIds, foldRetractedFacts } from './standingFacts.js';
-import { correspondenceEntries, foldRetractedCorrespondence } from './jobs.js';
+
+// Who is asking. The database's tier gate (capture_visible) is keyed on this:
+// a technician sees technician-channel captures, a manager and the planner see
+// everything, and any other value sees NOTHING (fail closed). Derived by the
+// hub from the verified identity — never from a tool argument.
+export type CallerTier = 'technician' | 'manager' | 'planner';
 
 // One upcoming stop, in the schedule's display conventions: date + HH:MM
 // slices of the naive-local timestamps (never timezone-converted — the wire's
@@ -36,6 +46,10 @@ export interface UpcomingVisit {
   jobTitle: string | null;
   technicianRef: string | null;
   technicianName: string | null;
+  // EVERY name on the trip: the brief tells a customer who is coming, and
+  // "Ben" for a two-person job is a wrong answer, not a short one.
+  technicianRefs: string[];
+  technicianNames: string[];
   unassigned: boolean;
   date: string | null; // YYYY-MM-DD — null = no time set yet
   startTime: string | null; // HH:MM wall clock
@@ -52,164 +66,190 @@ export interface UpcomingVisit {
   phrase: string;
 }
 
-export interface CustomerContext {
-  customer: Customer | null;
-  jobs: Job[];
-  /**
-   * Confirmed FUTURE work from the visits table — placed visits from
-   * today forward plus unplaced (time-TBD) visits with a live scheduling
-   * window. Added 2026-08-13: this aggregate previously read only `visits`
-   * (L2 evidence of PAST work), so "when is X's next visit?" answered "none"
-   * for customers with four confirmed bookings, on every surface that briefs
-   * from this context.
-   */
-  upcomingVisits: UpcomingVisit[];
-  recentVisits: VisitWithTechnician[];
-  recentCaptures: RawCapture[];
+// The opening of one capture: enough to answer "what did the last tech say"
+// in one call, with the id that opens the full words (get_capture).
+export interface CaptureSnippet {
+  captureId: string;
+  channel: CaptureChannel;
+  capturedAt: string;
+  technicianRef: string | null;
+  snippet: string;
+  truncated: boolean;
 }
 
-// Aggregated read for "brief me on this customer" / "what did the last tech say".
-// recentCaptures unions two sources: captures directly stamped with customer_id,
-// AND the captures linked from this customer's jobs/visits via source_capture_id —
-// because a tech note lands in L1 before identity is resolved, so its
-// raw_captures.customer_id is null and provenance lives only on the L2 row.
-//
-// Retraction fold (default): retracted captures, the retraction rows themselves,
-// AND visits whose source capture is retracted are all dropped — every consumer
-// (context tool, briefings, Q&A) inherits the folded view by construction.
-// includeRetracted is the audit escape hatch; the caller gates who may use it.
-export async function getCustomerContext(
-  customerId: string,
-  opts: { includeRetracted?: boolean } = {},
-): Promise<CustomerContext> {
-  const [customer, jobs, recentVisits, capturesByCustomer, linkedCaptures] = await Promise.all([
-    getCustomer(customerId),
-    listJobsForCustomer(customerId),
-    listVisitsForCustomer(customerId),
-    listRawCapturesForCustomer(customerId),
-    // THE THIRD SOURCE (2026-09-12). The two above reach a capture only through
-    // the L1 customer_id STAMP or through a job/visit's source_capture_id — and
-    // an inbound capture has neither when the door knew who wrote but not which
-    // job it was about. Without this the customer_captures link would be
-    // write-only: the message would be filed correctly and still invisible
-    // here, which is worse than the guess it replaced, not better.
-    listLinkedCapturesForCustomer(customerId),
-  ]);
+// A job on the contents page: the row (attributes folded) plus what the layer
+// counted for it. `restrictedCount` is how many live captures sit outside the
+// caller's view — said in numbers so a seat knows there is something to ask for.
+export type JobContents = Job & {
+  noteCount: number;
+  restrictedCount: number;
+  lastCaptureAt: string | null;
+  newest: CaptureSnippet | null;
+  lastVisitAt: string | null;
+  money: MoneySummary | null;
+};
 
-  // Upcoming schedule, tenant-scoped by the CUSTOMER's own tenant (the caller
-  // still rejects cross-tenant customers wholesale). "Today" is the firm's
-  // local date. Booked work stands regardless of note retractions — an
-  // assignment dies via its own status, never via retract_capture — so these
-  // rows deliberately do not join the retraction fold below.
-  let upcomingVisits: UpcomingVisit[] = [];
-  if (customer) {
-    const tz = (await getTenant(customer.tenant_id))?.timezone ?? 'UTC';
-    // Real clock unless EVAL_FAKE_NOW anchors THIS tenant (date-eval only):
-    // the upcoming/recent split must agree with the anchored resolve_date, or
-    // an anchored run charges the model for the harness's own inconsistency.
-    const todayLocal = localDateISO(spineNowIso(customer.tenant_id), tz);
-    const rows = await listUpcomingVisitsForCustomer(customer.tenant_id, customerId, todayLocal);
-    upcomingVisits = rows
+export interface CustomerContents {
+  customer: Customer;
+  jobs: JobContents[];
+  jobsTotal: number;
+  olderJobs: number;
+  // Captures filed on the customer with no job anywhere on the record (the
+  // door knew WHO, not WHICH).
+  customerLevel: { noteCount: number; restrictedCount: number; newest: CaptureSnippet | null };
+  /**
+   * Confirmed FUTURE work from the visits table — placed visits from today
+   * forward plus untimed visits. Added 2026-08-13: this read previously saw
+   * only past work, so "when is X's next visit?" answered "none" for customers
+   * with four confirmed bookings.
+   */
+  upcomingVisits: UpcomingVisit[];
+}
+
+// ---- the jsonb the database returns, narrowed by hand (the readTenantCostDetail idiom) ----
+interface RawSnippet {
+  id: string;
+  channel: CaptureChannel;
+  captured_at: string;
+  technician_ref: string | null;
+  snippet: string | null;
+  truncated: boolean;
+}
+interface RawJobBlock {
+  job: Job;
+  note_count: number;
+  restricted_count: number;
+  last_capture_at: string | null;
+  newest: RawSnippet | null;
+  last_visit_at: string | null;
+  money_events: MoneyEvent[];
+}
+interface RawContents {
+  customer: Customer;
+  jobs_total: number;
+  older_jobs: number;
+  jobs: RawJobBlock[];
+  customer_level: { note_count: number; restricted_count: number; newest: RawSnippet | null };
+  retracted_evidence_ids: string[];
+}
+
+const snippetOf = (raw: RawSnippet | null): CaptureSnippet | null =>
+  raw
+    ? {
+        captureId: raw.id,
+        channel: raw.channel,
+        capturedAt: raw.captured_at,
+        technicianRef: raw.technician_ref,
+        snippet: raw.snippet ?? '',
+        truncated: raw.truncated,
+      }
+    : null;
+
+// The contents page. Three bounded round trips — the page itself, the firm's
+// timezone, the upcoming visits — and nothing that grows with the history:
+// the database counts the captures and returns one snippet per job.
+export async function getCustomerContents(
+  tenantId: string,
+  customerId: string,
+  tier: CallerTier,
+): Promise<CustomerContents | null> {
+  const [raw, upcomingVisits] = await Promise.all([
+    readContents(tenantId, customerId, tier),
+    readUpcoming(tenantId, customerId),
+  ]);
+  // Wrong tenant or unknown id: the database returned nothing, and the
+  // upcoming read (tenant-filtered) is discarded with it.
+  if (!raw) return null;
+
+  // The two folds that stay here: a standing fact or a correspondence entry
+  // whose evidence was retracted disappears from the default view (the only
+  // removal path). The ids come from the same query that built the page.
+  const retracted = new Set(raw.retracted_evidence_ids);
+  const customer: Customer = {
+    ...raw.customer,
+    attributes: foldRetractedFacts(raw.customer.attributes, retracted),
+  };
+  const jobs: JobContents[] = raw.jobs.map((block) => ({
+    ...block.job,
+    attributes: foldRetractedCorrespondence(
+      foldRetractedFacts(block.job.attributes, retracted),
+      retracted,
+    ),
+    noteCount: block.note_count,
+    restrictedCount: block.restricted_count,
+    lastCaptureAt: block.last_capture_at,
+    newest: snippetOf(block.newest),
+    lastVisitAt: block.last_visit_at,
+    // Absence = "no money recorded here" (a zero summary on an untracked job
+    // would read as "fully paid"). The rows already exclude any that cite a
+    // retracted capture; the summary itself is the one shared definition.
+    money: block.money_events.length > 0 ? summarizeMoney(block.money_events) : null,
+  }));
+
+  return {
+    customer,
+    jobs,
+    jobsTotal: raw.jobs_total,
+    olderJobs: raw.older_jobs,
+    customerLevel: {
+      noteCount: raw.customer_level.note_count,
+      restrictedCount: raw.customer_level.restricted_count,
+      newest: snippetOf(raw.customer_level.newest),
+    },
+    upcomingVisits,
+  };
+}
+
+async function readContents(
+  tenantId: string,
+  customerId: string,
+  tier: CallerTier,
+): Promise<RawContents | null> {
+  const { data, error } = await getClient().rpc('customer_contents', {
+    p_tenant: tenantId,
+    p_customer: customerId,
+    p_caller_tier: tier,
+  });
+  if (error) throw new Error(`customer_contents failed: ${error.message}`);
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) return null;
+  return data as unknown as RawContents;
+}
+
+// Upcoming schedule, tenant-scoped by the verified tenant (the caller still
+// rejects cross-tenant customers wholesale). "Today" is the firm's local date.
+// Booked work stands regardless of note retractions — an assignment dies via
+// its own status, never via retract_capture — so these rows never fold.
+async function readUpcoming(tenantId: string, customerId: string): Promise<UpcomingVisit[]> {
+  const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
+  // Real clock unless EVAL_FAKE_NOW anchors THIS tenant (date-eval only):
+  // the upcoming/recent split must agree with the anchored resolve_date, or
+  // an anchored run charges the model for the harness's own inconsistency.
+  const todayLocal = localDateISO(spineNowIso(tenantId), tz);
+  const rows = await listUpcomingVisitsForCustomer(tenantId, customerId, todayLocal);
+  return (
+    rows
       // Re-check the embed's tenant: "a job shares its customer's tenant" is
       // an unenforced invariant (id-only FK) — drop rows that violate it.
-      .filter((r) => r.jobs?.tenant_id === customer.tenant_id)
+      .filter((r) => r.jobs?.tenant_id === tenantId)
       .map((r) => {
         const date = r.starts_at?.slice(0, 10) ?? null;
         const phrase = date ? `${weekdayFull(date)} ${date}` : 'no time set yet';
-        const crew = participantsOf(r, customer.tenant_id);
+        const crew = participantsOf(r, tenantId);
         return {
           visitId: r.id,
           jobId: r.job_id,
           jobTitle: r.jobs?.title ?? null,
           technicianRef: crew[0]?.ref ?? null,
           technicianName: crew[0]?.displayName ?? null,
-          // EVERY name on the trip: the brief tells a customer who is coming,
-          // and "Ben" for a two-person job is a wrong answer, not a short one.
           technicianRefs: crew.map((p) => p.ref),
           technicianNames: crew.map((p) => p.displayName),
-          unassigned: participantIdsOf(r, customer.tenant_id).length === 0, // counted, not named
+          unassigned: participantIdsOf(r, tenantId).length === 0, // counted, not named
           date,
           startTime: r.starts_at?.slice(11, 16) ?? null,
           endTime: r.ends_at?.slice(11, 16) ?? null,
           ...(r.starts_at === null ? { untimed: true as const } : {}),
           phrase,
         };
-      });
-  }
-
-  const byId = new Map<string, RawCapture>();
-  for (const capture of capturesByCustomer) byId.set(capture.id, capture);
-
-  // THE LINK'S OWN TENANT IS THE ONLY PROOF THIS CAPTURE IS OURS. `customer_id`
-  // is an id-only foreign key, so a link row carrying another firm's tenant_id
-  // would otherwise pull their verbatim words into this customer's context via
-  // the fleet-wide getRawCapture below. With no customer row there is nothing to
-  // check against, so nothing is taken — the safe direction.
-  const linkedCaptureIds = linkedCaptures
-    .filter((link) => !!customer && link.tenant_id === customer.tenant_id)
-    .map((link) => link.capture_id);
-
-  const sourceIds = [
-    ...jobs.map((j) => j.source_capture_id),
-    ...recentVisits.map((v) => v.source_capture_id),
-    ...linkedCaptureIds,
-  ].filter((id): id is string => !!id && !byId.has(id));
-
-  const fetched = await Promise.all([...new Set(sourceIds)].map((id) => getRawCapture(id)));
-  for (const capture of fetched) if (capture) byId.set(capture.id, capture);
-
-  let recentCaptures = [...byId.values()].sort((a, b) =>
-    a.captured_at < b.captured_at ? 1 : -1,
+      })
   );
-
-  let visits = recentVisits;
-  let customerOut = customer;
-  let jobsOut = jobs;
-  if (!opts.includeRetracted) {
-    // Standing-fact evidence captures are normally IN recentCaptures already
-    // (record_standing_fact stamps customer_id), but the union above doesn't
-    // guarantee it — add their ids explicitly so a fact can never dodge the
-    // fold by its evidence missing from the fetched lists.
-    const factIds = [
-      ...factSourceIds(customer?.attributes ?? null),
-      ...jobs.flatMap((j) => factSourceIds(j.attributes)),
-    ];
-    // Correspondence entries carry their own evidence (rung 10) and are in the
-    // SAME position as standing facts: an inbound capture on an existing job is
-    // never stamped with a customer_id (identity resolves after L1, which is
-    // immutable), so its retraction would not be found by the capture lists
-    // above and a retracted email would keep speaking from the job's L3.
-    const correspondenceIds = jobs.flatMap((j) =>
-      correspondenceEntries(j.attributes).map((e) => e.captureId),
-    );
-    const retractions = await findRetractionsFor([
-      ...new Set([...recentCaptures.map((c) => c.id), ...factIds, ...correspondenceIds]),
-    ]);
-    recentCaptures = foldRetractions(recentCaptures, retractions);
-    const retractedIds = new Set(
-      retractions.map((r) => r.retracts_capture_id).filter((id): id is string => !!id),
-    );
-    // A visit is this note's trip: its source capture retracted ⇒ the visit's
-    // facts (labor hours, L3 attributes) must not surface either.
-    visits = recentVisits.filter(
-      (v) => !v.source_capture_id || !retractedIds.has(v.source_capture_id),
-    );
-    // Standing facts follow the same rule: evidence retracted ⇒ the fact
-    // disappears from the default view (it is the only removal path).
-    if (customerOut) {
-      customerOut = {
-        ...customerOut,
-        attributes: foldRetractedFacts(customerOut.attributes, retractedIds),
-      };
-    }
-    jobsOut = jobs.map((j) => ({
-      ...j,
-      attributes: foldRetractedCorrespondence(
-        foldRetractedFacts(j.attributes, retractedIds),
-        retractedIds,
-      ),
-    }));
-  }
-
-  return { customer: customerOut, jobs: jobsOut, upcomingVisits, recentVisits: visits, recentCaptures };
 }

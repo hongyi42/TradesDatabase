@@ -25,7 +25,7 @@ import {
   foldRetractedFacts,
   formatDuration,
   getCustomer,
-  getCustomerContext,
+  getCustomerContents,
   getJob,
   getObservationForTenant,
   getOpenReviewItem,
@@ -34,7 +34,6 @@ import {
   listJobsForCustomer,
   listL2CitingCapture,
   listMoneyEventsForJob,
-  listMoneyEventsForJobs,
   listOpenJobsForCustomer,
   resolveOpenReviewItemFor,
   resolveReviewItem,
@@ -59,13 +58,6 @@ import {
   updateJobIdentity,
 } from '../../schedule/booking.js';
 import {
-  defaultAnswerer,
-  defaultBriefer,
-} from '../../synthesis/index.js';
-import type {
-  BriefFocus,
-} from '../../synthesis/index.js';
-import {
   correspondenceOf,
   recordFieldNote,
 } from '../../writePath/recordFieldNote.js';
@@ -73,8 +65,8 @@ import type {
   ResolvedIdentity,
 } from '../../writePath/recordFieldNote.js';
 import {
-  BRIEF_FOCUSES,
   UUID_RE,
+  callerTierOf,
   inboundAskFor,
   leanGrounding,
   recordCallerThroughTheDoor,
@@ -98,15 +90,22 @@ const BASE_TOOLS = [
   {
     name: 'get_customer_context',
     description:
-      "Brief on a customer: their jobs, UPCOMING scheduled visits, recent past visits, and recent " +
-      "raw captures. upcomingVisits is the schedule ahead — use it for \"when is X's next visit?\" " +
+      'The CONTENTS PAGE for a customer — fixed size, never their whole history. It carries the ' +
+      'profile and standing facts; the 10 most recent jobs, each with status, attributes, ' +
+      'noteCount (notes you may read), restrictedCount (notes on file but outside your view), ' +
+      "lastCaptureAt, lastVisitAt and `newest` — the newest note's first 200 characters with its " +
+      'captureId; olderJobs says how many more jobs exist; customerLevelNotes is what was filed ' +
+      'on the customer with no job. To READ a job\'s notes call list_recent_captures(jobId) — it ' +
+      'pages; for one note\'s full words call get_capture(captureId). Answer from what is on the ' +
+      'page when it is enough, and open only what you need. ' +
+      "upcomingVisits is the schedule ahead — use it for \"when is X's next visit?\" " +
       'and read each entry as-is: date + startTime are the visit as booked, and an entry with ' +
       'untimed:true is a REAL booked visit with NO time set yet — say exactly that (never say ' +
       'nothing is scheduled when an untimed entry exists, and never invent a day or time for ' +
       'one; nothing in the record says when it should happen). ' +
       "When you NAME a visit's day, SAY the entry's `phrase` VERBATIM (\"Tuesday 2026-08-18\") — " +
       'never re-derive the weekday or restate the date yourself; you are unreliable at both. ' +
-      'recentVisits is past work evidence, not the schedule. When the result carries an ' +
+      "Each job's lastVisitAt is past work evidence, not the schedule. When the result carries an " +
       'openWorkNote, the customer has work with NO visit booked: "next opening / availability / ' +
       'earliest you could come" questions are about THAT work — answer them with ' +
       'find_slots(jobId), never from upcomingVisits. moneyByJob is the money position per job; ' +
@@ -134,35 +133,6 @@ const BASE_TOOLS = [
       type: 'object',
       properties: { jobId: { type: 'string' } },
       required: ['jobId'],
-    },
-  },
-  {
-    name: 'brief_customer',
-    description:
-      'Generate a grounded, cited briefing on a customer from their record. focus=next_visit ' +
-      '(pre-visit cheat-sheet, default) or full_history (the relationship over time). ' +
-      'Returns {briefing, citations:[{claim, captureId}]}.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        customerId: { type: 'string' },
-        focus: { type: 'string', enum: ['next_visit', 'full_history'] },
-      },
-      required: ['customerId'],
-    },
-  },
-  {
-    name: 'answer_customer_question',
-    description:
-      'Answer a free-text question about a customer using only their record (says so if the ' +
-      'record lacks the answer). Returns {answer, citations:[{claim, captureId}]}.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        customerId: { type: 'string' },
-        question: { type: 'string' },
-      },
-      required: ['customerId', 'question'],
     },
   },
 ];
@@ -377,43 +347,44 @@ async function handleFindCustomer(toolCtx: ToolContext): Promise<unknown> {
 }
 
 async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> {
-  const { tenantId, str, activeManager, dropSensitive } = toolCtx;
+  const { tenantId, str, activeManager } = toolCtx;
       const customerId = str('customerId');
       if (!customerId) throw new Error('customerId is required');
-      const ctx = await getCustomerContext(customerId);
-      // Tenant guard: a cross-tenant (or unknown) id reads as an empty record.
-      if (!ctx.customer || ctx.customer.tenant_id !== tenantId) {
-        return { customer: null, jobs: [], upcomingVisits: [], recentVisits: [], recentCaptures: [] };
+      // THE CONTENTS PAGE (plan 2026-09-15-the-retrieval-layer-1). The database
+      // does the counting under the caller's tier; nothing here grows with the
+      // customer's history. The tenant guard is inside the read: a cross-tenant
+      // (or unknown) id reads as no such customer — in words, so the model does
+      // not read a blank as a failed lookup and retry.
+      const contents = await getCustomerContents(tenantId, customerId, callerTierOf(toolCtx));
+      if (!contents) {
+        return { customer: null, jobs: [], note: 'no such customer on this firm' };
       }
       // Served steering at the exact decision point (the B03 flake, 2026-08-14):
       // asked "when is the next OPENING for X's work?", the model reads this
       // context, sees the booked visits, and answers with the next VISIT —
       // the queued job with no visit is the one the question was about. Name
       // that work and the verb that answers for it, in the result itself.
-      const scheduledJobIds = new Set(ctx.upcomingVisits.map((v) => v.jobId));
-      const unscheduled = ctx.jobs.filter(
+      const scheduledJobIds = new Set(contents.upcomingVisits.map((v) => v.jobId));
+      const unscheduled = contents.jobs.filter(
         (j) => (j.status === 'open' || j.status === 'in_progress') && !scheduledJobIds.has(j.id),
       );
       // Money position per job (money-ledger plan): summaries only — the entry
       // list lives on get_job. Jobs with an empty ledger are OMITTED from the
       // map (absence = "no money recorded"; a zero-summary would read as
       // "fully paid"). Technicians get door numbers only.
-      const ledger = await listMoneyEventsForJobs(tenantId, ctx.jobs.map((j) => j.id));
-      const byJob = new Map<string, typeof ledger>();
-      for (const e of ledger) {
-        const list = byJob.get(e.job_id) ?? [];
-        list.push(e);
-        byJob.set(e.job_id, list);
-      }
       const moneyByJob: Record<string, unknown> = {};
-      for (const [jobId, events] of byJob) {
-        const s = summarizeMoney(events);
-        moneyByJob[jobId] = activeManager ? s : technicianMoneyView(s);
+      for (const j of contents.jobs) {
+        if (j.money) moneyByJob[j.id] = activeManager ? j.money : technicianMoneyView(j.money);
       }
       const contextResult: Record<string, unknown> = {
-        ...ctx,
-        ...(byJob.size > 0 ? { moneyByJob } : {}),
-        recentCaptures: dropSensitive(ctx.recentCaptures),
+        customer: contents.customer,
+        // The job row plus the layer's counts; `money` leaves the row for the
+        // tier-filtered map above (undefined is dropped by JSON.stringify).
+        jobs: contents.jobs.map((j) => ({ ...j, money: undefined })),
+        olderJobs: contents.olderJobs,
+        customerLevelNotes: contents.customerLevel,
+        upcomingVisits: contents.upcomingVisits,
+        ...(Object.keys(moneyByJob).length > 0 ? { moneyByJob } : {}),
         ...(unscheduled.length && !leanGrounding()
           ? {
               openWorkNote:
@@ -423,6 +394,11 @@ async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> 
                 'question about THESE jobs, never answered from the booked schedule.',
             }
           : {}),
+        // Absence in words, and the way onward: a page is not the history.
+        note:
+          (contents.jobsTotal === 0 ? 'No jobs on file for this customer. ' : '') +
+          'This is the contents page. list_recent_captures(jobId) pages a job\'s notes; ' +
+          'get_capture(captureId) gives one note in full.',
       };
       // Lean serves the RECORD only: the derived schedule-ahead block goes with
       // the other crutches, and openWorkNote goes with it because its steering
@@ -494,46 +470,6 @@ async function handleGetJob(toolCtx: ToolContext): Promise<unknown> {
           ? foldRetractedCorrespondence(foldRetractedFacts(job.attributes, retracted), retracted)
           : job.attributes;
       return { ...job, attributes, ...money };
-}
-
-async function handleBriefCustomer(toolCtx: ToolContext): Promise<unknown> {
-  const { deps, identity, tenantId, str, dropSensitive } = toolCtx;
-      const customerId = str('customerId');
-      if (!customerId) throw new Error('customerId is required');
-      const focusArg = str('focus');
-      // The SDK doesn't validate args against inputSchema, so check the enum here
-      // (mirrors the channel guard on record_field_note).
-      if (focusArg && !BRIEF_FOCUSES.includes(focusArg as BriefFocus)) {
-        throw new Error(`invalid focus: ${focusArg}`);
-      }
-      const ctx = await getCustomerContext(customerId);
-      // Guard a bad/cross-tenant id with a clean error before spending a model call.
-      if (!ctx.customer || ctx.customer.tenant_id !== tenantId) {
-        throw new Error('customer not found');
-      }
-      const focus = (focusArg as BriefFocus | undefined) ?? 'next_visit';
-      return (deps.brief ?? defaultBriefer)(
-        { ...ctx, recentCaptures: dropSensitive(ctx.recentCaptures) },
-        focus,
-        { tenantId, technicianRef: identity.technicianRef },
-      );
-}
-
-async function handleAnswerCustomerQuestion(toolCtx: ToolContext): Promise<unknown> {
-  const { deps, identity, tenantId, str, dropSensitive } = toolCtx;
-      const customerId = str('customerId');
-      if (!customerId) throw new Error('customerId is required');
-      const question = str('question');
-      if (!question) throw new Error('question is required');
-      const ctx = await getCustomerContext(customerId);
-      if (!ctx.customer || ctx.customer.tenant_id !== tenantId) {
-        throw new Error('customer not found');
-      }
-      return (deps.answer ?? defaultAnswerer)(
-        { ...ctx, recentCaptures: dropSensitive(ctx.recentCaptures) },
-        question,
-        { tenantId, technicianRef: identity.technicianRef },
-      );
 }
 
 async function handleOpenJob(toolCtx: ToolContext): Promise<unknown> {
@@ -1140,8 +1076,6 @@ export const customersTools = {
     find_customer: handleFindCustomer,
     get_customer_context: handleGetCustomerContext,
     get_job: handleGetJob,
-    brief_customer: handleBriefCustomer,
-    answer_customer_question: handleAnswerCustomerQuestion,
     open_job: handleOpenJob,
     cancel_job: handleCancelJob,
     record_caller: handleRecordCaller,

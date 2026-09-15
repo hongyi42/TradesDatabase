@@ -187,9 +187,9 @@ Blank query → `{matches:[], note:'empty query'}`.
 **`src/db/database.types.ts`** — `npm run gen:types:local` (never `gen:types`, which targets the pilot).
 
 ### Automated verification
-- [ ] `npx supabase db reset` on the worktree stack applies cleanly; the four functions appear under
+- [x] `npx supabase db reset` on the worktree stack applies cleanly; the four functions appear under
       `Functions` in the regenerated types (jsonb → `Returns: Json`, the `query_spine` shape).
-- [ ] New `src/db/retrievalLayer.test.ts` (rpc via `getClient()`): a capture reachable ONLY via
+- [x] New `src/db/retrievalLayer.test.ts` (rpc via `getClient()`): a capture reachable ONLY via
       `visit_notes` and one ONLY via `job_captures` appear in `captures_page('job')` and count in
       `customer_contents`; a retracted capture disappears from all four functions and reappears
       labelled with `p_include_retracted`, retraction row included; a `phone_call` capture is
@@ -197,7 +197,7 @@ Blank query → `{matches:[], note:'empty query'}`.
       carrying another firm's `tenant_id` never appears; keyset paging over 25 captures yields 20 + 5
       with no repeat or gap; `search_captures` finds "capacitor" by word and "4321" by substring,
       within scope only; `retracted_evidence_ids` names a fact's retracted evidence.
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`.
+- [x] `npm run typecheck`, `npm run lint`, `npm test` (3,142 passed = baseline 3,134 + 8 new).
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP. **Apply to the pilot before the PR merges** (Calls-worker
@@ -283,11 +283,14 @@ M07 (`:1210-1212`): drop the two names from its `requiredOneOf`.
 entries are history — leave.
 
 ### Automated verification
-- [ ] `grep -rn "getCustomerContext\|CustomerContext\b\|synthesis/" src scripts` returns nothing.
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`; `npx vitest run src/eval/toolCases.test.ts`.
+- [x] `grep -rn "getCustomerContext\|CustomerContext\b\|synthesis/" src scripts` returns nothing
+      (only the handler name `handleGetCustomerContext`, which is the tool's own).
+- [x] `npm run typecheck`, `npm run lint`, `npm test` (3,127 passed); `npx vitest run src/eval/toolCases.test.ts`.
 
 ### Live verification (agent-executable)
 - Prerequisites: `scripts/spine-eval` agent runner with `OPENROUTER_API_KEY`, seeded local world.
+  **Runs after Phase 3, not on a Phase-2-only build**: the description already points the model at
+  `get_capture` and a paging `list_recent_captures`, which arrive in Phase 3 (reviewer finding).
 - [ ] Q01, M07, C05 pass on the new path; record the tool sequence.
 
 ### Manual verification (ruling 5)

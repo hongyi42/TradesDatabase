@@ -6,10 +6,11 @@ import { createJob } from './jobs.js';
 import { createTenant } from './tenants.js';
 import { createVisit, insertVisitNote } from './visits.js';
 import { appendRawCapture, listRawCapturesForCustomer } from './rawCaptures.js';
-import { getCustomerContext } from './context.js';
+import { getCustomerContents } from './context.js';
 
 const pg = new Client({ connectionString: process.env.DATABASE_URL });
 let tenantId: string;
+let otherTenantId: string | null = null;
 
 beforeAll(async () => {
   await pg.connect();
@@ -20,22 +21,22 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await pg.query('truncate table schedule_entries, customers, jobs, visits, raw_captures cascade');
+  if (otherTenantId) await pg.query('delete from tenants where id = $1', [otherTenantId]);
   await pg.end();
 });
 
-describe('getCustomerContext', () => {
-  test('aggregates customer + jobs + visits + captures, surfacing tech notes linked only via source_capture_id', async () => {
+describe('getCustomerContents', () => {
+  test('counts the tech note reachable only through its visit, and the stamped call at customer level', async () => {
     const customer = await createCustomer({ tenantId, name: 'Context Cust', phone: '555-2200' });
     const job = await createJob({ tenantId, customerId: customer.id, title: 'CtxJob' });
 
     // A tech voice note: lands in L1 with NO customer_id; reachable only through
-    // the visit's source_capture_id.
+    // the visit it created (source_capture_id) and the note link.
     const techNote = await appendRawCapture({
       tenantId,
       channel: 'technician_voice',
       rawText: 'tech said this',
     });
-    // A reported trip: the visit, plus the note link recordFieldNote writes.
     const visit = await createVisit({
       tenantId,
       jobId: job.id,
@@ -48,7 +49,8 @@ describe('getCustomerContext', () => {
     });
     await insertVisitNote({ tenantId, visitId: visit.id, captureId: techNote.id });
 
-    // A capture stamped directly with the customer (e.g. an inbound call).
+    // A capture stamped directly with the customer and no job (e.g. an inbound
+    // call the door could not place on a job).
     const call = await appendRawCapture({
       tenantId,
       channel: 'phone_call',
@@ -56,20 +58,22 @@ describe('getCustomerContext', () => {
       customerId: customer.id,
     });
 
-    const ctx = await getCustomerContext(customer.id);
-    expect(ctx.customer?.id).toBe(customer.id);
-    expect(ctx.jobs.map((j) => j.id)).toContain(job.id);
-    expect(ctx.recentVisits.map((v) => v.id)).toContain(visit.id);
-
-    const captureIds = ctx.recentCaptures.map((c) => c.id);
-    expect(captureIds).toContain(techNote.id); // via source_capture_id union
-    expect(captureIds).toContain(call.id); // via customer_id column
+    const contents = (await getCustomerContents(tenantId, customer.id, 'manager'))!;
+    expect(contents.customer.id).toBe(customer.id);
+    const block = contents.jobs.find((j) => j.id === job.id)!;
+    expect(block.noteCount).toBe(1); // the visit-linked note, via the membership view
+    expect(block.newest?.captureId).toBe(techNote.id);
+    expect(block.newest?.snippet).toBe('tech said this');
+    expect(block.lastVisitAt).not.toBeNull();
+    expect(contents.customerLevel.noteCount).toBe(1); // the call: no job on any arm
+    expect(contents.customerLevel.newest?.captureId).toBe(call.id);
+    expect(contents.jobsTotal).toBe(1);
+    expect(contents.olderJobs).toBe(0);
   });
 
   // The date-eval 2026-08-13 regression class: a customer with confirmed
-  // BOOKINGS (assignments) but no past visits briefed as "no visits
-  // scheduled" — context read only the visits table. upcomingVisits is the
-  // schedule half.
+  // BOOKINGS but no past visits briefed as "no visits scheduled" — context read
+  // only the visits table. upcomingVisits is the schedule half.
   test('upcomingVisits surfaces placed bookings, unplaced windows, and nothing stale', async () => {
     const customer = await createCustomer({ tenantId, name: 'Upcoming Cust' });
     const job = await createJob({ tenantId, customerId: customer.id, title: 'Radiator bleed' });
@@ -110,13 +114,13 @@ describe('getCustomerContext', () => {
       status: 'confirmed',
     });
 
-    const ctx = await getCustomerContext(customer.id);
-    const ids = ctx.upcomingVisits.map((u) => u.visitId);
+    const contents = (await getCustomerContents(tenantId, customer.id, 'manager'))!;
+    const ids = contents.upcomingVisits.map((u) => u.visitId);
     expect(ids).toContain(placed.id);
     expect(ids).toContain(unplaced.id);
     expect(ids).toHaveLength(2); // cancelled + past excluded
 
-    const placedRow = ctx.upcomingVisits.find((u) => u.visitId === placed.id);
+    const placedRow = contents.upcomingVisits.find((u) => u.visitId === placed.id);
     // Display convention: raw wall-clock slices, never timezone-converted —
     // and the day label is SERVER-composed (the resolve_date phrase pattern:
     // the eval caught the model writing "Tuesday, Aug 19" for a served
@@ -128,7 +132,7 @@ describe('getCustomerContext', () => {
       phrase: 'Friday 2027-03-05',
     });
 
-    const windowRow = ctx.upcomingVisits.find((u) => u.visitId === unplaced.id);
+    const windowRow = contents.upcomingVisits.find((u) => u.visitId === unplaced.id);
     // INVERTED (rung 9a): this used to carry a stored range, and the phrase
     // read "between Monday … and Friday …". Nothing records when an untimed
     // visit should happen, so the ONLY honest phrase says so — the brief must
@@ -140,10 +144,11 @@ describe('getCustomerContext', () => {
     });
   });
 
-  test("upcomingVisits never leaks another tenant's bookings", async () => {
+  test("a cross-tenant customer reads as nothing, and never leaks another tenant's bookings", async () => {
     // Two tenants, same-shaped data: the leak test the data-security gate
     // requires for a new accessor.
     const other = await createTenant(`ctx-other-${Date.now()}`, { technicianSeats: 2 });
+    otherTenantId = other.id;
     const mine = await createCustomer({ tenantId, name: 'Leak Cust A' });
     const theirs = await createCustomer({ tenantId: other.id, name: 'Leak Cust B' });
     const myJob = await createJob({ tenantId, customerId: mine.id, title: 'Mine' });
@@ -165,11 +170,13 @@ describe('getCustomerContext', () => {
       status: 'confirmed',
     });
 
-    const ctx = await getCustomerContext(mine.id);
-    expect(ctx.upcomingVisits.map((u) => u.visitId)).not.toContain(theirRow.id);
-    // And reading the OTHER tenant's customer directly never mixes mine in.
-    const otherCtx = await getCustomerContext(theirs.id);
-    expect(otherCtx.upcomingVisits.map((u) => u.visitId)).toEqual([theirRow.id]);
+    const contents = (await getCustomerContents(tenantId, mine.id, 'manager'))!;
+    expect(contents.upcomingVisits.map((u) => u.visitId)).not.toContain(theirRow.id);
+    // Their customer under MY tenant is nothing at all — not an empty record.
+    expect(await getCustomerContents(tenantId, theirs.id, 'manager')).toBeNull();
+    // And reading the OTHER tenant's customer under its own tenant never mixes mine in.
+    const otherContents = (await getCustomerContents(other.id, theirs.id, 'manager'))!;
+    expect(otherContents.upcomingVisits.map((u) => u.visitId)).toEqual([theirRow.id]);
   });
 
   test('listRawCapturesForCustomer returns newest first', async () => {

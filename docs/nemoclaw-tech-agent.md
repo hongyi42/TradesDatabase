@@ -90,10 +90,12 @@ The future **Option B** (per-bot JWT / OAuth Resource Server) swaps only the hea
 
 ## 4. Restrict the tool surface
 Allowlist only the spine tools for the technician profile (`tools.profile` / allowlist) — the
-14-tool technician surface: `record_field_note`, `find_customer`, `get_customer_context`,
-`get_job`, `resolve_date`, `list_recent_captures`, `brief_customer`, `answer_customer_question`,
+technician surface is pinned by name in `src/mcp/tools/surface.expected.ts` (`TECHNICIAN_TOOLS`,
+the authority when this list drifts): `record_field_note`, `find_customer`, `get_customer_context`,
+`get_job`, `get_capture`, `search_captures`, `resolve_date`, `list_recent_captures`,
 `web_search`, `read_webpage`, `send_email`, `retract_capture`, `record_standing_fact`,
-`get_schedule`. Outbound network policy should allow only the gateway + our server's host.
+`get_schedule`, `inform_team_lead`, `ask_team_lead`, `inform_teammate`. Outbound network policy
+should allow only the gateway + our server's host.
 
 **Route links: booked order, one per stop (2026-07-31).** `get_schedule` no longer asks Google
 Routes for a "best driving order" and no longer returns `driveMinutes`, `optimizeFailed`,
@@ -321,7 +323,9 @@ date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). Array
   time. If `alsoRemoved` is absent, the post-commit scan failed — fall back to the staged
   `willAlsoRemove`.
 - For questions ("what did the last tech do here?"), the agent uses `find_customer` →
-  `get_customer_context` / `list_recent_captures`.
+  `get_customer_context` (the contents page: counts and the newest note's opening per job) →
+  `list_recent_captures` (a page of one job's notes) / `get_capture` (one note in full) /
+  `search_captures` (keyword, technicians). Never the whole history in one result.
 - **Web tools (2026-07-13, all tiers):** `web_search` (Brave snippets via Render — the key never
   reaches a sandbox) and `read_webpage` (hardened reader: URLs from the person or from search
   results only per the §0e rules; server enforces SSRF guard, a length cap on non-search URLs,
@@ -747,7 +751,8 @@ trigger webhook handler (verify Composio's HMAC `webhook-signature`) — are non
 - **Chat channel:** send a Telegram voice note → confirm the address in chat → read back over `pg`
   that an L1 `raw_captures` row (`channel='technician_voice'`) exists **and** an L2 job/visit links
   to it via `source_capture_id`. Then ask the bot a question and confirm it answers from
-  `get_customer_context`.
+  `get_customer_context` (the contents page) and opens the note with `get_capture` when asked
+  for the exact words.
 - **Email channel:** send a real **work** email → it appears in the spine (L1 `channel='email'` + L2
   when it matches a customer); send a **non-work** email → it is filtered out (no rows). Spot-check
   the classifier's precision on a sample of real inbox mail.

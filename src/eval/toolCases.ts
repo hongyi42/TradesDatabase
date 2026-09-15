@@ -1270,37 +1270,9 @@ export function buildToolCases(): ToolCase[] {
   });
 
   // ── requires an external service: run only when explicitly enabled ──────────
-  one({
-    id: 'X01',
-    family: 'external',
-    title: 'brief_customer writes a cited briefing',
-    tool: 'brief_customer',
-    tenant: 'main',
-    badge: 'manager-sam',
-    requires: 'model',
-    args: (ctx) => ({ customerId: customerId(ctx.tenant, 'edge-rich'), focus: 'next_visit' }),
-    check: all(ok, mentions('citations')),
-  });
-
-  one({
-    id: 'X02',
-    family: 'external',
-    title: 'answer_customer_question admits when the record does not say',
-    tool: 'answer_customer_question',
-    tenant: 'main',
-    badge: 'manager-sam',
-    requires: 'model',
-    args: (ctx) => ({
-      customerId: customerId(ctx.tenant, 'edge-silent'),
-      question: 'What is the gate code for this property?',
-    }),
-    // The anti-fabrication case: this customer has no gate code on file.
-    check: all(ok, (out) =>
-      /don't|does not|no .*(record|information)|not on file|unknown/i.test(out.text)
-        ? null
-        : `expected an admission that the record is silent, got: ${out.text.slice(0, 200)}`,
-    ),
-  });
+  // (X01/X02 — brief_customer / answer_customer_question — were retired with
+  // those tools, plan 2026-09-15-the-retrieval-layer-1: the seat briefs itself
+  // from the contents page.)
 
   one({
     id: 'X03',

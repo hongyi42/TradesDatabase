@@ -24,9 +24,7 @@
 
 /** What every badge sees, manager or not (the hub's `TOOLS`). */
 export const TECHNICIAN_TOOLS = [
-  'answer_customer_question',
   'ask_team_lead', // the Q&A desk (build 5.5 Phase 2)
-  'brief_customer',
   'find_customer',
   'get_customer_context',
   'get_job',

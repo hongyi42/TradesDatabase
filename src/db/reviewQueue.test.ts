@@ -144,6 +144,22 @@ describe('review_queue_page', () => {
 
   test('the limit is clamped to 1..50', async () => {
     expect((await page(tenantId, { p_limit: 0 })).items).toHaveLength(1);
-    expect((await page(tenantId, { p_limit: 500 })).items).toHaveLength(25);
+    // 30 more items make 55, so the upper clamp is actually exercised.
+    const extra = await pg.query(
+      `insert into review_items (tenant_id, kind, subject_ref, created_at)
+       select $1, 'call_action', 'rq-extra-' || g, timestamptz '2027-03-01 00:00+00' + (g || ' seconds')::interval
+         from generate_series(1, 30) as g
+       returning id`,
+      [tenantId],
+    );
+    try {
+      const p = await page(tenantId, { p_limit: 500 });
+      expect(p.items).toHaveLength(50);
+      expect(p.has_more).toBe(true);
+    } finally {
+      await pg.query('delete from review_items where id = any($1::uuid[])', [
+        extra.rows.map((r) => r.id as string),
+      ]);
+    }
   });
 });

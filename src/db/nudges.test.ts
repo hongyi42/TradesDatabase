@@ -93,29 +93,27 @@ describe('createPendingNudge — ask once per subject, ever', () => {
 });
 
 describe('listNudgesByStatus — a total order, so pages never repeat or skip', () => {
-  test('two gaps created in the same instant come back ordered by id', async () => {
+  test('gaps created in the same instant come back ordered by id', async () => {
     // Paged since retrieval layer plan 3: a created_at tie spanning a page
-    // boundary would repeat one row and drop the other without the id tiebreak.
-    const a = await createPendingNudge({
-      tenantId,
-      kind: 'overdue_visit_gap',
-      subjectRef: 'asg-order-a',
-      technicianId: techId,
-    });
-    const b = await createPendingNudge({
-      tenantId,
-      kind: 'overdue_visit_gap',
-      subjectRef: 'asg-order-b',
-      technicianId: techId,
-    });
-    if (!a || !b) throw new Error('fixtures were not created');
-    await pg.query(`update nudges set created_at = '2026-08-16T12:00:00Z' where id = any($1::uuid[])`, [
-      [a.id, b.id],
-    ]);
-    const ids = (await listNudgesByStatus(tenantId, ['pending']))
+    // boundary would repeat one row and drop another without the id tiebreak.
+    // FIXED ids, inserted in REVERSE id order, so insertion order cannot pass for
+    // id order by luck.
+    const ids = [
+      'ffffffff-0000-4000-8000-000000000003',
+      'ffffffff-0000-4000-8000-000000000002',
+      'ffffffff-0000-4000-8000-000000000001',
+    ];
+    for (const [i, id] of ids.entries()) {
+      await pg.query(
+        `insert into nudges (id, tenant_id, kind, subject_ref, technician_id, status, created_at)
+         values ($1, $2, 'overdue_visit_gap', $3, $4, 'pending', '2026-08-16T12:00:00Z')`,
+        [id, tenantId, `asg-order-${i}`, techId],
+      );
+    }
+    const got = (await listNudgesByStatus(tenantId, ['pending']))
       .map((n) => n.id)
-      .filter((id) => id === a.id || id === b.id);
-    expect(ids).toEqual([a.id, b.id].sort());
+      .filter((id) => ids.includes(id));
+    expect(got).toEqual([...ids].reverse());
   });
 });
 

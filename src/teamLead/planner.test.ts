@@ -7581,6 +7581,36 @@ describe('rung 10 — inbound requests reach the planner', () => {
     );
     expect(decisions).toHaveLength(1);
   });
+
+  test('(19) a RETRACTED unmatched item drops the matcher\'s why too — it quotes the words', async () => {
+    const withReason = (outbound: boolean) =>
+      unmatchedObs({
+        context: {
+          matchReason: 'no customer has the phone 555-0101; no customer is at 12 Elm Street',
+          ...(outbound ? { outbound: true, sentTo: 'nora@home.test' } : {}),
+        },
+      });
+    for (const outbound of [false, true]) {
+      const seen: { user?: string } = {};
+      await runPlanner(
+        NOW,
+        'shadow',
+        baseDeps({
+          listNudges: async () => [],
+          listObservations: async () => [withReason(outbound)],
+          listCiting: async () => ({ citing: [], retracted: [CAP] }),
+          runLoop: capturingLoop(seen),
+        }),
+      );
+      const user = seen.user ?? '';
+      expect(user).toContain('the message this is about was RETRACTED');
+      expect(user).not.toContain('555-0101');
+      expect(user).not.toContain('12 Elm Street');
+      expect(user).not.toContain('nora@home.test');
+      expect(user).not.toContain('nobody has been out yet');
+      expect(user).toContain(outbound ? 'nobody on file is the person it went to' : 'nobody on file matches this sender');
+    }
+  });
 });
 
 describe('noteRefusal — what the model was told no with (2026-09-11)', () => {
@@ -7689,6 +7719,52 @@ describe('retrieval layer 3 — the gap ceiling, ids on the evidence, nothing cu
     expect(summary.plans[0].dropped.map((d) => d.nudgeId)).toContain('gap-000');
     // The lead is hidden, not ended: its member must not read as a frozen group.
     expect(user).not.toContain('FROZEN');
+  });
+
+  test('over the ceiling, a held gap that still makes it keeps its place in the list', async () => {
+    const seen: { user?: string } = {};
+    // 101 gaps, the two OLDEST on hold: the one back sooner is shown (after the
+    // 99 unheld ones), the other is hidden — and the shown one still renders
+    // FIRST, in the order the list always had.
+    const open = Array.from({ length: PLANNER_GAPS_SHOWN + 1 }, (_, i) =>
+      i === 0
+        ? gapAt(0, { not_before: '2026-08-20T00:00:00.000Z' })
+        : i === 1
+          ? gapAt(1, { not_before: '2026-09-20T00:00:00.000Z' })
+          : gapAt(i),
+    );
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => open,
+      runLoop: loopReturning([], seen),
+    }));
+    const user = seen.user ?? '';
+    expect(user).not.toContain('gap gap-001\n');
+    expect(user).toContain('gap gap-000\n');
+    expect(user.indexOf('gap gap-000\n')).toBeLessThan(user.indexOf('gap gap-002\n'));
+  });
+
+  test('a capped tick that FAILS still records that it was capped', async () => {
+    const open = Array.from({ length: PLANNER_GAPS_SHOWN + 1 }, (_, i) => gapAt(i));
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => open,
+      runLoop: (async () => {
+        throw new Error('provider down');
+      }) as unknown as NonNullable<PlannerDeps['runLoop']>,
+    }));
+    expect(summary.plans[0].outcome).toBe('error');
+    expect(summary.plans[0].gapsHidden).toBe(1);
+  });
+
+  test('a note that really ENDS in … is not reported as cut', () => {
+    const view = buildGapView(
+      nudge(),
+      Date.parse(NOW),
+      [evidence('2026-08-15T13:00:00.000Z', 'done, will check the flue tomorrow…')],
+      false,
+      new Set(),
+    );
+    expect(view.block).toContain('will check the flue tomorrow…');
+    expect(view.block).not.toContain('was cut at');
   });
 
   test('an evidence line names its capture; older notes and a cut line are announced', () => {

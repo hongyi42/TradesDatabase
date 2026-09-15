@@ -123,9 +123,9 @@ cut notices on evidence lines, event ids on money lines, and "retracted" instead
 not bound its statement; `authenticator`'s 8 s does (local + hosted, 2026-09-15). Run `npm run gen:types:local`.
 
 ### Automated verification
-- [ ] `npx supabase db reset` applies; the regenerated types show `v_capture_links` and no `v_visit_notes`.
-- [ ] `grep -rn "v_visit_notes\|v_job_captures\|v_customer_captures\|retraction_reason" src scripts` → migration-history comments only.
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` (record the count).
+- [x] `npx supabase db reset` applies; the regenerated types show `v_capture_links` and no `v_visit_notes`.
+- [x] `grep -rn "v_visit_notes\|v_job_captures\|v_customer_captures\|retraction_reason" src scripts` → migration-history comments only.
+- [x] `npm run typecheck`, `npm run lint`, `npm test` (record the count) — 3,173 passed, 9 skipped (baseline before the phase: the same suite minus the new view tests).
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP; runs at merge time with Phase 2's migration (see Phase 3 live).
@@ -231,9 +231,9 @@ the old `listL2CitingCapture` (`:545-699`) and `listNoteTimesForJobs` (`visits.t
   - Imports: `server.test.ts:6-11` and `customerCaptures.test.ts:12` import `listL2CitingCapture` from `./captureMembership.js`; their calls at `:8485` and `:106` pass the tenant.
 
 ### Automated verification
-- [ ] `npx supabase db reset`; the regenerated types list the three functions.
-- [ ] `grep -rn "listJobEvidenceSince\|listJobStampedCaptureTimes\|listNoteTimesForJobs" src` → comments only.
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` (count vs the Phase 1 baseline).
+- [x] `npx supabase db reset`; the regenerated types list the three functions.
+- [x] `grep -rn "listJobEvidenceSince\|listJobStampedCaptureTimes\|listNoteTimesForJobs" src` → comments only (none left).
+- [x] `npm run typecheck`, `npm run lint`, `npm test` (count vs the Phase 1 baseline) — 3,175 passed after the phase, 3,178 after its review's added tests.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP, at merge time (see Phase 3 live).
@@ -288,8 +288,8 @@ the old `listL2CitingCapture` (`:545-699`) and `listNoteTimesForJobs` (`visits.t
 - **`nudges.test.ts`:** two nudges with an identical `created_at` come back ordered by id.
 
 ### Automated verification
-- [ ] `npx vitest run src/teamLead src/db/nudges.test.ts src/eval`.
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`.
+- [x] `npx vitest run src/teamLead src/db/nudges.test.ts src/eval`.
+- [x] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` — 3,188 passed, 9 skipped; build clean.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP; Render MCP (workspace `tea-d69903h5pdvs738dm81g`).

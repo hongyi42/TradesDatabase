@@ -1614,16 +1614,16 @@ export function buildGapView(
     // to know what the first one already tried.
     const unmatched = n.kind === 'inbound_unmatched';
     const customerId = ctxStr(n, 'customerId');
+    // The matcher's `why` quotes what the extractor read out of the words (a
+    // phone number, an address), so a retracted message drops it with them.
+    const why = retracted
+      ? ''
+      : ' — why: ' +
+        `${ctxStr(n, 'matchReason') ?? 'no unique match on phone, email, thread or address'}`;
     if (unmatched && outbound) {
-      lines.push(
-        '  the firm promised this and nobody on file is the person it went to — why: ' +
-          `${ctxStr(n, 'matchReason') ?? 'no unique match on phone, email, thread or address'}`,
-      );
+      lines.push('  the firm promised this and nobody on file is the person it went to' + why);
     } else if (unmatched) {
-      lines.push(
-        '  nobody on file matches this sender — why: ' +
-          `${ctxStr(n, 'matchReason') ?? 'no unique match on phone, email, thread or address'}`,
-      );
+      lines.push('  nobody on file matches this sender' + why);
     } else if (customerId) {
       lines.push(`  customer: ${ctxStr(n, 'customerName') ?? 'unnamed'} (id ${customerId})`);
     }
@@ -1904,7 +1904,14 @@ export function buildGapView(
             'not shown — spine_read v_captures joined to v_capture_links on this job id for them)',
         );
       }
-      if (evidenceText.some((t) => t.endsWith('…'))) {
+      // Decided from the SOURCE length, never from a trailing "…" — a phone
+      // turns a typed "..." into "…", and a note that really ends that way was
+      // not cut.
+      if (
+        relevant.some(
+          (e) => (e.capture.raw_text ?? '').replace(/\s+/g, ' ').trim().length > EVIDENCE_TEXT_CHARS,
+        )
+      ) {
         lines.push(
           `    (a line ending in … was cut at ${EVIDENCE_TEXT_CHARS} characters — spine_read ` +
             'v_captures where id = its capture id has the full words)',
@@ -4284,6 +4291,10 @@ export async function runPlanner(
     // per-tenant — the declaration is inside this loop body, not above it — so a
     // tenant never sees the previous one's views.
     const views = new Map<string, GapView>();
+    // How many open gaps the ceiling hid from this look — hoisted for the CATCH
+    // like `views`: a capped tick is the one most likely to die on the clock, and
+    // its error record must still say it was capped.
+    let hiddenGaps = 0;
     // WHAT THE MODEL LOOKED UP THIS TICK (build 6 Phase 4), filled by the tool
     // loop's onResult hook and read by validateDecisions when it checks a
     // citation. Declared HERE, per tenant, for the same reason `views` is: one
@@ -4470,7 +4481,7 @@ export async function runPlanner(
       // loop is owed a call, and the totals in the record. A focused pass is one
       // item and never capped.
       const shown = focus ? open : gapsToShow(open, nowMs);
-      const hiddenGaps = open.length - shown.length;
+      hiddenGaps = open.length - shown.length;
 
       // The recover-validation set, read only for a firm that is DUE — ids
       // only, since dismissed rows are permanent and monotonic (review F3). A
@@ -5675,6 +5686,7 @@ export async function runPlanner(
             views.size,
             loopStarted === null ? 0 : Date.now() - loopStarted,
           ),
+          ...(hiddenGaps > 0 ? { gapsHidden: hiddenGaps } : {}),
           refusals: [...refusals.values()],
           toolsUsed,
           stalledWarnings,

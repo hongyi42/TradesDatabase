@@ -378,6 +378,14 @@ describe('MCP server', () => {
     expect(Array.isArray(rows.data)).toBe(true);
   });
 
+  test('find_customer never shows the phone MATCH key, only the phone as written', async () => {
+    await createCustomer({ tenantId, name: 'Keyless Kim', phone: '(206) 555-0181' });
+    const found = await call('find_customer', { query: 'Keyless Kim' });
+    expect(found.data).toHaveLength(1);
+    expect(found.data[0].phone).toBe('(206) 555-0181');
+    expect(found.data[0]).not.toHaveProperty('phone_key');
+  });
+
   test('an ambiguous note asks who, then RECORDS on the answer (no third call)', async () => {
     // FIRM-local today (seed tenant tz = America/Los_Angeles): the matcher
     // consults the capture's firm-local day, so the fixture must book there.
@@ -7079,6 +7087,47 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
       const again = await callWith('cancel_job', { jobId, reason: 'again' });
       expect(again.isError).toBe(true);
       expect(again.text).toContain('it already is');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('the yes covers what was SHOWN: a visit booked after the preview refuses the cancel', { timeout: 30_000 }, async () => {
+    // The terminal verb cancelled every live visit AT yes-time, so a visit booked
+    // (or moved) between the preview and the yes died without anyone approving it.
+    const customer = await createCustomer({ tenantId, name: 'Shown Shay' });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const first = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'fence repair',
+        date: '2027-02-03',
+        startTime: '09:00',
+        endTime: '11:00',
+      });
+      expect(first.data.status).toBe('booked');
+      const jobId = first.data.jobId as string;
+      const stage = await callWith('cancel_job', { jobId, reason: 'customer went elsewhere' });
+      expect((stage.data.preview as { visits: unknown[] }).visits).toHaveLength(1);
+
+      const second = await callWith('book_visit', {
+        jobId,
+        date: '2027-02-04',
+        startTime: '09:00',
+        endTime: '11:00',
+      });
+      expect(second.data.status).toBe('booked');
+
+      const refused = await callWith('cancel_job', { confirmId: stage.data.confirmId });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('visits changed');
+      const job = await pg.query<{ status: string }>('select status from jobs where id = $1', [jobId]);
+      expect(job.rows[0].status).toBe('open');
+      const live = await pg.query<{ n: number }>(
+        `select count(*)::int as n from visits where job_id = $1 and status = 'confirmed'`,
+        [jobId],
+      );
+      expect(live.rows[0].n).toBe(2);
     } finally {
       await mgrClient.close();
     }

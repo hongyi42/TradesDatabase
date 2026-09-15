@@ -169,7 +169,10 @@ const SPINE_VIEW_CATALOG =
   'created_at); ' +
   'v_jobs(id, title, job_type, status, priority, duration_minutes, price_cents, created_at, ' +
   'updated_at, customer_id, customer_name); ' +
-  'v_customers(id, name, phone, email, address_line1, city, state, postal_code, created_at); ' +
+  'v_customers(id, name, phone, email, address_line1, city, state, postal_code, created_at, ' +
+  "phone_key) — look a number up by phone_key, never by phone: phone is stored however it " +
+  "was written, and phone_key is its digits with a leading US 1 dropped (for " +
+  "'+1 (206) 555-0170' ask phone_key = '2065550170'); " +
   'v_time_off(technician_ref, technician_name, starts_on, ends_on, reason); ' +
   'v_money_events(id, job_id, job_title, customer_id, customer_name, kind, amount_cents, ' +
   'currency, occurred_at, actor_ref, corrects_event_id, method, external_ref) — the money ' +

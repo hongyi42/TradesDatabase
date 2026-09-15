@@ -1330,6 +1330,55 @@ const liveRowsForJob = async (jobId: string): Promise<Visit[]> =>
     (r) => r.status === 'confirmed' || r.status === 'proposed',
   );
 
+// "YYYY-MM-DD HH:MM" from a stored timestamp, or null for an untimed visit —
+// the date + HH:MM slices get_team_schedule serves. Times are stored naive-local,
+// so the raw column's '+00:00' is a marker a model would act on; anything that
+// can reach a model (a staged confirmation's detail) carries this form instead.
+export function wallClock(ts: string | null | undefined): string | null {
+  return ts ? `${ts.slice(0, 10)} ${ts.slice(11, 16)}` : null;
+}
+
+// WHAT A MANAGER APPROVED when they said yes to a job cancellation: exactly
+// these live visits at exactly these times. Sorted by id so two snapshots
+// compare as plain values.
+export interface ApprovedJobVisit {
+  visitId: string;
+  startsAt: string | null; // wall-clock (wallClock), null = untimed
+  endsAt: string | null;
+}
+
+const snapshotOf = (rows: Visit[]): ApprovedJobVisit[] =>
+  rows
+    .map((r) => ({ visitId: r.id, startsAt: wallClock(r.starts_at), endsAt: wallClock(r.ends_at) }))
+    .sort((a, b) => a.visitId.localeCompare(b.visitId));
+
+// Field by field, never JSON.stringify: the approved list round-trips through a
+// JSONB review-item detail, and JSONB reorders object keys.
+const sameVisits = (a: ApprovedJobVisit[], b: ApprovedJobVisit[]): boolean =>
+  a.length === b.length &&
+  a.every(
+    (v, i) => v.visitId === b[i].visitId && v.startsAt === b[i].startsAt && v.endsAt === b[i].endsAt,
+  );
+
+// Tenant-guarded snapshot of a job's live visits, taken when a cancellation is
+// staged (before the preview is built, so a change between the two reads
+// refuses at the yes rather than becoming the approved set).
+export async function snapshotJobVisits(tenantId: string, jobId: string): Promise<ApprovedJobVisit[]> {
+  const job = await resolveCancelJob(tenantId, jobId);
+  return snapshotOf(await liveRowsForJob(job.id));
+}
+
+// Do the job's live visits still match what was approved? The confirm asks this
+// BEFORE consuming its token, so a refusal leaves nothing half-done.
+export async function jobVisitsStillApproved(
+  tenantId: string,
+  jobId: string,
+  approved: ApprovedJobVisit[],
+): Promise<boolean> {
+  const job = await resolveCancelJob(tenantId, jobId);
+  return sameVisits(snapshotOf(await liveRowsForJob(job.id)), approved);
+}
+
 export async function previewCancelJob(
   tenantId: string,
   jobId: string,
@@ -1379,6 +1428,11 @@ export interface CancelJobInput {
   jobId: string;
   reason: string;
   actorRef: string;
+  // The live visits the manager was shown (snapshotJobVisits at stage). When
+  // given, the cascade runs only if the job still has exactly these, and each
+  // visit's cancel is a compare-and-set on its times: a visit booked, moved or
+  // re-timed after the preview is never cancelled by a yes nobody gave for it.
+  approvedVisits?: ApprovedJobVisit[];
 }
 
 export interface CancelJobResult {
@@ -1397,9 +1451,33 @@ export async function cancelJob(input: CancelJobInput): Promise<CancelJobResult>
   // re-runnable state (the job is still open; already-cancelled rows are
   // simply absent from the next run's live list). Completed/terminal rows
   // are never touched.
+  const liveRows = await liveRowsForJob(job.id);
+  if (input.approvedVisits && !sameVisits(snapshotOf(liveRows), input.approvedVisits)) {
+    throw new Error(
+      "the job's visits changed since the cancellation was approved (one was booked, moved or " +
+        'removed) — nothing was cancelled; restage to see what it has now',
+    );
+  }
   const cancelledVisits: Visit[] = [];
-  for (const row of await liveRowsForJob(job.id)) {
-    const cancelled = await updateVisitStatus(row.id, 'cancelled', input.reason);
+  for (const row of liveRows) {
+    let cancelled: Visit;
+    try {
+      cancelled = await updateVisitStatus(
+        row.id,
+        'cancelled',
+        input.reason,
+        undefined,
+        // The raw times just read: a move landing after that read matches no row.
+        input.approvedVisits ? { startsAt: row.starts_at, endsAt: row.ends_at } : undefined,
+      );
+    } catch (err) {
+      if (!cancelledVisits.length) throw err;
+      const why = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `${cancelledVisits.length} visit(s) were cancelled, then visit ${row.id} changed at the last ` +
+          `moment and was left alone (${why}). The job is still open — cancel it again to finish (restage first if it was staged).`,
+      );
+    }
     cancelledVisits.push(cancelled);
     await appendScheduleEvent({
       tenantId,

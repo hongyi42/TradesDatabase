@@ -53,9 +53,12 @@ import {
 } from '../../email/format.js';
 import {
   cancelJob,
+  jobVisitsStillApproved,
   openWorkSteer,
   previewCancelJob,
+  snapshotJobVisits,
   updateJobIdentity,
+  type ApprovedJobVisit,
 } from '../../schedule/booking.js';
 import {
   correspondenceOf,
@@ -335,7 +338,14 @@ async function handleFindCustomer(toolCtx: ToolContext): Promise<unknown> {
   const { tenantId, str } = toolCtx;
       const query = str('query');
       if (!query) throw new Error('query is required');
-      const rows = await searchCustomers(tenantId, query);
+      // phone_key is a MATCHING key, not something to say: a seat shown a bare
+      // "2065550170" beside "(206) 555-0170" may quote the digits, since the
+      // accuracy rules say to copy numbers character for character.
+      const rows = (await searchCustomers(tenantId, query)).map((c) => {
+        const { phone_key, ...shown } = c;
+        void phone_key;
+        return shown;
+      });
       // Fold standing facts whose evidence was retracted (one lookup across
       // all rows) — a retracted fact must not stay visible in name lookups
       // when context/briefings already hide it (fold is the removal path).
@@ -575,6 +585,12 @@ async function handleCancelJob(toolCtx: ToolContext): Promise<unknown> {
         const reason = str('reason')?.trim();
         if (!jobId) throw new Error('jobId is required');
         if (!reason) throw new Error('reason is required — say why the work is being cancelled');
+        // WHAT IS BEING APPROVED: exactly these live visits at these times,
+        // read BEFORE the preview (a change between the reads refuses at the
+        // yes). Wall-clock form — list_pending_reviews shows this detail to the
+        // model. Without it the yes cancelled whatever the job had AT yes-time,
+        // including a visit booked or moved after the manager read the preview.
+        const approvedVisits = await snapshotJobVisits(tenantId, jobId);
         const preview = await previewCancelJob(tenantId, jobId);
         // Staging replaces any prior staged job-cancel BY THIS CALLER (the
         // unschedule_visit idiom: subjectRef = caller, per-caller supersede +
@@ -594,6 +610,7 @@ async function handleCancelJob(toolCtx: ToolContext): Promise<unknown> {
             jobId,
             reason,
             preview: preview as unknown as Json,
+            approvedVisits: approvedVisits as unknown as Json,
             stagedAt: new Date().toISOString(),
           } as unknown as Json,
         });
@@ -616,13 +633,32 @@ async function handleCancelJob(toolCtx: ToolContext): Promise<unknown> {
       if (!item) {
         throw new Error('confirmation not found — call cancel_job again with jobId + reason to restage');
       }
-      const d = (item.detail ?? {}) as { jobId?: string; reason?: string; stagedAt?: string };
+      const d = (item.detail ?? {}) as {
+        jobId?: string;
+        reason?: string;
+        stagedAt?: string;
+        approvedVisits?: ApprovedJobVisit[];
+      };
       if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
         throw new Error('confirmation expired — restage the job cancellation and confirm again');
       }
       if (!d.jobId || !d.reason) {
         throw new Error('staged job cancellation is malformed — restage with jobId + reason');
+      }
+      // THE YES COVERS WHAT WAS SHOWN. Checked before the token is consumed, so
+      // a refusal cancels nothing; cancelJob repeats it with a compare-and-set
+      // per visit for a change that lands after this read.
+      if (!Array.isArray(d.approvedVisits)) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'staged before the visit check existed');
+        throw new Error('this confirmation predates a safety check — nothing was cancelled; restage the job cancellation and confirm again');
+      }
+      if (!(await jobVisitsStillApproved(tenantId, d.jobId, d.approvedVisits))) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', "the job's visits changed while the confirmation was pending");
+        throw new Error(
+          "job NOT cancelled: its visits changed since the manager approved (one was booked, moved or " +
+            'removed) — nothing was cancelled; restage to show them what it has now',
+        );
       }
       const consumed = await resolveReviewItem(
         item.id,
@@ -640,6 +676,7 @@ async function handleCancelJob(toolCtx: ToolContext): Promise<unknown> {
           jobId: d.jobId,
           reason: d.reason,
           actorRef: subjectRef,
+          approvedVisits: d.approvedVisits,
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

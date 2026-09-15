@@ -5,6 +5,12 @@
 // UP, so the two must agree exactly — src/db/phone.test.ts runs every case
 // through both. `[^0-9]` on both sides, never `\D`, which Postgres widens to
 // non-ASCII digits.
+//
+// KNOWN LIMIT, accepted (operator, 2026-09-15): any 11-digit number starting
+// with 1 is read as US +1. A foreign number saved without its country code that
+// happens to be 11 digits starting with 1 (a Chinese mobile, 138…) shares a key
+// with a US number and could match the wrong customer. US firms: an 11-digit
+// customer number starting with 1 is almost always +1.
 export function phoneKey(raw: string | null | undefined): string | null {
   const digits = (raw ?? '').replace(/[^0-9]/g, '');
   if (digits.length === 11 && digits.startsWith('1')) return digits.slice(1);

@@ -27,6 +27,7 @@ import {
   previewBookVisit,
   previewMoveVisit,
   previewUnscheduleVisit,
+  snapshotJobVisits,
 } from './booking.js';
 
 // Integration against the local stack, scheduling.test.ts truncate discipline.
@@ -1201,6 +1202,48 @@ describe('cancelJob — the terminal verb (cancel-vocabulary plan, 2026-07-25)',
     await expect(
       cancelJob({ tenantId, jobId: job.id, reason: '  ', actorRef: 'manager-test' }),
     ).rejects.toThrow('reason is required');
+  });
+
+  test('approvedVisits: a visit moved after the preview refuses the whole cascade', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Approved Ari' });
+    const { job, assignment } = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      title: 'roof patch',
+      date: '2027-01-11',
+      startTime: '09:00',
+      endTime: '11:00',
+      actorRef: 'manager-test',
+    });
+    const approved = await snapshotJobVisits(tenantId, job.id);
+    expect(approved).toEqual([
+      { visitId: assignment.id, startsAt: '2027-01-11 09:00', endsAt: '2027-01-11 11:00' },
+    ]);
+    await moveVisit({
+      tenantId,
+      visitId: assignment.id,
+      date: '2027-01-12',
+      startTime: '09:00',
+      reason: 'rain',
+      actorRef: 'manager-test',
+    });
+    await expect(
+      cancelJob({ tenantId, jobId: job.id, reason: 'went elsewhere', actorRef: 'manager-test', approvedVisits: approved }),
+    ).rejects.toThrow(/visits changed/);
+    expect((await getJob(job.id))?.status).toBe('open');
+    expect((await getVisitForTenant(assignment.id, tenantId))?.status).toBe('confirmed');
+
+    // Approving what it has NOW cancels it.
+    const done = await cancelJob({
+      tenantId,
+      jobId: job.id,
+      reason: 'went elsewhere',
+      actorRef: 'manager-test',
+      approvedVisits: await snapshotJobVisits(tenantId, job.id),
+    });
+    expect(done.job.status).toBe('cancelled');
+    expect(done.cancelledVisits.map((v) => v.id)).toEqual([assignment.id]);
   });
 });
 

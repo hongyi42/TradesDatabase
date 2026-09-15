@@ -86,6 +86,7 @@ import {
   previewUnscheduleVisit,
   spanMinutes,
   unscheduleVisit,
+  wallClock,
 } from '../../schedule/booking.js';
 import {
   isRealDateISO,
@@ -1267,13 +1268,6 @@ async function handleMoveVisit(toolCtx: ToolContext): Promise<unknown> {
                 'told a day or time for this visit, THEY still need telling — check the job\'s ' +
                 'record (calls, emails, notes) before you move a visit, not after.',
           };
-}
-
-// "YYYY-MM-DD HH:MM" from a stored timestamp, or null for an untimed visit. The
-// same date + HH:MM slices get_team_schedule serves: times are stored
-// naive-local, so the raw column's '+00:00' is a marker the model would act on.
-function wallClock(ts: string | null | undefined): string | null {
-  return ts ? `${ts.slice(0, 10)} ${ts.slice(11, 16)}` : null;
 }
 
 async function handleUnscheduleVisit(toolCtx: ToolContext): Promise<unknown> {

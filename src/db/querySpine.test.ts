@@ -144,6 +144,17 @@ describe('query_spine — tenant isolation', () => {
     },
   );
 
+  test('the planner finds a customer by NUMBER through v_customers.phone_key, whatever the spelling', async () => {
+    // The code lookups moved onto phone_key (20260916130100); spine_read reads
+    // v_customers, so without the column a planner query on a caller's +1
+    // number missed the same customer the matcher now finds.
+    const spelled = await createCustomer({ tenantId: tenantA, name: 'QS Spelled A', phone: '(206) 555-0170' });
+    const r = await run(tenantA, "select id, phone from v_customers where phone_key = '2065550170'");
+    const rows = r.rows[0].result as Array<{ id: string; phone: string }>;
+    expect(rows.map((c) => c.id)).toContain(spelled.id);
+    expect(rows.find((c) => c.id === spelled.id)?.phone).toBe('(206) 555-0170');
+  });
+
   test('a query that tries to widen the filter still only gets its own tenant', async () => {
     // `or true` is the shape an adversarial or confused query takes. The view's
     // WHERE is applied before this predicate can matter.

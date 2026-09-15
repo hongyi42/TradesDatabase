@@ -27,29 +27,29 @@ was re-verified on main bf9d5ea (includes #242 and #243).
   the implementer may rewrite any fixture to a realistic 10-digit number where a test needs it.
 - **(10)+(8, AGENTS.md) roll out to the boxes in THIS task (user, 2026-09-15, option A)** — s2
   first, then the other five; the operator's go is asked before touching trades-box-1.
-- **(6) The view route, settled by the schema** — writing desk answers as `to_agent` violates
-  `office_messages`' CHECK `direction = 'to_planner' or technician_id is not null`
-  (20260901150000_office_messages.sql:55-56); desk rows carry no technician_id, and desk.ts's
-  catch would silently drop the model's answer. So a migration filters `kind = 'desk'` out of
-  `v_office_messages`. `is distinct from`, not `<>`, so a null `kind` is not dropped with it.
-- **(5) Compare starts_at AND ends_at** — options: start only, start+end, start+end+crew. A crew
-  change does not change what is being cancelled; an end-time change does. A staged item without
-  the new fields (staged before deploy) is refused with "restage" — fail closed, 15-minute blast.
-  The snapshot lives in the review item's `detail.expected`, never in the model-facing preview.
-- **(5) The board and console cancel buttons are left out** — `/board/api/cancel` (and its console
-  alias) confirm with visitId + reason only, so the same race exists there, but preview and confirm
-  are one dialog seconds apart with the card on screen, and the fix would thread the preview's time
-  through two web clients' generic write helpers (web/board/board.js:1634-1650, web/console/app.js
-  :406-410, :2188-2190). The MCP path's gap is minutes of chat. Overturn at plan review if wanted.
-- **(7) An allowlist projection keeping snake_case** — options: list_team's camelCase view, or
-  an allowlist of safe row fields. Chosen allowlist: tests read `id`/`seat_exempt` (server.test.ts
-  :976, :1210, :1255, :1259), and a column added later stays hidden by default.
+- **(6) The view route, settled by the schema** — a `to_agent` desk row violates the CHECK requiring a
+  technician_id (20260901150000:55-56) and desk.ts would drop the answer; so the view filters
+  `kind is distinct from 'desk'`.
+- **(5) Compare starts_at AND ends_at** (a crew change is not what is cancelled); a pre-deploy token
+  without `detail.expected` is refused (fail closed). The snapshot is wall-clock, never raw.
+- **(5) Board/console cancel buttons left out** — same race, but preview and confirm are one dialog
+  seconds apart with the card on screen (web/board/board.js:1634-1650, web/console/app.js).
+- **(7) An allowlist projection keeping snake_case** — tests read `id`/`seat_exempt`; a column
+  added later stays hidden by default.
 - **AGENTS.md rule 8 wording** — states the facts: get_connect_link connects Gmail only (manager
   tier); a manager's seat connects other accounts through Composio's own connection tool
   (`manageConnections: true`, src/composio/sessions.ts:33-34); a technician's seat cannot connect
   accounts. (Corrected at the Phase 4 review from "cannot be connected yet", untrue for managers.)
 - **Migrations applied to the pilot BEFORE merge** — the Calls-worker auto-deploys at merge and
   runs `matchIdentity` → `findCustomersByPhone` (memory deploy-does-not-migrate). Never `db push`.
+
+- **Added at the final code review (user, 2026-09-15):** (1) `cancel_job` gets the same fix — the
+  stage snapshots the job's live visits (wall-clock), the yes refuses if that set changed, and
+  cancelJob's cascade is a per-visit compare-and-set; (2) `v_customers` exposes `phone_key` to the
+  planner (migration 20260916130200 + catalog line), `find_customer` strips it, and the retrieval
+  task is noted to project it out of `customer_contents`; (3) an 11-digit number starting with 1
+  is read as US +1 — known limit, accepted. The unschedule check also became a compare-and-set
+  (`expectedTimes` on unscheduleVisit / updateVisitStatus).
 
 ## Plain-language walkthrough
 
@@ -297,4 +297,4 @@ enforcement, per the Box_Setup_Stuff sync rule.
       is classified for tool search; record the answer in engineering memory.
 - [ ] Remaining five seats, one at a time, same checks. Capture each `wire` and `verify` tail.
 
-**Landing order:** Phase 4's s2 canary, then the pilot migrations (phases 2–3), merge, the other five seats.
+**Landing order:** Phase 4's s2 canary, then the pilot migrations (130000, 130100, 130200), merge, the other five seats.

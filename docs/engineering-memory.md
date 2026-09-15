@@ -1545,6 +1545,22 @@ were unreachable when those items were created, the per-tick routing cap deferre
   the description orders the model to use them verbatim, and timeTbd stops are LISTED but never
   COUNTED (a windowed visit is not ON a day until placed — the same distinction that made the
   eval's T07 "free weekday" question ambiguous until its phrasing pinned it).
+- **`get_team_schedule` is a COUNTS PAGE, not a stop list (retrieval layer 4, 2026-09-15).**
+  Operator ruling: a schedule read never dumps the week into a seat's window. The default result is
+  `days[]` (visits / completed / unassigned / byTechnician, every date of the range) + `counts`;
+  the stops come only with `stops: true` (optionally `technicianRef`), 25 per page with a
+  `next`/`after` value cursor; `unassignedOnly: true` pages the board tray's own read
+  (`readLooseBucket`: parked visits incl. overdue, untimed, jobs with no visit). Completed visits
+  now count (the console's status set), so a finished day no longer reads "free". The rules stay
+  in `src/schedule/boardRead.ts`, shared with the board and console (operator: the schedule's one
+  definition is TypeScript, an exception to "rules live in the database").
+- **`v_schedule.local_day` put early visits on the WRONG DAY until 20260917140000.** The view
+  converted naive-local `starts_at` with `at time zone <firm tz>`, as if the stored instant were
+  real UTC: a 06:00 visit for a Pacific firm read as the previous day, a 22:00 visit for a UTC+ firm
+  as the next. Counts by day from the planner's/manager's SQL were silently off at the day edges,
+  and the symptom looks like a model date error, not a view bug. The stored digits ARE the wall
+  clock: `(starts_at at time zone 'UTC')::date`. Any new view deriving a local date from
+  `visits.starts_at`/`ends_at`/`completed_at` must do the same.
 - **GLM passed the date eval 100% (2026-08-13, v3 run): 94/94, zero stalls, zero delivered
   weekday-date contradictions — the arc was 86% (morning) → 97% (post-#133) → 100% (post-#134),
   and every point of it came from mechanism, not prompting.** What closed the last three: served

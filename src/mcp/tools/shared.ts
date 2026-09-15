@@ -781,10 +781,11 @@ export async function recordCallerThroughTheDoor<T>(run: () => Promise<T>): Prom
 }
 
 // GROUNDING_LEAN=1 strips the derived date/schedule crutches added for the
-// GLM-era seat model — get_team_schedule counts/windowCoverByDay/countsNote,
-// get_customer_context upcomingVisits/openWorkNote — while keeping the `now`
-// rider, resolve_date, and every correctness filter (the v_schedule status
-// filter is a bug fix, not a crutch, and is untouched). Date-eval Arm B
+// GLM-era seat model — get_customer_context upcomingVisits/openWorkNote — while
+// keeping the `now` rider, resolve_date, and every correctness filter (the
+// v_schedule status filter is a bug fix, not a crutch, and is untouched).
+// get_team_schedule's counts are NO LONGER stripped: since retrieval layer 4
+// they are the page itself, not a crutch beside a dump. Date-eval Arm B
 // (2026-08-23): measure a frontier model WITHOUT the scaffolding. Read per
 // CALL, not at module load, so the eval window flips it via Render env with
 // no build, and tests toggle it around individual calls. Never set it in

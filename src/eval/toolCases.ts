@@ -17,6 +17,7 @@
 import type { TenantKey, TenantManifest, WorldManifest } from './worldManifest.js';
 import { captureId, customerId, customerName, jobId, visitId } from './worldManifest.js';
 import { addDays, naiveLocal, nextWorkday } from './clock.js';
+import { MANAGER_TOOLS_EXPECTED } from '../mcp/tools/surface.expected.js';
 
 /** An external dependency a case needs. Cases carrying one are skipped LOUDLY. */
 // 'maps' has no case requiring it since the solver's cases died with rung 8.
@@ -269,11 +270,12 @@ export function buildToolCases(): ToolCase[] {
   one({
     id: 'R07',
     family: 'reads',
-    title: 'get_team_schedule returns the whole board for a day',
+    title: 'get_team_schedule lists a day\'s stops when asked',
     tool: 'get_team_schedule',
     tenant: 'main',
     badge: 'manager-sam',
-    args: (ctx) => ({ from: ctx.anchor, to: ctx.anchor }),
+    // Retrieval layer 4: counts by default, the stops only with stops:true.
+    args: (ctx) => ({ from: ctx.anchor, to: ctx.anchor, stops: true }),
     check: all(ok, mentions('stops')),
   });
 
@@ -395,7 +397,11 @@ export function buildToolCases(): ToolCase[] {
         args: () => ({}),
         check: (out) => {
           const names = (out.json as string[]) ?? [];
-          if (names.length !== 43) return `manager sees ${names.length} tools, expected 43`;
+          // The pinned catalog, not a hand-kept number: plan 1 changed the surface
+          // to 42 and a literal 43 here kept failing a correct server.
+          if (names.length !== MANAGER_TOOLS_EXPECTED.length) {
+            return `manager sees ${names.length} tools, expected ${MANAGER_TOOLS_EXPECTED.length}`;
+          }
           for (const need of ['book_visit', 'cancel_job', 'query_spine', 'add_technician_seat', 'record_money_event', 'set_firm_profile']) {
             if (!names.includes(need)) return `manager surface is missing ${need}`;
           }

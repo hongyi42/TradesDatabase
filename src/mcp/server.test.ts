@@ -167,6 +167,25 @@ async function clientFor(
   return { client: isolated, callWith };
 }
 
+// get_team_schedule's recall lists are PAGES (retrieval layer 4): the shared seed
+// tenant accumulates parked visits and bare jobs across this file, so a fixture's
+// row can sit on any page. This walks one queue to the end.
+async function recallAll(
+  callWith: Awaited<ReturnType<typeof clientFor>>['callWith'],
+  queue: 'visits' | 'jobs',
+): Promise<Array<Record<string, unknown>>> {
+  const out: Array<Record<string, unknown>> = [];
+  let after: string | null = null;
+  for (let n = 0; n < 500; n++) {
+    const res = await callWith('get_team_schedule', { unassignedOnly: true, queue, ...(after ? { after } : {}) });
+    if (res.isError || res.data.status !== 'ok') throw new Error(`recall page failed: ${res.text}`);
+    out.push(...(res.data[queue] as Array<Record<string, unknown>>));
+    after = res.data[`${queue}Next`] as string | null;
+    if (!after) return out;
+  }
+  throw new Error('recall paging never ended');
+}
+
 /**
  * The surface assertion, by NAME rather than by count (2026-09-12).
  *
@@ -4376,16 +4395,13 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       // it rides the `untimed` list rather than a day group. The straddling-
       // range clamp it used to need is gone with the range itself: there is no
       // date to clamp, and therefore no way to mis-date it.
-      const recall = await callWith('get_team_schedule', { unassignedOnly: true });
-      const untimed = recall.data.untimed as Array<Record<string, unknown>>;
-      const mine = untimed.find((st) => st.visitId === visitId);
+      const recallVisits = await recallAll(callWith, 'visits');
+      const mine = recallVisits.find((st) => st.visitId === visitId);
       expect(mine).toBeDefined();
       expect(mine?.unassigned).toBe(true);
-      // …and it appears on no day group at all.
-      const dayStops = (
-        recall.data.days as Array<{ date: string; stops: Array<Record<string, unknown>> }>
-      ).flatMap((d) => d.stops);
-      expect(dayStops.some((st) => st.visitId === visitId)).toBe(false);
+      // …and it sits on no day at all (retrieval layer 4: the recall list carries
+      // untimed visits with date null, never on a date).
+      expect(mine?.date).toBeNull();
 
       // find_slots on the untimed visit: duration from the JOB's recorded
       // length. The search window no longer defaults to the visit's own days
@@ -4460,13 +4476,15 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       // no range, so it lands on NO day — and rides the top-level `untimed`
       // list instead, which is what keeps it reachable.
       const full = await callWith('get_team_schedule', {
-        from: '2026-12-20', to: '2026-12-24',
+        from: '2026-12-20', to: '2026-12-24', stops: true,
       });
-      const fullStops = (
-        full.data.days as Array<{ date: string; stops: Array<Record<string, unknown>> }>
-      ).flatMap((d) => d.stops);
+      const fullStops = full.data.stops as Array<Record<string, unknown>>;
       expect(fullStops.some((st) => st.visitId === visitId)).toBe(false);
-      const untimed = full.data.untimed as Array<Record<string, unknown>>;
+      // Retrieval layer 4: the windowed page COUNTS untimed visits and the recall
+      // list names them — never both lists in one result.
+      expect(full.data.untimed).toBeUndefined();
+      expect(full.data.counts.untimed).toBeGreaterThanOrEqual(1);
+      const untimed = await recallAll(callWith, 'visits');
       expect(untimed.find((u) => u.visitId === visitId)).toMatchObject({
         technicianRef: 'tech-mcp',
         unassigned: false,
@@ -4478,17 +4496,12 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       // Every window says the same thing: there is no date to make it appear
       // in one window and not another.
       const outside = await callWith('get_team_schedule', {
-        from: '2026-12-26', to: '2026-12-28',
+        from: '2026-12-26', to: '2026-12-28', stops: true,
       });
-      const outsideStops = (
-        outside.data.days as Array<{ stops: Array<Record<string, unknown>> }>
-      ).flatMap((d) => d.stops);
+      const outsideStops = outside.data.stops as Array<Record<string, unknown>>;
       expect(outsideStops.some((st) => st.visitId === visitId)).toBe(false);
-      expect(
-        (outside.data.untimed as Array<Record<string, unknown>>).some(
-          (u) => u.visitId === visitId,
-        ),
-      ).toBe(true);
+      // …and the untimed count does not depend on the window either.
+      expect(outside.data.counts.untimed).toBe(full.data.counts.untimed);
 
       // find_slots still works on an untimed subject. The "range wider than
       // the 14-day cap" clamp it needed is gone with the stored range: every
@@ -4532,15 +4545,25 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         total: number;
         untimed: number;
       };
+      // The counts page names no customers: stops come only when asked.
+      expect(counted.data.stops).toBeUndefined();
       expect(counts.byDay['2026-12-21']).toBe(1);
       expect(counts.byDay['2026-12-22']).toBe(1);
       expect(counts.total).toBe(2);
       expect(counts.untimed).toBeGreaterThanOrEqual(1); // 'assigned tbd' above
       // Zero-days are DATA: every requested day appears, so "which days are
-      // free" is a read, not an inference from absence. And rung 9a made that
-      // answer unambiguous — no untimed visit half-occupies a day any more, so
-      // `windowCoverByDay` is gone and a byDay of 0 simply means free.
+      // empty" is a read, not an inference from absence — in `days` too.
       expect(counts.byDay['2026-12-24']).toBe(0);
+      expect(
+        (counted.data.days as Array<{ date: string; visits: number }>).map((d) => [d.date, d.visits]),
+      ).toEqual([
+        ['2026-12-20', 0],
+        ['2026-12-21', 1],
+        ['2026-12-22', 1],
+        ['2026-12-23', 0],
+        ['2026-12-24', 0],
+      ]);
+      expect(counted.data.days[1].byTechnician).toEqual({ 'tech-mcp': 1 });
       expect((counts as Record<string, unknown>).windowCoverByDay).toBeUndefined();
       // Counts cover the REQUESTED range only.
       const total = Object.values(counts.byDay).reduce((a, b) => a + b, 0);
@@ -4550,11 +4573,9 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       }
 
       // GROUNDING_LEAN=1 (date-eval Arm B, 2026-08-23): the derived crutches
-      // disappear — counts/countsNote off get_team_schedule, upcomingVisits/
-      // openWorkNote off get_customer_context — while the DATA (days, jobs)
-      // stays. Presence with the flag OFF is pinned by the counts assertions
-      // above and the upcomingVisits check here, so normal operation cannot
-      // silently serve the lean shape.
+      // disappear — upcomingVisits/openWorkNote off get_customer_context — while
+      // the DATA stays. get_team_schedule's counts STAY under the flag since
+      // retrieval layer 4: they are the page itself, not a crutch beside a dump.
       const fullCtx = await callWith('get_customer_context', { customerId: customer.id });
       expect(fullCtx.data.upcomingVisits).toBeDefined();
       process.env.GROUNDING_LEAN = '1';
@@ -4564,8 +4585,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
           to: '2026-12-24',
         });
         expect(leanSched.data.status).toBe('ok');
-        expect(leanSched.data.counts).toBeUndefined();
-        expect(leanSched.data.countsNote).toBeUndefined();
+        expect(leanSched.data.counts.total).toBe(2);
         expect(Array.isArray(leanSched.data.days)).toBe(true);
         const leanCtx = await callWith('get_customer_context', { customerId: customer.id });
         expect(leanCtx.data.upcomingVisits).toBeUndefined();
@@ -4637,11 +4657,11 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
 
       // Team view: the manager sees ANOTHER technician's stop, with a
       // scheduleVersion.
-      const team = await callWith('get_team_schedule', { from: '2026-12-01', to: '2026-12-01' });
+      const team = await callWith('get_team_schedule', { from: '2026-12-01', to: '2026-12-01', stops: true });
       expect(team.data.status).toBe('ok');
       const v1 = team.data.scheduleVersion as number;
       expect(v1).toBeGreaterThan(0);
-      const stops = team.data.days[0].stops as Array<Record<string, unknown>>;
+      const stops = team.data.stops as Array<Record<string, unknown>>;
       const stop = stops.find((s) => s.visitId === visitId);
       expect(stop).toMatchObject({
         technicianRef: 'tech-mcp',
@@ -4657,6 +4677,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(stop).not.toHaveProperty('end');
       // Server-computed weekday on every emitted date (the find_slots lesson).
       expect(team.data.days[0].weekday).toBe('Tue');
+      expect(stop?.weekday).toBe('Tue');
+      expect(stop?.date).toBe('2026-12-01');
       expect(stop?.address).toContain('40 Elm Ave');
 
       // MOVE to another day: one call, no gate (rung 9a).
@@ -4718,8 +4740,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(cancelled.data.status).toBe('unscheduled');
       expect(cancelled.data.note).toContain('loose bucket');
       // The unscheduled visit no longer appears on the board.
-      const gone = await callWith('get_team_schedule', { from: '2026-12-02', to: '2026-12-02' });
-      expect(gone.data.days).toHaveLength(0);
+      const gone = await callWith('get_team_schedule', { from: '2026-12-02', to: '2026-12-02', stops: true });
+      expect((gone.data.stops as Array<{ visitId: string }>).map((s) => s.visitId)).not.toContain(movedId);
     } finally {
       await mgrClient.close();
     }
@@ -4748,8 +4770,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(booked.data.jobDurationMinutes).toBe(60);
       const id = booked.data.visitId as string;
 
-      const team = await callWith('get_team_schedule', { from: '2026-12-15', to: '2026-12-15' });
-      const stop = (team.data.days[0].stops as Array<Record<string, unknown>>).find(
+      const team = await callWith('get_team_schedule', { from: '2026-12-15', to: '2026-12-15', stops: true });
+      const stop = (team.data.stops as Array<Record<string, unknown>>).find(
         (s) => s.visitId === id,
       );
       expect(stop).toBeDefined();
@@ -5008,8 +5030,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       const id = booked.data.visitId as string;
 
       // The board window covering the day flags it person-less.
-      const team = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05' });
-      const stop = (team.data.days[0].stops as Array<Record<string, unknown>>).find(
+      const team = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05', stops: true });
+      const stop = (team.data.stops as Array<Record<string, unknown>>).find(
         (s) => s.visitId === id,
       );
       expect(stop).toMatchObject({ unassigned: true, technicianRef: null, technicianName: null });
@@ -5023,8 +5045,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         reason: 'assigning tech',
       });
       expect(moved.data.status).toBe('moved');
-      const after = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05' });
-      const attached = (after.data.days[0].stops as Array<Record<string, unknown>>).find(
+      const after = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05', stops: true });
+      const attached = (after.data.stops as Array<Record<string, unknown>>).find(
         (s) => s.visitId === moved.data.visitId,
       );
       expect(attached).toMatchObject({ unassigned: false, technicianRef: 'tech-mcp' });
@@ -5059,10 +5081,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(aBooked.data.status).toBe('booked');
 
       // Default board read (today) does NOT show the far-out visit…
-      const today = await callWith('get_team_schedule', {});
-      const todaysIds = (today.data.days as Array<{ stops: Array<{ visitId: string }> }>)
-        .flatMap((d) => d.stops)
-        .map((s) => s.visitId);
+      const today = await callWith('get_team_schedule', { stops: true });
+      const todaysIds = (today.data.stops as Array<{ visitId: string }>).map((s) => s.visitId);
       expect(todaysIds).not.toContain(farId);
       // …and a >14-day range without the flag still errors (cap unchanged).
       const capped = await callWith('get_team_schedule', { from: '2027-01-01', to: '2027-03-01' });
@@ -5073,10 +5093,16 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(recall.data.status).toBe('ok');
       expect(recall.data.unassignedOnly).toBe(true);
       expect(recall.data.scheduleVersion).toBeGreaterThan(0);
-      const recallStops = (recall.data.days as Array<{ stops: Array<Record<string, unknown>> }>)
-        .flatMap((d) => d.stops);
+      expect(recall.data.counts.parkedVisits).toBeGreaterThanOrEqual(1);
+      const recallStops = await recallAll(callWith, 'visits');
       const farStop = recallStops.find((s) => s.visitId === farId);
-      expect(farStop).toMatchObject({ unassigned: true, customer: 'Recall Roy' });
+      expect(farStop).toMatchObject({
+        unassigned: true,
+        customer: 'Recall Roy',
+        date: '2027-02-10',
+        startTime: '09:00',
+        jobId: booked.data.jobId,
+      });
       // Assigned visits never appear here.
       expect(recallStops.map((s) => s.visitId)).not.toContain(aBooked.data.visitId);
 
@@ -5089,7 +5115,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         priority: 'urgent',
       });
       const recall2 = await callWith('get_team_schedule', { unassignedOnly: true });
-      const jobs = recall2.data.unscheduledJobs as Array<Record<string, unknown>>;
+      const jobs = await recallAll(callWith, 'jobs');
       const bare = jobs.find((j) => j.jobId === bareJob.id);
       expect(bare).toMatchObject({
         title: 'Recall bare job',
@@ -5098,16 +5124,161 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       });
       // Jobs with a live visit (the far-out booking's job) stay OUT.
       expect(jobs.map((j) => j.jobId)).not.toContain(booked.data.jobId);
-      expect(recall2.data.note).toContain('unscheduledJobs');
-      // The windowed mode does NOT carry the jobs half.
+      expect(recall2.data.note).toContain('jobs are open jobs with NO visit');
+      // The windowed mode COUNTS the jobs half and never lists it.
       const windowed = await callWith('get_team_schedule', {});
-      expect(windowed.data.unscheduledJobs).toBeUndefined();
+      expect(windowed.data.jobs).toBeUndefined();
+      expect(windowed.data.counts.unscheduledJobs).toBe(recall2.data.counts.unscheduledJobs);
 
       // Garbage flag type is rejected.
       const bad = await callWith('get_team_schedule', { unassignedOnly: 'yes' });
       expect(bad.data.status).toBe('invalid_range');
     } finally {
       await mgrClient.close();
+    }
+  });
+
+  test('the counts page: stops page by 25, crews found by any member, completed counted, overdue recall, value cursors (retrieval layer 4)', { timeout: 60_000 }, async () => {
+    const customer = await createCustomer({ tenantId, name: 'Paging Pam' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'paging work' });
+    // Schedule-only people: they take no seat, so the file's seat-capped tests
+    // below are unaffected.
+    const first = await insertTechnician({ tenantId, ref: 'page-a', displayName: 'Page A', seatExempt: true });
+    const second = await insertTechnician({ tenantId, ref: 'page-b', displayName: 'Page B', seatExempt: true });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // 30 person-less trips on one day (nobody on them, so no overlap guard).
+      const day = '2027-04-06';
+      const tripIds: string[] = [];
+      for (let i = 0; i < 30; i++) {
+        const hh = String(6 + Math.floor(i / 2)).padStart(2, '0');
+        const mm = i % 2 === 0 ? '00' : '30';
+        const v = await createVisit({
+          tenantId,
+          jobId: job.id,
+          startsAt: `${day}T${hh}:${mm}:00Z`,
+          endsAt: `${day}T${hh}:${mm === '00' ? '20' : '50'}:00Z`,
+          status: 'confirmed',
+        });
+        tripIds.push(v.id);
+      }
+      // A crew trip where page-b is the SECOND member, and a completed one.
+      const crew = await createVisit({
+        tenantId,
+        jobId: job.id,
+        technicianIds: [first.id, second.id],
+        startsAt: `${day}T21:00:00Z`,
+        endsAt: `${day}T22:00:00Z`,
+        status: 'confirmed',
+      });
+      await createVisit({
+        tenantId,
+        jobId: job.id,
+        startsAt: `${day}T23:00:00Z`,
+        endsAt: `${day}T23:30:00Z`,
+        status: 'completed',
+      });
+
+      const counted = await callWith('get_team_schedule', { from: day, to: day });
+      expect(counted.data.stops).toBeUndefined();
+      expect(counted.data.days[0]).toMatchObject({ visits: 32, completed: 1, unassigned: 31 });
+      expect(counted.data.days[0].byTechnician).toMatchObject({ 'page-a': 1, 'page-b': 1 });
+
+      const p1 = await callWith('get_team_schedule', { from: day, to: day, stops: true });
+      expect(p1.data.stops).toHaveLength(25);
+      expect(p1.data.hasMore).toBe(true);
+      const p2 = await callWith('get_team_schedule', { from: day, to: day, stops: true, after: p1.data.next });
+      expect(p2.data.stops).toHaveLength(7);
+      expect(p2.data.hasMore).toBe(false);
+      const ids = [...p1.data.stops, ...p2.data.stops].map((s: { visitId: string }) => s.visitId);
+      expect(new Set(ids).size).toBe(32);
+      const done = p2.data.stops.find((s: { status: string }) => s.status === 'completed');
+      expect(done).toMatchObject({ stage: 'happened', startTime: '23:00' });
+
+      // A crew trip is found by EITHER member — never just the first lane.
+      const byB = await callWith('get_team_schedule', { from: day, to: day, stops: true, technicianRef: 'page-b' });
+      expect(byB.data.stops.map((s: { visitId: string }) => s.visitId)).toEqual([crew.id]);
+      // Added in one statement, so the crew's order is the id tiebreak — compare as a set.
+      expect([...byB.data.stops[0].technicianRefs].sort()).toEqual(['page-a', 'page-b']);
+      const unknown = await callWith('get_team_schedule', { from: day, to: day, stops: true, technicianRef: 'nobody-here' });
+      expect(unknown.data.status).toBe('invalid_range');
+      expect(unknown.data.note).toContain('list_team');
+      const garbage = await callWith('get_team_schedule', { from: day, to: day, stops: true, after: 'page two' });
+      expect(garbage.data.status).toBe('invalid_range');
+
+      // An overdue parked visit is in the recall list, flagged (the old recall
+      // view floored at today and lost it).
+      const overdue = await createVisit({
+        tenantId,
+        jobId: job.id,
+        startsAt: '2026-01-05T09:00:00Z',
+        endsAt: '2026-01-05T10:00:00Z',
+        status: 'confirmed',
+      });
+      const recalled = await recallAll(callWith, 'visits');
+      expect(recalled.find((v) => v.visitId === overdue.id)).toMatchObject({ overdue: true, unassigned: true });
+
+      // Value cursors: the row a cursor names can leave the queue (the manager
+      // just dealt with it) and the next page still starts right after it.
+      const q1 = await callWith('get_team_schedule', { unassignedOnly: true, queue: 'visits' });
+      expect(q1.data.visits).toHaveLength(25);
+      expect(q1.data.jobs).toBeUndefined();
+      const cursorRow = q1.data.visits[24] as { visitId: string };
+      const expectedNext = await callWith('get_team_schedule', { unassignedOnly: true, queue: 'visits', after: q1.data.visitsNext });
+      await pg.query(`update visits set status = 'cancelled' where id = $1`, [cursorRow.visitId]);
+      const q2 = await callWith('get_team_schedule', { unassignedOnly: true, queue: 'visits', after: q1.data.visitsNext });
+      expect(q2.data.visits.map((v: { visitId: string }) => v.visitId)).toEqual(
+        expectedNext.data.visits.map((v: { visitId: string }) => v.visitId),
+      );
+      const firstIds = new Set(q1.data.visits.map((v: { visitId: string }) => v.visitId));
+      expect(q2.data.visits.some((v: { visitId: string }) => firstIds.has(v.visitId))).toBe(false);
+      const noQueue = await callWith('get_team_schedule', { unassignedOnly: true, after: q1.data.visitsNext });
+      expect(noQueue.data.status).toBe('invalid_range');
+    } finally {
+      await mgrClient.close();
+      // Leave the shared tenant's schedule and roster as the later tests expect.
+      await pg.query(`update visits set status = 'cancelled' where job_id = $1`, [job.id]);
+      await pg.query('delete from visit_participants where technician_id = any($1::uuid[])', [[first.id, second.id]]);
+      await pg.query('delete from technicians where id = any($1::uuid[])', [[first.id, second.id]]);
+    }
+  });
+
+  test('a busy fortnight stays a small page without stops (retrieval layer 4)', { timeout: 60_000 }, async () => {
+    // The operator's rule the counts page exists for: a schedule read never dumps
+    // into the seat's window. 10 people × 5 trips a day × 14 days = 700 visits.
+    const customer = await createCustomer({ tenantId, name: 'Busy Bella' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'busy fortnight' });
+    const techs: string[] = [];
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      for (let t = 0; t < 10; t++) {
+        const tech = await insertTechnician({ tenantId, ref: `busy-${t}`, displayName: `Busy ${t}`, seatExempt: true });
+        techs.push(tech.id);
+        const { rows } = await pg.query<{ id: string }>(
+          `insert into visits (tenant_id, job_id, starts_at, ends_at, status)
+           select $1, $2,
+                  timestamptz '2028-01-03 07:00+00' + (d || ' days')::interval + ((h * 2) || ' hours')::interval,
+                  timestamptz '2028-01-03 08:00+00' + (d || ' days')::interval + ((h * 2) || ' hours')::interval,
+                  'confirmed'
+             from generate_series(0, 13) as d, generate_series(0, 4) as h
+           returning id`,
+          [tenantId, job.id],
+        );
+        await pg.query(
+          `insert into visit_participants (tenant_id, visit_id, technician_id)
+           select $1, v, $2 from unnest($3::uuid[]) as v`,
+          [tenantId, tech.id, rows.map((r) => r.id)],
+        );
+      }
+      const page = await callWith('get_team_schedule', { from: '2028-01-03', to: '2028-01-16' });
+      expect(page.data.counts.total).toBe(700);
+      expect(page.data.days[0].byTechnician['busy-0']).toBe(5);
+      expect(page.text.length).toBeLessThan(8000);
+    } finally {
+      await mgrClient.close();
+      await pg.query(`update visits set status = 'cancelled' where job_id = $1`, [job.id]);
+      await pg.query('delete from visit_participants where technician_id = any($1::uuid[])', [techs]);
+      await pg.query('delete from technicians where id = any($1::uuid[])', [techs]);
     }
   });
 
@@ -7020,10 +7191,8 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
       expect(still.rows[0].status).toBe('open');
 
       // The job is in the recall view's unscheduledJobs before the confirm…
-      const before = await callWith('get_team_schedule', { unassignedOnly: true });
-      expect(
-        (before.data.unscheduledJobs as Array<{ jobId: string }>).map((j) => j.jobId),
-      ).toContain(bare.id);
+      const before = await recallAll(callWith, 'jobs');
+      expect(before.map((j) => j.jobId)).toContain(bare.id);
 
       // Restage supersedes the caller's prior token: the old confirmId dies.
       const stage2 = await callWith('cancel_job', { jobId: bare.id, reason: 'duplicate entry' });
@@ -7041,10 +7210,8 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
       expect(after.rows[0].status).toBe('cancelled');
       // …and gone from it after (the bucket-exit contract: the freeze must
       // never see dead work).
-      const recall = await callWith('get_team_schedule', { unassignedOnly: true });
-      expect(
-        (recall.data.unscheduledJobs as Array<{ jobId: string }>).map((j) => j.jobId),
-      ).not.toContain(bare.id);
+      const recall = await recallAll(callWith, 'jobs');
+      expect(recall.map((j) => j.jobId)).not.toContain(bare.id);
 
       // A used token cannot commit twice.
       const replay = await callWith('cancel_job', { confirmId: stage2.data.confirmId });
@@ -7084,8 +7251,10 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
         { visitId: booked.data.visitId, day: '2027-02-01' },
       ]);
       // Off the board.
-      const day = await callWith('get_team_schedule', { from: '2027-02-01', to: '2027-02-01' });
-      expect(day.data.days).toHaveLength(0);
+      const day = await callWith('get_team_schedule', { from: '2027-02-01', to: '2027-02-01', stops: true });
+      expect((day.data.stops as Array<{ visitId: string }>).map((s) => s.visitId)).not.toContain(
+        booked.data.visitId,
+      );
       // Terminal: a second cancel_job on the same job refuses with the truth.
       const again = await callWith('cancel_job', { jobId, reason: 'again' });
       expect(again.isError).toBe(true);

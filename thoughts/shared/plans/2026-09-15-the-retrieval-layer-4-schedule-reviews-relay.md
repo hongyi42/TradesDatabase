@@ -154,10 +154,10 @@ re-check; refs from `participantsOf(row, tenantId)`. Drop now-unused imports.
 `record_caller` (`customers.ts:854-873`): append the note to both refusals when `hitRowCap(onFile.length)`.
 
 ### Automated verification
-- [ ] `src/db/scheduling.test.ts`, on its OWN tenant: 1,005 confirmed visits (bulk `insert …
+- [x] `src/db/scheduleWindow.test.ts` (landed there, not scheduling.test.ts), on its OWN tenant: 1,005 confirmed visits (bulk `insert …
       generate_series` via `pg`) in one window → both window readers return 1,005, ordered, no duplicates.
-- [ ] `src/schedule/fit.db.test.ts` passes unchanged; `src/db/rowCap.test.ts`: 999 false, 1000 true.
-- [ ] A `readLooseBucket` test: `nowIso` moves `overdue`; an occupied trip whose technician row is
+- [x] `src/schedule/fit.db.test.ts` passes unchanged; `src/db/rowCap.test.ts`: 999 false, 1000 true.
+- [x] A `readLooseBucket` test: `nowIso` moves `overdue`; an occupied trip whose technician row is
       another tenant's reads `unassigned: false`. `npm run typecheck`, `lint`, `test`.
 
 ---
@@ -206,9 +206,9 @@ a `next` cursor still works after its row was booked.
 **Docs** — `docs/nemoclaw-tech-agent.md:357`; one line on the new shape in `docs/engineering-memory.md`.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `lint`, `test`; a 14-day, 10-technician, 5-trips/day window serializes
+- [x] `npm run typecheck`, `lint`, `test`; a 14-day, 10-technician, 5-trips/day window serializes
       under 8,000 chars without `stops`.
-- [ ] `npm run spine-eval:world` then `npm run spine-eval:tools`: R07, R08 pass (`toolCases.test.ts` is
+- [x] `npm run spine-eval:world` then `npm run spine-eval:tools`: R07, R08 pass (`toolCases.test.ts` is
       static and runs no check).
 
 ### Live verification (agent-executable, optional)

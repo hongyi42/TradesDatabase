@@ -1196,43 +1196,7 @@ export async function listIdenticalUnassignedVisits(
     }));
 }
 
-// ASSIGNED-and-unplaced rows intersecting a day window (plan 4b-2 Phase 3):
-// the board's "no time yet" strip. Confirmed rows with a person attached and
-// no times; the range-intersection predicate (earliest <= to AND latest >=
-// from) shows a Tue–Thu visit on each covered day. DAY_SELECT shape so the
-// strip carries customer/technician names in the same single round trip.
-// Single string literal — see the DETAIL_SELECT note above. The strip shows
-// what the work IS (title) and how long it takes (4b-1 duration), unlike the
-// time-grid day view where the sheet fetches those on tap.
-const UNPLACED_STRIP_SELECT =
-  '*, jobs(id,tenant_id,title,duration_minutes,customer_id,customers(name,tenant_id)), visit_participants(technician_id,created_at,tenant_id,technicians(id,ref,display_name,tenant_id))';
-
-export type UnplacedStripRow = Visit & {
-  jobs:
-    | (Pick<Job, 'id' | 'tenant_id' | 'title' | 'duration_minutes' | 'customer_id'> & {
-        customers: Pick<Customer, 'name' | 'tenant_id'> | null;
-      })
-    | null;
-  visit_participants: ParticipantEmbed[];
-};
-
-// EVERY untimed row — assigned or not. The reader above deliberately shows only
-// person-attached rows (unassigned ones live in the unassignedOnly recall view);
-// this one is the complete queue. Same shape so handlers can reuse one row type,
-// and the same oldest-first order.
-export async function listUnplaced(tenantId: string): Promise<UnplacedStripRow[]> {
-  const { data, error } = await getClient()
-    .from('visits')
-    .select(UNPLACED_STRIP_SELECT)
-    .eq('tenant_id', tenantId)
-    .eq('status', 'confirmed')
-    .is('starts_at', null)
-    .order('created_at', { ascending: true });
-  if (error) throw new Error(`listUnplaced failed: ${error.message}`);
-  return (data ?? []) as UnplacedStripRow[];
-}
-
-// Sibling of the guard above (plan 4b-2): untimed rows are ALSO exempt from the
+// Sibling of listIdenticalUnassignedVisits (plan 4b-2): untimed rows are ALSO exempt from the
 // DB overlap guard, so a retried one-shot untimed booking would silently
 // duplicate without this check. It used to key on the exact date range; rung 9a
 // deleted the range, so the key is now the JOB — two untimed visits on one job

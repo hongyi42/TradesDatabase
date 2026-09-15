@@ -354,8 +354,8 @@ date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). Array
     time. It is REACTIVE: it edits the schedule only when asked.
   - *Consequences:* `book_visit` / `move_visit` are unconditionally one-shot;
     `unschedule_visit` stages only for a PLACED visit; an untimed visit sits on no day, so it
-    appears in the unscheduled queue and in `get_team_schedule`'s `untimed` list, never in a
-    day group. `find_slots(earliestDate, latestDate)` is UNAFFECTED — same words, different
+    appears in the unscheduled queue and in `get_team_schedule`'s `unassignedOnly: true` list
+    (date null), never on a day; the windowed read only counts it (`counts.untimed`). `find_slots(earliestDate, latestDate)` is UNAFFECTED — same words, different
     thing: a search range, never a commitment.
   - Reasoning and the full footprint: `docs/engineering-memory.md` §6a, and
     `thoughts/shared/plans/2026-09-05-the-rails-come-out.md`.

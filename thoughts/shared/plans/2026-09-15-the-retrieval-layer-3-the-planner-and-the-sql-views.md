@@ -1,6 +1,6 @@
 ---
 date: 2026-09-15
-task: The retrieval layer, plan 3 of 4 — the planner and the SQL views: v_captures folds retractions, one v_capture_links replaces three link views, the planner's evidence / watcher activity / moot-fact readers move onto capture_membership, evidence and money lines carry ids and announce cuts, the gap list is capped at 30 and says so
+task: The retrieval layer, plan 3 of 4 — the planner and the SQL views: v_captures folds retractions, one v_capture_links replaces three link views, the planner's evidence / watcher activity / moot-fact readers move onto capture_membership, evidence and money lines carry ids and announce cuts, the gap list is capped at 100 and the planner is always told the ceiling
 research: thoughts/shared/research/2026-09-15-the-retrieval-and-delivery-layer.md
 status: draft
 supersedes: supabase/migrations/20260823120000_planner_read_surface.sql (its "retractions are a labelled trail, not a fold" ruling — overturned by operator ruling 3, 2026-09-15)
@@ -22,9 +22,9 @@ membership, folds the views, and caps what the planner is shown.
   (operator, this session). No shim views (mine; the pilot is a test surface): migrations apply
   immediately before merge; manager gateways need a restart for the new description.
 - **Gap order under the cap: not on hold (oldest first), then held by `not_before`** (operator, this
-  session, over inbound-first). The 30 render in today's order; at ≤30 the prompt is byte-identical.
-- **Cap = 30** (`PLANNER_GAPS_SHOWN`, mine; the `OFFICE_MESSAGES_SHOWN` precedent). Hidden gaps get no
-  reads, tick marks or pinged stamps; the focused pass (one item) is uncapped.
+  session, over inbound-first). The chosen gaps render in today's order; at or under the cap, none move.
+- **Cap = 100 gaps + noticed items, the ceiling ALWAYS stated** (operator 2026-09-15, replacing my 30).
+  GLM 5.3 context 1,310,720 tokens (OpenRouter `/api/v1/models`, 2026-09-15) vs ~190K worst case. Hidden gaps: no reads, marks, stamps.
 - **A retracted call/email's gap hides its words and states a record fact** (operator, this session).
 - **Pushed evidence includes `manager_only` notes** (operator, this session): planner tier sees all.
 - **`query_spine`'s 5 s limit is dead; the real bound is 8 s** (measured this session, local stack):
@@ -51,7 +51,7 @@ membership, folds the views, and caps what the planner is shown.
 
 ```
                BEFORE                                          AFTER
-planner tick ─ every open gap ─► 3 TS arms (URL wall) ─►   ─ ≤30 gaps (not held first) ─► gap_evidence (RPC body)
+planner tick ─ every open gap ─► 3 TS arms (URL wall) ─►   ─ ≤100 gaps (not held first) ► gap_evidence (RPC body)
                ─► lines: no ids, silent 6×600 cut             ─► lines: capture id, "3 earlier not shown"
 watcher      ─► 2 TS readers, unchunked                    ─► job_activity_since (RPC body); retracted ≠ activity
 moot fact    ─► 5 TS arms, fleet-wide                      ─► capture_records (RPC body), tenant-scoped
@@ -66,7 +66,7 @@ it when a retracted note no longer comes back and a trip-linked note is found wi
 database functions replace eleven hand-written queries. You'd notice it in the tests: a trip-linked
 note is evidence, a retracted note is not a report, and 250 ids pass through every reader.
 
-**Phase 3** changes what the planner is shown: at most 30 gaps plus a "N more" line, capture ids and
+**Phase 3** changes what the planner is shown: at most 100 gaps, a line naming that ceiling (and "N more" when hit), capture ids and
 cut notices on evidence lines, event ids on money lines, and "retracted" instead of a retracted call's words.
 
 ## Secrets & env preflight
@@ -250,16 +250,16 @@ the old `listL2CitingCapture` (`:545-699`) and `listNoteTimesForJobs` (`visits.t
 `.range`), the `listObservationsByStatus` twin (`observations.ts:90-110`).
 
 **`src/teamLead/planner.ts`**
-- **The cap.** Beside `:629`: `export const PLANNER_GAPS_SHOWN = 30;` and `export function gapsToShow(open: Nudge[], nowMs: number): Nudge[]`.
+- **The cap.** Beside `:629`: `export const PLANNER_GAPS_SHOWN = 100;` and `export function gapsToShow(open: Nudge[], nowMs: number): Nudge[]`.
   - At or under the cap it returns `open` unchanged.
-  - Over the cap it ranks gaps not on hold (`not_before` null or `≤ nowMs`) by `(created_at, id)`, then held gaps by `(not_before, created_at, id)`, takes 30, and returns them in `open`'s order (`open.filter(n => chosen.has(n.id))`).
+  - Over the cap it ranks gaps not on hold (`not_before` null or `≤ nowMs`) by `(created_at, id)`, then held gaps by `(not_before, created_at, id)`, takes 100, and returns them in `open`'s order (`open.filter(n => chosen.has(n.id))`).
 - **Where `shown` replaces `open`.** After `:4342`: `const shown = focus ? open : gapsToShow(open, nowMs); const hiddenGaps = open.length - shown.length;`.
   - Use `shown` at `:4393`, `:4396`, the `asks` line (`:4434`), `:4439`, `:4474`, `:4504`, `:4614-4617`, `:4650-4658`, `:4692` and `:4864`.
   - Keep `open` at `:4665` (the sibling-gap fact), `:4676` (a hidden lead is not leaderless), `:4319`, `:5384` and `:5476`.
 - **The count line.** `buildPlannerUserMessage` (`:3379-3445`) gets a new last param `hiddenGaps = 0`.
-  - Line `:3439` becomes `This firm has ${views.length + hiddenGaps} open gap(s).`
-  - When `hiddenGaps > 0` it adds ` Only ${views.length} are shown below (the ones not on hold first, then held ones); ${hiddenGaps} more are not shown and will come up as these close.`
-  - With nothing hidden it is byte-identical. `PlannerTenantPlan` (`:409`) gets `gapsHidden?: number`, set when > 0.
+  - Line `:3439` becomes `This firm has ${views.length + hiddenGaps} open gap(s). You are shown at most ${PLANNER_GAPS_SHOWN} gaps and noticed items per look — anything past that waits for a later one.` on EVERY non-focused tick (one line, so the `This firm has` forged-line neutraliser, `memory.test.ts:145`, still covers it, and the existing `toContain('This firm has N open gap(s).')` assertions still hold).
+  - When `hiddenGaps > 0` it adds ` Right now ${hiddenGaps} more are NOT shown: you see the ones not on hold first, then held ones.`
+  - `PlannerTenantPlan` (`:409`) gets `gapsHidden?: number`, set when > 0.
 - **Evidence lines** (`:1413-1419`, `:1828-1834`). Keep the pre-slice `matching` list. Each line gains ` capture ${e.capture.id}` before its colon. After the loop:
   - `earlier = max(matching.length, ...matching.map(e => e.gapTotal ?? 0)) - relevant.length`; when > 0, add `    (${earlier} earlier note(s) since ${since} not shown — spine_read v_captures joined to v_capture_links on this job id)`.
   - If any shown line ends in `…`, add `    (a line ending in … was cut at ${EVIDENCE_TEXT_CHARS} characters — spine_read v_captures where id = its capture id has the full words)`.
@@ -272,12 +272,12 @@ the old `listL2CitingCapture` (`:545-699`) and `listNoteTimesForJobs` (`visits.t
 
 **Tests** (`src/teamLead/planner.test.ts` unit tests; `src/db/nudges.test.ts` on the local stack)
 - **The cap:**
-  - 31 open gaps → `31 open gap(s)`, `1 more`, 30 `gap ` blocks.
+  - 101 open gaps → `101 open gap(s)`, `at most 100`, `1 more are NOT shown`, 100 `gap ` blocks; 1 gap → the ceiling sentence is present and no `NOT shown`.
   - An old held gap is the one hidden.
   - The hidden gap's job is absent from the `listEvidence` asks, and a decision on it is refused.
   - A member whose lead is hidden does not render `FROZEN`.
   - `plans[0].gapsHidden === 1`.
-  - With ≤30 gaps and a held gap, the gap order is unchanged.
+  - With ≤100 gaps and a held gap, the gap order is unchanged.
 - **Evidence and money:**
   - `:331-333`: the expected line gains ` capture c-2026-08-15T12:30:00.000Z`.
   - `gapTotal: 9` with 6 shown → `3 earlier notes`.

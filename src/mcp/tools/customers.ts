@@ -334,18 +334,20 @@ const TEAM_LEAD_TOOLS = [
   },
 ];
 
+// A customer row as a seat may see it: without phone_key, the generated MATCHING
+// key (20260916130100). The accuracy rules tell a seat to copy numbers character
+// for character, so bare digits beside the written phone are something it may quote.
+function withoutPhoneKey<T extends { phone_key?: unknown }>(row: T): Omit<T, 'phone_key'> {
+  const { phone_key, ...shown } = row;
+  void phone_key;
+  return shown;
+}
+
 async function handleFindCustomer(toolCtx: ToolContext): Promise<unknown> {
   const { tenantId, str } = toolCtx;
       const query = str('query');
       if (!query) throw new Error('query is required');
-      // phone_key is a MATCHING key, not something to say: a seat shown a bare
-      // "2065550170" beside "(206) 555-0170" may quote the digits, since the
-      // accuracy rules say to copy numbers character for character.
-      const rows = (await searchCustomers(tenantId, query)).map((c) => {
-        const { phone_key, ...shown } = c;
-        void phone_key;
-        return shown;
-      });
+      const rows = (await searchCustomers(tenantId, query)).map(withoutPhoneKey);
       // Fold standing facts whose evidence was retracted (one lookup across
       // all rows) — a retracted fact must not stay visible in name lookups
       // when context/briefings already hide it (fold is the removal path).
@@ -391,7 +393,8 @@ async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> 
         if (j.money) moneyByJob[j.id] = activeManager ? j.money : technicianMoneyView(j.money);
       }
       const contextResult: Record<string, unknown> = {
-        customer: contents.customer,
+        // The contents function emits the whole customers row (customers%rowtype).
+        customer: withoutPhoneKey(contents.customer),
         // The job row plus the layer's counts; `money` leaves the row for the
         // tier-filtered map above (undefined is dropped by JSON.stringify).
         // retractedCount is a manager/planner signal; a technician never sees the key.
@@ -653,7 +656,22 @@ async function handleCancelJob(toolCtx: ToolContext): Promise<unknown> {
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'staged before the visit check existed');
         throw new Error('this confirmation predates a safety check — nothing was cancelled; restage the job cancellation and confirm again');
       }
-      if (!(await jobVisitsStillApproved(tenantId, d.jobId, d.approvedVisits))) {
+      let stillApproved: boolean;
+      try {
+        stillApproved = await jobVisitsStillApproved(tenantId, d.jobId, d.approvedVisits);
+      } catch (err) {
+        // The job is gone or already closed (e.g. cancelled on the console):
+        // this token can never succeed, so it must not sit in the review list
+        // answering every retry with the same error until it expires.
+        await resolveReviewItem(
+          item.id,
+          tenantId,
+          'dismissed',
+          `job no longer cancellable: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        throw err;
+      }
+      if (!stillApproved) {
         await resolveReviewItem(item.id, tenantId, 'dismissed', "the job's visits changed while the confirmation was pending");
         throw new Error(
           "job NOT cancelled: its visits changed since the manager approved (one was booked, moved or " +

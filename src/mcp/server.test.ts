@@ -844,6 +844,9 @@ describe('MCP server', () => {
     const { isError, data } = await call('get_customer_context', { customerId: customer.id });
     expect(isError).toBe(false);
     expect(data.customer.id).toBe(customer.id);
+    // The phone as written, never the generated matching key beside it.
+    expect(data.customer.phone).toBe('555-3300');
+    expect(data.customer).not.toHaveProperty('phone_key');
     const block = data.jobs.find((j: { id: string }) => j.id === job.id);
     expect(block.title).toBe('J'); // the job row, spread
     expect(block.noteCount).toBe(1);
@@ -7087,6 +7090,27 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
       const again = await callWith('cancel_job', { jobId, reason: 'again' });
       expect(again.isError).toBe(true);
       expect(again.text).toContain('it already is');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('a job closed elsewhere before the yes dismisses the pending cancel instead of leaving it open', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Closed Elsewhere Cleo' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'gutter clean' });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const stage = await callWith('cancel_job', { jobId: job.id, reason: 'duplicate' });
+      expect(stage.data.status).toBe('needs_confirmation');
+      // Cancelled on the console in the meantime.
+      await pg.query(`update jobs set status = 'cancelled' where id = $1`, [job.id]);
+      const confirm = await callWith('cancel_job', { confirmId: stage.data.confirmId });
+      expect(confirm.isError).toBe(true);
+      expect(confirm.text).toContain('it already is');
+      const item = await pg.query<{ status: string }>('select status from review_items where id = $1', [
+        stage.data.confirmId,
+      ]);
+      expect(item.rows[0].status).toBe('dismissed');
     } finally {
       await mgrClient.close();
     }

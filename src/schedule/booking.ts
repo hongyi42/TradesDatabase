@@ -1473,9 +1473,14 @@ export async function cancelJob(input: CancelJobInput): Promise<CancelJobResult>
     } catch (err) {
       if (!cancelledVisits.length) throw err;
       const why = err instanceof Error ? err.message : String(err);
+      // Say WHICH it was: a visit that changed under the compare-and-set is a
+      // different story from a failed write.
+      const what = /changed concurrently/.test(why)
+        ? 'changed at the last moment and was left alone'
+        : 'could not be cancelled';
       throw new Error(
-        `${cancelledVisits.length} visit(s) were cancelled, then visit ${row.id} changed at the last ` +
-          `moment and was left alone (${why}). The job is still open — cancel it again to finish (restage first if it was staged).`,
+        `${cancelledVisits.length} visit(s) were cancelled, then visit ${row.id} ${what} (${why}). ` +
+          'The job is still open — cancel it again to finish (restage first if it was staged).',
       );
     }
     cancelledVisits.push(cancelled);

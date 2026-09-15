@@ -101,6 +101,17 @@ describe('matchIdentity', () => {
     expect(r).toMatchObject({ status: 'matched', customerId: phoneCustomerId });
   });
 
+  test('a phone matches across spellings: stored (206) 555-0172, extracted +1 206-555-0172', async () => {
+    const spelled = await createCustomer({ tenantId, name: 'Spelling Stan', phone: '(206) 555-0172' });
+    const r = await matchIdentity({
+      tenantId,
+      technicianRef: 'tech-1',
+      capturedAt: today,
+      extracted: note({ phone: '+1 206-555-0172' }),
+    });
+    expect(r).toMatchObject({ status: 'matched', customerId: spelled.id });
+  });
+
   test('a unique address match resolves to that customer (case-insensitive)', async () => {
     const r = await matchIdentity({
       tenantId,

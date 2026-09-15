@@ -231,9 +231,9 @@ alone: both sides are Twilio E.164.
   find a customer stored `206-555-0170`.
 
 ### Automated verification
-- [ ] Red first: the identityMatch and recordFieldNote two-spelling tests fail before the change
-- [ ] `npx vitest run src/db/phone.test.ts src/writePath src/console src/calls`
-- [ ] `npm run typecheck`, `npm run lint`, full `npm test`, `npm run build`
+- [x] Red first: the identityMatch and recordFieldNote two-spelling tests fail before the change
+- [x] `npx vitest run src/db/phone.test.ts src/writePath src/console src/calls`
+- [x] `npm run typecheck`, `npm run lint`, full `npm test`, `npm run build`
 
 ### Live verification (agent-executable, pre-merge)
 - Prerequisites: `supabase-test` MCP; the operator's go.

@@ -157,26 +157,32 @@ export function capMcpToolResult(
   result: Record<string, unknown>,
   cap: number = resultCapChars(),
 ): Record<string, unknown> | null {
-  if (cap <= 0 || JSON.stringify(result).length <= cap) return null;
+  if (cap <= 0) return null;
   const blocks = Array.isArray(result.content) ? (result.content as ContentBlock[]) : [];
   const texts = blocks.filter((b) => b && b.type === 'text' && typeof b.text === 'string');
   const dropped = blocks.length - texts.length;
+  const hasStructured = result.structuredContent !== undefined;
+  // WHAT THE MODEL READS is the measure, not the wire bytes: the text a
+  // tools/call returns is JSON-in-text, and its escaped form is 15-35% longer
+  // than the text itself. Measuring the serialized result announced a cut on
+  // results that fit, which tells the model to re-query for nothing.
   const joined =
     texts.length > 0
       ? texts.map((b) => b.text as string).join('\n')
-      : JSON.stringify(result.structuredContent ?? result.content ?? null);
+      : // No text block at all: whatever the payload is (structuredContent, or a
+        // shape a later MCP revision adds), it is served AS its JSON rather than
+        // replaced by nothing.
+        JSON.stringify(result.structuredContent ?? result);
+  if (dropped === 0 && !hasStructured && joined.length <= cap) return null;
   const droppedNote =
     (dropped > 0 ? `${dropped} non-text block(s) were dropped. ` : '') +
-    (result.structuredContent !== undefined ? 'The structured copy was dropped. ' : '');
+    (hasStructured ? 'The structured copy was dropped. ' : '');
   const body = capToolResult(joined, cap, {}, droppedNote + COMPOSIO_CAP_ADVICE);
   const content: Array<{ type: 'text'; text: string }> = [{ type: 'text', text: body }];
-  // The text alone fit, so capToolResult returned it as it was — the cut was
-  // the dropped blocks, and that still has to be said.
-  if (body === joined) {
-    content.push({
-      type: 'text',
-      text: `[relay] This result was over the ${cap}-character limit. ${droppedNote}${COMPOSIO_CAP_ADVICE}`,
-    });
+  // The text itself fit — what went was the non-text blocks or the structured
+  // copy, and that is said rather than left for the model to notice.
+  if (body === joined && droppedNote) {
+    content.push({ type: 'text', text: `[relay] ${droppedNote}${COMPOSIO_CAP_ADVICE}` });
   }
   return {
     ...(result.resultType !== undefined ? { resultType: result.resultType } : {}),
@@ -208,28 +214,62 @@ function capResponseText(text: string, requestId: string | number): { capped: st
 // Split a buffer of SSE text into complete events and the unfinished remainder.
 // Each event keeps the exact separator that ended it, so an untouched event is
 // forwarded byte-for-byte.
-const EVENT_END = /\r\n\r\n|\n\n|\r\r/;
-function takeEvents(pending: string): { events: Array<{ block: string; sep: string }>; rest: string } {
-  const events: Array<{ block: string; sep: string }> = [];
-  let rest = pending;
-  for (;;) {
-    const m = EVENT_END.exec(rest);
-    if (!m) return { events, rest };
-    events.push({ block: rest.slice(0, m.index), sep: m[0] });
-    rest = rest.slice(m.index + m[0].length);
-  }
+//
+// Hand-scanned rather than a regex, for two reasons. An SSE line ends with CRLF,
+// LF or CR, so an event boundary is ANY TWO of those in a row — '\n\r\n' and
+// '\r\n\r' included, which a fixed alternation misses while a generic one would
+// read a single '\r\n' as two endings. And the scan RESUMES: re-scanning the
+// whole buffer on every chunk is quadratic, and a multi-megabyte result — the
+// case the cap exists for — would block the shared web process for seconds.
+function newlineAt(text: string, i: number): number {
+  if (text[i] === '\r') return text[i + 1] === '\n' ? 2 : 1;
+  return text[i] === '\n' ? 1 : 0;
 }
+
+function takeEvents(
+  pending: string,
+  from = 0,
+): { events: Array<{ block: string; sep: string }>; rest: string; scanned: number } {
+  const events: Array<{ block: string; sep: string }> = [];
+  let start = 0;
+  let i = Math.max(0, from);
+  while (i < pending.length) {
+    const first = newlineAt(pending, i);
+    if (first === 0) {
+      i += 1;
+      continue;
+    }
+    // A lone '\r' at the very end may still become '\r\n': wait for more.
+    if (pending[i] === '\r' && first === 1 && i + 1 >= pending.length) break;
+    const second = newlineAt(pending, i + first);
+    if (second === 0) {
+      i += first;
+      continue;
+    }
+    if (pending[i + first] === '\r' && second === 1 && i + first + 1 >= pending.length) break;
+    events.push({ block: pending.slice(start, i), sep: pending.slice(i, i + first + second) });
+    i += first + second;
+    start = i;
+  }
+  const rest = pending.slice(start);
+  // Resume just behind the tail, so a boundary split across chunks is still seen.
+  return { events, rest, scanned: Math.max(0, rest.length - 3) };
+}
+
+// A UTF-8 BOM may precede the first field of a stream (SSE strips it).
+const stripBom = (line: string): string => (line.charCodeAt(0) === 0xfeff ? line.slice(1) : line);
 
 function eventData(block: string): string | null {
   const data = block
     .split(/\r\n|\n|\r/)
+    .map(stripBom)
     .filter((line) => line.startsWith('data:'))
     .map((line) => line.slice(5).replace(/^ /, ''));
   return data.length > 0 ? data.join('\n') : null;
 }
 
 function withData(block: string, data: string): string {
-  const kept = block.split(/\r\n|\n|\r/).filter((line) => !line.startsWith('data:'));
+  const kept = block.split(/\r\n|\n|\r/).filter((line) => !stripBom(line).startsWith('data:'));
   return [...kept, `data: ${data}`].join('\n');
 }
 
@@ -240,115 +280,151 @@ export const cappingForward =
       const url = new URL(urlStr);
       const lib = url.protocol === 'http:' ? http : https;
       let upstream: IncomingMessage | null = null;
-      // The client going away cancels the request (MCP: closing the stream IS
-      // the cancellation), so the upstream leg is torn down with it.
-      res.on('close', () => {
-        upReq.destroy();
+      // A fault answers ONCE: whichever leg notices first writes the 502 (or
+      // cuts the client loose, if the head is already out) and the rest are
+      // no-ops. Without this a socket error a tick after the 502 truncated it.
+      let answered = false;
+      const fail = (why: string): void => {
+        if (answered) return;
+        answered = true;
+        if (!res.headersSent) jsonError(res, 502, why);
+        else res.destroy(); // mid-stream fault: cut the client loose rather than hang it
         resolve();
-      });
-      const upReq = lib.request(
-        {
-          hostname: url.hostname,
-          port: url.port || (url.protocol === 'http:' ? 80 : 443),
-          path: url.pathname + url.search,
-          method,
-          // Identity encoding: a compressed body cannot be read to be capped.
-          headers: { ...headers, 'accept-encoding': 'identity' },
-        },
-        (upRes) => {
-          upstream = upRes;
-          const status = upRes.statusCode ?? 502;
-          const contentType = String(upRes.headers['content-type'] ?? '').toLowerCase();
-          const encoding = String(upRes.headers['content-encoding'] ?? 'identity').toLowerCase();
-          const isJson = contentType.startsWith('application/json');
-          const isSse = contentType.startsWith('text/event-stream');
-          const outHeaders = { ...upRes.headers };
-          delete outHeaders['content-length'];
-          delete outHeaders['transfer-encoding'];
-          upRes.on('error', () => res.destroy());
+      };
+      let upReq: http.ClientRequest;
+      try {
+        upReq = lib.request(
+          {
+            hostname: url.hostname,
+            port: url.port || (url.protocol === 'http:' ? 80 : 443),
+            path: url.pathname + url.search,
+            method,
+            // Identity encoding: a compressed body cannot be read to be capped.
+            headers: { ...headers, 'accept-encoding': 'identity' },
+          },
+          (upRes) => {
+            upstream = upRes;
+            const status = upRes.statusCode ?? 502;
+            const contentType = String(upRes.headers['content-type'] ?? '').toLowerCase();
+            const encoding = String(upRes.headers['content-encoding'] ?? 'identity').toLowerCase();
+            const isJson = contentType.startsWith('application/json');
+            const isSse = contentType.startsWith('text/event-stream');
+            const outHeaders = { ...upRes.headers };
+            delete outHeaders['content-length'];
+            delete outHeaders['transfer-encoding'];
+            // An upstream that dies mid-body is a Composio-side fault, and the
+            // relay's contract is that those answer with a JSON 502 whenever the
+            // head has not gone out yet (the JSON branch writes nothing until the
+            // body is whole, so that is the common case).
+            upRes.on('error', () => fail('upstream ended mid-response'));
 
-          if (status < 200 || status >= 300 || encoding !== 'identity' || (!isJson && !isSse)) {
-            // Nothing this relay can read to cap: the old pipe.
-            res.writeHead(status, upRes.headers);
-            upRes.pipe(res);
-            upRes.on('end', resolve);
-            return;
-          }
+            if (status < 200 || status >= 300 || encoding !== 'identity' || (!isJson && !isSse)) {
+              // Nothing this relay can read to cap: the old pipe.
+              res.writeHead(status, upRes.headers);
+              upRes.pipe(res);
+              upRes.on('end', resolve);
+              return;
+            }
 
-          if (isJson) {
-            const chunks: Buffer[] = [];
-            let size = 0;
+            if (isJson) {
+              const chunks: Buffer[] = [];
+              let size = 0;
+              upRes.on('data', (chunk: Buffer) => {
+                size += chunk.length;
+                if (size > MAX_BUFFERED_BYTES) {
+                  upRes.destroy();
+                  fail('Composio result too large to relay');
+                  return;
+                }
+                chunks.push(chunk);
+              });
+              upRes.on('end', () => {
+                if (answered || res.headersSent) return resolve();
+                answered = true;
+                const raw = Buffer.concat(chunks);
+                const { capped } = capResponseText(raw.toString('utf8'), requestId);
+                const out = capped === null ? raw : Buffer.from(capped, 'utf8');
+                res.writeHead(status, { ...outHeaders, 'content-length': String(Buffer.byteLength(out)) });
+                res.end(out);
+                resolve();
+              });
+              return;
+            }
+
+            // SSE: forward event by event; only the response event is rewritten.
+            res.writeHead(status, outHeaders);
+            const decoder = new StringDecoder('utf8');
+            let pending = '';
+            let scanned = 0;
+            let done = false;
+            const finish = () => {
+              if (done) return;
+              done = true;
+              res.end();
+              upRes.destroy();
+              resolve();
+            };
             upRes.on('data', (chunk: Buffer) => {
-              size += chunk.length;
-              if (size > MAX_BUFFERED_BYTES) {
+              if (done) return;
+              pending += decoder.write(chunk);
+              if (pending.length > MAX_BUFFERED_BYTES) {
+                // One unterminated event this large: cut the client loose.
+                done = true;
+                res.destroy();
                 upRes.destroy();
-                if (!res.headersSent) jsonError(res, 502, 'Composio result too large to relay');
-                else res.destroy();
                 resolve();
                 return;
               }
-              chunks.push(chunk);
+              const { events, rest, scanned: next } = takeEvents(pending, scanned);
+              pending = rest;
+              scanned = next;
+              for (const { block, sep } of events) {
+                const data = eventData(block);
+                const { capped, isResponse } =
+                  data === null ? { capped: null, isResponse: false } : capResponseText(data, requestId);
+                res.write(capped === null ? block + sep : withData(block, capped) + sep);
+                if (isResponse) {
+                  finish();
+                  return;
+                }
+              }
             });
             upRes.on('end', () => {
-              if (res.headersSent) return resolve();
-              const raw = Buffer.concat(chunks);
-              const { capped } = capResponseText(raw.toString('utf8'), requestId);
-              const out = capped === null ? raw : Buffer.from(capped, 'utf8');
-              res.writeHead(status, { ...outHeaders, 'content-length': String(Buffer.byteLength(out)) });
-              res.end(out);
-              resolve();
-            });
-            return;
-          }
-
-          // SSE: forward event by event; only the response event is rewritten.
-          res.writeHead(status, outHeaders);
-          const decoder = new StringDecoder('utf8');
-          let pending = '';
-          let done = false;
-          const finish = () => {
-            if (done) return;
-            done = true;
-            res.end();
-            upRes.destroy();
-            resolve();
-          };
-          upRes.on('data', (chunk: Buffer) => {
-            if (done) return;
-            pending += decoder.write(chunk);
-            if (pending.length > MAX_BUFFERED_BYTES) {
-              // One unterminated event this large: cut the client loose.
-              done = true;
-              res.destroy();
-              upRes.destroy();
-              resolve();
-              return;
-            }
-            const { events, rest } = takeEvents(pending);
-            pending = rest;
-            for (const { block, sep } of events) {
-              const data = eventData(block);
-              const { capped, isResponse } =
-                data === null ? { capped: null, isResponse: false } : capResponseText(data, requestId);
-              res.write(capped === null ? block + sep : withData(block, capped) + sep);
-              if (isResponse) {
-                finish();
-                return;
+              if (done) return;
+              pending += decoder.end();
+              // A stream may end WITHOUT the blank line after its last event —
+              // the response would then go out uncapped. Cap the remainder the
+              // same way before it leaves.
+              if (pending) {
+                const data = eventData(pending);
+                const { capped } = data === null ? { capped: null } : capResponseText(data, requestId);
+                res.write(capped === null ? pending : withData(pending, capped));
               }
-            }
-          });
-          upRes.on('end', () => {
-            if (done) return;
-            pending += decoder.end();
-            if (pending) res.write(pending);
-            finish();
-          });
-        },
-      );
+              finish();
+            });
+          },
+        );
+      } catch {
+        // http.request THROWS synchronously on a malformed header value — the
+        // shape an env var pasted with a trailing newline has. Answer the
+        // relay's own 502 rather than letting the rejection surface as the 401
+        // reserved for identity failures.
+        fail('upstream request could not be built');
+        return;
+      }
       upReq.on('error', () => {
-        if (!res.headersSent) jsonError(res, 502, 'upstream error');
-        else res.destroy(); // mid-stream fault: cut the client loose rather than hang it
         upstream?.destroy();
+        fail('upstream error');
+      });
+      // Registered AFTER `upReq` exists, deliberately: a listener that closes
+      // over a `const` declared below it throws a ReferenceError the moment the
+      // constructor throws synchronously (http.request does, on a header value
+      // carrying a stray newline — the shape a pasted env var has), and an
+      // uncaught throw inside an emitter takes the whole web process down.
+      // The client going away cancels the request (MCP: closing the response
+      // stream IS the cancellation), so the upstream leg goes with it.
+      res.on('close', () => {
+        upReq.destroy();
         resolve();
       });
       upReq.end(body);

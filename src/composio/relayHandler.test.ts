@@ -3,7 +3,14 @@ import { createHmac } from 'node:crypto';
 import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Technician } from '../db/technicians.js';
-import { handleComposioRelay, isRelayPath, type ForwardFn, type RelayDeps } from './relayHandler.js';
+import {
+  capMcpToolResult,
+  cappingForward,
+  handleComposioRelay,
+  isRelayPath,
+  type ForwardFn,
+  type RelayDeps,
+} from './relayHandler.js';
 
 // Pure unit tests — every Composio/DB touchpoint stubbed via RelayDeps
 // (sessions.test.ts pattern). Identity is real: headers are signed with the
@@ -76,6 +83,12 @@ function fakeRes(): CapturedResponse {
   captured.res = {
     get headersSent() {
       return sent;
+    },
+    on() {
+      return this;
+    },
+    destroy() {
+      return this;
     },
     writeHead(status: number, headers?: Record<string, unknown>) {
       sent = true;
@@ -512,6 +525,57 @@ describe('cappingForward — Composio results through the size cap', () => {
     expect((JSON.parse(msg.result.content[0].text) as { truncated: boolean }).truncated).toBe(true);
   });
 
+  test('SSE: a notification reaches the client BEFORE the response is ready (streamed, not buffered)', async () => {
+    process.env.COMPOSIO_API_KEY = 'k';
+    process.env.SPINE_RESULT_CAP_CHARS = '400';
+    const progress = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/progress', params: { progress: 1 } });
+    const response = JSON.stringify({ jsonrpc: '2.0', id: 7, result: { content: [{ type: 'text', text: 'z'.repeat(3000) }] } });
+    let release: (() => void) | null = null;
+    upstreamHandler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${progress}\r\n\r\n`);
+      // The response only goes out once the test says so, from the client side.
+      release = () => {
+        // The event SEPARATOR is split across writes — the boundary scan has to
+        // survive "\r\n" arriving before "\r\n".
+        res.write(`data: ${response}\r\n`);
+        res.write('\r\n');
+      };
+    };
+    const resp = await post(toolCall);
+    const reader = resp.body!.getReader();
+    const decoder = new TextDecoder();
+    const first = decoder.decode((await reader.read()).value);
+    expect(first).toContain('notifications/progress');
+    expect(first).not.toContain('"id":7');
+    expect(release).not.toBeNull();
+    release!();
+    let rest = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      rest += decoder.decode(value);
+    }
+    const data = rest.split(/\r\n|\n/).find((l) => l.startsWith('data: '))!.slice(6);
+    const msg = JSON.parse(data) as { id: number; result: { content: Array<{ text: string }> } };
+    expect(msg.id).toBe(7);
+    expect((JSON.parse(msg.result.content[0].text) as { truncated: boolean }).truncated).toBe(true);
+  });
+
+  test('SSE: a stream that ENDS without a blank line still has its response cut', async () => {
+    process.env.COMPOSIO_API_KEY = 'k';
+    process.env.SPINE_RESULT_CAP_CHARS = '400';
+    const response = JSON.stringify({ jsonrpc: '2.0', id: 7, result: { content: [{ type: 'text', text: 'q'.repeat(3000) }] } });
+    upstreamHandler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(`data: ${response}`); // no trailing blank line
+    };
+    const body = await (await post(toolCall)).text();
+    const data = body.split(/\r\n|\n/).find((l) => l.startsWith('data: '))!.slice(6);
+    const msg = JSON.parse(data) as { result: { content: Array<{ text: string }> } };
+    expect((JSON.parse(msg.result.content[0].text) as { truncated: boolean }).truncated).toBe(true);
+  });
+
   test('an upstream error status passes through unchanged', async () => {
     process.env.COMPOSIO_API_KEY = 'k';
     process.env.SPINE_RESULT_CAP_CHARS = '400';
@@ -535,5 +599,51 @@ describe('cappingForward — Composio results through the size cap', () => {
     };
     const resp = await post({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
     expect(await resp.text()).toBe(catalog);
+  });
+});
+
+describe('capMcpToolResult — what counts as too big, and what is never lost', () => {
+  test('a text that FITS is left alone even though its JSON form does not', () => {
+    // Composio results are JSON-in-text: escaping inflates them 15-35%. Measuring
+    // the serialized result announced a cut on results the model could read whole,
+    // which tells it to re-query for nothing.
+    const text = JSON.stringify({ emails: Array.from({ length: 12 }, (_, i) => ({ id: i, subject: 'hi "there"' })) });
+    const cap = text.length; // the text fits EXACTLY
+    expect(JSON.stringify({ content: [{ type: 'text', text }] }).length).toBeGreaterThan(cap);
+    expect(capMcpToolResult({ content: [{ type: 'text', text }] }, cap)).toBeNull();
+  });
+
+  test('a result with no content array keeps its payload as text instead of becoming "null"', () => {
+    const capped = capMcpToolResult({ resultType: 'task', task: { id: 't1', words: 'w'.repeat(2000) } }, 400);
+    expect(capped?.resultType).toBe('task');
+    const body = (capped?.content as Array<{ text: string }>)[0].text;
+    expect(body).toContain('t1');
+    expect(body).not.toBe('null');
+  });
+
+  test('dropping blocks is announced even when the text itself fits', () => {
+    const capped = capMcpToolResult(
+      { content: [{ type: 'text', text: 'short' }, { type: 'image', data: 'x'.repeat(900) }], isError: true },
+      400,
+    );
+    const blocks = capped?.content as Array<{ text: string }>;
+    expect(blocks[0].text).toBe('short');
+    expect(blocks[1].text).toContain('1 non-text block(s) were dropped');
+    expect(capped?.isError).toBe(true);
+  });
+});
+
+describe('cappingForward — faults answer once, and in the contracted shape', () => {
+  test('a header value http.request refuses answers 502 JSON, never an uncaught throw', async () => {
+    const captured = fakeRes();
+    await cappingForward(1)(
+      'http://127.0.0.1:9/mcp',
+      'POST',
+      { 'x-api-key': 'abc\n' }, // a pasted env var's trailing newline
+      Buffer.from(''),
+      captured.res,
+    );
+    expect(captured.status).toBe(502);
+    expect(JSON.parse(captured.body)).toMatchObject({ error: 'upstream request could not be built' });
   });
 });

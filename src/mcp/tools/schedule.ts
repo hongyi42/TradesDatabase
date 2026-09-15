@@ -802,6 +802,15 @@ async function handleGetTeamSchedule(toolCtx: ToolContext): Promise<unknown> {
       if (queue !== undefined && !unassignedOnly) {
         return { status: 'invalid_range', note: 'queue pages the unassignedOnly:true lists — pass unassignedOnly:true with it' };
       }
+      // The recall lists are the firm's whole queue: a person filter or a stop
+      // list there would be silently ignored, and the answer would read as
+      // that person's. Refused in words instead.
+      if (unassignedOnly && (technicianRef !== undefined || wantStops)) {
+        return {
+          status: 'invalid_range',
+          note: 'unassignedOnly:true lists the whole queue — technicianRef and stops apply to the dated schedule read, not to it',
+        };
+      }
       if (unassignedOnly && after !== undefined && queue === undefined) {
         return { status: 'invalid_range', note: 'after needs queue ("visits" or "jobs") — say which list you are paging' };
       }
@@ -997,7 +1006,11 @@ async function handleGetTeamSchedule(toolCtx: ToolContext): Promise<unknown> {
           next,
           stopsNote:
             `${listed.length} visit(s) match; this page shows ${page.length}. ` +
-            (next ? 'For the next page call again with the same range, stops:true and after = next.' : 'That is all of them.'),
+            (next
+              ? 'For the next page call again with the same from/to, stops:true' +
+                (technicianRef !== undefined ? `, technicianRef '${technicianRef}'` : '') +
+                ' and after = next.'
+              : 'That is all of them.'),
         };
       }
       return {

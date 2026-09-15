@@ -276,7 +276,13 @@ export function buildToolCases(): ToolCase[] {
     badge: 'manager-sam',
     // Retrieval layer 4: counts by default, the stops only with stops:true.
     args: (ctx) => ({ from: ctx.anchor, to: ctx.anchor, stops: true }),
-    check: all(ok, mentions('stops')),
+    // The stop LIST itself, not the word: the counts-only page's note says
+    // "stops:true" too, so mentions('stops') would pass a page with no list.
+    check: all(ok, (out) =>
+      Array.isArray((out.json as { stops?: unknown } | null)?.stops)
+        ? null
+        : `expected a stops array, got: ${out.text.slice(0, 200)}`,
+    ),
   });
 
   one({

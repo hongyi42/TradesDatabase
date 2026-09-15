@@ -141,12 +141,19 @@ export async function getJob(id: string): Promise<Job | null> {
   return data;
 }
 
+// Oldest first, and the order is STABLE: `id` breaks a created_at tie. Postgres
+// gives rows with equal sort keys no order, and two jobs minted in one
+// transaction or one millisecond do share created_at. recordFieldNote reads the
+// TAIL of this list as the newest job, so without the tiebreak one note could
+// land on a different job on its next delivery. On a tie, the higher id is
+// "newest": arbitrary, but the same answer every call.
 export async function listJobsForCustomer(customerId: string): Promise<Job[]> {
   const { data, error } = await getClient()
     .from('jobs')
     .select()
     .eq('customer_id', customerId)
-    .order('created_at', { ascending: true });
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true });
   if (error) throw new Error(`listJobsForCustomer failed: ${error.message}`);
   return data ?? [];
 }
@@ -166,7 +173,10 @@ export async function listOpenJobsForCustomer(customerId: string): Promise<Job[]
     .select()
     .eq('customer_id', customerId)
     .in('status', ['open', 'in_progress'])
-    .order('created_at', { ascending: true });
+    // Same tiebreak as listJobsForCustomer: this order reaches the model in
+    // openWorkSteer's text, which must not reshuffle between two calls.
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true });
   if (error) throw new Error(`listOpenJobsForCustomer failed: ${error.message}`);
   return data ?? [];
 }

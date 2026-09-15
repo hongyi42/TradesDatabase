@@ -127,11 +127,11 @@ test('jobs tied on created_at come back in ONE stable order — id ascending', a
 ```
 
 ### Automated verification
-- [ ] Red first: run `npx vitest run src/db/spine.test.ts` with ONLY the test added — it fails
+- [x] Red first: run `npx vitest run src/db/spine.test.ts` with ONLY the test added — it fails
       (5 random uuids match sorted order by chance 1 in 120; if it passes, rerun once).
-- [ ] After the change the same command passes.
-- [ ] `npm run typecheck` and `npm run lint` pass.
-- [ ] `npx vitest run src/writePath/recordFieldNote.test.ts src/mcp/server.test.ts` passes (the
+- [x] After the change the same command passes.
+- [x] `npm run typecheck` and `npm run lint` pass.
+- [x] `npx vitest run src/writePath/recordFieldNote.test.ts src/mcp/server.test.ts` passes (the
       tail-is-newest consumers and the openWorkSteer callers).
 
 ### Live / manual verification

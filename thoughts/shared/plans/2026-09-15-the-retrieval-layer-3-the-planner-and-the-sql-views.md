@@ -23,8 +23,8 @@ membership, folds the views, and caps what the planner is shown.
   immediately before merge; manager gateways need a restart for the new description.
 - **Gap order under the cap: not on hold (oldest first), then held by `not_before`** (operator, this
   session, over inbound-first). The chosen gaps render in today's order; at or under the cap, none move.
-- **Cap = 100 gaps + noticed items, the ceiling ALWAYS stated** (operator 2026-09-15, replacing my 30).
-  GLM 5.3 context 1,310,720 tokens (OpenRouter `/api/v1/models`, 2026-09-15) vs ~190K worst case. Hidden gaps: no reads, marks, stamps.
+- **Hard cap 100 gaps + noticed items, a SUGGESTED (unenforced) target under 30, both ALWAYS stated** (operator
+  2026-09-15). GLM 5.3 context 1,310,720 tokens (OpenRouter `/api/v1/models`) vs ~190K worst case. Hidden: no reads, marks, stamps.
 - **A retracted call/email's gap hides its words and states a record fact** (operator, this session).
 - **Pushed evidence includes `manager_only` notes** (operator, this session): planner tier sees all.
 - **`query_spine`'s 5 s limit is dead; the real bound is 8 s** (measured this session, local stack):
@@ -250,14 +250,14 @@ the old `listL2CitingCapture` (`:545-699`) and `listNoteTimesForJobs` (`visits.t
 `.range`), the `listObservationsByStatus` twin (`observations.ts:90-110`).
 
 **`src/teamLead/planner.ts`**
-- **The cap.** Beside `:629`: `export const PLANNER_GAPS_SHOWN = 100;` and `export function gapsToShow(open: Nudge[], nowMs: number): Nudge[]`.
+- **The cap.** Beside `:629`: `export const PLANNER_GAPS_SHOWN = 100;`, `export const PLANNER_GAPS_TARGET = 30;` and `export function gapsToShow(open: Nudge[], nowMs: number): Nudge[]`.
   - At or under the cap it returns `open` unchanged.
   - Over the cap it ranks gaps not on hold (`not_before` null or `≤ nowMs`) by `(created_at, id)`, then held gaps by `(not_before, created_at, id)`, takes 100, and returns them in `open`'s order (`open.filter(n => chosen.has(n.id))`).
 - **Where `shown` replaces `open`.** After `:4342`: `const shown = focus ? open : gapsToShow(open, nowMs); const hiddenGaps = open.length - shown.length;`.
   - Use `shown` at `:4393`, `:4396`, the `asks` line (`:4434`), `:4439`, `:4474`, `:4504`, `:4614-4617`, `:4650-4658`, `:4692` and `:4864`.
   - Keep `open` at `:4665` (the sibling-gap fact), `:4676` (a hidden lead is not leaderless), `:4319`, `:5384` and `:5476`.
 - **The count line.** `buildPlannerUserMessage` (`:3379-3445`) gets a new last param `hiddenGaps = 0`.
-  - Line `:3439` becomes `This firm has ${views.length + hiddenGaps} open gap(s). You are shown at most ${PLANNER_GAPS_SHOWN} gaps and noticed items per look — anything past that waits for a later one.` on EVERY non-focused tick (one line, so the `This firm has` forged-line neutraliser, `memory.test.ts:145`, still covers it, and the existing `toContain('This firm has N open gap(s).')` assertions still hold).
+  - Line `:3439` becomes `This firm has ${views.length + hiddenGaps} open gap(s). Aim to keep the firm under ${PLANNER_GAPS_TARGET} open gaps and noticed items by settling them, never by setting aside ones that still need doing. You are shown at most ${PLANNER_GAPS_SHOWN} per look — anything past that waits for a later one.` on EVERY non-focused tick (one line, so the `This firm has` forged-line neutraliser, `memory.test.ts:145`, still covers it, and the existing `toContain('This firm has N open gap(s).')` assertions still hold).
   - When `hiddenGaps > 0` it adds ` Right now ${hiddenGaps} more are NOT shown: you see the ones not on hold first, then held ones.`
   - `PlannerTenantPlan` (`:409`) gets `gapsHidden?: number`, set when > 0.
 - **Evidence lines** (`:1413-1419`, `:1828-1834`). Keep the pre-slice `matching` list. Each line gains ` capture ${e.capture.id}` before its colon. After the loop:
@@ -272,7 +272,7 @@ the old `listL2CitingCapture` (`:545-699`) and `listNoteTimesForJobs` (`visits.t
 
 **Tests** (`src/teamLead/planner.test.ts` unit tests; `src/db/nudges.test.ts` on the local stack)
 - **The cap:**
-  - 101 open gaps → `101 open gap(s)`, `at most 100`, `1 more are NOT shown`, 100 `gap ` blocks; 1 gap → the ceiling sentence is present and no `NOT shown`.
+  - 101 open gaps → `101 open gap(s)`, `at most 100`, `1 more are NOT shown`, 100 `gap ` blocks; 1 gap → the `under 30` and `at most 100` sentences are present, no `NOT shown`.
   - An old held gap is the one hidden.
   - The hidden gap's job is absent from the `listEvidence` asks, and a decision on it is refused.
   - A member whose lead is hidden does not render `FROZEN`.

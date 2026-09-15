@@ -2,7 +2,7 @@
 date: 2026-09-15
 task: The retrieval layer, plan 4 of 4 — the team schedule becomes a counts page with pages of stops on request, the schedule readers stop cutting at 1000 rows, list_pending_reviews pages, array results wrapped, Composio results go through the size cap, visit time indexes, and v_schedule's early-morning day bug
 research: thoughts/shared/research/2026-09-15-the-retrieval-and-delivery-layer.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 

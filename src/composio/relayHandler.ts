@@ -275,7 +275,12 @@ export function takeEvents(
     start = i;
   }
   const rest = pending.slice(start);
-  // Resume just behind the tail, so a boundary split across chunks is still seen.
+  // Resume THREE characters behind the tail — not one, not two. The longest
+  // prefix of a boundary that can still be incomplete is '\r\n' + '\r' (a CRLF
+  // line ending followed by a CR that may yet become CRLF), so an index further
+  // back than len-3 can no longer become part of a boundary, and anything
+  // nearer would miss one split across chunks exactly there. Verified by
+  // fuzzing the scanner against a full rescan (review, 2026-09-15).
   return { events, rest, scanned: Math.max(0, rest.length - 3) };
 }
 

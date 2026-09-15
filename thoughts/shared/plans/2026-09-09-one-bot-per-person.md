@@ -127,6 +127,29 @@ different sandbox. Every occupied seat needs that backfill before it can be wire
 `BOARD_BOT_TOKEN`, so deleting `@DashboardMan_bot` silences operator alerts as well as the Mini App
 button. Phase 2 has to land first, or the alerts move somewhere else first.
 
+**Where a seat's token lives, decided 2026-09-15.** Wiring an already-provisioned seat needs its
+token, and there was no way back to one: provisioning leaves the token in the openclaw credential
+store, the container's process env holds only a version-scoped placeholder (an attempt to read it
+from `/proc` got a 61-character non-token and a rejected `getMe`), and `/root` kept secrets files for
+two seats out of six. BotFather was the only route, once per bot, forever.
+
+So the tokens get an operator-only home: `ops_secrets.bot_tokens`, migration `20260915100000`. The
+control is **schema exposure, not RLS** — every application path is PostgREST with the service-role
+key, and service_role bypasses RLS by design, so a policy would protect nothing. PostgREST only
+routes to exposed schemas, so an unexposed one has no URL at all. Verified against the hosted project
+with the real service-role key and an explicit `Accept-Profile`: `PGRST106, Invalid schema`. Verified
+too that neither Render service carries a `DATABASE_URL`/`PG*` connection string or a secret file — a
+direct connection would ignore schema exposure entirely. RLS is enabled on the table as a second
+lock, for the day somebody adds the schema to the exposed list; it does not cover service_role.
+
+Two things to keep true: **Exposed schemas must stay `public, graphql_public`** (breaking it is
+silent), and **no `SECURITY DEFINER` function in `public` may read that table** — RPC is exposed, so
+such a function is a bridge across the line. The token sits in the clear in backups and PITR
+snapshots; at fleet scale that wants Supabase Vault rather than a `text` column.
+
+This is a lookup, not a delivery channel. The box still holds its own copy because it has to run the
+bots.
+
 **The menu button is not free.** `setChatMenuButton` with a `web_app` replaces that bot's commands
 menu — on an assistant people actually chat with, that costs the `/` list. The Main Mini App setting
 in BotFather adds an "Open App" button at the top of the chat and leaves the menu alone, which is the

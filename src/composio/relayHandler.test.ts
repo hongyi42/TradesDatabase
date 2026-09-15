@@ -6,6 +6,7 @@ import type { Technician } from '../db/technicians.js';
 import {
   capMcpToolResult,
   cappingForward,
+  takeEvents,
   handleComposioRelay,
   isRelayPath,
   type ForwardFn,
@@ -621,7 +622,7 @@ describe('capMcpToolResult — what counts as too big, and what is never lost', 
     expect(body).not.toBe('null');
   });
 
-  test('dropping blocks is announced even when the text itself fits', () => {
+  test('dropping blocks is announced even when the text itself fits — and no cut is claimed', () => {
     const capped = capMcpToolResult(
       { content: [{ type: 'text', text: 'short' }, { type: 'image', data: 'x'.repeat(900) }], isError: true },
       400,
@@ -629,11 +630,84 @@ describe('capMcpToolResult — what counts as too big, and what is never lost', 
     const blocks = capped?.content as Array<{ text: string }>;
     expect(blocks[0].text).toBe('short');
     expect(blocks[1].text).toContain('1 non-text block(s) were dropped');
+    // The text was NOT cut, so it must not say it was.
+    expect(blocks[1].text).not.toContain('was cut');
     expect(capped?.isError).toBe(true);
+  });
+
+  test('a small result keeps its structured copy — a tool with an outputSchema MUST send one', () => {
+    const result = { content: [{ type: 'text', text: '{"ok":true}' }], structuredContent: { ok: true } };
+    expect(capMcpToolResult(result, 20_000)).toBeNull();
+  });
+
+  test('a structured-only result is served as its JSON, and never announced as dropped', () => {
+    const capped = capMcpToolResult({ structuredContent: { id: 'x', words: 'w'.repeat(2000) } }, 400);
+    const body = (capped?.content as Array<{ text: string }>)[0].text;
+    expect(body).toContain('truncated');
+    expect(JSON.stringify(capped)).not.toContain('The structured copy was dropped');
+  });
+
+  test('a result of images only is NAMED, never re-served as base64 text', () => {
+    const capped = capMcpToolResult(
+      { content: [{ type: 'image', data: 'B'.repeat(4000), mimeType: 'image/png' }] },
+      400,
+    );
+    const body = (capped?.content as Array<{ text: string }>)[0].text;
+    expect(body).toContain('carried no text, only: image');
+    expect(body).not.toContain('BBBB');
+  });
+});
+
+describe('takeEvents — the SSE boundary scanner', () => {
+  // An SSE line ends with CRLF, LF or CR, so a boundary is ANY TWO in a row —
+  // '\n\r\n' and '\r\n\r' included — while a single CRLF is ONE ending, never two.
+  test.each([
+    ['CRLF CRLF', 'a\r\n\r\nb', ['a'], 'b'],
+    ['LF LF', 'a\n\nb', ['a'], 'b'],
+    ['CR CR', 'a\r\rb', ['a'], 'b'],
+    ['LF CRLF', 'a\n\r\nb', ['a'], 'b'],
+    ['CRLF CR', 'a\r\n\rb', ['a'], 'b'],
+    ['a lone CRLF is not a boundary', 'a\r\nb', [], 'a\r\nb'],
+    ['two events', 'a\n\nb\n\nc', ['a', 'b'], 'c'],
+  ])('%s', (_label, input, blocks, rest) => {
+    const out = takeEvents(input);
+    expect(out.events.map((e) => e.block)).toEqual(blocks);
+    expect(out.rest).toBe(rest);
+    // Nothing is ever lost: block + separator + remainder is the input again.
+    expect(out.events.map((e) => e.block + e.sep).join('') + out.rest).toBe(input);
+  });
+
+  test('a boundary split across chunks is still found, and the resume offset never skips one', () => {
+    const feed = ['event: message\r\ndata: 1\r', '\n\r', '\ndata: 2\n', '\nrest'];
+    let pending = '';
+    let scanned = 0;
+    const seen: string[] = [];
+    for (const chunk of feed) {
+      pending += chunk;
+      const out = takeEvents(pending, scanned);
+      seen.push(...out.events.map((e) => e.block));
+      pending = out.rest;
+      scanned = out.scanned;
+    }
+    expect(seen).toEqual(['event: message\r\ndata: 1', 'data: 2']);
+    expect(pending).toBe('rest');
+  });
+
+  test('a lone CR at the end of a chunk waits for the byte that may complete it', () => {
+    // '\r' could still become '\r\n': calling it a boundary now would split a CRLF.
+    const first = takeEvents('a\n\r');
+    expect(first.events).toEqual([]);
+    expect(takeEvents('a\n\r\nb', first.scanned).events.map((e) => e.block)).toEqual(['a']);
   });
 });
 
 describe('cappingForward — faults answer once, and in the contracted shape', () => {
+  test('a malformed session URL answers the relay\'s 502, never the identity 401', async () => {
+    const captured = fakeRes();
+    await cappingForward(1)('not a url', 'POST', {}, Buffer.from(''), captured.res);
+    expect(captured.status).toBe(502);
+  });
+
   test('a header value http.request refuses answers 502 JSON, never an uncaught throw', async () => {
     const captured = fakeRes();
     await cappingForward(1)(
@@ -644,6 +718,6 @@ describe('cappingForward — faults answer once, and in the contracted shape', (
       captured.res,
     );
     expect(captured.status).toBe(502);
-    expect(JSON.parse(captured.body)).toMatchObject({ error: 'upstream request could not be built' });
+    expect(JSON.parse(captured.body)).toMatchObject({ error: 'the Composio session endpoint could not be called' });
   });
 });

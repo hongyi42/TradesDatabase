@@ -1358,6 +1358,25 @@ export async function listUnscheduledOpenJobsWithCustomer(
   return (await listUnscheduledOpenJobsCapped(tenantId)).rows;
 }
 
+// How many OPEN jobs have no live visit — the contents page's
+// `unscheduledJobs` count. Ids only: the full queue read drags every job's
+// customer embed, and the windowed schedule read wants the number, not the rows.
+// The "live visit" predicate is the same one listUnscheduledOpenJobsCapped
+// applies (PostgREST cannot express the anti-join, so it is counted here).
+export async function countUnscheduledOpenJobs(tenantId: string): Promise<{ count: number; rowCapHit: boolean }> {
+  const { data, error } = await getClient()
+    .from('jobs')
+    .select('id, visits(status)')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'open');
+  if (error) throw new Error(`countUnscheduledOpenJobs failed: ${error.message}`);
+  const rows = data ?? [];
+  return {
+    count: rows.filter((r) => !r.visits.some((v) => v.status === 'proposed' || v.status === 'confirmed')).length,
+    rowCapHit: hitRowCap(rows.length),
+  };
+}
+
 // How many visits are committed with NO time set — the schedule contents page's
 // `untimed` count. A head count, not a read of the rows: the windowed page must
 // not grow with the queue.

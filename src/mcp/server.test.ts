@@ -5223,6 +5223,11 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       // two were added in one statement, so which is FIRST is the id tiebreak:
       // read the order, then search by whoever is second.
       const byA = await callWith('get_team_schedule', { from: day, to: day, stops: true, technicianRef: 'page-a' });
+      // The counts stay the whole team's even when the stop list is one person's,
+      // and the note says which number answers "how many does X have".
+      expect(byA.data.counts.total).toBe(32);
+      expect(byA.data.days[0].byTechnician['page-a']).toBe(1);
+      expect(byA.data.countsNote).toContain("byTechnician['page-a']");
       expect(byA.data.stops.map((s: { visitId: string }) => s.visitId)).toEqual([crew.id]);
       const crewRefs = byA.data.stops[0].technicianRefs as string[];
       expect([...crewRefs].sort()).toEqual(['page-a', 'page-b']);
@@ -10066,6 +10071,10 @@ describe('list_pending_reviews pages (retrieval layer 4)', () => {
       expect(p1.data.note).toContain('reviewItemId');
       const opened = await callWith('list_pending_reviews', { reviewItemId: big.id });
       expect(opened.data.item.detail.words).toHaveLength(3000);
+      // The same field names the page uses — the drill-down must not rename them.
+      expect(opened.data.item).toMatchObject({ id: big.id, subjectRef: 'rl4-3', detailWithheld: false });
+      expect(opened.data.item.createdAt).toBeDefined();
+      expect(opened.data.item).not.toHaveProperty('subject_ref');
 
       const notMine = await callWith('list_pending_reviews', { reviewItemId: foreign.rows[0].id });
       expect(notMine.isError).toBe(false);

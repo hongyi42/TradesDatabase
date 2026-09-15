@@ -166,17 +166,40 @@ export function capMcpToolResult(
   // tools/call returns is JSON-in-text, and its escaped form is 15-35% longer
   // than the text itself. Measuring the serialized result announced a cut on
   // results that fit, which tells the model to re-query for nothing.
+  // With no text block, what stands in for one depends on what is there:
+  //   * the structured copy, served AS its JSON (and then not "dropped");
+  //   * otherwise, for a result made only of images/audio/resources, a LINE
+  //     NAMING them — serializing those blocks would spend the whole budget on
+  //     base64 the model cannot read, cut mid-string;
+  //   * otherwise the result itself (a shape a later MCP revision adds — an
+  //     input_required result's inputRequests), rather than nothing at all.
+  const servesStructured = texts.length === 0 && hasStructured;
   const joined =
     texts.length > 0
       ? texts.map((b) => b.text as string).join('\n')
-      : // No text block at all: whatever the payload is (structuredContent, or a
-        // shape a later MCP revision adds), it is served AS its JSON rather than
-        // replaced by nothing.
-        JSON.stringify(result.structuredContent ?? result);
-  if (dropped === 0 && !hasStructured && joined.length <= cap) return null;
+      : servesStructured
+        ? JSON.stringify(result.structuredContent)
+        : blocks.length > 0
+          ? `[relay] This result carried no text, only: ${blocks.map((b) => String(b.type)).join(', ')}.`
+          : JSON.stringify(result);
+  // THREE CASES, and only the first two change anything:
+  //   * the text itself is over the limit → cut it, and say so;
+  //   * the text fits but the RESULT is over → the bulk is elsewhere (images,
+  //     the structured copy), so keep the text and drop those, saying what went;
+  //   * the text fits and the only reason the serialized result does not is
+  //     JSON escaping (15-35% on the JSON-in-text a tool returns) → nothing is
+  //     wrong: pass it through untouched. Measuring the serialized size alone
+  //     announced cuts that never happened, and stripping a small result's
+  //     structuredContent breaks any client validating it against an
+  //     outputSchema, which a tool declaring one MUST send (MCP tools spec).
+  if (joined.length <= cap) {
+    if (JSON.stringify(result).length <= cap) return null;
+    if (dropped === 0 && !hasStructured) return null;
+  }
   const droppedNote =
     (dropped > 0 ? `${dropped} non-text block(s) were dropped. ` : '') +
-    (hasStructured ? 'The structured copy was dropped. ' : '');
+    // …not when the structured copy IS what is being served as the text.
+    (hasStructured && !servesStructured ? 'The structured copy was dropped. ' : '');
   const body = capToolResult(joined, cap, {}, droppedNote + COMPOSIO_CAP_ADVICE);
   const content: Array<{ type: 'text'; text: string }> = [{ type: 'text', text: body }];
   // The text itself fit — what went was the non-text blocks or the structured
@@ -226,7 +249,7 @@ function newlineAt(text: string, i: number): number {
   return text[i] === '\n' ? 1 : 0;
 }
 
-function takeEvents(
+export function takeEvents(
   pending: string,
   from = 0,
 ): { events: Array<{ block: string; sep: string }>; rest: string; scanned: number } {
@@ -269,7 +292,12 @@ function eventData(block: string): string | null {
 }
 
 function withData(block: string, data: string): string {
-  const kept = block.split(/\r\n|\n|\r/).filter((line) => !stripBom(line).startsWith('data:'));
+  const kept = block
+    .split(/\r\n|\n|\r/)
+    // An empty line inside a block only happens on the EOF remainder (a blank
+    // line is a boundary everywhere else), and keeping it would emit the data
+    // line behind a blank one.
+    .filter((line) => line !== '' && !stripBom(line).startsWith('data:'));
   return [...kept, `data: ${data}`].join('\n');
 }
 
@@ -277,8 +305,6 @@ export const cappingForward =
   (requestId: string | number): ForwardFn =>
   (urlStr, method, headers, body, res) =>
     new Promise((resolve) => {
-      const url = new URL(urlStr);
-      const lib = url.protocol === 'http:' ? http : https;
       let upstream: IncomingMessage | null = null;
       // A fault answers ONCE: whichever leg notices first writes the 502 (or
       // cuts the client loose, if the head is already out) and the rest are
@@ -293,6 +319,11 @@ export const cappingForward =
       };
       let upReq: http.ClientRequest;
       try {
+        // Inside the try with the request itself: `new URL` throws synchronously
+        // on a malformed session endpoint, and that is a relay fault with its own
+        // 502 — never the bare 401 reserved for identity failures.
+        const url = new URL(urlStr);
+        const lib = url.protocol === 'http:' ? http : https;
         upReq = lib.request(
           {
             hostname: url.hostname,
@@ -353,13 +384,25 @@ export const cappingForward =
 
             // SSE: forward event by event; only the response event is rewritten.
             res.writeHead(status, outHeaders);
-            const decoder = new StringDecoder('utf8');
+            // BACKPRESSURE, which pipe() used to do for us: a slow sandbox client
+          // on a chatty stream would otherwise pile writes up inside the shared
+          // web process — the very thing the byte ceiling above guards against.
+          const writeEvent = (text: string): void => {
+            if (!res.write(text)) {
+              upRes.pause();
+              res.once('drain', () => upRes.resume());
+            }
+          };
+          const decoder = new StringDecoder('utf8');
             let pending = '';
             let scanned = 0;
             let done = false;
             const finish = () => {
               if (done) return;
               done = true;
+              // The request HAS been answered: a socket reset racing the last
+              // write must not then destroy a response already ended.
+              answered = true;
               res.end();
               upRes.destroy();
               resolve();
@@ -382,7 +425,7 @@ export const cappingForward =
                 const data = eventData(block);
                 const { capped, isResponse } =
                   data === null ? { capped: null, isResponse: false } : capResponseText(data, requestId);
-                res.write(capped === null ? block + sep : withData(block, capped) + sep);
+                writeEvent(capped === null ? block + sep : withData(block, capped) + sep);
                 if (isResponse) {
                   finish();
                   return;
@@ -398,7 +441,7 @@ export const cappingForward =
               if (pending) {
                 const data = eventData(pending);
                 const { capped } = data === null ? { capped: null } : capResponseText(data, requestId);
-                res.write(capped === null ? pending : withData(pending, capped));
+                writeEvent(capped === null ? pending : withData(pending, capped));
               }
               finish();
             });
@@ -409,7 +452,7 @@ export const cappingForward =
         // shape an env var pasted with a trailing newline has. Answer the
         // relay's own 502 rather than letting the rejection surface as the 401
         // reserved for identity failures.
-        fail('upstream request could not be built');
+        fail('the Composio session endpoint could not be called');
         return;
       }
       upReq.on('error', () => {

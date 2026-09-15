@@ -17,6 +17,7 @@ import {
   addTimeOff,
   annotateResolvedReviewItem,
   appendJobCorrespondence,
+  countUnscheduledOpenJobs,
   countUntimedVisits,
   deleteTimeOff,
   durationError,
@@ -76,7 +77,6 @@ import {
 import {
   readBoardDays,
   readLooseBucket,
-  readUnscheduledJobsCapped,
 } from '../../schedule/boardRead.js';
 import {
   bookVisit,
@@ -924,10 +924,11 @@ async function handleGetTeamSchedule(toolCtx: ToolContext): Promise<unknown> {
       // Past days read as HISTORY: completed visits count (the console's status
       // set, user decision 2026-09-07). Reading confirmed alone made a finished
       // day look empty, and the old note called it free.
-      const [board, untimedCount, jobsRead] = await Promise.all([
+      const [board, untimedCount, unscheduled] = await Promise.all([
         readBoardDays({ tenantId, from, to: toDay, statuses: ['confirmed', 'completed'] }),
         countUntimedVisits(tenantId),
-        readUnscheduledJobsCapped(tenantId),
+        // The COUNT, not the queue: the rows themselves are the recall view's.
+        countUnscheduledOpenJobs(tenantId),
       ]);
 
       // The board draws ONE LANE PER PERSON (a crew trip appears in each lane);
@@ -967,7 +968,7 @@ async function handleGetTeamSchedule(toolCtx: ToolContext): Promise<unknown> {
         completed: days.reduce((n, d) => n + d.completed, 0),
         unassigned: days.reduce((n, d) => n + d.unassigned, 0),
         untimed: untimedCount,
-        unscheduledJobs: jobsRead.jobs.length,
+        unscheduledJobs: unscheduled.count,
       };
 
       let stopsBlock: Record<string, unknown> = {};
@@ -1022,6 +1023,10 @@ async function handleGetTeamSchedule(toolCtx: ToolContext): Promise<unknown> {
         days,
         counts,
         countsNote:
+          (technicianRef !== undefined
+            ? `counts and days[].visits are the WHOLE TEAM's, not ${technicianRef}'s — for one ` +
+              "person's number read days[].byTechnician['" + technicianRef + "']. "
+            : '') +
           'These counts are computed here — ALWAYS use them for how-many/busiest/compare questions, ' +
           'never count anything yourself. days[].visits counts trips (a crew of two is one visit); ' +
           'byTechnician counts each person on it. 0 visits = nothing booked that day, which is not ' +
@@ -1032,7 +1037,7 @@ async function handleGetTeamSchedule(toolCtx: ToolContext): Promise<unknown> {
         ...(wantStops
           ? stopsBlock
           : { note: 'Counts only. For who is going where, call again with stops:true (and technicianRef for one person).' }),
-        ...(jobsRead.rowCapHit ? { rowCapNote: rowCapNote('open jobs') } : {}),
+        ...(unscheduled.rowCapHit ? { rowCapNote: rowCapNote('open jobs') } : {}),
       };
 }
 

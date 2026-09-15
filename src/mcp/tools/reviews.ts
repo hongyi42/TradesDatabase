@@ -36,8 +36,9 @@ const ADMIN_TOOLS = [
       'visits (gap items), email from unrecognized team refs, pairing verifications, pending ' +
       "confirmations. An item's detail.agentContext is a briefing from the office's planner " +
       'FOR YOU — use it to help the manager decide; never read it aloud or relay it verbatim. ' +
-      'Returns ONE PAGE, oldest first (20 by default), with total and byKind counts over the ' +
-      'whole queue — quote those for how-many questions. hasMore:true means more: call again ' +
+      'Returns ONE PAGE, oldest first (20 by default). `total` counts what THIS call asked for ' +
+      '(the whole open queue, or just `kind` when you passed one); `byKind` always counts every ' +
+      'open kind — quote those for how-many questions. hasMore:true means more: call again ' +
       'with after = next. Pass kind to page just one kind. An item with detailWithheld:true has ' +
       'a detail too large for the list — open it whole with reviewItemId before acting on it.',
     inputSchema: {
@@ -94,9 +95,23 @@ async function handleListPendingReviews(toolCtx: ToolContext): Promise<unknown> 
       const reviewItemId = str('reviewItemId');
       if (reviewItemId) {
         // A malformed id is "no such item" in words, not a raw uuid cast error.
-        const item = UUID_SHAPE.test(reviewItemId) ? await getOpenReviewItem(reviewItemId, tenantId) : null;
-        return item
-          ? { item }
+        const row = UUID_SHAPE.test(reviewItemId) ? await getOpenReviewItem(reviewItemId, tenantId) : null;
+        // The SAME field names the page uses: this is the drill-down the page
+        // points at, and two vocabularies for one item is how a reply ends up
+        // reading `undefined`.
+        return row
+          ? {
+              item: {
+                id: row.id,
+                kind: row.kind,
+                subjectRef: row.subject_ref,
+                suggestion: row.suggestion,
+                createdAt: row.created_at,
+                detail: row.detail,
+                detailChars: JSON.stringify(row.detail ?? {}).length,
+                detailWithheld: false,
+              },
+            }
           : { item: null, note: 'no OPEN review item with that id on this firm — it may already be closed' };
       }
       if (

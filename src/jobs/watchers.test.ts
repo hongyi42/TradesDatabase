@@ -96,8 +96,7 @@ function baseDeps(over: Partial<WatcherDeps> = {}): WatcherDeps {
     listTenants: async () => ['t1'],
     getTenant: async () => tenant('UTC'),
     listOverdue: async () => [],
-    listCaptureTimes: async () => [],
-    listNoteTimes: async () => [],
+    listActivity: async () => new Map(),
     listTeam: async () => [],
     listJobs: async () => [],
     listEverFlagged: async () => [],
@@ -357,7 +356,7 @@ describe('runWatchers', () => {
         listOverdue: async () => [
           visit({ starts_at: '2026-08-15T14:00:00.000Z', ends_at: '2026-08-15T15:00:00.000Z' }),
         ],
-        listCaptureTimes: async () => [{ job_id: 'j1', captured_at: capturedAt }],
+        listActivity: async () => new Map([['j1', capturedAt]]),
       });
     const suppressed = await runWatchers('2026-08-16T02:00:00.000Z', 'shadow', deps('2026-08-16T01:30:00.000Z'));
     expect(suppressed.gapsFound).toBe(0);
@@ -374,11 +373,14 @@ describe('runWatchers', () => {
         visit({ id: 'a2', job_id: 'j2' }), // capture before the start → gap
         visit({ id: 'a3', job_id: 'j3' }), // visit row DURING the visit → suppressed
       ],
-      listCaptureTimes: async () => [
-        { job_id: 'j1', captured_at: '2026-08-16T08:30:00.000Z' },
-        { job_id: 'j2', captured_at: '2026-08-16T06:30:00.000Z' },
-      ],
-      listNoteTimes: async () => [{ job_id: 'j3', created_at: '2026-08-16T07:30:00.000Z' }],
+      // One read now (the capture membership): a trip-reporting note is just a
+      // capture that reached its job through the visit_note arm.
+      listActivity: async () =>
+        new Map([
+          ['j1', '2026-08-16T08:30:00.000Z'],
+          ['j2', '2026-08-16T06:30:00.000Z'],
+          ['j3', '2026-08-16T07:30:00.000Z'],
+        ]),
     }));
     expect(summary.gapsFound).toBe(1);
     expect(summary.freshGaps).toBe(1);
@@ -389,7 +391,7 @@ describe('runWatchers', () => {
     // for a visit starting 07:00:00 must suppress, not read as "before".
     const summary = await runWatchers(NOW, 'shadow', baseDeps({
       listOverdue: async () => [visit({})],
-      listCaptureTimes: async () => [{ job_id: 'j1', captured_at: '2026-08-16T07:00:45.000Z' }],
+      listActivity: async () => new Map([['j1', '2026-08-16T07:00:45.000Z']]),
     }));
     expect(summary.gapsFound).toBe(0);
   });
@@ -567,7 +569,7 @@ describe('runWatchers', () => {
     // CONTROL: the same crew trip with NO note raises one gap.
     const control = await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => [crewVisit],
-      listNoteTimes: async () => [],
+      listActivity: async () => new Map(),
       createObservation: async (input) => obsRow({ subject_ref: input.subjectRef }),
     }));
     expect(control.observationsCreated).toBe(1);
@@ -585,7 +587,7 @@ describe('runWatchers', () => {
     });
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => [reported],
-      listNoteTimes: async () => [{ job_id: 'jc3', created_at: '2026-08-16T09:00:00.000Z' }],
+      listActivity: async () => new Map([['jc3', '2026-08-16T09:00:00.000Z']]),
       createObservation: async (input) => obsRow({ subject_ref: input.subjectRef }),
     }));
     expect(summary.observationsCreated).toBe(0);
@@ -634,7 +636,7 @@ describe('runWatchers', () => {
         openItem({ subject_ref: 'a-cancelled', detail: { jobId: 'j7', startsAtLocal: '2026-08-15T10:00:00.000Z' } }),
         openItem({ subject_ref: 'a-thin', detail: { jobId: 'j9' } }), // no visit window — still resolvable
       ],
-      listCaptureTimes: async () => [{ job_id: 'j9', captured_at: '2026-08-15T11:00:00.000Z' }],
+      listActivity: async () => new Map([['j9', '2026-08-15T11:00:00.000Z']]),
       listAssignments: async () => [
         visit({ id: 'a-cancelled', status: 'cancelled' } as Partial<PlacedVisitWithParticipants>),
         visit({ id: 'a-still-open', job_id: 'j8' }),
@@ -667,7 +669,7 @@ describe('runWatchers', () => {
         } as Partial<ReviewItem>),
       ],
       // Activity BEFORE the flag (09:00 < 10:00) — what the planner escalated despite.
-      listCaptureTimes: async () => [{ job_id: 'j-esc', captured_at: '2026-08-16T09:00:00.000Z' }],
+      listActivity: async () => new Map([['j-esc', '2026-08-16T09:00:00.000Z']]),
       listAssignments: async () => [
         visit({ id: 'a-esc', status: 'completed' } as Partial<PlacedVisitWithParticipants>),
       ],
@@ -689,7 +691,7 @@ describe('runWatchers', () => {
           detail: { jobId: 'j-esc', escalatedFromNudge: 'n-esc' },
         } as Partial<ReviewItem>),
       ],
-      listCaptureTimes: async () => [{ job_id: 'j-esc', captured_at: '2026-08-16T11:30:00.000Z' }],
+      listActivity: async () => new Map([['j-esc', '2026-08-16T11:30:00.000Z']]),
       resolveGap: async (_t, _k, subjectRef) => {
         resolvedAfter.push(subjectRef);
         return openItem({});
@@ -754,7 +756,7 @@ describe('review-item auto-resolve is kind-generic', () => {
       listCostEvents: async () => [],
       // A field note landed on the job — that closes a VISIT gap, not a cost one:
       // the item asks a MANAGER to record a number, and prose is not a number.
-      listCaptureTimes: async () => [{ job_id: 'j-cost', captured_at: '2026-08-16T11:00:00.000Z' }],
+      listActivity: async () => new Map([['j-cost', '2026-08-16T11:00:00.000Z']]),
       resolveGap: async (_t, kind) => {
         resolved.push(kind);
         return costItem();
@@ -848,7 +850,7 @@ describe('review-item auto-resolve is kind-generic', () => {
         kind === 'overdue_visit_gap'
           ? [openItem({ detail: { jobId: 'j1', startsAtLocal: '2026-08-16T07:00:00.000Z' } })]
           : [],
-      listCaptureTimes: async () => [{ job_id: 'j1', captured_at: '2026-08-16T09:00:00.000Z' }],
+      listActivity: async () => new Map([['j1', '2026-08-16T09:00:00.000Z']]),
       resolveGap,
     }));
     // (2) the visit left 'confirmed'

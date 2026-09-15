@@ -5,7 +5,7 @@ import {
   getTenant,
   listVisitsByIds,
   listDecisionsForNudges,
-  listJobEvidenceSince,
+  listGapEvidence,
   listJobIdsWithCostEvents,
   listJobsWithCustomerByIds,
   listLiveMoneyEventsForJobsSince,
@@ -40,13 +40,14 @@ import {
   markObservationAsked,
   clearObservationAsked,
   stampObservationsPinged,
-  listL2CitingCapture,
+  readCaptureRecords,
   listVisitsCreatedSince,
   // The roster (build 6.5 Phase 1). `isInactiveState` is the ONE definition of
   // "this row no longer participates" — the planner must not grow a second.
   isInactiveState,
   listTeam,
   listRosterEvents,
+  type EvidenceAsk,
   type JobEvidenceRow,
   type MoneyEvent,
   type Nudge,
@@ -708,7 +709,7 @@ export interface PlannerDeps {
   stampPinged?: typeof stampObservationsPinged;
   // The two moot-fact readers for the inbound kinds (rung 10) — batched once
   // per tick, because mootFactFor is a sync closure inside the per-gap loop.
-  listCiting?: typeof listL2CitingCapture;
+  listCiting?: typeof readCaptureRecords;
   listVisitsSince?: typeof listVisitsCreatedSince;
   // Build 7: the writer behind `observe`. Injected like every other one so a
   // unit test never touches the database.
@@ -734,7 +735,7 @@ export interface PlannerDeps {
   dismissGap?: typeof dismissNudge;
   recoverGap?: typeof recoverNudge;
   listDismissedNudges?: typeof listDismissedNudgeIds;
-  listEvidence?: typeof listJobEvidenceSince;
+  listEvidence?: typeof listGapEvidence;
   // The record-level test for cost gaps. Same reader the item sweep uses, so
   // "the ledger says this is filled" means one thing across the whole ladder.
   listCostEvents?: typeof listJobIdsWithCostEvents;
@@ -978,7 +979,7 @@ export interface GapView {
   //
   // NULL for any capture a technician did not SPEAK — see
   // TECHNICIAN_SPOKEN_CHANNELS. The evidence read is job-scoped, not
-  // person-scoped (listJobEvidenceSince), so this pool also holds customer
+  // person-scoped (listGapEvidence), so this pool also holds customer
   // phone calls, inbound email and manager notes. `answered_by_capture_id` is
   // the whole definition of mv_gap_outcomes.closed_by_technician, so stamping
   // one of those would silently rewrite what that metric counts.
@@ -1413,7 +1414,15 @@ export function buildGapView(
   const relevant = Number.isNaN(sinceMs)
     ? []
     : evidence
-        .filter((e) => e.jobId === jobId && Date.parse(e.capture.captured_at) > sinceMs)
+        .filter(
+          (e) =>
+            e.jobId === jobId &&
+            // Rows are asked for PER GAP (listGapEvidence), so two gaps on one
+            // job each get their own copy; a row without a gapId is a caller
+            // that handed over a firm-wide list and is matched by job alone.
+            (e.gapId === undefined || e.gapId === n.id) &&
+            Date.parse(e.capture.captured_at) > sinceMs,
+        )
         .slice(-EVIDENCE_PER_GAP);
 
   const evidenceText = relevant.map((e) => flat(e.capture.raw_text ?? '', EVIDENCE_TEXT_CHARS));
@@ -4047,7 +4056,7 @@ export async function runPlanner(
   const listOffice = deps.listOfficeMessages ?? listOfficeMessagesByStatus;
   const markRead = deps.markMessagesRead ?? markOfficeMessagesRead;
   const createOffice = deps.createOffice ?? createOfficeMessage;
-  const listEvidence = deps.listEvidence ?? listJobEvidenceSince;
+  const listEvidence = deps.listEvidence ?? listGapEvidence;
   const listCostEvents = deps.listCostEvents ?? listJobIdsWithCostEvents;
   const listMoneySince = deps.listMoneySince ?? listLiveMoneyEventsForJobsSince;
   const runLoop = deps.runLoop ?? runToolLoop;
@@ -4068,7 +4077,7 @@ export async function runPlanner(
   const markAsked = deps.markAsked ?? markObservationAsked;
   const clearAsked = deps.clearAsked ?? clearObservationAsked;
   const stampPinged = deps.stampPinged ?? stampObservationsPinged;
-  const listCiting = deps.listCiting ?? listL2CitingCapture;
+  const listCiting = deps.listCiting ?? readCaptureRecords;
   const listVisitsSince = deps.listVisitsSince ?? listVisitsCreatedSince;
   const focus = deps.focus ?? null;
   const tools = deps.tools ?? [];
@@ -4431,7 +4440,21 @@ export async function runPlanner(
         askedAt.length > 0 && jobIds.length > 0
           ? new Date(Math.max(Math.min(...askedAt), floorMs)).toISOString()
           : null;
-      const evidence = sinceIso ? await listEvidence(tenantId, readJobIds, sinceIso) : [];
+      // ASKED FOR PER GAP (retrieval layer plan 3): each gap's own floor goes to
+      // the database, which returns that gap's newest EVIDENCE_PER_GAP live
+      // captures and the TOTAL since its floor — so the block can say how many it
+      // did not show. Same uuid belt as `readJobIds`, and the SAME clamp as the
+      // money read. Still gated on `sinceIso`, never on `asks.length`: the gate
+      // is the firm-wide one the money read shares, and a firm whose job ids are
+      // not uuid-shaped simply asks for nothing.
+      const asks: EvidenceAsk[] = [];
+      for (const n of open) {
+        const jobId = ctxStr(n, 'jobId');
+        const ms = Date.parse(n.asked_at ?? n.created_at);
+        if (!jobId || !UUID_ISH_RE.test(jobId) || Number.isNaN(ms)) continue;
+        asks.push({ gapId: n.id, jobId, sinceIso: new Date(Math.max(ms, floorMs)).toISOString() });
+      }
+      const evidence = sinceIso ? await listEvidence(tenantId, asks, EVIDENCE_PER_GAP) : [];
 
       // ONE ledger read per tenant, over the cost gaps' jobs only — the same
       // batched discipline as the evidence read. Skipped entirely when the firm
@@ -4521,14 +4544,18 @@ export async function runPlanner(
           : new Date(Math.max(Date.parse(earliestNoticed), bookingFloorMs)).toISOString();
       // Degraded, not fatal: the moot fact is information the planner weighs,
       // and losing it costs one unnecessary look rather than the firm's tick.
-      let citing: Awaited<ReturnType<typeof listCiting>> = [];
+      let citing: Awaited<ReturnType<typeof listCiting>>['citing'] = [];
       let visitsSince: Awaited<ReturnType<typeof listVisitsSince>> = [];
       if (inboundGaps.length > 0) {
         try {
-          [citing, visitsSince] = await Promise.all([
-            inboundCaptureIds.length > 0 ? listCiting(inboundCaptureIds) : Promise.resolve([]),
+          const [records, since] = await Promise.all([
+            inboundCaptureIds.length > 0
+              ? listCiting(tenantId, inboundCaptureIds)
+              : Promise.resolve({ citing: [], retracted: [] }),
             bookingFloor ? listVisitsSince(tenantId, bookingFloor) : Promise.resolve([]),
           ]);
+          citing = records.citing;
+          visitsSince = since;
         } catch (err) {
           console.error(
             `[planner] tenant ${tenantId}: the inbound record reads failed — running without`,

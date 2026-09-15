@@ -7,8 +7,8 @@ import {
   appendRawCapture,
   findCustomersByThread,
   isAgentWrittenCapture,
-  listL2CitingCapture,
 } from '../db/rawCaptures.js';
+import { listL2CitingCapture } from '../db/captureMembership.js';
 import { createCustomer, insertCustomerCapture } from '../db/customers.js';
 import { appendJobCorrespondence, createJob, insertJobCapture } from '../db/jobs.js';
 import { createVisit, insertVisitNote, updateVisitStatus } from '../db/visits.js';
@@ -8484,7 +8484,7 @@ describe("read_memory / write_memory — the planner's own notes", () => {
       expect(res.status).toBe('ok');
       expect(String(res.note)).toContain('retires itself once the record cites');
       expect(String(res.note)).not.toContain('will not close itself');
-      const citing = await listL2CitingCapture([capture.id]);
+      const citing = await listL2CitingCapture(tenantId, [capture.id]);
       expect(citing.map((c) => c.kind)).toContain('note');
     });
 

@@ -7,7 +7,7 @@ import {
   getTenant,
   listVisitsByIds,
   listEverFlaggedSubjectRefs,
-  listJobStampedCaptureTimes,
+  listJobActivitySince,
   listJobsWithCustomerByIds,
   listNudgedSubjectRefs,
   listNudgesByStatus,
@@ -17,7 +17,6 @@ import {
   participantsOf,
   listTeam,
   listTenantIdsWithTelegramBindings,
-  listNoteTimesForJobs,
   readSettingsTolerantly,
   resolveOpenReviewItemFor,
 } from '../db/index.js';
@@ -198,8 +197,10 @@ export interface WatcherDeps {
   listTenants?: typeof listTenantIdsWithTelegramBindings;
   getTenant?: typeof getTenant;
   listOverdue?: typeof listOverdueConfirmedVisits;
-  listCaptureTimes?: typeof listJobStampedCaptureTimes;
-  listNoteTimes?: typeof listNoteTimesForJobs;
+  // The activity probe (retrieval layer plan 3): ONE read over the capture
+  // membership, replacing the two "homes" (job-stamped capture times + visit-note
+  // link times) that each under-counted without the other.
+  listActivity?: typeof listJobActivitySince;
   listTeam?: typeof listTeam;
   listJobs?: typeof listJobsWithCustomerByIds;
   listEverFlagged?: typeof listEverFlaggedSubjectRefs;
@@ -280,8 +281,7 @@ export async function runWatchers(
   const listTenants = deps.listTenants ?? listTenantIdsWithTelegramBindings;
   const get = deps.getTenant ?? getTenant;
   const listOverdue = deps.listOverdue ?? listOverdueConfirmedVisits;
-  const listCaptureTimes = deps.listCaptureTimes ?? listJobStampedCaptureTimes;
-  const listNoteTimes = deps.listNoteTimes ?? listNoteTimesForJobs;
+  const listActivity = deps.listActivity ?? listJobActivitySince;
   const team = deps.listTeam ?? listTeam;
   const listJobs = deps.listJobs ?? listJobsWithCustomerByIds;
   const listEverFlagged = deps.listEverFlagged ?? listEverFlaggedSubjectRefs;
@@ -433,7 +433,7 @@ export async function runWatchers(
       for (const g of openGaps) jobIds.add(g.jobId);
 
       // Per-job LATEST activity, as minute-precision naive-local epoch — only
-      // the max ever matters, and one accumulator serves both homes.
+      // the max ever matters.
       const latestByJob = new Map<string, number>();
       if (jobIds.size > 0) {
         // Floor: the earliest visit START anything below compares against —
@@ -450,17 +450,14 @@ export async function runWatchers(
         minNaiveMs = Math.max(minNaiveMs, Date.parse(from) - MAX_FLOOR_REACH_MS);
         const floorUtcIso = new Date(minNaiveMs - MAX_UTC_OFFSET_MS).toISOString();
         const ids = [...jobIds];
-        const [captures, visits] = await Promise.all([
-          listCaptureTimes(tenantId, ids, floorUtcIso),
-          listNoteTimes(tenantId, ids, floorUtcIso),
-        ]);
-        const note = (jobId: string | null, utcIso: string): void => {
-          if (!jobId) return;
+        // Every job arm of the capture membership, by the CAPTURE's own time,
+        // live captures only — a note a manager retracted is not a report. The
+        // ids ride in the RPC body, so a large backlog cannot hit the URL wall.
+        const note = (jobId: string, utcIso: string): void => {
           const ms = Date.parse(naiveLocal(utcIso));
           latestByJob.set(jobId, Math.max(latestByJob.get(jobId) ?? -Infinity, ms));
         };
-        for (const c of captures) note(c.job_id, c.captured_at);
-        for (const v of visits) note(v.job_id, v.created_at);
+        for (const [jobId, at] of await listActivity(tenantId, ids, floorUtcIso)) note(jobId, at);
       }
 
       // Parse BOTH sides (PostgREST returns '+00:00', naiveLocal emits 'Z' —

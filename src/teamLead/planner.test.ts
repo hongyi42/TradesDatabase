@@ -3,7 +3,7 @@ import { Client } from 'pg';
 import { getClient } from '../db/client.js';
 import { createPendingNudge, listNudgesByStatus } from '../db/nudges.js';
 import { recordNudgeDecisions } from '../db/nudgeDecisions.js';
-import type { Nudge, NudgeDecision, NudgeDecisionInput, Observation, OfficeMessage, Tenant, JobEvidenceRow, RawCapture, RosterEvent, Technician } from '../db/index.js';
+import type { EvidenceAsk, Nudge, NudgeDecision, NudgeDecisionInput, Observation, OfficeMessage, Tenant, JobEvidenceRow, RawCapture, RosterEvent, Technician } from '../db/index.js';
 import type { PlannerSummary, PlannerTenantPlan } from './planner.js';
 import {
   buildGapView,
@@ -208,7 +208,7 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     // together, one unstubbed reader degrades BOTH to empty and the inbound
     // THE RECORD line silently disappears. Empty = "nothing was created from
     // this call", which is what every test that does not care already assumes.
-    listCiting: async () => [],
+    listCiting: async () => ({ citing: [], retracted: [] }),
     listVisitsSince: async () => [],
     // Phase 3 (2026-08-29): the same reason as listMoneySince above, and the same
     // trap watchers.test.ts hit — this fixture's tenant id is the literal 't1',
@@ -2822,7 +2822,10 @@ describe('the job-note line', () => {
     await runPlanner(NOW, 'shadow', baseDeps({
       listNudges: async () => [withJob('n1', good), withJob('n2', 'not-a-uuid')],
       runLoop: loopReturning([]),
-      listEvidence: async (_t: string, ids: string[]) => ((seen.evidence = ids), []),
+      // Asked for PER GAP now (listGapEvidence): the belt shows as the asks' job ids.
+      listEvidence: async (_t: string, asks: EvidenceAsk[]) => (
+        (seen.evidence = asks.map((a) => a.jobId)), []
+      ),
       listMoneySince: async (_t: string, ids: string[]) => ((seen.money = ids), []),
       jobNotes: async (_t: string, ids: string[]) => ((seen.notes = ids), new Map()),
     }));
@@ -6789,14 +6792,17 @@ describe('rung 10 — inbound requests reach the planner', () => {
     // EXACT — a job the manager's agent opened, citing this call.
     expect(
       await blockFor({
-        listCiting: async () => [{ kind: 'job', id: JOB, captureId: CAP, jobId: JOB }],
+        listCiting: async () => ({
+          citing: [{ kind: 'job', id: JOB, captureId: CAP, jobId: JOB }],
+          retracted: [],
+        }),
       }),
     ).toContain('a job was created from this capture — it cites this call');
 
     // INFERRED — a visit booked by hand on the board after this was noticed.
     expect(
       await blockFor({
-        listCiting: async () => [],
+        listCiting: async () => ({ citing: [], retracted: [] }),
         listVisitsSince: async () => [
           {
             id: 'v-3',
@@ -6810,7 +6816,7 @@ describe('rung 10 — inbound requests reach the planner', () => {
 
     // NOTHING — a booking for somebody else, or one that predates the notice.
     const none = await blockFor({
-      listCiting: async () => [],
+      listCiting: async () => ({ citing: [], retracted: [] }),
       listVisitsSince: async () => [
         { id: 'v-4', jobId: 'j-4', customerId: 'someone-else', createdAt: '2026-08-16T11:58:00.000Z' },
         { id: 'v-5', jobId: 'j-5', customerId: CUST, createdAt: '2026-08-16T11:00:00.000Z' },
@@ -7447,7 +7453,9 @@ describe('rung 10 — inbound requests reach the planner', () => {
         baseDeps({
           listNudges: async () => [],
           listObservations: async () => [obs],
-          listCiting: (async () => citing) as unknown as NonNullable<PlannerDeps['listCiting']>,
+          listCiting: (async () => ({ citing, retracted: [] })) as unknown as NonNullable<
+            PlannerDeps['listCiting']
+          >,
           runLoop: capturingLoop(seen),
         }),
       );

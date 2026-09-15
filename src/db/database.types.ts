@@ -3435,6 +3435,10 @@ export type Database = {
         Returns: Json
       }
       capture_is_live: { Args: { p_capture: string }; Returns: boolean }
+      capture_records: {
+        Args: { p_capture_ids: string[]; p_tenant: string }
+        Returns: Json
+      }
       capture_scope_found: {
         Args: { p_scope: string; p_scope_id: string; p_tenant: string }
         Returns: boolean
@@ -3507,6 +3511,19 @@ export type Database = {
           p_tenant: string
           p_terminal_statuses?: string[]
         }
+        Returns: Json
+      }
+      gap_evidence: {
+        Args: {
+          p_asks: Json
+          p_per_gap?: number
+          p_tenant: string
+          p_text_chars?: number
+        }
+        Returns: Json
+      }
+      job_activity_since: {
+        Args: { p_job_ids: string[]; p_since: string; p_tenant: string }
         Returns: Json
       }
       query_spine: {

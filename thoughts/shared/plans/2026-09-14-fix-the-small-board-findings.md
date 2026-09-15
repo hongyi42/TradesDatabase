@@ -265,15 +265,15 @@ const rank = (e) => RANK[e.statusClass] ?? 4; // plan/research: complete, unknow
   hid its tool-registry finding behind two passing doc references (2026-09-14).
 
 **`src/work/decision-index.test.ts`**
-- In `beforeAll`, before the script runs: write `src/busy.ts`; write `docs/busy-1.md` …
-  `docs/busy-4.md`, each `# Busy N\n\n- src/busy.ts is mentioned in passing.\n`; write
+- In `beforeAll`, before the script runs: write a temp-tree source file `busy.ts` under `src`; write `docs/busy-1.md` …
+  `docs/busy-4.md`, each `# Busy N\n\n- <that file> is mentioned in passing.\n`; write
   `thoughts/shared/findings/2026-09-10-a-finding-on-a-busy-file.md` (frontmatter like the
-  promoted finding, `files: src/busy.ts`).
+  promoted finding, `files:` naming that file).
 - New test:
 
 ```ts
 test('a finding outranks prose mentions from docs/, which are seeded at mentions 100', () => {
-  const list = byFile['src/busy.ts'];
+  const list = byFile[BUSY_FILE];
   expect(list).toHaveLength(4);
   expect(list[0].kind).toBe('finding');
   expect(list[0].where).toContain('a-finding-on-a-busy-file');

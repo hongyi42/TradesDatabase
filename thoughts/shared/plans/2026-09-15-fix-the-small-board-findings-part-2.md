@@ -2,7 +2,7 @@
 date: 2026-09-15
 task: small board findings part 2 — unschedule confirm re-check, desk answers not citable, seat-add row leak, drifted text, phone match key, tool-search guard on the boxes
 research: thoughts/shared/research/2026-09-15-the-retrieval-and-delivery-layer.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -295,6 +295,6 @@ enforcement, per the Box_Setup_Stuff sync rule.
       the new rule 8; `verify` shows no toolSearch ✗; a real turn on s2 answers (memory
       nemoclaw-status-lies-after-restart). Grep the installed OpenClaw dist for how `inference.local`
       is classified for tool search; record the answer in engineering memory.
-- [ ] Remaining five seats, one at a time, same checks. Capture each `wire` and `verify` tail.
+- [x] Remaining five seats, one at a time, same checks. Capture each `wire` and `verify` tail.
 
 **Landing order:** Phase 4's s2 canary, then the pilot migrations (130000, 130100, 130200), merge, the other five seats.

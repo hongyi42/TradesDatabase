@@ -175,10 +175,10 @@ test('a retraction FOLLOWS its target onto the CUSTOMER link when there is no jo
 ```
 
 ### Automated verification
-- [ ] `npx vitest run src/mcp/server.test.ts -t "CUSTOMER link"` passes.
-- [ ] Mutation check: comment out the `listCustomerCapturesForCapture` loop (captures.ts:800-807),
+- [x] `npx vitest run src/mcp/server.test.ts -t "CUSTOMER link"` passes.
+- [x] Mutation check: comment out the `listCustomerCapturesForCapture` loop (captures.ts:800-807),
       rerun — the new test FAILS. Restore, then `git diff --stat src/mcp/tools/captures.ts` is empty.
-- [ ] `npm run typecheck` and `npm run lint` pass.
+- [x] `npm run typecheck` and `npm run lint` pass.
 
 ### Live / manual verification
 None — codified through the real MCP server (in-memory transport).

@@ -1322,7 +1322,10 @@ export async function listUnscheduledOpenJobsWithCustomer(
     .select(UNSCHEDULED_JOBS_SELECT)
     .eq('tenant_id', tenantId)
     .eq('status', 'open')
-    .order('created_at', { ascending: true });
+    // `id` breaks a created_at tie (jobs minted in one transaction), so the
+    // work queue and the board tray do not reshuffle between two reads.
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true });
   if (error) throw new Error(`listUnscheduledOpenJobsWithCustomer failed: ${error.message}`);
   return (data ?? [])
     .filter(
@@ -1488,6 +1491,13 @@ export async function listVisitsForCustomer(customerId: string): Promise<VisitWi
               : p,
           ),
       }))
-      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+      // Newest first; `id` breaks a tie. The old `a < b ? 1 : -1` answered -1 for
+      // a tie in BOTH directions, an inconsistent comparator whose result order
+      // the engine is free to pick.
+      .sort((a, b) =>
+        a.created_at === b.created_at
+          ? b.id.localeCompare(a.id)
+          : a.created_at < b.created_at ? 1 : -1,
+      )
   );
 }

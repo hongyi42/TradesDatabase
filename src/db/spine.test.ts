@@ -10,7 +10,14 @@ import {
   updateJobStatus,
 } from './jobs.js';
 import { createTenant } from './tenants.js';
-import { createVisit, insertVisitNote, listNoteTimesForJobs, listVisitsForJob } from './visits.js';
+import {
+  createVisit,
+  insertVisitNote,
+  listNoteTimesForJobs,
+  listUnscheduledOpenJobsWithCustomer,
+  listVisitsForCustomer,
+  listVisitsForJob,
+} from './visits.js';
 import { appendRawCapture, listJobStampedCaptureTimes } from './rawCaptures.js';
 
 // Writes go through the app's own path (supabase-js / PostgREST). A direct pg
@@ -120,6 +127,48 @@ describe('context spine data-access layer', () => {
     for (let i = 0; i < 3; i++) {
       expect((await listJobsForCustomer(customer.id)).map((j) => j.id)).toEqual(expected);
       expect((await listOpenJobsForCustomer(customer.id)).map((j) => j.id)).toEqual(expected);
+    }
+  });
+
+  test('the unscheduled work queue and a customer\'s past visits are stable on a created_at tie', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Tie Queue Cust' });
+    const jobs = await Promise.all(
+      [1, 2, 3, 4, 5].map((i) => createJob({ tenantId, customerId: customer.id, title: `queue ${i}` })),
+    );
+    const jobIds = jobs.map((j) => j.id);
+    await pg.query('update jobs set created_at = $1 where id = any($2::uuid[])', [
+      '2026-09-01T12:00:00Z',
+      jobIds,
+    ]);
+    // A job WITH a completed visit stays unscheduled (only proposed/confirmed
+    // visits take it off the queue), so these trips do not disturb the queue.
+    const visits = await Promise.all(
+      [1, 2, 3, 4, 5].map(() =>
+        createVisit({
+          tenantId,
+          jobId: jobs[0].id,
+          technicianId: null,
+          startsAt: null,
+          endsAt: null,
+          status: 'completed',
+          completedAt: '2026-08-16T13:00:00.000Z',
+        }),
+      ),
+    );
+    const visitIds = visits.map((v) => v.id);
+    await pg.query('update visits set created_at = $1 where id = any($2::uuid[])', [
+      '2026-09-01T12:00:00Z',
+      visitIds,
+    ]);
+
+    const queueOrder = [...jobIds].sort(); // oldest first, id ascending on a tie
+    const visitOrder = [...visitIds].sort().reverse(); // newest first, id descending on a tie
+    for (let i = 0; i < 3; i++) {
+      const queue = (await listUnscheduledOpenJobsWithCustomer(tenantId))
+        .map((r) => r.id)
+        .filter((id) => jobIds.includes(id));
+      expect(queue).toEqual(queueOrder);
+      expect((await listVisitsForCustomer(customer.id)).map((v) => v.id)).toEqual(visitOrder);
     }
   });
 

@@ -142,8 +142,9 @@ export async function getJob(id: string): Promise<Job | null> {
 }
 
 // Oldest first, and the order is STABLE: `id` breaks a created_at tie. Postgres
-// gives rows with equal sort keys no order, and two jobs minted in one
-// transaction or one millisecond do share created_at. recordFieldNote reads the
+// gives rows with equal sort keys no order, and two jobs minted in ONE
+// transaction share created_at exactly (now() is fixed per transaction; separate
+// requests almost never tie at microsecond precision). recordFieldNote reads the
 // TAIL of this list as the newest job, so without the tiebreak one note could
 // land on a different job on its next delivery. On a tie, the higher id is
 // "newest": arbitrary, but the same answer every call.

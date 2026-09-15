@@ -4,6 +4,7 @@ import { getClient } from './client.js';
 import { createCustomer, insertCustomerCapture, setCustomerAttribute } from './customers.js';
 import { TERMINAL_JOB_STATUSES, createJob, insertJobCapture } from './jobs.js';
 import { insertTechnician } from './technicians.js';
+import { setTechnicianViewRule } from './technicianView.js';
 import { createTenant } from './tenants.js';
 import { createVisit, insertVisitNote } from './visits.js';
 import { appendRawCapture, type RawCapture } from './rawCaptures.js';
@@ -35,6 +36,11 @@ beforeAll(async () => {
   if (error || !data) throw new Error(`could not load seed tenant: ${error?.message ?? 'none'}`);
   tenantId = data.id;
   techId = (await insertTechnician({ tenantId, ref: 'tech-layer', displayName: 'Tech Layer', seatExempt: true })).id;
+  // The seed tenant is SHARED, and server.test.ts widens its technician view rule
+  // to whole_firm for its own suite. An interrupted run leaves that row behind,
+  // and this file's technician assertions would then be measuring a wider view
+  // without failing (measured, 2026-09-15). Start from the shipped default.
+  await setTechnicianViewRule(tenantId, null, 'retrievalLayer.test');
 });
 
 afterAll(async () => {

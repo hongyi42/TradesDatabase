@@ -24,6 +24,12 @@ The request flow (ask, desk relay, `grant_access`, message back) is parked task
   customers of her own jobs that are not terminal (`TERMINAL_JOB_STATUSES`: paid, cancelled,
   declined; completed/invoiced still count). In view: own jobs + every non-terminal job of a served
   customer + granted. Customers in view: customers of own jobs + granted.
+- **A trip her own note minted is not a trip (operator, 2026-09-15, Phase 2 review).** The note door
+  creates a completed visit with its author on it when a job has no matching trip
+  (`attachNote.ts:115-130`), so counting it let a technician open any customer's record by filing one
+  note. Excluded: a visit whose `source_capture_id` is a technician-channel capture. A trip minted
+  from a CALL (record_caller) still counts. The contradiction — she filed on a job she is not booked
+  on — goes to a planner detector in the request-flow task, where the planner may also grant or deny.
 - **Her own notes, always (operator, 2026-09-15, Phase 1 review).** A TECHNICIAN-channel capture
   stamped with her ref is in her scope wherever it sits, filed or not; authorship lifts scope only
   (content rules still apply). Technician channels only: inbound mail, send/audit and phone-line rows
@@ -32,6 +38,15 @@ The request flow (ask, desk relay, `grant_access`, message back) is parked task
   → `{id, name, inView:false, note}`; `get_job` → `{id, inView:false, note}`; page/search on an
   out-of-view scope → `inView:false`, no rows; `get_capture` keeps its one `found:false`.
   `record_standing_fact` is refused on an out-of-view target (its preview shows the old value).
+- **Money is a STATUS IN WORDS for a technician (operator, 2026-09-15, during implementation —
+  AMENDS 3C's "door numbers either way").** `technicianMoneyView` returns `{status}` — "invoiced,
+  not yet paid", "part paid, balance outstanding", "paid in full", … — and no figure at all. The
+  invoice amount is what the customer was charged, and balance due equals it until something is
+  paid, so either number told her the price. The retraction preview's `alsoLosesEvidence.money`
+  drops `amountCents` for a technician too (she keeps eventId/job/kind, which is what
+  `inform_team_lead` asks her to name). A grant still opens no money detail. The planner RELAY (its
+  gap block renders ledger amounts and it writes the technician's text itself) is plan 3's, by the
+  operator's call.
 - **A grant opens what the manager picks (operator 3C).** `access_grants.opens` = `record` (as if she
   served it; content gate still applies) or `record_and_notes` (every capture in it, as a manager sees
   it: channel, `manager_only` and tags bypassed). Money stays `technicianMoneyView` door numbers (TS,
@@ -62,9 +77,11 @@ The request flow (ask, desk relay, `grant_access`, message back) is parked task
 - **Unchanged / tests** (mine): the technician desk already has NO dispatched tools
   (`desk.ts:179-186`); write doors are not reads. `server.test.ts` runs at `whole_firm` so option-A
   tests still test content; a new describe block tests the default.
-- **New tables registered by name** (eng-memory §1): `scripts/seed.mjs` truncate list,
-  `scripts/spine-eval/world.mjs` `RESET_TABLES`, and its pilot tenant-scoped list for the rules and
-  tags (grants go by cascade from `technicians`/`customers`).
+- **New tables registered by name** (eng-memory §1): `scripts/seed.mjs` truncate list and
+  `scripts/spine-eval/world.mjs` `RESET_TABLES`. **Deviation, decided in Phase 3** (mine): the PILOT
+  tenant-scoped list gets them as documented ABSENCES, not entries — `technician_view_rules` is firm
+  CONFIGURATION (the `tenant_settings`/`tenant_profiles` precedent: a pilot rebuild must not forget a
+  firm's own rule), `access_grants` goes by cascade, `capture_tags` hangs off captures a pilot keeps.
 
 ## Plain-language walkthrough
 
@@ -269,10 +286,28 @@ call; `record_and_notes` → `get_capture` on it `found:true`; under `own_trips`
 the other job is not listed; a manager badge on Henderson unchanged.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`; `npx vitest run src/eval/toolCases.test.ts` (surface unchanged: 17 / 42).
+- [x] `npm run typecheck`, `npm run lint`, `npm test` (3190 passed); `npx vitest run src/eval/toolCases.test.ts` (13 passed, surface unchanged: 17 / 42).
 - Live / Manual verification: none this phase.
 
 ---
+
+## Phase 4: money in words (added during implementation, operator ruling above)
+
+### Changes required
+- **`src/db/moneyEvents.ts`** — `technicianMoneyView(s) => { status: TechnicianMoneyStatus }`, the
+  seven states derived from the summary in a fixed order (credit → nothing invoiced → outstanding →
+  settled/paid). No booleans: a flag pair reconstructs a number.
+- **`src/mcp/tools/shared.ts`** — `losingEvidenceOf(impact, activeManager)` strips `amountCents`
+  from the retraction preview's money list for a technician; `retractedResult` passes its flag.
+- **`src/mcp/tools/captures.ts`** — the stage path passes `activeManager` too.
+- **`src/mcp/tools/customers.ts`** — `get_customer_context` and `get_job` descriptions say the
+  technician block is words, never a figure, and that the manager has the numbers.
+- **Tests** — `moneyEvents.test.ts`: every state, and `JSON.stringify(view)` contains NO digit;
+  `server.test.ts`: the tier-split money case asserts `{status:'invoiced, not yet paid'}` with no
+  digits, and the retraction preview names the entry without its amount.
+
+### Automated verification
+- [x] `npm run typecheck`, `npm run lint`, `npm test` (3190 passed).
 
 ## Phase 3: registration, docs, the pilot, the live check
 

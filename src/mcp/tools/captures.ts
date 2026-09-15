@@ -23,6 +23,7 @@ import {
   getOpenReviewItem,
   getRawCapture,
   getRawCaptureByExternalId,
+  getTechnicianView,
   insertCustomerCapture,
   insertJobCapture,
   insertVisitNote,
@@ -42,6 +43,8 @@ import {
   trySetJobAttribute,
   updateOpenReviewItemDetail,
   upsertOpenReviewItem,
+  viewHasCustomer,
+  viewHasJob,
   writeJobNote,
 } from '../../db/index.js';
 import type {
@@ -882,7 +885,9 @@ async function handleRetractCapture(toolCtx: ToolContext): Promise<unknown> {
             visits: impact.visits,
             correspondence: impact.correspondence,
           },
-          ...(losingEvidenceOf(impact) ? { alsoLosesEvidence: losingEvidenceOf(impact) } : {}),
+          ...(losingEvidenceOf(impact, activeManager)
+            ? { alsoLosesEvidence: losingEvidenceOf(impact, activeManager) }
+            : {}),
           note:
             'Nothing was retracted. Show the person the capture and this reason; on their explicit yes call again with ONLY confirmId. A retraction is permanent (the audit trail keeps both rows). If willAlsoRemove.facts, willAlsoRemove.visits or willAlsoRemove.correspondence has entries, the shown preview MUST include them. If alsoLosesEvidence.visits has entries, say those trips STAY on the schedule and only lose this note — never that they disappear.' +
             (impact.moneyLosingEvidence.length > 0
@@ -1112,9 +1117,19 @@ async function handleRecordStandingFact(toolCtx: ToolContext): Promise<unknown> 
         let customerId: string;
         let targetName: string | null;
         let currentAttributes: Json;
+        // THE TECHNICIAN LIMITED VIEW (plan 2): the preview shows each fact's
+        // current value, so staging a fact on a record she may not open would be a
+        // way to read it. Refused before anything about the target is loaded.
+        const view =
+          callerTierOf(toolCtx) === 'technician'
+            ? await getTechnicianView(tenantId, viewerIdOf(toolCtx))
+            : null;
+        const outsideView = (what: 'customer' | 'job') =>
+          new Error(`that ${what} is outside your view — only a manager can record facts on it`);
         if (customerIdArg) {
           const customer = await getCustomer(customerIdArg);
           if (!customer || customer.tenant_id !== tenantId) throw new Error('customer not found');
+          if (view && !viewHasCustomer(view, customer.id)) throw outsideView('customer');
           target = 'customer';
           targetId = customer.id;
           customerId = customer.id;
@@ -1123,6 +1138,7 @@ async function handleRecordStandingFact(toolCtx: ToolContext): Promise<unknown> 
         } else {
           const job = await getJob(jobIdArg as string);
           if (!job || job.tenant_id !== tenantId) throw new Error('job not found');
+          if (view && !viewHasJob(view, job.id)) throw outsideView('job');
           const customer = await getCustomer(job.customer_id);
           target = 'job';
           targetId = job.id;

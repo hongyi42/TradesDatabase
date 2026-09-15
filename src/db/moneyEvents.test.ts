@@ -375,14 +375,28 @@ describe('material_cost — a COST kind is inert in every revenue number (plan 2
     expect(s.balanceDueCents).toBe(summarizeMoney(revenue()).balanceDueCents);
   });
 
-  test('technicianMoneyView still withholds cost — it is manager-only', () => {
+  test('technicianMoneyView is STATUS IN WORDS — no figure of any kind reaches a technician', () => {
     // The tier boundary has ONE definition; a new summary field must not widen
-    // it by accident (technicians are ASKED about cost, but never shown it).
+    // it by accident. Operator 2026-09-15: the amounts went too — an invoice
+    // total is what the customer was charged, and balance due equals it until
+    // something is paid, so either number tells a technician the price.
     const s = summarizeMoney([...revenue(), mk('material_cost', 4000)]);
-    expect(technicianMoneyView(s)).toEqual({
-      balanceDueCents: s.balanceDueCents,
-      invoicedCents: s.invoicedCents,
-    });
+    const view = technicianMoneyView(s);
+    expect(Object.keys(view)).toEqual(['status']);
+    expect(JSON.stringify(view)).not.toMatch(/[0-9]/);
+
+    const at = (events: MoneyEvent[]) => technicianMoneyView(summarizeMoney(events)).status;
+    expect(at([])).toBe('nothing recorded yet');
+    expect(at([mk('estimate_presented', 90_000), mk('estimate_approved', 90_000)])).toBe(
+      'quoted, nothing invoiced yet',
+    );
+    expect(at([mk('invoice_issued', 45_000)])).toBe('invoiced, not yet paid');
+    expect(at([mk('invoice_issued', 45_000), mk('payment_received', 20_000)])).toBe(
+      'part paid, balance outstanding',
+    );
+    expect(at([mk('invoice_issued', 45_000), mk('payment_received', 45_000)])).toBe('paid in full');
+    expect(at([mk('invoice_issued', 45_000), mk('write_off', 45_000)])).toBe('settled, no balance due');
+    expect(at([mk('payment_received', 30_000)])).toBe('the office holds a credit');
   });
 
   test('material_cost is a real enum value the DB accepts (and stays non-negative)', async () => {

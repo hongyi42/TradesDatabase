@@ -463,3 +463,55 @@ describe('grants', () => {
     expect(left.rowCount).toBe(0);
   });
 });
+
+describe('a trip her own note minted is not a trip (operator, 2026-09-15)', () => {
+  test('filing a note on a customer she is not booked on does not open his record', async () => {
+    const stranger = await createCustomer({ tenantId, name: 'Stranger Sam', phone: '206-555-0177' });
+    const job = await createJob({ tenantId, customerId: stranger.id, title: 'Stranger porch' });
+    // The note door's shape: a technician note, and a completed visit minted FROM it
+    // with its author on the crew (attachNote.ts).
+    const note = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-view-jane',
+      rawText: 'reset the breaker while I was there',
+      jobId: job.id,
+    });
+    await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianId: jane,
+      startsAt: null,
+      endsAt: null,
+      status: 'completed',
+      completedAt: '2026-09-14T15:00:00.000Z',
+      sourceCaptureId: note.id,
+    });
+    const v = await getTechnicianView(tenantId, jane);
+    expect(v.jobIds.has(job.id)).toBe(false);
+    expect(v.customerIds.has(stranger.id)).toBe(false);
+    expect(isOutsideView((await contentsFor(stranger.id))!)).toBe(true);
+    // Her own note is still hers to read — that is the whole record she gets.
+    expect((await getCaptureFull(tenantId, note.id, 'technician', false, jane))?.rawText).toContain('breaker');
+  });
+
+  test('a trip minted from a CALL still counts: the firm booked it, she did not', async () => {
+    const called = await createCustomer({ tenantId, name: 'Called Cora' });
+    const job = await createJob({ tenantId, customerId: called.id, title: 'Cora furnace' });
+    const call = await appendRawCapture({
+      tenantId,
+      channel: 'phone_call',
+      rawText: 'no heat, send someone',
+      jobId: job.id,
+    });
+    await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianId: jane,
+      startsAt: null,
+      endsAt: null,
+      sourceCaptureId: call.id,
+    });
+    expect((await getTechnicianView(tenantId, jane)).jobIds.has(job.id)).toBe(true);
+  });
+});

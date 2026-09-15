@@ -234,6 +234,26 @@ async function truncateSpine(hasScheduling) {
         where table_schema = 'public' and table_name = 'tenant_settings'`,
     );
     if (ts.rows.length > 0) tables += ', tenant_settings';
+    // The technician limited view (plan 2026-09-15-the-retrieval-layer-2),
+    // registered BY NAME (eng-memory §1):
+    //   technician_view_rules  references ONLY tenants — no cascade above reaches
+    //                          it, so a stale rule (say whole_firm) would silently
+    //                          widen or narrow the reseeded firm's technicians.
+    //                          Same consequence as tenant_settings on --hosted.
+    //   access_grants          cascades from customers/jobs/technicians — named
+    //                          anyway; a grant must never outlive its world.
+    //   capture_tags           carries a NO ACTION FK to raw_captures (the
+    //                          tenant_profiles trap) — named because no delete
+    //                          path reaches it either way; TRUNCATE … CASCADE
+    //                          pulls it in regardless of the FK's action.
+    for (const t of ['technician_view_rules', 'access_grants', 'capture_tags']) {
+      const probe = await client.query(
+        `select 1 from information_schema.tables
+          where table_schema = 'public' and table_name = $1`,
+        [t],
+      );
+      if (probe.rows.length > 0) tables += `, ${t}`;
+    }
     // lifecycle_runs is DELIBERATELY EXCLUDED (eng-memory §1 asks that every new
     // table be registered by name — this is its registration). It is the cron's
     // own execution log, tenant-agnostic and holding no customer-derived text, so

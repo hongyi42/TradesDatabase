@@ -31,7 +31,15 @@
 --                          job/customer in the view, and may its content be read.
 --
 -- "Serving" (operator 1A): a TRIP is a visit_participants row on a visit that is
--- not cancelled. Her OWN JOBS are the jobs she has a trip on, of any status and
+-- not cancelled AND was not minted by a technician's own note (operator,
+-- 2026-09-15, Phase 2 review). The note door creates a completed visit with its
+-- author on it when the job has no matching trip (attachNote.ts:115-130), so
+-- without that second half a technician could open any customer's record by
+-- filing one note about them — no manager, no grant. A trip booked from a CALL
+-- (record_caller) still counts: that one was the firm's decision, not hers.
+-- The contradiction ("she filed on a job she is not booked on") is for the
+-- planner to notice and put to a manager — a later task, not this rule.
+-- Her OWN JOBS are the jobs she has a trip on, of any status and
 -- any age. She SERVES the customers of her own jobs that are not terminal. In
 -- view: her own jobs, every non-terminal job of a served customer, and what a
 -- live grant opens. Customers in view: the customers of her own jobs, and granted.
@@ -239,7 +247,10 @@ begin
     join customers cu on cu.id = j.customer_id and cu.tenant_id = j.tenant_id
    where p.tenant_id = p_tenant
      and p.technician_id = p_technician
-     and v.status <> 'cancelled';
+     and v.status <> 'cancelled'
+     and not exists (select 1 from raw_captures src
+                      where src.id = v.source_capture_id
+                        and src.channel in ('technician_voice', 'technician_note', 'technician_photo'));
 
   if v_scope = 'whole_firm' then
     v_out.all_scope := true;

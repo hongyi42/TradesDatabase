@@ -580,10 +580,25 @@ export function restoreHintFor(impact: FoldImpact | undefined): string | undefin
 // for an empty list.
 export function losingEvidenceOf(
   impact: FoldImpact,
-): { visits: FoldImpact['visitsLosingEvidence']; money: FoldImpact['moneyLosingEvidence'] } | undefined {
-  return impact.visitsLosingEvidence.length > 0 || impact.moneyLosingEvidence.length > 0
-    ? { visits: impact.visitsLosingEvidence, money: impact.moneyLosingEvidence }
-    : undefined;
+  // A TECHNICIAN IS SHOWN NO AMOUNT (operator, 2026-09-15): this list is the one
+  // other place a money figure reached a technician. She keeps the eventId, the
+  // job and the kind — which is exactly what inform_team_lead's note tells her to
+  // name — and the manager reads the number.
+  activeManager = false,
+): {
+  visits: FoldImpact['visitsLosingEvidence'];
+  money: (Omit<FoldImpact['moneyLosingEvidence'][number], 'amountCents'> & { amountCents?: number | null })[];
+} | undefined {
+  if (impact.visitsLosingEvidence.length === 0 && impact.moneyLosingEvidence.length === 0) {
+    return undefined;
+  }
+  const money = activeManager
+    ? impact.moneyLosingEvidence
+    : impact.moneyLosingEvidence.map(({ amountCents, ...rest }) => {
+        void amountCents;
+        return rest;
+      });
+  return { visits: impact.visitsLosingEvidence, money };
 }
 
 // MONEY NEVER FOLDS (operator ruling 2026-09-15): the entries still count, and
@@ -608,7 +623,7 @@ export async function retractedResult(
   activeManager = false,
 ): Promise<Record<string, unknown>> {
   const impact = captureId ? await tryFindFoldImpact(tenantId, captureId) : undefined;
-  const losing = impact && losingEvidenceOf(impact);
+  const losing = impact && losingEvidenceOf(impact, activeManager);
   return {
     status: 'retracted',
     captureId,

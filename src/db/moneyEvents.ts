@@ -597,13 +597,39 @@ export async function syncJobStatusForMoney(
 }
 
 /**
- * The technician projection of a money summary — the "door numbers" only.
+ * The technician projection of a money summary — STATUS IN WORDS, NO FIGURES.
  * ONE definition of the money tier boundary (review finding: it was inline in
- * two read tools; policy encoded twice drifts): no methods, no references, no
- * history — those are manager_only by standing policy.
+ * two read tools; policy encoded twice drifts).
+ *
+ * It used to return the two "door numbers", `balanceDueCents` + `invoicedCents`.
+ * The operator removed both on 2026-09-15: the invoice amount is what the
+ * customer was charged, and balance due EQUALS it until something is paid, so
+ * keeping either one told a technician the price. A firm whose technician really
+ * needs the figure — collecting a payment on site — asks the manager for it, in
+ * life or through the access request flow. That makes it a thing you ask for
+ * rather than a default, which is the whole point.
+ *
+ * Deliberately no booleans and no "roughly": a number is a number however it is
+ * rounded, and a flag pair reconstructs one.
  */
-export function technicianMoneyView(
-  s: MoneySummary,
-): { balanceDueCents: number; invoicedCents: number } {
-  return { balanceDueCents: s.balanceDueCents, invoicedCents: s.invoicedCents };
+export type TechnicianMoneyStatus =
+  | 'nothing recorded yet'
+  | 'quoted, nothing invoiced yet'
+  | 'invoiced, not yet paid'
+  | 'part paid, balance outstanding'
+  | 'paid in full'
+  | 'settled, no balance due'
+  | 'the office holds a credit';
+
+export function technicianMoneyView(s: MoneySummary): { status: TechnicianMoneyStatus } {
+  // Order matters: a credit balance is read before "settled", and "settled"
+  // (cleared by a credit or a write-off rather than by payment) before "paid".
+  if (s.balanceDueCents < 0) return { status: 'the office holds a credit' };
+  if (s.invoicedCents === 0) {
+    return { status: s.quotedCents > 0 ? 'quoted, nothing invoiced yet' : 'nothing recorded yet' };
+  }
+  if (s.balanceDueCents > 0) {
+    return { status: s.paidCents > 0 ? 'part paid, balance outstanding' : 'invoiced, not yet paid' };
+  }
+  return { status: s.paidCents >= s.invoicedCents ? 'paid in full' : 'settled, no balance due' };
 }

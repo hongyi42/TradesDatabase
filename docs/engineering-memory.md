@@ -1189,6 +1189,37 @@ were unreachable when those items were created, the per-tick routing cap deferre
   keys as 7 digits and matches only 7-digit spellings — guessing the area code could name the
   wrong person. The key is a matching key, not display text: `find_customer` strips it.
 
+- **A technician reads a LIMITED VIEW: the customers she serves, what a manager granted, and
+  her own notes** (2026-09-15, operator rulings on plan
+  `2026-09-15-the-retrieval-layer-2-the-technician-limited-view`). A trip is a
+  `visit_participants` row on a visit that is not cancelled AND was not minted by a
+  technician-channel note (the note door creates a completed visit with its author on it, so
+  counting it would let anyone open a record by filing one note; a trip minted from a CALL still
+  counts). She sees every job she has a trip on
+  (any age), every UNFINISHED job (not paid/cancelled/declined) of a customer she has unfinished
+  work with, and the PROFILE of every customer she has a trip with at all — including one whose only
+  job of hers is paid (his other jobs stay out of view; his profile does not). Everything else comes back as a name + id with
+  `inView:false`. A grant (`access_grants`, a ledger: revoked by a stamp, never edited) opens one
+  customer or one job, either as `record` or as `record_and_notes` (every note, as the manager
+  sees them). The manager picks per grant. A technician-channel note she wrote is always hers to
+  read, wherever it sits (scope only, content rules still apply). The rule lives ONCE in
+  Postgres (`technician_view_of` → `capture_in_scope` + `capture_content_open`). Its per-firm knobs
+  are `technician_view_rules`: `job_scope` own_trips | serving (default) | serving_history |
+  whole_firm, `technician_channels`, `hidden_tags` (for `capture_tags`, which nothing writes yet).
+  **No seat verb sets the rule or grants yet** (both belong to task
+  `20260915-the-technician-access-request-flow-tech`). Until it lands, a firm's rule is set by
+  hand. Use the `supabase-test` MCP on the pilot, or local SQL:
+  `insert into technician_view_rules (tenant_id, job_scope, set_by) values ('<tenant>', 'whole_firm', 'operator') on conflict (tenant_id) do update set job_scope = excluded.job_scope, set_by = excluded.set_by;`.
+  **Money is words, not figures** (same ruling, amended during implementation):
+  `technicianMoneyView` returns a STATUS — "invoiced, not yet paid", "paid in full" — and no amount,
+  no balance; the retraction preview names a money entry without its `amountCents`. A firm whose
+  technician needs the number asks the manager. The one surface still able to speak a figure to a
+  technician is the PLANNER RELAY (its gap block renders ledger amounts and it writes the text), left
+  to the plan-3 task by the operator.
+  **How to apply:** a technician read MUST pass her roster id (`viewerIdOf`) to the readers in
+  `src/db/context.ts`, or `getTechnicianView` for a TypeScript door. A read without it sees
+  nothing, by design, and that includes tests (see `server.test.ts`'s `whole_firm` fixture).
+
 ## 3. Environments & infrastructure
 
 ```
@@ -3795,6 +3826,15 @@ some other gap, but a review item can never wake it.) So a gap routed to rung 2 
 gap, while no technician is reachable — has **no owner in software at all**. This is the mechanism
 behind "the manager's bucket has never drained" (§2, 2026-08-21); the batched end-of-day "record
 all" recorded there as the intended fix is still not built.
+
+**A composite `IS NOT NULL` is false when ANY field is null, so a "was a view passed?" guard written
+that way silently refuses everyone** (2026-09-15, found writing `technician_view`). For a row value,
+Postgres defines `r IS NOT NULL` as "every field is non-null" and `r IS NULL` as "every field is
+null". A `technician_view` with one null array is neither. Test ONE field that is always set
+instead: `(p_view).tenant_id is not null`. The symptom points away from the cause: every
+technician read returns nothing, and it looks like a scope bug. Related, and just as quiet:
+`x = any(null_array)` is NULL rather than false, so every array in a composite the predicate reads
+must be non-null (`technician_view_of` initialises them to `'{}'`).
 
 ## 6a. The build order — the harness rebuild (2026-08-28 → )
 

@@ -288,8 +288,10 @@ timezone."` (firm-local, tenant timezone). The agent runtime injects no date int
 this line is how the model knows what today is between `resolve_date` calls; it self-refreshes
 every call, so sessions crossing midnight stay grounded. It states what today IS —
 `resolve_date` remains the only sanctioned way to compute any OTHER date (eval:
-date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). Array-shaped results
-(e.g. `find_customer`) keep their shape and carry no rider.
+date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). No result is a bare
+array any more (retrieval layer 4): `find_customer` returns `{customers}`, `list_team` `{team}`,
+`list_pending_reviews` a page, and the hub wraps any other array as `{items, count}` — so every
+result carries the rider.
 - The agent calls `record_field_note({ text, channel })`. **If identity resolves to a customer or
   job that already exists, this call RECORDS** — L1 + L2 in one step, `status: 'recorded'`
   (plan ②, 2026-08-21). Idempotency comes from a content stamp

@@ -350,18 +350,24 @@ async function handleFindCustomer(toolCtx: ToolContext): Promise<unknown> {
       const query = str('query');
       if (!query) throw new Error('query is required');
       const rows = (await searchCustomers(tenantId, query)).map(withoutPhoneKey);
+      // A named object, never a bare array (retrieval layer 4): an array result
+      // gets no `now` rider, and an empty one says nothing in words.
+      const found = (customers: typeof rows) =>
+        customers.length === 0
+          ? { customers, note: `no customer on this firm matches "${query}"` }
+          : { customers };
       // Fold standing facts whose evidence was retracted (one lookup across
       // all rows) — a retracted fact must not stay visible in name lookups
       // when context/briefings already hide it (fold is the removal path).
       const ids = [...new Set(rows.flatMap((c) => factSourceIds(c.attributes)))];
-      if (ids.length === 0) return rows;
+      if (ids.length === 0) return found(rows);
       const retracted = new Set(
         (await findRetractionsFor(ids))
           .map((r) => r.retracts_capture_id)
           .filter((id): id is string => !!id),
       );
-      if (retracted.size === 0) return rows;
-      return rows.map((c) => ({ ...c, attributes: foldRetractedFacts(c.attributes, retracted) }));
+      if (retracted.size === 0) return found(rows);
+      return found(rows.map((c) => ({ ...c, attributes: foldRetractedFacts(c.attributes, retracted) })));
 }
 
 async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> {

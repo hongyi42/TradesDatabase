@@ -864,17 +864,21 @@ async function handleListTeam(toolCtx: ToolContext): Promise<unknown> {
           .filter((p) => p.technician_id)
           .map((p) => [p.technician_id, p.bot_username]),
       );
-      return (await listTeam(tenantId)).map((t) => ({
-        ref: t.ref,
-        displayName: t.display_name,
-        tier: t.tier,
-        state: t.state,
-        seatExempt: t.seat_exempt,
-        skills: t.skills,
-        availabilityConfigured: t.availability !== null,
-        sandboxRef: t.sandbox_ref,
-        botUsername: poolBotByTechnician.get(t.id) ?? null,
-      }));
+      // A named object, never a bare array (retrieval layer 4): arrays get no
+      // `now` rider.
+      return {
+        team: (await listTeam(tenantId)).map((t) => ({
+          ref: t.ref,
+          displayName: t.display_name,
+          tier: t.tier,
+          state: t.state,
+          seatExempt: t.seat_exempt,
+          skills: t.skills,
+          availabilityConfigured: t.availability !== null,
+          sandboxRef: t.sandbox_ref,
+          botUsername: poolBotByTechnician.get(t.id) ?? null,
+        })),
+      };
 }
 
 async function handleSetTechnicianSkills(toolCtx: ToolContext): Promise<unknown> {

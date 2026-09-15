@@ -212,7 +212,7 @@ a `next` cursor still works after its row was booked.
       static and runs no check).
 
 ### Live verification (agent-executable, optional)
-- [ ] `npm run spine-eval:agent` (`EVAL_INFERENCE_API_KEY`): D01, S08, M04 pass; record whether the agent
+- [x] `npm run spine-eval:agent` (`EVAL_INFERENCE_API_KEY`): D01, S08, M04 pass; record whether the agent
       passed `stops: true` when it named customers.
 
 ### Manual verification
@@ -247,7 +247,7 @@ carries `now`), `:383-389`, `:1065`, `:1293`, `:1389` (`toEqual([])` → `custom
 detail; another tenant's id → not found. `docs/nemoclaw-tech-agent.md:292`.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `lint`, `test`; `npm run spine-eval:tools`: R01, R09, R10 (empty queue), G04 pass.
+- [x] `npm run typecheck`, `lint`, `test`; `npm run spine-eval:tools`: R01, R09, R10 (empty queue), G04 pass.
 
 ---
 

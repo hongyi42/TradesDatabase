@@ -186,6 +186,24 @@ async function recallAll(
   throw new Error('recall paging never ended');
 }
 
+// list_pending_reviews is a page too (retrieval layer 4); this walks one kind's
+// queue to the end, so an assertion that an item is ABSENT means something.
+async function reviewsAll(
+  callWith: Awaited<ReturnType<typeof clientFor>>['callWith'],
+  kind: string,
+): Promise<Array<Record<string, unknown>>> {
+  const out: Array<Record<string, unknown>> = [];
+  let after: string | null = null;
+  for (let n = 0; n < 500; n++) {
+    const res = await callWith('list_pending_reviews', { kind, limit: 50, ...(after ? { after } : {}) });
+    if (res.isError) throw new Error(`review page failed: ${res.text}`);
+    out.push(...(res.data.items as Array<Record<string, unknown>>));
+    after = res.data.next as string | null;
+    if (!after) return out;
+  }
+  throw new Error('review paging never ended');
+}
+
 /**
  * The surface assertion, by NAME rather than by count (2026-09-12).
  *
@@ -361,7 +379,7 @@ describe('MCP server', () => {
     expect(lastFriday.data.date < today).toBe(true);
   });
 
-  test('every object tool result carries the temporal grounding rider `now`; arrays keep their shape', async () => {
+  test('every tool result carries the temporal grounding rider `now` — arrays are wrapped, so none is left out', async () => {
     // The rider is the eval's condition-B line, firm-local (seed tenant tz =
     // America/Los_Angeles) — computed here with the same Intl formatting so a
     // wiring or timezone regression fails loudly. Computed via a THUNK and
@@ -392,17 +410,21 @@ describe('MCP server', () => {
     expect(rd.data.today).toBeDefined();
     expect(rd.data.timezone).toBe('America/Los_Angeles');
 
-    // …and array results stay arrays (the rider must not change their shape).
+    // …and a lookup that used to be a bare array is a named object now, so it
+    // gets the rider and says "nothing" in words (retrieval layer 4).
+    const before3 = lineNow();
     const rows = await call('find_customer', { query: 'no-such-customer-zzz' });
-    expect(Array.isArray(rows.data)).toBe(true);
+    expect(rows.data.customers).toEqual([]);
+    expect(rows.data.note).toContain('no customer on this firm matches');
+    expect([before3, lineNow()]).toContain(rows.data.now);
   });
 
   test('find_customer never shows the phone MATCH key, only the phone as written', async () => {
     await createCustomer({ tenantId, name: 'Keyless Kim', phone: '(206) 555-0181' });
     const found = await call('find_customer', { query: 'Keyless Kim' });
-    expect(found.data).toHaveLength(1);
-    expect(found.data[0].phone).toBe('(206) 555-0181');
-    expect(found.data[0]).not.toHaveProperty('phone_key');
+    expect(found.data.customers).toHaveLength(1);
+    expect(found.data.customers[0].phone).toBe('(206) 555-0181');
+    expect(found.data.customers[0]).not.toHaveProperty('phone_key');
   });
 
   test('an ambiguous note asks who, then RECORDS on the answer (no third call)', async () => {
@@ -1082,7 +1104,7 @@ describe('MCP server', () => {
 
       // list_team: roster facts only — no Composio ids in the payload.
       const team = await callWith('list_team', {});
-      const bob = team.data.find((t: { ref: string }) => t.ref === 'bob-marley');
+      const bob = team.data.team.find((t: { ref: string }) => t.ref === 'bob-marley');
       expect(bob).toMatchObject({ displayName: 'Bob Marley', state: 'offboarding' });
       expect(Object.keys(bob)).not.toContain('composio_connected_account_id');
 
@@ -1093,8 +1115,10 @@ describe('MCP server', () => {
         subjectRef: 'tehc-bob',
         suggestion: 'bob-marley',
       });
-      const pending = await callWith('list_pending_reviews', {});
-      expect(pending.data.map((i: { id: string }) => i.id)).toContain(item.id);
+      // kind narrows the page, so the item is found however long the shared
+      // tenant's queue has grown (retrieval layer 4: the list is paged).
+      const pending = await reviewsAll(callWith, 'sheet_ref_mismatch');
+      expect(pending.map((i) => i.id)).toContain(item.id);
 
       // ④b fourth rail: a gap item's briefing rides detail to the manager's
       // agent verbatim — and the tool description carries the never-relay rule.
@@ -1118,8 +1142,8 @@ describe('MCP server', () => {
           agentContext: 'Job aa: asked once on the visit day; ledger empty; a figure unblocks the invoice.',
         },
       });
-      const withBriefing = await callWith('list_pending_reviews', {});
-      const briefed = (withBriefing.data as Array<{ id: string; detail?: { agentContext?: string } }>).find(
+      const withBriefing = await reviewsAll(callWith, 'overdue_visit_gap');
+      const briefed = (withBriefing as Array<{ id: string; detail?: { agentContext?: string } }>).find(
         (r) => r.id === gapItem.id,
       );
       expect(briefed?.detail?.agentContext).toBe(
@@ -1310,14 +1334,14 @@ describe('MCP server', () => {
 
       // list_team surfaces the flag on every row.
       const team = await callWith('list_team', {});
-      expect(team.data.find((t: { ref: string }) => t.ref === 'helper-hman')).toMatchObject({
+      expect(team.data.team.find((t: { ref: string }) => t.ref === 'helper-hman')).toMatchObject({
         seatExempt: true,
         state: 'active',
         sandboxRef: null,
         botUsername: null,
       });
       expect(
-        team.data.find((t: { ref: string }) => t.ref === 'mgr-test'),
+        team.data.team.find((t: { ref: string }) => t.ref === 'mgr-test'),
       ).toMatchObject({ seatExempt: false });
 
       // Deactivate ↔ reactivate round-trip AT THE FULL CAP: comes back ACTIVE
@@ -1405,7 +1429,7 @@ describe('spine tool_call cost counter', () => {
     );
     const res = await callWith('find_customer', { query: 'nobody-by-this-name' });
     expect(res.isError).toBe(false);
-    expect(res.data).toEqual([]);
+    expect(res.data.customers).toEqual([]);
   });
 
   test('a REFUSED call still counts — the agent burned a turn on it', async () => {
@@ -2341,9 +2365,9 @@ describe('bind_telegram (manager tool + cold-pool auto-allocation)', () => {
 
       // list_team surfaces the handle too, so the manager can re-ask later.
       const team = await callWith('list_team', {});
-      const coldRow = team.data.find((t: { ref: string }) => t.ref === 'tg-cold');
+      const coldRow = team.data.team.find((t: { ref: string }) => t.ref === 'tg-cold');
       expect(coldRow).toMatchObject({ sandboxRef: 'pool-x', botUsername: '@poolx_bot' });
-      const aRow = team.data.find((t: { ref: string }) => t.ref === 'tg-a');
+      const aRow = team.data.team.find((t: { ref: string }) => t.ref === 'tg-a');
       expect(aRow).toMatchObject({ sandboxRef: 's-existing', botUsername: null });
       const row2 = await pg.query<{ sandbox_ref: string; host_id: string; telegram_user_id: string }>(
         "select sandbox_ref, host_id, telegram_user_id from technicians where tenant_id=$1 and ref='tg-cold'",
@@ -4278,7 +4302,7 @@ describe('record_standing_fact (staged two-step)', () => {
 
     // find_customer folds the same way.
     const found = await call('find_customer', { query: 'Fact Fold Cust' });
-    const row = found.data.find((c: { id: string }) => c.id === customer.id);
+    const row = found.data.customers.find((c: { id: string }) => c.id === customer.id);
     expect(row.attributes.prefers_contact).toBeUndefined();
 
     // Retract the JOB fact's evidence → get_job folds too.
@@ -5195,11 +5219,18 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       const done = p2.data.stops.find((s: { status: string }) => s.status === 'completed');
       expect(done).toMatchObject({ stage: 'happened', startTime: '23:00' });
 
-      // A crew trip is found by EITHER member — never just the first lane.
-      const byB = await callWith('get_team_schedule', { from: day, to: day, stops: true, technicianRef: 'page-b' });
-      expect(byB.data.stops.map((s: { visitId: string }) => s.visitId)).toEqual([crew.id]);
-      // Added in one statement, so the crew's order is the id tiebreak — compare as a set.
-      expect([...byB.data.stops[0].technicianRefs].sort()).toEqual(['page-a', 'page-b']);
+      // A crew trip is found by EITHER member — never just the first lane. The
+      // two were added in one statement, so which is FIRST is the id tiebreak:
+      // read the order, then search by whoever is second.
+      const byA = await callWith('get_team_schedule', { from: day, to: day, stops: true, technicianRef: 'page-a' });
+      expect(byA.data.stops.map((s: { visitId: string }) => s.visitId)).toEqual([crew.id]);
+      const crewRefs = byA.data.stops[0].technicianRefs as string[];
+      expect([...crewRefs].sort()).toEqual(['page-a', 'page-b']);
+      const bySecond = await callWith('get_team_schedule', { from: day, to: day, stops: true, technicianRef: crewRefs[1] });
+      expect(bySecond.data.stops.map((s: { visitId: string }) => s.visitId)).toEqual([crew.id]);
+      expect(bySecond.data.stops[0].technicianRef).toBe(crewRefs[0]);
+      const recallFiltered = await callWith('get_team_schedule', { unassignedOnly: true, technicianRef: 'page-a' });
+      expect(recallFiltered.data.status).toBe('invalid_range');
       const unknown = await callWith('get_team_schedule', { from: day, to: day, stops: true, technicianRef: 'nobody-here' });
       expect(unknown.data.status).toBe('invalid_range');
       expect(unknown.data.note).toContain('list_team');
@@ -5656,9 +5687,9 @@ describe('schedule-input verbs (Plan 3a)', () => {
 
       // list_team surfaces both new fields.
       const team = await callWith('list_team', {});
-      const row = (team.data as Array<Record<string, unknown>>).find((t) => t.ref === 'input-probe');
+      const row = (team.data.team as Array<Record<string, unknown>>).find((t) => t.ref === 'input-probe');
       expect(row).toMatchObject({ skills: ['boilers', 'gas-line'], availabilityConfigured: true });
-      const goneRow = (team.data as Array<Record<string, unknown>>).find((t) => t.ref === 'input-gone');
+      const goneRow = (team.data.team as Array<Record<string, unknown>>).find((t) => t.ref === 'input-gone');
       expect(goneRow).toMatchObject({ skills: [], availabilityConfigured: false });
 
       // Clearing skills is a valid "back to unknown".
@@ -5754,19 +5785,17 @@ describe('schedule-input verbs (Plan 3a)', () => {
       expect(added.data.note).toContain('REQUIRED next step');
       expect(added.data.note).toContain('set_availability');
 
-      const pending = await callWith('list_pending_reviews', {});
-      const item = (pending.data as Array<Record<string, unknown>>).find(
-        (r) => r.kind === 'availability_setup' && r.subject_ref === 'onboard-one',
+      const item = (await reviewsAll(callWith, 'availability_setup')).find(
+        (r) => r.kind === 'availability_setup' && r.subjectRef === 'onboard-one',
       );
       expect(item).toBeDefined();
 
       // Setting the pattern closes the obligation.
       const set = await callWith('set_availability', { ref: 'onboard-one', pattern: PATTERN_MON_FRI });
       expect(set.isError).toBe(false);
-      const after = await callWith('list_pending_reviews', {});
       expect(
-        (after.data as Array<Record<string, unknown>>).find(
-          (r) => r.kind === 'availability_setup' && r.subject_ref === 'onboard-one',
+        (await reviewsAll(callWith, 'availability_setup')).find(
+          (r) => r.kind === 'availability_setup' && r.subjectRef === 'onboard-one',
         ),
       ).toBeUndefined();
 
@@ -5776,9 +5805,8 @@ describe('schedule-input verbs (Plan 3a)', () => {
         seatExempt: true,
       });
       await callWith('add_technician_seat', { confirmId: stage2.data.confirmId });
-      const pending2 = await callWith('list_pending_reviews', {});
-      const item2 = (pending2.data as Array<Record<string, unknown>>).find(
-        (r) => r.kind === 'availability_setup' && r.subject_ref === 'onboard-two',
+      const item2 = (await reviewsAll(callWith, 'availability_setup')).find(
+        (r) => r.kind === 'availability_setup' && r.subjectRef === 'onboard-two',
       );
       expect(item2).toBeDefined();
       const dismissed = await callWith('resolve_review', {
@@ -5799,10 +5827,9 @@ describe('schedule-input verbs (Plan 3a)', () => {
       const added3 = await callWith('add_technician_seat', { confirmId: stage3.data.confirmId });
       expect(added3.isError).toBe(false);
       expect(added3.data.note).toContain('REQUIRED next step');
-      const pending3 = await callWith('list_pending_reviews', {});
       expect(
-        (pending3.data as Array<Record<string, unknown>>).find(
-          (r) => r.kind === 'availability_setup' && r.subject_ref === 'onboard-three',
+        (await reviewsAll(callWith, 'availability_setup')).find(
+          (r) => r.kind === 'availability_setup' && r.subjectRef === 'onboard-three',
         ),
       ).toBeDefined();
     } finally {
@@ -9987,5 +10014,63 @@ describe('rung 10 — open_job, and the citation on what a yes creates', () => {
     const refused = await call('open_job', { customerId: customer.id, title: 'nope' });
     expect(refused.isError).toBe(true);
     expect(refused.text).toMatch(/manager/i);
+  });
+});
+
+describe('list_pending_reviews pages (retrieval layer 4)', () => {
+  test('20 + next → 5, counts over the whole queue, a withheld detail opens by id, another firm\'s id is not found', async () => {
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    const other = await createTenant('rl4-review-other', { managerSeats: 1 });
+    const made: string[] = [];
+    try {
+      // A kind no other test writes, so the counts are exactly this fixture.
+      for (let i = 0; i < 25; i++) {
+        const { rows } = await pg.query<{ id: string }>(
+          `insert into review_items (tenant_id, kind, subject_ref, detail, created_at)
+           values ($1, 'rl4_page_probe', $2, $3::jsonb, timestamptz '2027-01-01 00:00+00' + ($4 || ' seconds')::interval)
+           returning id`,
+          [tenantId, `rl4-${i}`, JSON.stringify(i === 3 ? { words: 'y'.repeat(3000) } : { i }), String(i)],
+        );
+        made.push(rows[0].id);
+      }
+      const foreign = await pg.query<{ id: string }>(
+        `insert into review_items (tenant_id, kind, subject_ref) values ($1, 'rl4_page_probe', 'rl4-foreign') returning id`,
+        [other.id],
+      );
+
+      const p1 = await callWith('list_pending_reviews', { kind: 'rl4_page_probe' });
+      expect(p1.data.items).toHaveLength(20);
+      expect(p1.data.total).toBe(25);
+      expect(p1.data.byKind.rl4_page_probe).toBe(25);
+      expect(p1.data.hasMore).toBe(true);
+      expect(p1.data.now).toBeDefined();
+      const p2 = await callWith('list_pending_reviews', { kind: 'rl4_page_probe', after: p1.data.next });
+      expect(p2.data.items).toHaveLength(5);
+      expect(p2.data.next).toBeNull();
+      const refs = [...p1.data.items, ...p2.data.items].map((i: { subjectRef: string }) => i.subjectRef);
+      expect(new Set(refs).size).toBe(25);
+      expect(refs).not.toContain('rl4-foreign');
+
+      const big = p1.data.items.find((i: { subjectRef: string }) => i.subjectRef === 'rl4-3');
+      expect(big).toMatchObject({ detail: null, detailWithheld: true });
+      expect(p1.data.note).toContain('reviewItemId');
+      const opened = await callWith('list_pending_reviews', { reviewItemId: big.id });
+      expect(opened.data.item.detail.words).toHaveLength(3000);
+
+      const notMine = await callWith('list_pending_reviews', { reviewItemId: foreign.rows[0].id });
+      expect(notMine.isError).toBe(false);
+      expect(notMine.data.item).toBeNull();
+      const badCursor = await callWith('list_pending_reviews', { after: 'page-two' });
+      expect(badCursor.isError).toBe(true);
+      const empty = await callWith('list_pending_reviews', { kind: 'rl4_no_such_kind' });
+      expect(empty.data.items).toEqual([]);
+      expect(empty.data.note).toContain('no open review items');
+      await pg.query('delete from review_items where id = $1', [foreign.rows[0].id]);
+    } finally {
+      await mgrClient.close();
+      await pg.query('delete from review_items where id = any($1::uuid[])', [made]);
+      await pg.query('delete from review_items where tenant_id = $1', [other.id]);
+      await pg.query('delete from tenants where id = $1', [other.id]);
+    }
   });
 });

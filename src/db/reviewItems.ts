@@ -398,6 +398,81 @@ export async function listOpenReviewItems(tenantId: string): Promise<ReviewItem[
   return data ?? [];
 }
 
+// ONE PAGE of the open review queue (retrieval layer 4) — list_pending_reviews'
+// read. The queue used to come back whole, every item's `detail` included; the
+// page, the counts and the withheld-detail rule live in review_queue_page
+// (migration 20260917140000). The cursor timestamp stays the exact STRING the
+// function returned: a JS Date would drop its microseconds and repeat a row.
+export interface ReviewQueueItem {
+  id: string;
+  kind: string;
+  subjectRef: string;
+  suggestion: string | null;
+  createdAt: string;
+  // null when withheld: the item's detail is over the page's size limit.
+  detail: Json | null;
+  detailChars: number;
+  detailWithheld: boolean;
+}
+
+export interface ReviewQueuePage {
+  total: number;
+  byKind: Record<string, number>;
+  items: ReviewQueueItem[];
+  hasMore: boolean;
+  nextAfterCreated: string | null;
+  nextAfterId: string | null;
+}
+
+export async function getReviewQueuePage(
+  tenantId: string,
+  opts: { kind?: string; afterCreated?: string; afterId?: string; limit?: number } = {},
+): Promise<ReviewQueuePage> {
+  const { data, error } = await getClient().rpc('review_queue_page', {
+    p_tenant: tenantId,
+    ...(opts.kind ? { p_kind: opts.kind } : {}),
+    ...(opts.afterCreated ? { p_after_created: opts.afterCreated } : {}),
+    ...(opts.afterId ? { p_after_id: opts.afterId } : {}),
+    ...(opts.limit !== undefined ? { p_limit: opts.limit } : {}),
+  });
+  if (error) throw new Error(`review_queue_page failed: ${error.message}`);
+  // Narrowed by hand: the function returns jsonb (the readTenantCostDetail idiom).
+  const raw = (data ?? {}) as {
+    total?: number;
+    by_kind?: Record<string, number>;
+    items?: Array<{
+      id: string;
+      kind: string;
+      subject_ref: string;
+      suggestion: string | null;
+      created_at: string;
+      detail: Json | null;
+      detail_chars: number;
+      detail_withheld: boolean;
+    }>;
+    has_more?: boolean;
+    next_after_created?: string | null;
+    next_after_id?: string | null;
+  };
+  return {
+    total: raw.total ?? 0,
+    byKind: raw.by_kind ?? {},
+    items: (raw.items ?? []).map((i) => ({
+      id: i.id,
+      kind: i.kind,
+      subjectRef: i.subject_ref,
+      suggestion: i.suggestion,
+      createdAt: i.created_at,
+      detail: i.detail,
+      detailChars: i.detail_chars,
+      detailWithheld: i.detail_withheld,
+    })),
+    hasMore: raw.has_more === true,
+    nextAfterCreated: raw.next_after_created ?? null,
+    nextAfterId: raw.next_after_id ?? null,
+  };
+}
+
 // Re-annotate an already-CLOSED item's resolution text. The one caller is the
 // send_email confirm path: the token is consumed ('send confirmed by …')
 // BEFORE the send for at-most-once, so a send failure must rewrite the

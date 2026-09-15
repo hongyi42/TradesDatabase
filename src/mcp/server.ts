@@ -29,10 +29,6 @@ import {
   enablePairing as liveEnablePairing,
 } from '../composio/offboarding.js';
 import type { Extractor } from '../writePath/extract.js';
-import {
-  type Briefer,
-  type Answerer,
-} from '../synthesis/index.js';
 import { identityFromEnv, type RequestIdentity } from './identity.js';
 import { type ComputeRoutes } from '../routes/googleRoutes.js';
 import { runSpineQuery } from '../db/querySpine.js';
@@ -60,6 +56,7 @@ import { reviewsTools } from './tools/reviews.js';
 import { rosterTools } from './tools/roster.js';
 import { scheduleTools } from './tools/schedule.js';
 import type { ToolHandler } from './tools/types.js';
+import { capToolResult } from './resultCap.js';
 
 // Unchanged public surface: these four have always been imported from this module.
 export { attributeAnswerToGap, openQuestionsFor, oneShotNoteStamp, refuseNameAsAddress, safeEnvInt };
@@ -73,8 +70,6 @@ export { attributeAnswerToGap, openQuestionsFor, oneShotNoteStamp, refuseNameAsA
 // the agent cannot address another firm's data or claim another technician.
 export interface ServerDeps {
   extract?: Extractor; // injectable so tests don't call the live model
-  brief?: Briefer; // injectable briefing synthesizer (same reason)
-  answer?: Answerer; // injectable Q&A synthesizer (same reason)
   identity?: RequestIdentity; // gateway-pinned tenant + technician for this request
   // Composio pairing seams — injectable so tests never need COMPOSIO_API_KEY.
   connectLink?: typeof liveCreateConnectLink;
@@ -91,7 +86,7 @@ export interface ServerDeps {
   webSearch?: typeof braveWebSearch; // Brave seam — tests never need BRAVE_API_KEY
   fetchPage?: typeof fetchPageText; // fetch seam — tests never hit the network
   // The Q&A desk seam (build 5.5 Phase 2) — injectable so a dispatch test
-  // never calls the live model (the brief/answer synthesizer precedent).
+  // never calls the live model (the extractor precedent).
   deskAnswer?: typeof answerDeskQuestion;
   // Cost-ledger seam. Injectable for the same reason as the rest: without it
   // every hermetic dispatch test would start writing to the real database.
@@ -442,8 +437,10 @@ export const TEAM_LEAD_ONLY_TOOL_NAMES = new Set(
 // …PLUS the shared team-lead doors (rung 10b.2). Taken FROM `TEAM_LEAD_TOOLS`
 // rather than re-declared: one schema, two catalogs, so a reworded description
 // can never drift between what the planner reads and what the seat reads.
+// …and MINUS search_captures (operator ruling 2026-09-15): keyword search is
+// the technician's read; a manager searches with query_spine over v_captures.
 const MANAGER_TOOLS = [
-  ...TOOLS.filter((t) => t.name !== 'get_schedule'),
+  ...TOOLS.filter((t) => t.name !== 'get_schedule' && t.name !== 'search_captures'),
   ...ADMIN_TOOLS,
   ...TEAM_LEAD_TOOLS.filter((t) => SEAT_SHARED_TEAM_LEAD_TOOLS.has(t.name)),
 ];
@@ -660,6 +657,15 @@ async function dispatch(
     throw new Error(
       'get_schedule is the technician route view — managers use get_team_schedule ' +
         '(it includes visits you hold yourself) or the dispatch board',
+    );
+  }
+  // Same inverse gate for the technician's keyword search (operator ruling
+  // 2026-09-15): listed only to technicians, refused here so a stale catalog
+  // cannot reach it either.
+  if (name === 'search_captures' && activeManager) {
+    throw new Error(
+      "search_captures is the technician's keyword search — managers search with " +
+        'query_spine over v_captures (join v_job_captures / v_visit_notes / v_customer_captures)',
     );
   }
   // Sensitivity filter: manager-only L1 rows (e.g. payment agent_actions from
@@ -899,7 +905,21 @@ export function createServer(deps: ServerDeps = {}): Server {
           // decoration, not payload — the result stands without it
         }
       }
-      return { content: [{ type: 'text' as const, text: JSON.stringify(grounded) }] };
+      // THE SIZE CAP AT THE DOOR (plan 2026-09-15-the-retrieval-layer-1, Phase
+      // 4): a result over the limit is cut and SAYS so. The decorations sit at
+      // the END of the serialized result — the first thing a cut would drop —
+      // so they are carried onto the cut object itself: a capped schedule read
+      // still ends with its board link, and a capped read still re-grounds `now`.
+      const carry: Record<string, unknown> = {};
+      if (grounded && typeof grounded === 'object' && !Array.isArray(grounded)) {
+        const g = grounded as Record<string, unknown>;
+        for (const key of ['boardLink', 'boardNote', 'now']) {
+          if (g[key] !== undefined) carry[key] = g[key];
+        }
+      }
+      return {
+        content: [{ type: 'text' as const, text: capToolResult(JSON.stringify(grounded), undefined, carry) }],
+      };
     } catch (err) {
       return {
         content: [{ type: 'text' as const, text: err instanceof Error ? err.message : String(err) }],

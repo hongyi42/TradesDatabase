@@ -217,13 +217,19 @@ retract the evidence, the fact disappears from default reads).
 - Channel enum already covers phone calls, web forms, SMS, chat, sales notes, quotes, CRM import,
   accounting events, IoT — the write path is deliberately channel-agnostic.
 
-### 4c. The read/synthesis layer
+### 4c. The read layer — contents, then open
 
-`brief_customer` (pre-visit cheat sheet, or full relationship history), `answer_customer_question`,
-`get_customer_context`. All grounded: every claim carries a **citation** back to an L1 capture, and
-`validateCitations` ([src/synthesis/grounding.ts](../src/synthesis/grounding.ts)) drops any citation
-whose capture id isn't actually in the context it was given — so a hallucinated citation never
-reaches the reader.
+A model is never handed a customer's whole history (operator ruling, 2026-09-14).
+`get_customer_context` returns a fixed-size **contents page**: profile, standing facts, the recent
+jobs with note counts and the newest note's opening, upcoming visits, money position.
+`list_recent_captures` pages one job's or customer's notes; `get_capture` opens one note in full;
+`search_captures` (technicians) finds notes by keyword. The rules — which captures belong to a job,
+the retraction fold, the tier gate, order and paging — live once in the database
+(`capture_membership` and the reader functions in
+[supabase/migrations/20260916120000_retrieval_layer_core.sql](../supabase/migrations/20260916120000_retrieval_layer_core.sql));
+[src/db/context.ts](../src/db/context.ts) only calls them. The seat briefs itself from the page
+(the old `brief_customer` / `answer_customer_question` synthesis tools were retired with plan
+2026-09-15-the-retrieval-layer-1).
 
 ### 4d. Scheduling — the biggest subsystem
 
@@ -383,7 +389,6 @@ src/
                   entry, routes /inbound /control /board /admin /composio + MCP), identity.ts (HMAC)
   writePath/    ← raw → structured: extract.ts (model), identityMatch.ts (deterministic),
                   recordFieldNote.ts (the orchestrator)
-  synthesis/    ← briefings, question answering, citation grounding
   schedule/     ← booking verbs, availability, fit engine (find_slots), policy
   telegram/     ← the Mini App board API, initData verification, notification worker, roster cache
   admin/        ← the operator cost dashboard API

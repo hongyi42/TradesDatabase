@@ -127,8 +127,6 @@ describe('tool cases — the corpus covers the surface', () => {
     // Every tool that reaches a model or a third party must be marked, or a run
     // without keys reports real failures that are really just absent capability.
     const externalTools = [
-      'brief_customer',
-      'answer_customer_question',
       'web_search',
       'read_webpage',
       'send_email',
@@ -190,7 +188,7 @@ describe('tool cases — no step can fire with a missing confirmId', () => {
             { id: 'v', date: '2026-08-20' },
           ]),
         ),
-        captures: { 'cap-rich-intake': 'cap' },
+        captures: { 'cap-rich-intake': 'cap', 'cap-rich-note-1': 'cap' },
         technicians: { 'tech-jane': 'tj' },
       },
       anchor: '2026-08-12',

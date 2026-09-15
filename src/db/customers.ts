@@ -246,10 +246,9 @@ export async function listCustomerCapturesForCapture(
   return data ?? [];
 }
 
-// The captures linked to this customer. Ids only: getCustomerContext already
-// owns the fetch-and-dedup of capture rows (it does the same for jobs' and
-// visits' source captures), so returning rows here would duplicate that and
-// re-fetch what it may already hold.
+// The captures linked to this customer. Ids only. The customer read itself
+// goes through the database's capture_membership view now (migration
+// 20260916120000); this reader stays for the retraction walk and tests.
 //
 // `tenant_id` RIDES ALONG so the caller can re-check it. This is keyed on the
 // CUSTOMER, but the link's tenant is a separate column on a separate row, and

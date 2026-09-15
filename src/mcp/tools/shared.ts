@@ -22,17 +22,18 @@ import {
   setNudgeAnsweredBy,
 } from '../../db/index.js';
 import type {
+  CallerTier,
   CaptureChannel,
   FoldImpact,
   Json,
   TechnicianTier,
 } from '../../db/index.js';
 import type {
-  BriefFocus,
-} from '../../synthesis/index.js';
-import type {
   ExtractedFields,
 } from '../../writePath/extract.js';
+import type {
+  ToolContext,
+} from './types.js';
 import type {
   MatchResult,
 } from '../../writePath/identityMatch.js';
@@ -50,8 +51,18 @@ import {
 } from 'node:crypto';
 
 export const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
-export const BRIEF_FOCUSES: BriefFocus[] = ['next_visit', 'full_history'];
 export const TIERS: TechnicianTier[] = ['manager', 'technician'];
+
+// Who is asking, for the retrieval layer's tier gate. From the VERIFIED
+// identity the hub established, never from a tool argument: the planner is the
+// `spine:` namespace, a manager is an ACTIVE manager roster row (the same
+// predicate as the admin-tool gate), and everyone else is a technician.
+export const callerTierOf = (ctx: ToolContext): CallerTier =>
+  ctx.identity.technicianRef.startsWith('spine:')
+    ? 'planner'
+    : ctx.activeManager
+      ? 'manager'
+      : 'technician';
 
 // GROUNDING_BARE=1 (date-eval bare-clock arm, 2026-08-23): the model's ONLY
 // date help is the firm-local `now` rider. Read at module load — the flag
@@ -552,12 +563,41 @@ export function restoreHintFor(impact: FoldImpact | undefined): string | undefin
 // confirm must not look different from a first-try confirm. The scan is
 // advisory here (see tryFindFoldImpact), and an absent list must not read as
 // "nothing folded": say the scan failed and point back at the staged preview.
+// What survives a retraction but loses the note as its evidence: booked trips
+// (rung 9b) and money entries (2026-09-15). Present only when something is in
+// it, and both arrays ride together so a reader never mistakes a missing key
+// for an empty list.
+export function losingEvidenceOf(
+  impact: FoldImpact,
+): { visits: FoldImpact['visitsLosingEvidence']; money: FoldImpact['moneyLosingEvidence'] } | undefined {
+  return impact.visitsLosingEvidence.length > 0 || impact.moneyLosingEvidence.length > 0
+    ? { visits: impact.visitsLosingEvidence, money: impact.moneyLosingEvidence }
+    : undefined;
+}
+
+// MONEY NEVER FOLDS (operator ruling 2026-09-15): the entries still count, and
+// the only right fix for a wrong amount is a correction in the ledger — which
+// is a manager's verb. Worded per tier so a technician is never told to call a
+// tool they cannot reach.
+export function moneyLosingEvidenceNote(activeManager: boolean): string {
+  return (
+    'The money entries under money STILL COUNT — retracting a note never changes money. ' +
+    (activeManager
+      ? 'If an amount was wrong, correct it with record_money_event (kind correction, ' +
+        'correctsEventId = its eventId).'
+      : 'If an amount was wrong, tell the manager with inform_team_lead, naming the entry, ' +
+        'so they can correct it — you cannot change money yourself.')
+  );
+}
+
 export async function retractedResult(
   tenantId: string,
   captureId: string | null,
   retractionId: string,
+  activeManager = false,
 ): Promise<Record<string, unknown>> {
   const impact = captureId ? await tryFindFoldImpact(tenantId, captureId) : undefined;
+  const losing = impact && losingEvidenceOf(impact);
   return {
     status: 'retracted',
     captureId,
@@ -565,15 +605,14 @@ export async function retractedResult(
     // `alsoRemoved` must name ONLY what actually went. Trips that merely lost
     // this note as evidence ride alongside under their own key (rung 9b) —
     // folding them into alsoRemoved would tell the manager a live appointment
-    // had disappeared.
+    // had disappeared. Money rides there too: it never goes.
     alsoRemoved: impact && {
       facts: impact.facts,
       visits: impact.visits,
       correspondence: impact.correspondence,
     },
-    ...(impact && impact.visitsLosingEvidence.length > 0
-      ? { alsoLostEvidence: { visits: impact.visitsLosingEvidence } }
-      : {}),
+    ...(losing ? { alsoLostEvidence: losing } : {}),
+    ...(losing && losing.money.length > 0 ? { moneyNote: moneyLosingEvidenceNote(activeManager) } : {}),
     ...(impact === undefined
       ? {
           alsoRemovedNote:

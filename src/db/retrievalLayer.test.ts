@@ -49,6 +49,7 @@ interface JobBlock {
   restricted_count: number;
   newest: Snip | null;
   last_visit_at: string | null;
+  retracted_count: number;
   money_events: unknown[];
 }
 interface Contents {
@@ -216,6 +217,10 @@ describe('the retraction fold — removed everywhere, labelled on the audit path
     expect(p.captures.map((c) => c.id)).toEqual([good.id]);
     expect(p.total_visible).toBe(1);
     expect((await contents(customer.id, 'manager'))!.jobs[0].note_count).toBe(1);
+    // The retraction is visible to a manager AS A COUNT (the key to the audit
+    // trail), and to a technician not at all.
+    expect((await contents(customer.id, 'manager'))!.jobs[0].retracted_count).toBe(1);
+    expect((await contents(customer.id, 'technician'))!.jobs[0].retracted_count).toBe(0);
     expect(await full(bad.id, 'manager')).toBeNull();
     expect((await search('job', job.id, 'bad', 'manager')).matches).toEqual([]);
 

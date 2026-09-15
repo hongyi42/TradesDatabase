@@ -209,8 +209,14 @@ begin
   -- never pushed off the page by newer finished work (review finding: its
   -- openWorkNote and money would otherwise vanish, and "absent" reads as
   -- "nothing recorded"). Each job carries its counts, its newest visible note's
-  -- opening, its last completed trip, and its money rows (minus any that cite a
-  -- retracted capture — the fold covers money too).
+  -- opening, its last completed trip, and its money rows.
+  --
+  -- MONEY NEVER FOLDS (operator ruling 2026-09-15, after the final review): a
+  -- money entry recorded from a since-retracted note keeps counting, exactly as
+  -- get_job and job-status derivation count it. Hiding it here alone made two
+  -- readers disagree on a balance — and hiding a retracted note's CORRECTION
+  -- silently revived the entry it cancelled. A wrong amount is corrected in the
+  -- ledger; retract_capture lists the entries that lost their evidence instead.
   select coalesce(jsonb_agg(x.job_json order by x.finished, x.created_at desc, x.id desc), '[]'::jsonb)
     into v_jobs
     from (
@@ -228,10 +234,10 @@ begin
                                   where v.job_id = j.id and v.tenant_id = j.tenant_id
                                     and v.status = 'completed'
                                     and (v.source_capture_id is null or capture_is_live(v.source_capture_id))),
+               'retracted_count', stats.retracted_count,
                'money_events', (select coalesce(jsonb_agg(to_jsonb(m) order by m.id), '[]'::jsonb)
                                   from money_events m
-                                 where m.job_id = j.id and m.tenant_id = j.tenant_id
-                                   and (m.source_capture_id is null or capture_is_live(m.source_capture_id)))
+                                 where m.job_id = j.id and m.tenant_id = j.tenant_id)
              ) as job_json
         from (select jobs.*, (jobs.status::text = any(coalesce(p_terminal_statuses, '{}'::text[]))) as finished
                 from jobs
@@ -239,12 +245,21 @@ begin
                order by finished, created_at desc, id desc
                limit v_recent) j
         cross join lateral (
-          select count(*) filter (where capture_visible(c.channel, c.sensitivity, p_caller_tier)) as note_count,
-                 count(*) filter (where not capture_visible(c.channel, c.sensitivity, p_caller_tier)) as restricted_count,
-                 max(c.captured_at) filter (where capture_visible(c.channel, c.sensitivity, p_caller_tier)) as last_capture_at
+          select count(*) filter (where capture_is_live(c.id)
+                                    and capture_visible(c.channel, c.sensitivity, p_caller_tier)) as note_count,
+                 count(*) filter (where capture_is_live(c.id)
+                                    and not capture_visible(c.channel, c.sensitivity, p_caller_tier)) as restricted_count,
+                 max(c.captured_at) filter (where capture_is_live(c.id)
+                                              and capture_visible(c.channel, c.sensitivity, p_caller_tier)) as last_capture_at,
+                 -- Notes retracted as recorded-in-error (targets, not the
+                 -- retraction rows). Counted for managers and the planner only:
+                 -- they read the audit trail, and a count is what tells them
+                 -- there is one to open (list_recent_captures includeRetracted).
+                 count(*) filter (where p_caller_tier in ('manager', 'planner')
+                                    and c.retracts_capture_id is null
+                                    and not capture_is_live(c.id)) as retracted_count
             from capture_scope_members(p_tenant, 'job', j.id) s
             join raw_captures c on c.id = s.capture_id and c.tenant_id = p_tenant
-           where capture_is_live(c.id)
         ) stats
         left join lateral (
           select jsonb_build_object(

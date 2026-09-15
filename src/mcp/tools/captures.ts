@@ -68,6 +68,8 @@ import {
   currentFactValue,
   encodeFactValue,
   oneShotNoteStamp,
+  losingEvidenceOf,
+  moneyLosingEvidenceNote,
   resolutionFrom,
   retractedResult,
   stagedNotePreview,
@@ -207,7 +209,10 @@ const BASE_TOOLS = [
       'show it to the person as part of the confirmation. A trip that was BOOKED separately and ' +
       'merely mentioned in this note does NOT disappear: it keeps its place on the schedule and ' +
       'only loses this note as evidence, and it is listed under alsoLosesEvidence instead. Never ' +
-      'tell anyone a booked visit is going away because of a retraction. The confirm response ' +
+      'tell anyone a booked visit is going away because of a retraction. MONEY NEVER CHANGES: a ' +
+      'money entry recorded from the note keeps counting and is listed under ' +
+      'alsoLosesEvidence.money — a wrong amount is corrected in the ledger (record_money_event, ' +
+      'managers), never by retracting. The confirm response ' +
       'echoes the final list as alsoRemoved (correspondence included, plus alsoLostEvidence) ' +
       'with a restoreHint when ' +
       'facts folded; if alsoRemoved is absent, the ' +
@@ -837,10 +842,13 @@ async function handleRetractCapture(toolCtx: ToolContext): Promise<unknown> {
             visits: impact.visits,
             correspondence: impact.correspondence,
           },
-          ...(impact.visitsLosingEvidence.length > 0
-            ? { alsoLosesEvidence: { visits: impact.visitsLosingEvidence } }
-            : {}),
-          note: 'Nothing was retracted. Show the person the capture and this reason; on their explicit yes call again with ONLY confirmId. A retraction is permanent (the audit trail keeps both rows). If willAlsoRemove.facts, willAlsoRemove.visits or willAlsoRemove.correspondence has entries, the shown preview MUST include them. If alsoLosesEvidence.visits has entries, say those trips STAY on the schedule and only lose this note — never that they disappear.',
+          ...(losingEvidenceOf(impact) ? { alsoLosesEvidence: losingEvidenceOf(impact) } : {}),
+          note:
+            'Nothing was retracted. Show the person the capture and this reason; on their explicit yes call again with ONLY confirmId. A retraction is permanent (the audit trail keeps both rows). If willAlsoRemove.facts, willAlsoRemove.visits or willAlsoRemove.correspondence has entries, the shown preview MUST include them. If alsoLosesEvidence.visits has entries, say those trips STAY on the schedule and only lose this note — never that they disappear.' +
+            (impact.moneyLosingEvidence.length > 0
+              ? ' If alsoLosesEvidence.money has entries, the shown preview MUST include them too. ' +
+                moneyLosingEvidenceNote(activeManager)
+              : ''),
         };
       }
       // CONFIRM. Guarded token lookup, then commit-first (the unique index +
@@ -872,7 +880,7 @@ async function handleRetractCapture(toolCtx: ToolContext): Promise<unknown> {
           // externalId, but the column type is nullable — retractedResult
           // guards it (never `?? ''`: an empty id would scan nothing and
           // report an empty impact).
-          return await retractedResult(tenantId, landed.retracts_capture_id, landed.id);
+          return await retractedResult(tenantId, landed.retracts_capture_id, landed.id, activeManager);
         }
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
         throw new Error('confirmation expired — restage the retraction and confirm again');
@@ -979,7 +987,7 @@ async function handleRetractCapture(toolCtx: ToolContext): Promise<unknown> {
       // Advisory recompute (facts can change inside the 15-min stage window;
       // the scan reads stored bundles, which the read-time fold never
       // rewrites, so post-commit results equal pre-commit ones).
-      return await retractedResult(tenantId, target.id, retractionId);
+      return await retractedResult(tenantId, target.id, retractionId, activeManager);
 }
 
 async function handleRecordStandingFact(toolCtx: ToolContext): Promise<unknown> {

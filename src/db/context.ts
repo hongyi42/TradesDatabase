@@ -83,6 +83,9 @@ export interface CaptureSnippet {
 export type JobContents = Job & {
   noteCount: number;
   restrictedCount: number;
+  // Notes on this job retracted as recorded-in-error. Managers and the planner
+  // only (0 for a technician): the count says there is an audit trail to open.
+  retractedCount: number;
   lastCaptureAt: string | null;
   newest: CaptureSnippet | null;
   lastVisitAt: string | null;
@@ -123,6 +126,7 @@ interface RawJobBlock {
   job: Job;
   note_count: number;
   restricted_count: number;
+  retracted_count: number;
   last_capture_at: string | null;
   newest: RawSnippet | null;
   last_visit_at: string | null;
@@ -181,12 +185,13 @@ export async function getCustomerContents(
     ),
     noteCount: block.note_count,
     restrictedCount: block.restricted_count,
+    retractedCount: block.retracted_count,
     lastCaptureAt: block.last_capture_at,
     newest: snippetOf(block.newest),
     lastVisitAt: block.last_visit_at,
     // Absence = "no money recorded here" (a zero summary on an untracked job
-    // would read as "fully paid"). The rows already exclude any that cite a
-    // retracted capture; the summary itself is the one shared definition.
+    // would read as "fully paid"). Every row counts — money never folds with a
+    // retraction (operator 2026-09-15) — so this agrees with get_job.
     money: block.money_events.length > 0 ? summarizeMoney(block.money_events) : null,
   }));
 

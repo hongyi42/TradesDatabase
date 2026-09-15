@@ -94,6 +94,8 @@ const BASE_TOOLS = [
       'profile and standing facts; up to 10 jobs — every job still in progress, unbooked or ' +
       'unpaid first, then the newest finished ones — each with status, attributes, ' +
       'noteCount (notes you may read), restrictedCount (notes on file but outside your view), ' +
+      'retractedCount (managers: notes retracted as recorded in error — ' +
+      'list_recent_captures(jobId, includeRetracted: true) shows each with its reason), ' +
       "lastCaptureAt, lastVisitAt and `newest` — the newest note's first 200 characters with its " +
       'captureId; olderJobs says how many more (finished) jobs are on file but not shown — ' +
       'get_job(jobId) reads one; customerLevelNotes is what was filed ' +
@@ -382,7 +384,12 @@ async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> 
         customer: contents.customer,
         // The job row plus the layer's counts; `money` leaves the row for the
         // tier-filtered map above (undefined is dropped by JSON.stringify).
-        jobs: contents.jobs.map((j) => ({ ...j, money: undefined })),
+        // retractedCount is a manager/planner signal; a technician never sees the key.
+        jobs: contents.jobs.map((j) => ({
+          ...j,
+          money: undefined,
+          ...(callerTierOf(toolCtx) === 'technician' ? { retractedCount: undefined } : {}),
+        })),
         olderJobs: contents.olderJobs,
         customerLevelNotes: contents.customerLevel,
         upcomingVisits: contents.upcomingVisits,

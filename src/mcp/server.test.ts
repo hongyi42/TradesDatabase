@@ -1384,6 +1384,87 @@ describe('spine tool_call cost counter', () => {
   });
 });
 
+describe('a retraction never moves money, and says which entries lost their evidence', () => {
+  test('the preview lists the money, the technician is pointed at the manager, and every reader agrees on the balance', { timeout: 30_000 }, async () => {
+    const customer = await createCustomer({ tenantId, name: 'Cash Cust', phone: '555-3388' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Cash job' });
+    // The technician's note, and money a manager recorded FROM it.
+    const note = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'collected $500 cash from the customer',
+      jobId: job.id,
+    });
+    const { client: mgrClient, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const invoice = await mgr('record_money_event', { jobId: job.id, kind: 'invoice_issued', amountCents: 80000 });
+      expect(invoice.isError).toBe(false);
+      const paid = await mgr('record_money_event', {
+        jobId: job.id,
+        kind: 'payment_received',
+        amountCents: 50000,
+        method: 'cash',
+        sourceCaptureId: note.id,
+      });
+      expect(paid.isError).toBe(false);
+      const eventId = paid.data.eventId as number;
+
+      // The technician (the note's author) stages the retraction.
+      const staged = await call('retract_capture', { captureId: note.id, reason: 'wrong customer' });
+      expect(staged.isError).toBe(false);
+      expect(staged.data.alsoLosesEvidence.money).toEqual([
+        expect.objectContaining({ eventId, jobId: job.id, kind: 'payment_received', amountCents: 50000 }),
+      ]);
+      expect(staged.data.note).toContain('STILL COUNT');
+      expect(staged.data.note).toContain('inform_team_lead'); // a technician cannot correct money
+      expect(staged.data.note).not.toContain('record_money_event');
+
+      const done = await call('retract_capture', { confirmId: staged.data.confirmId });
+      expect(done.data.status).toBe('retracted');
+      expect(done.data.alsoLostEvidence.money.map((m: { eventId: number }) => m.eventId)).toEqual([eventId]);
+      expect(done.data.moneyNote).toContain('inform_team_lead');
+
+      // EVERY reader sums the same ledger: the payment still counts on both.
+      const ctx = await mgr('get_customer_context', { customerId: customer.id });
+      const job1 = await mgr('get_job', { jobId: job.id });
+      expect(ctx.data.moneyByJob[job.id].balanceDueCents).toBe(30000);
+      expect(job1.data.money.balanceDueCents).toBe(30000);
+
+      // A manager sees that the job carries a retraction; a technician's page has no such key.
+      const mgrJob = ctx.data.jobs.find((j: { id: string }) => j.id === job.id);
+      expect(mgrJob.retractedCount).toBe(1);
+      const techCtx = await call('get_customer_context', { customerId: customer.id });
+      const techJob = techCtx.data.jobs.find((j: { id: string }) => j.id === job.id);
+      expect(techJob.retractedCount).toBeUndefined();
+      // …and the manager can open the trail with the reason.
+      const trail = await mgr('list_recent_captures', { jobId: job.id, includeRetracted: true });
+      const row = trail.data.captures.find((c: { captureId: string }) => c.captureId === note.id);
+      expect(row.retracted.reason).toBe('wrong customer');
+
+      // A manager retracting a money-citing note is pointed at the correction instead.
+      const note2 = await appendRawCapture({
+        tenantId,
+        channel: 'technician_note',
+        technicianRef: 'tech-mcp',
+        rawText: 'second cash note',
+        jobId: job.id,
+      });
+      await mgr('record_money_event', {
+        jobId: job.id,
+        kind: 'payment_received',
+        amountCents: 10000,
+        sourceCaptureId: note2.id,
+      });
+      const mgrStaged = await mgr('retract_capture', { captureId: note2.id, reason: 'duplicate' });
+      expect(mgrStaged.data.note).toContain('record_money_event');
+      expect(mgrStaged.data.note).toContain('correctsEventId');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+});
+
 describe('the size cap at the door', () => {
   test('a result over SPINE_RESULT_CAP_CHARS is cut and says so, and the cut is still valid JSON', async () => {
     const customer = await createCustomer({ tenantId, name: 'Cap Cust', phone: '555-3377' });

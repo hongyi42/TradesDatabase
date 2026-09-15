@@ -2,7 +2,7 @@
 date: 2026-09-15
 task: The retrieval layer, plan 1 of 4 — captures and the customer read: one membership definition in the database, a fixed-size contents page, paged and truncated capture reads, technician keyword search, the two briefing tools retired, and a size cap on every seat result
 research: thoughts/shared/research/2026-09-15-the-retrieval-and-delivery-layer.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -52,8 +52,22 @@ operator lands it first. Nothing here depends on it (`getCustomerContents` never
   (omitted when no shown job has money, as today), `customer.attributes` and `jobs[].attributes`
   folded, and **`jobs[]` entries are the job row spread + extras**, so `jobs.find(j => j.id === …)`
   keeps working. Removed: `recentCaptures`, `recentVisits`.
-- **Money fold**: `money_events` whose `source_capture_id` is retracted are excluded in the RPC; the
-  summary still runs through the shared `summarizeMoney`.
+- **Money NEVER folds** (operator, 2026-09-15, after the final review — REVERSES the first draft's
+  "money fold"): a money entry recorded from a since-retracted note keeps counting on every reader,
+  so the contents page, `get_job` and job-status derivation agree; hiding a retracted note's
+  CORRECTION would have silently revived the entry it cancelled. Instead `retract_capture`'s preview
+  and confirm list those entries under `alsoLosesEvidence.money` / `alsoLostEvidence.money`, with a
+  tier-worded note: a manager corrects with `record_money_event` (`correctsEventId`), a technician
+  tells the manager. The planner getting a report of the retraction is a separate item (see the task
+  file), not this plan.
+- **Managers see retractions** (operator, 2026-09-15): the contents page carries `retractedCount` per
+  job for managers and the planner (a technician's page omits the key); `list_recent_captures` and
+  `get_capture` with `includeRetracted` open each one with its reason.
+- **Live work leads the page** (final review): the ten jobs are every live job first (not paid,
+  cancelled, declined — the set passed in from `TERMINAL_JOB_STATUSES`), then the newest finished,
+  so an old open or unpaid job keeps its `openWorkNote` and `moneyByJob` entry.
+- **The size cap fits its own limit** (final review): the cut object, `partial` included, is at most
+  the cap after escaping, and the hub's `now` / `boardLink` / `boardNote` ride on it.
 - **Visit reports merged from a since-retracted note**: not rendered here (`lastVisitAt` only); plan
   4's visit page decides how such a report is shown.
 - **`get_capture` returns no `metadata`/`blob_path`/`external_id`** (the `v_captures` posture).

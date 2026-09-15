@@ -51,6 +51,19 @@ export interface FoldedCorrespondence {
   followUp: string | null;
 }
 
+// MONEY NEVER FOLDS (operator ruling 2026-09-15). A money entry recorded from a
+// note keeps counting after the note is retracted: the ledger is corrected with
+// a correction entry, never by hiding rows, so every money reader keeps summing
+// the same rows and agrees. What a retraction owes the person is to SAY which
+// entries just lost their evidence, so a wrong amount gets corrected on purpose.
+export interface MoneyLosingEvidence {
+  eventId: number;
+  jobId: string;
+  kind: string;
+  amountCents: number | null;
+  occurredAt: string;
+}
+
 export interface FoldImpact {
   facts: FoldedFact[];
   /** Trips that DISAPPEAR with the capture — it is their `source_capture_id`. */
@@ -59,6 +72,8 @@ export interface FoldImpact {
   visitsLosingEvidence: FoldedVisit[];
   /** What this caller said, kept on a job, that stops being shown (rung 10). */
   correspondence: FoldedCorrespondence[];
+  /** Money entries recorded from the capture. They KEEP COUNTING; they lose their evidence. */
+  moneyLosingEvidence: MoneyLosingEvidence[];
 }
 
 // PostgREST caps every response at db-max-rows (1000 in supabase/config.toml
@@ -91,7 +106,7 @@ async function fetchAll<T>(
 // revisit with a JSONB path index + RPC if tenants outgrow it.
 export async function findFoldImpact(tenantId: string, captureId: string): Promise<FoldImpact> {
   const client = getClient();
-  const [customers, jobs, visits, citingVisits] = await Promise.all([
+  const [customers, jobs, visits, citingVisits, citingMoney] = await Promise.all([
     fetchAll('customers', (from, to) =>
       client.from('customers').select('id, name, attributes').eq('tenant_id', tenantId).range(from, to),
     ),
@@ -134,6 +149,17 @@ export async function findFoldImpact(tenantId: string, captureId: string): Promi
         )
         .eq('tenant_id', tenantId)
         .eq('source_capture_id', captureId)
+        .range(from, to),
+    ),
+    // Money recorded from this capture (record_money_event's sourceCaptureId).
+    // Ordered by id: paging needs a total order, and id is the ledger's.
+    fetchAll('money_events', (from, to) =>
+      client
+        .from('money_events')
+        .select('id, job_id, kind, amount_cents, occurred_at')
+        .eq('tenant_id', tenantId)
+        .eq('source_capture_id', captureId)
+        .order('id', { ascending: true })
         .range(from, to),
     ),
   ]);
@@ -212,5 +238,12 @@ export async function findFoldImpact(tenantId: string, captureId: string): Promi
     visits: linked.filter((v) => v.disappears).map((v) => v.folded),
     visitsLosingEvidence: linked.filter((v) => !v.disappears).map((v) => v.folded),
     correspondence,
+    moneyLosingEvidence: citingMoney.map((m) => ({
+      eventId: m.id,
+      jobId: m.job_id,
+      kind: m.kind,
+      amountCents: m.amount_cents,
+      occurredAt: m.occurred_at,
+    })),
   };
 }

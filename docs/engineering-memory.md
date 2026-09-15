@@ -2116,6 +2116,18 @@ were unreachable when those items were created, the per-tick routing cap deferre
   set the GUC — verified by setting `role anon` on the pilot.
 - PostgREST silently caps result sets at **1000 rows** (`db-max-rows`) — any scan that can
   exceed it must paginate (see `src/db/foldImpact.ts` for the pattern).
+- **A `statement_timeout` set INSIDE a function does not bound that function's own query**
+  (measured 2026-09-15, retrieval layer plan 3). `query_spine` ran
+  `set_config('statement_timeout', '5000', true)` from 2026-08-06; through `/rpc/query_spine`,
+  `pg_sleep(6)` returned at 6.03 s and `pg_sleep(12)` was cancelled at 8.05 s (57014). A statement's
+  timer is armed when the statement STARTS, so a GUC changed mid-statement cannot reach it — the same
+  holds for a function-level `SET` clause. The bound every RPC actually gets is the **`authenticator`
+  role's `statement_timeout=8s`** (`pg_roles`, identical on the local stack and the hosted pilot;
+  `service_role` and `spine_reader` carry none). The dead line was deleted in
+  `20260917120000_the_sql_views_fold.sql`; `querySpine.test.ts` pins it stays gone. Symptom that
+  points elsewhere: a "5 s bounded" query that runs for 7.9 s looks like a slow database, not a no-op
+  setting. Related: a `pg_get_functiondef` pin also reads comments written inside `$$`, so keep a
+  comment that names the forbidden text OUTSIDE the body.
 - `googleapis` is GONE (rung 10, 2026-09-07). It survived the schedule sheet's retirement only
   because `src/email/ingest.ts` imported it; that puller had no production caller and was deleted
   with it. Email arrives by Composio webhook (`src/inbound/webhook.ts`), push not poll.

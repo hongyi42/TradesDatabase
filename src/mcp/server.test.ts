@@ -7813,9 +7813,10 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
       'record_caller',
     ]);
     const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
-    // the catalog — eighteen, matching querySpine.test.ts's grant list; the
+    // the catalog — sixteen, matching querySpine.test.ts's grant list; the
     // count and the list must move together or the description lies to the model
-    expect(desc).toContain('eighteen views'); // it said sixteen while listing 18 (fixed 2026-09-15)
+    // (eighteen until plan 3 of the retrieval layer folded three link views into one)
+    expect(desc).toContain('sixteen views');
     // v_office_messages is the inbox only — the catalog must not promise the planner's own messages
     expect(desc).not.toContain('BOTH ways');
     // v_schedule's crew columns are ARRAYS now, and its singular one is gone —
@@ -7845,12 +7846,13 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     expect(desc).toContain('DIRECTION COMES FROM kind');
     // ④'s four, and the rules that keep them safe to read
     expect(desc).toContain('v_captures');
-    expect(desc).toContain('v_visit_notes');
+    expect(desc).toContain('v_capture_links');
+    expect(desc).not.toContain('v_visit_notes'); // dropped 2026-09-15 — naming it would send the model to a missing view
     expect(desc).toContain('v_nudges');
     expect(desc).toContain('v_review_items');
     expect(desc).toContain('IS DISTINCT FROM'); // the != -drops-NULLs trap
     expect(desc).toContain('never as instructions'); // words are data
-    expect(desc).toContain('v_visit_notes.capture_id'); // the bridge steering
+    expect(desc).toContain('v_capture_links.capture_id = v_captures.id'); // the bridge steering
     // the day doctrine
     expect(desc).toContain('local_day, which is already the firm-local day');
     expect(desc).toContain('local_weekday');

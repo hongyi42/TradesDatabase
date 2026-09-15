@@ -15,10 +15,9 @@
 // trimmed to `now` so an afternoon ask never ranks an already-past slot.
 
 import {
-  getTechnicianById,
-  listVisitsForTenant,
+  listVisitsWithRefsForTenant,
   participantIdsOf,
-  listJobsWithCustomerByIds,
+  participantsOf,
   listTeam,
   listTimeOffForTechnician,
   type PlacedVisit,
@@ -380,7 +379,13 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
   // day it could land on. Rung 9a deleted the range: an untimed visit belongs
   // to no day at all, so it can be budgeted against none of them, and there is
   // nothing to read.
-  const placedRows = await listVisitsForTenant(
+  //
+  // The EMBEDDED window reader (retrieval layer 4): the customer's city rides on
+  // each row, so there is no second read keyed on a job-id list — that list went
+  // into a URL in chunks of 500, above PostgREST's ~200-id wall, and a busy
+  // fortnight would have failed the search outright. Paged, so a firm with more
+  // than 1000 visits in the window no longer reads its later days as empty.
+  const placedRows = await listVisitsWithRefsForTenant(
     input.tenantId,
     `${input.earliest}T00:00:00.000Z`,
     addDaysISO(input.latest, 1) + 'T00:00:00.000Z',
@@ -391,11 +396,15 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
   const rows = placedRows.filter(
     (r) => participantIdsOf(r, input.tenantId).length > 0 && r.id !== input.excludeVisitId,
   );
-  const jobs = await listJobsWithCustomerByIds(input.tenantId, [
-    ...new Set(rows.map((r) => r.job_id)),
-  ]);
+  // ID-only foreign keys: the job and the customer are each re-checked against
+  // the tenant before their city is used (the boardRead.readBoardDays rule).
   const cityByJob = new Map(
-    jobs.map((j) => [j.id, j.customers?.city?.trim().toLowerCase() || null]),
+    rows.map((r) => {
+      const job = r.jobs && r.jobs.tenant_id === input.tenantId ? r.jobs : null;
+      const customer =
+        job && job.customers && job.customers.tenant_id === input.tenantId ? job.customers : null;
+      return [r.job_id, customer?.city?.trim().toLowerCase() || null] as const;
+    }),
   );
 
   const technicians: FitTechnician[] = [];
@@ -461,17 +470,16 @@ export async function findDisplacementCandidates(
 ): Promise<DisplacementCandidate[]> {
   // excludeVisitId: an visitId ask's own subject — "what could move
   // to make room" must never propose moving the visit to make room for itself.
+  // The embedded reader, as in assembleFitContext: names and crew refs ride on
+  // the row, so neither a job-id list nor a per-person roster read is needed.
   const rows = (
-    await listVisitsForTenant(
+    await listVisitsWithRefsForTenant(
       tenantId,
       `${earliest}T00:00:00.000Z`,
       addDaysISO(latest, 1) + 'T00:00:00.000Z',
       ['confirmed'],
     )
   ).filter((r) => r.id !== excludeVisitId);
-  const jobs = await listJobsWithCustomerByIds(tenantId, [...new Set(rows.map((r) => r.job_id))]);
-  const nameByJob = new Map(jobs.map((j) => [j.id, j.customers?.name ?? null]));
-  const refCache = new Map<string, string | null>();
   const out: DisplacementCandidate[] = [];
   // Earliest first. The promise-graded tiebreak died with the ladder
   // (rung 9a) — what a customer was told is no longer a column, so start time
@@ -481,18 +489,16 @@ export async function findDisplacementCandidates(
     // EVERY person who would be displaced — moving a crew visit moves both of
     // them, so naming one would understate what the manager is being asked to
     // disturb.
-    const refs: string[] = [];
-    for (const technicianId of participantIdsOf(row, tenantId)) {
-      if (!refCache.has(technicianId)) {
-        const t = await getTechnicianById(technicianId, tenantId);
-        refCache.set(technicianId, t?.ref ?? null);
-      }
-      const ref = refCache.get(technicianId) ?? null;
-      if (ref) refs.push(ref);
-    }
+    // participantsOf re-checks both the participant and the technician row
+    // against the tenant — a person who cannot be named is left out, exactly
+    // what the per-person getTechnicianById read used to do.
+    const refs = participantsOf(row, tenantId).map((p) => p.ref);
+    const job = row.jobs && row.jobs.tenant_id === tenantId ? row.jobs : null;
+    const customer =
+      job && job.customers && job.customers.tenant_id === tenantId ? job.customers : null;
     out.push({
       visitId: row.id,
-      customer: nameByJob.get(row.job_id) ?? null,
+      customer: customer?.name ?? null,
       technicianRef: refs[0] ?? null,
       technicianRefs: refs,
       day: row.starts_at.slice(0, 10),

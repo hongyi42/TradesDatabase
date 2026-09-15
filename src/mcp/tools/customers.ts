@@ -31,12 +31,14 @@ import {
   getOpenReviewItem,
   getRawCapture,
   getTechnician,
+  hitRowCap,
   listJobsForCustomer,
   listL2CitingCapture,
   listMoneyEventsForJob,
   listOpenJobsForCustomer,
   resolveOpenReviewItemFor,
   resolveReviewItem,
+  rowCapNote,
   searchCustomers,
   summarizeMoney,
   technicianMoneyView,
@@ -495,7 +497,15 @@ async function handleGetJob(toolCtx: ToolContext): Promise<unknown> {
         retracted.size > 0
           ? foldRetractedCorrespondence(foldRetractedFacts(job.attributes, retracted), retracted)
           : job.attributes;
-      return { ...job, attributes, ...money };
+      // Told, not paged (operator ruling 2026-09-15): the ledger is read in id
+      // order, so a cut at the row limit drops the NEWEST entries and the
+      // balance above would be wrong without saying so.
+      return {
+        ...job,
+        attributes,
+        ...money,
+        ...(hitRowCap(moneyEvents.length) ? { moneyNote: rowCapNote('ledger entries') } : {}),
+      };
 }
 
 async function handleOpenJob(toolCtx: ToolContext): Promise<unknown> {
@@ -853,11 +863,18 @@ async function handleRecordCaller(toolCtx: ToolContext): Promise<unknown> {
       // the LINK path needs either check.
       const onFile = customerId ? await listJobsForCustomer(customerId) : [];
       const liveJobs = onFile.filter((j) => !TERMINAL_JOB_STATUSES.has(j.status));
+      // The job list is read oldest first and not paged, so at the row limit
+      // the NEWEST jobs are the ones missing — which is exactly where a refusal
+      // below would be wrong. Told, not paged (operator ruling 2026-09-15).
+      const jobsCapNote = hitRowCap(onFile.length)
+        ? ` (${rowCapNote("of this customer's jobs")})`
+        : '';
       if (customerId && !openJob && !onFile.some((j) => j.status !== 'cancelled')) {
         throw new Error(
           'there is nothing to file this call onto — that customer has no job it could land on. ' +
             'Pass `openJob` as well. If there is no work in the call at all, say so to the office ' +
-            'instead of recording it.',
+            'instead of recording it.' +
+            jobsCapNote,
         );
       }
       // A TRIP NEEDS A JOB TO SIT ON — a LIVE one. `openJob` here is the request
@@ -868,7 +885,8 @@ async function handleRecordCaller(toolCtx: ToolContext): Promise<unknown> {
       if (bookVisitArg === true && !openJob && liveJobs.length === 0) {
         throw new Error(
           'a trip needs a job to sit on — pass `openJob` as well, or name a customer who ' +
-            'already has one open.',
+            'already has one open.' +
+            jobsCapNote,
         );
       }
 

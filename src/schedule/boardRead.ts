@@ -8,7 +8,7 @@ import {
   listVisitsWithRefsForTenant,
   listTeam,
   listUnassignedVisitsWithRefs,
-  listUnscheduledOpenJobsWithCustomer,
+  listUnscheduledOpenJobsCapped,
   isPlaced,
   unwrapAttributes,
   type Visit,
@@ -306,8 +306,22 @@ export interface LooseBucket {
     // tap will remove.
     technicianRefs: string[];
     technicianNames: string[];
+    // Added for get_team_schedule's recall view (retrieval layer 4); the board
+    // ignores them. `jobId` is withheld on the same tenant re-check as jobTitle,
+    // so the agent can go from a parked row to update_job / cancel_job.
+    jobId: string | null;
+    // The row's age: the order untimed rows queue in, and the recall view's
+    // paging key for them.
+    createdAt: string;
+    // COUNTED, not named: a crew member whose roster row belongs to another
+    // tenant is left out of technicianRefs but still occupies the trip, so
+    // "nobody is on it" is read off the participant ids (participantIdsOf).
+    unassigned: boolean;
   }[];
   unscheduledJobs: UnscheduledJob[];
+  // The open-job read came back at PostgREST's row limit, so the unscheduled
+  // list may be short (src/db/rowCap.ts — told, not paged, by ruling).
+  unscheduledJobsRowCapHit: boolean;
 }
 
 // THE unscheduled-jobs projection — the board tray AND get_team_schedule's
@@ -315,29 +329,45 @@ export interface LooseBucket {
 // (final-review finding: parity was previously by duplication, tenant
 // re-check included). The job row is already tenant-filtered by the query;
 // only the embedded customer needs the re-check (ID-only foreign keys).
-export async function readUnscheduledJobs(tenantId: string): Promise<UnscheduledJob[]> {
-  return (await listUnscheduledOpenJobsWithCustomer(tenantId)).map((job) => ({
-    jobId: job.id,
-    title: job.title,
-    customer: job.customers && job.customers.tenant_id === tenantId ? job.customers.name : null,
-    priority: job.priority,
-    durationMinutes: job.duration_minutes,
-    createdAt: job.created_at,
-  }));
+export async function readUnscheduledJobsCapped(
+  tenantId: string,
+): Promise<{ jobs: UnscheduledJob[]; rowCapHit: boolean }> {
+  const { rows, rowCapHit } = await listUnscheduledOpenJobsCapped(tenantId);
+  return {
+    jobs: rows.map((job) => ({
+      jobId: job.id,
+      title: job.title,
+      customer: job.customers && job.customers.tenant_id === tenantId ? job.customers.name : null,
+      priority: job.priority,
+      durationMinutes: job.duration_minutes,
+      createdAt: job.created_at,
+    })),
+    rowCapHit,
+  };
 }
 
-export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
+export async function readUnscheduledJobs(tenantId: string): Promise<UnscheduledJob[]> {
+  return (await readUnscheduledJobsCapped(tenantId)).jobs;
+}
+
+// `nowIso` is the clock `overdue` is judged against. The board passes nothing
+// (the real clock); get_team_schedule passes spineNowIso so an eval-anchored
+// tenant's recall view flags the same rows its own `today` would.
+export async function readLooseBucket(
+  tenantId: string,
+  nowIso: string = new Date().toISOString(),
+): Promise<LooseBucket> {
   // The jobs read is independent of the tenant read — start it first so the
   // three queries run at depth 2, not 3 (final-review efficiency finding).
-  const jobsPromise = readUnscheduledJobs(tenantId);
+  const jobsPromise = readUnscheduledJobsCapped(tenantId);
   const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
-  const today = localDateISO(new Date().toISOString(), tz);
+  const today = localDateISO(nowIso, tz);
   // Parked visits are read UNBOUNDED into the past: a parked visit whose day
   // slipped by is missed work, not history — it surfaces flagged `overdue`
   // instead of disappearing. (Terminal rows still drop via status; note the
   // recorded limitation that `proposed` unassigned rows are invisible to
   // BOTH halves — no production writer mints them today; Plan 3c/4b decides.)
-  const [parked, unscheduledJobs] = await Promise.all([
+  const [parked, jobsRead] = await Promise.all([
     listUnassignedVisitsWithRefs(tenantId, '1970-01-01T00:00:00.000Z'),
     jobsPromise,
   ]);
@@ -372,9 +402,9 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
         overdue: placedRow ? (date as string) < today : false,
         technicianRefs: crew.map((p) => p.ref),
         technicianNames: crew.map((p) => p.displayName),
-        // Sort key only — stripped below so the endpoint serves exactly the
-        // declared LooseBucket shape.
-        _createdAt: row.created_at,
+        jobId: job ? row.job_id : null,
+        createdAt: row.created_at,
+        unassigned: participantIdsOf(row, tenantId).length === 0,
       };
     });
   // OLDEST FIRST (user choice 2026-09-05). Placed-but-overdue rows still sort
@@ -384,16 +414,12 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
     if (a.date && b.date) return a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
     if (a.date) return -1; // dated rows first
     if (b.date) return 1;
-    return a._createdAt < b._createdAt ? -1 : a._createdAt > b._createdAt ? 1 : 0;
+    return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
   });
   return {
-    // Strip the sort key: the endpoint serves exactly the declared shape.
-    parkedVisits: parkedVisits.map((v) => {
-      const { _createdAt, ...rest } = v;
-      void _createdAt;
-      return rest;
-    }),
-    unscheduledJobs,
+    parkedVisits,
+    unscheduledJobs: jobsRead.jobs,
+    unscheduledJobsRowCapHit: jobsRead.rowCapHit,
   };
 }
 

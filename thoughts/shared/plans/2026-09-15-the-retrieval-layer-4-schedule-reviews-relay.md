@@ -104,15 +104,15 @@ empty and `find_slots` can offer booked time), and agents are told when a list h
 - `npm run gen:types:local` (never `gen:types`).
 
 ### Automated verification
-- [ ] `npx supabase db reset` applies; `review_queue_page` in `database.types.ts`.
-- [ ] `src/db/querySpine.test.ts`: tenant timezone set by `pg` update (`createTenant` takes none):
+- [x] `npx supabase db reset` applies; `review_queue_page` in `database.types.ts`.
+- [x] `src/db/querySpine.test.ts`: tenant timezone set by `pg` update (`createTenant` takes none):
       America/Los_Angeles, naive 06:00 on 2027-03-09 → `local_day` 2027-03-09, `local_weekday`
       Tuesday (fails on the old view); Asia/Tokyo, naive 22:00 → same day (the other direction);
       one cancelled visit through `v_cancelled_visits`.
-- [ ] New `src/db/reviewQueue.test.ts` (own tenant): empty queue → `items: []`, `by_kind: {}`; 25
+- [x] New `src/db/reviewQueue.test.ts` (own tenant): empty queue → `items: []`, `by_kind: {}`; 25
       items → 20 + 5, no repeat or gap, including two items sharing a `created_at`; `p_kind`; a
       3,000-char detail withheld; resolved items and another tenant's never appear.
-- [ ] `src/db/schema.test.ts`: the five index names exist. `npm run typecheck`, `lint`, `test`.
+- [x] `src/db/schema.test.ts`: the five index names exist. `npm run typecheck`, `lint`, `test`.
 
 ### Live verification (agent-executable; `supabase-test` MCP)
 - [ ] **At PR time, before merge** (Calls-worker auto-deploys; the web deploy calls the function):

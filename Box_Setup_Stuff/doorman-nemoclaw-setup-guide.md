@@ -725,6 +725,8 @@ recovery from a killed channel is just a container restart. On a box without (3b
 
 ### 5c. MCP config \+ toolSearch (only if NOT using the §6 bake-in)
 
+**Enforcement today (2026-09-15):** `bootstrap-box.sh wire <AGENT>` writes `tools.toolSearch=false`, reads the in-container `/sandbox/.openclaw/openclaw.json` back and **fails loudly** unless it is `false`; `bootstrap-box.sh verify` reports it for every seat. An UNSET key is not off: OpenClaw turns structured tool search on by itself for local inference routes when `tools.toolSearch` is unset (https://docs.openclaw.ai/tools/tool-search), and a rebuild wipes top-level `tools.*`. Re-run `wire` after any rebuild; never `openclaw config patch`. The manual form below is history.
+
 The agent config is `/sandbox/.openclaw/openclaw.json` (agent runs as user `sandbox`, HOME `/sandbox`). It's on the container **writable layer** — a *recreate* wipes it (that's why §6 exists). Manual form (container id from `docker ps`):
 
 sudo docker exec \-u sandbox \<CID\> sh \-lc 'python3 \- \<\<EOF

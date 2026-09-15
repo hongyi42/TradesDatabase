@@ -781,13 +781,15 @@ silently and never ask permission for a reversible internal change.
    never give an email address they did not say. Say what you recorded or passed on, and never
    that the item is closed: what you wrote is what closes it, on the office's next pass.
 
-8. OUTSIDE ACCOUNTS GO THROUGH COMPOSIO, AND THAT IS YOUR FIRST MOVE. Gmail, Google Sheets,
-   Excel, Drive — anything owned by a third party — is reached ONLY through the spine tools.
-   To connect one, call get_connect_link and give the person the URL it returns. Do not search
-   the web for a way in, do not look for another integration, do not try to authenticate
-   anybody yourself, and do not go hunting through your tool list first: the answer is
-   get_connect_link every time somebody asks to connect, re-connect, or fix an outside account.
-   The rest is automatic once they approve in the browser — the office finishes the wiring
+8. OUTSIDE ACCOUNTS GO THROUGH COMPOSIO, AND THAT IS YOUR FIRST MOVE. Anything owned by a third
+   party is reached ONLY through your tools. GMAIL: call get_connect_link and give the person
+   the URL it returns, every time somebody asks to connect, re-connect, or fix their Gmail —
+   it connects Gmail and nothing else. Any OTHER account (Google Sheets, Excel, Drive): on a
+   manager's seat, connect it through Composio's own connection tool, which also returns a link
+   to hand over; a technician's seat cannot connect accounts — say so plainly and that a
+   manager can. Do not search the web for a way in, do not look for another integration, do
+   not try to authenticate anybody yourself.
+   For Gmail the rest is automatic once they approve in the browser — the office finishes the wiring
    (the mail watcher included) and asks a manager to confirm the mailbox is the right one.
    You do not create that watcher and you cannot; do not tell anyone the connection is
    finished at the moment they approve, only that it is being verified.
@@ -1481,6 +1483,20 @@ EOF
       rm -rf "$ts_tmp"
       ok "denied ${ts_deny} (both placements); thinking=adaptive; model=google/gemini-3.8-flash ctx=${ctx} maxTokens=8192 image-input=on reasoning-effort=on; inbound debounce=2000ms"
     fi
+    # TOOL SEARCH GUARD (2026-09-15). OpenClaw turns structured tool search ON by
+    # itself on a local inference route when tools.toolSearch is UNSET
+    # (https://docs.openclaw.ai/tools/tool-search), and a rebuild wipes top-level
+    # tools.* — so a seat can silently lose every spine tool behind
+    # tool_search/tool_describe (the 2026-08-04 resolve_date failure). The jq
+    # above writes `false`; this reads the container's config BACK, whether or
+    # not the write ran, and stops loudly if it did not stick. docker exec, not
+    # `nemoclaw exec` (its output is not clean JSON), and `|| echo` so a jq parse
+    # error names the seat instead of aborting under set -euo pipefail.
+    ts_now=$(docker exec "$cid" cat /sandbox/.openclaw/openclaw.json 2>/dev/null \
+      | jq -r 'if .tools.toolSearch == false then "false" else (.tools.toolSearch | tojson) end' \
+      2>/dev/null || echo unreadable)
+    [ "$ts_now" = "false" ] || fail "tool search guard FAILED on ${agent}: tools.toolSearch is '${ts_now}' (want false; null = unset) — OpenClaw turns tool search ON when it is unset on a local route, hiding every spine tool. Re-run wire; never openclaw config patch"
+    ok "tools.toolSearch=false read back on ${agent}"
   else
     echo "    WARN: no running container for ${agent} — apply the tool deny + reasoning flags manually"
   fi
@@ -1632,6 +1648,13 @@ phase_verify() {
       2770/660) ;;
       *) echo "    ✗ $a perms are ${pm:-unreadable} (want 2770/660) — next restart will fail GATEWAY_UNSAFE_CONFIG_PATH; fix: docker exec <cid> sh -c 'chmod 2770 /sandbox/.openclaw && chmod 660 /sandbox/.openclaw/openclaw.json'"; warn=$((warn+1)) ;;
     esac
+    # Tool search must be explicitly OFF (the wire guard's twin, for a seat
+    # rebuilt without a re-wire): unset means OpenClaw may turn it on by itself.
+    tsv=$(docker exec "$c" cat /sandbox/.openclaw/openclaw.json 2>/dev/null \
+      | jq -r 'if .tools.toolSearch == false then "false" else (.tools.toolSearch | tojson) end' \
+      2>/dev/null || echo unreadable)
+    if [ "$tsv" = "false" ]; then ok "$a tools.toolSearch=false"; pass=$((pass+1));
+    else echo "    ✗ $a tools.toolSearch is '${tsv}' — every spine tool can hide behind tool search; run: ./bootstrap-box.sh wire $a"; warn=$((warn+1)); fi
     v=$(docker exec "$c" sh -lc 'openclaw --version 2>/dev/null' | grep -o '[0-9]\{4\}\.[0-9][0-9]*\.[0-9][0-9]*' | head -1)
     if [ "$v" = "$OPENCLAW_PIN" ]; then ok "$a on ${v}"; pass=$((pass+1));
     else

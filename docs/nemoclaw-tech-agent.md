@@ -245,8 +245,11 @@ the test is now PLACEMENT:
   email address the manager did not give — and reports what it recorded, never that the item is
   closed.
 - **Outside accounts go through Composio, first move (AGENTS.md rule 8, added 2026-09-07).**
-  Gmail, Sheets, Excel, Drive: the agent calls `get_connect_link` and hands over the URL. No web
-  search, no alternative integration, no self-authentication, no hunting the tool list first.
+  Gmail: the agent calls `get_connect_link` (Gmail-only, manager-tier) and hands over the URL.
+  Other accounts (Sheets, Excel, Drive): a manager's seat connects them through Composio's own
+  connection tool (the manager session has `manageConnections: true`); a technician's seat
+  cannot connect accounts and says so (corrected 2026-09-15 — the first wording routed all four
+  to `get_connect_link`). No web search, no alternative integration, no self-authentication.
   Everything after the browser approval is already automatic and is NOT the agent's to do —
   `checkPairing` (`src/composio/pairing.ts`) adopts the ACTIVE account, opens the
   `pairing_verification` review for a manager, and calls `ensureTrigger`, which creates

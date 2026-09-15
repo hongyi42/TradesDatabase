@@ -44,8 +44,10 @@ was re-verified on main bf9d5ea (includes #242 and #243).
 - **(7) An allowlist projection keeping snake_case** — options: list_team's camelCase view, or
   an allowlist of safe row fields. Chosen allowlist: tests read `id`/`seat_exempt` (server.test.ts
   :976, :1210, :1255, :1259), and a column added later stays hidden by default.
-- **AGENTS.md rule 8 wording** — states the fact: get_connect_link connects Gmail only; Sheets,
-  Excel and Drive cannot be connected yet, say so plainly. No new flow is invented.
+- **AGENTS.md rule 8 wording** — states the facts: get_connect_link connects Gmail only (manager
+  tier); a manager's seat connects other accounts through Composio's own connection tool
+  (`manageConnections: true`, src/composio/sessions.ts:33-34); a technician's seat cannot connect
+  accounts. (Corrected at the Phase 4 review from "cannot be connected yet", untrue for managers.)
 - **Migrations applied to the pilot BEFORE merge** — the Calls-worker auto-deploys at merge and
   runs `matchIdentity` → `findCustomersByPhone` (memory deploy-does-not-migrate). Never `db push`.
 
@@ -276,8 +278,8 @@ whether `inference.local` counts as local.
 enforcement, per the Box_Setup_Stuff sync rule.
 
 ### Automated verification
-- [ ] `bash -n Box_Setup_Stuff/bootstrap-box.sh`; `shellcheck` on the changed lines if installed
-- [ ] `npx vitest run src/eval/doctrine.test.ts` (it reads this script's doctrine)
+- [x] `bash -n Box_Setup_Stuff/bootstrap-box.sh`; `shellcheck` on the changed lines if installed
+- [x] `npx vitest run src/eval/doctrine.test.ts` (it reads this script's doctrine)
 
 ### Live verification (agent-executable, operator's go at each step)
 - Prerequisites: `ssh tradesbox`; before any sudo, `who` + `ps` show no other operator session

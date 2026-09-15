@@ -110,12 +110,6 @@ beforeAll(async () => {
     // supplies technicianRef. 'tech-mcp' matches the schedule entry below.
     identity: { tenantId, technicianRef: 'tech-mcp' },
     extract: async () => ({ workPerformed: 'did the work' }),
-    // Stub the synthesizers so the MCP tests never call the live model.
-    brief: async (ctx) => ({ briefing: `stub briefing for ${ctx.customer?.name}`, citations: [] }),
-    answer: async (ctx, question) => ({
-      answer: `stub answer to "${question}" for ${ctx.customer?.name}`,
-      citations: [],
-    }),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   client = new Client({ name: 'test-client', version: '0.0.0' });
@@ -159,8 +153,6 @@ async function clientFor(
   const server = createServer({
     identity,
     extract: async () => ({ workPerformed: 'did the work' }),
-    brief: async (ctx) => ({ briefing: `stub for ${ctx.customer?.name}`, citations: [] }),
-    answer: async (ctx, question) => ({ answer: `stub: ${question}`, citations: [] }),
     ...extra,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -382,10 +374,8 @@ describe('MCP server', () => {
     expect(rd.data.timezone).toBe('America/Los_Angeles');
 
     // …and array results stay arrays (the rider must not change their shape).
-    const caps = await call('list_recent_captures', {
-      jobId: '00000000-0000-0000-0000-000000000000',
-    });
-    expect(Array.isArray(caps.data)).toBe(true);
+    const rows = await call('find_customer', { query: 'no-such-customer-zzz' });
+    expect(Array.isArray(rows.data)).toBe(true);
   });
 
   test('an ambiguous note asks who, then RECORDS on the answer (no third call)', async () => {
@@ -832,56 +822,44 @@ describe('MCP server', () => {
     expect(confirm.text).toContain('confirmation not found');
   });
 
-  test('get_customer_context returns the aggregated record', async () => {
+  test('get_customer_context returns the contents page, never the history', async () => {
     const customer = await createCustomer({ tenantId, name: 'Ctx Over Mcp', phone: '555-3300' });
-    await createJob({ tenantId, customerId: customer.id, title: 'J' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'J' });
+    await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'x'.repeat(300),
+      jobId: job.id,
+    });
 
     const { isError, data } = await call('get_customer_context', { customerId: customer.id });
     expect(isError).toBe(false);
     expect(data.customer.id).toBe(customer.id);
-    expect(data.jobs.length).toBeGreaterThanOrEqual(1);
-    expect(Array.isArray(data.recentVisits)).toBe(true);
-    expect(Array.isArray(data.recentCaptures)).toBe(true);
+    const block = data.jobs.find((j: { id: string }) => j.id === job.id);
+    expect(block.title).toBe('J'); // the job row, spread
+    expect(block.noteCount).toBe(1);
+    expect(block.restrictedCount).toBe(0);
+    // The newest note's opening, cut, with the id that opens the full words.
+    expect(block.newest.snippet).toHaveLength(200);
+    expect(block.newest.truncated).toBe(true);
+    expect(typeof block.newest.captureId).toBe('string');
+    expect(data.olderJobs).toBe(0);
+    expect(data.customerLevelNotes).toEqual({ noteCount: 0, restrictedCount: 0, newest: null });
+    expect(data.note).toContain('contents page');
+    // The old bulk fields are gone.
+    expect(data.recentCaptures).toBeUndefined();
+    expect(data.recentVisits).toBeUndefined();
   });
 
-  test('brief_customer returns a briefing + citations (stubbed synthesizer)', async () => {
-    const customer = await createCustomer({ tenantId, name: 'Brief Me', phone: '555-4400' });
-    await createJob({ tenantId, customerId: customer.id, title: 'J' });
-
-    const { isError, data } = await call('brief_customer', { customerId: customer.id });
-    expect(isError).toBe(false);
-    expect(typeof data.briefing).toBe('string');
-    expect(Array.isArray(data.citations)).toBe(true);
-  });
-
-  test('answer_customer_question returns an answer + citations (stubbed synthesizer)', async () => {
-    const customer = await createCustomer({ tenantId, name: 'Ask Me', phone: '555-5500' });
-
-    const { isError, data } = await call('answer_customer_question', {
-      customerId: customer.id,
-      question: 'What is going on with this customer?',
-    });
-    expect(isError).toBe(false);
-    expect(typeof data.answer).toBe('string');
-    expect(Array.isArray(data.citations)).toBe(true);
-  });
-
-  test('a synthesis tool on a bogus customerId is a clean "customer not found" error', async () => {
-    const { isError, text } = await call('brief_customer', {
+  test('get_customer_context on a bogus customerId says so in words', async () => {
+    const { isError, data } = await call('get_customer_context', {
       customerId: '00000000-0000-0000-0000-000000000000',
     });
-    expect(isError).toBe(true);
-    expect(text).toContain('customer not found');
-  });
-
-  test('brief_customer rejects an invalid focus value', async () => {
-    const customer = await createCustomer({ tenantId, name: 'Focus Test', phone: '555-6600' });
-    const { isError, text } = await call('brief_customer', {
-      customerId: customer.id,
-      focus: 'deep_dive',
-    });
-    expect(isError).toBe(true);
-    expect(text).toContain('invalid focus');
+    expect(isError).toBe(false);
+    expect(data.customer).toBeNull();
+    expect(data.jobs).toEqual([]);
+    expect(data.note).toContain('no such customer');
   });
 
   test('an invalid channel is rejected as a tool error', async () => {
@@ -903,10 +881,8 @@ describe('MCP server', () => {
     expect(okJob.data.id).toBe(job.id);
     const okCtx = await call('get_customer_context', { customerId: customer.id });
     expect(okCtx.data.customer.id).toBe(customer.id);
-    const okBrief = await call('brief_customer', { customerId: customer.id });
-    expect(okBrief.isError).toBe(false);
 
-    // Wrong tenant: the SAME ids read as empty / null / error across all five tools.
+    // Wrong tenant: the SAME ids read as empty / null across all the read tools.
     const { client: otherClient, callWith } = await clientFor({
       tenantId: WRONG_TENANT,
       technicianRef: 'tech-x',
@@ -918,14 +894,13 @@ describe('MCP server', () => {
       expect(ctx.data.customer).toBeNull();
       expect(ctx.data.jobs).toEqual([]);
 
-      expect((await callWith('list_recent_captures', { jobId: job.id })).data).toEqual([]);
-      expect((await callWith('list_recent_captures', { customerId: customer.id })).data).toEqual([]);
-
-      expect((await callWith('brief_customer', { customerId: customer.id })).isError).toBe(true);
-      expect(
-        (await callWith('answer_customer_question', { customerId: customer.id, question: 'hi' }))
-          .isError,
-      ).toBe(true);
+      // The page reader: an unknown scope, said in words, never their notes.
+      const byJob = await callWith('list_recent_captures', { jobId: job.id });
+      expect(byJob.data.captures).toEqual([]);
+      expect(byJob.data.note).toContain('no such job');
+      const byCust = await callWith('list_recent_captures', { customerId: customer.id });
+      expect(byCust.data.captures).toEqual([]);
+      expect(byCust.data.note).toContain('no such customer');
     } finally {
       await otherClient.close();
     }
@@ -1409,6 +1384,225 @@ describe('spine tool_call cost counter', () => {
   });
 });
 
+describe('a retraction never moves money, and says which entries lost their evidence', () => {
+  test('the preview lists the money, the technician is pointed at the manager, and every reader agrees on the balance', { timeout: 30_000 }, async () => {
+    const customer = await createCustomer({ tenantId, name: 'Cash Cust', phone: '555-3388' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Cash job' });
+    // The technician's note, and money a manager recorded FROM it.
+    const note = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'collected $500 cash from the customer',
+      jobId: job.id,
+    });
+    const { client: mgrClient, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const invoice = await mgr('record_money_event', { jobId: job.id, kind: 'invoice_issued', amountCents: 80000 });
+      expect(invoice.isError).toBe(false);
+      const paid = await mgr('record_money_event', {
+        jobId: job.id,
+        kind: 'payment_received',
+        amountCents: 50000,
+        method: 'cash',
+        sourceCaptureId: note.id,
+      });
+      expect(paid.isError).toBe(false);
+      const eventId = paid.data.eventId as number;
+
+      // The technician (the note's author) stages the retraction.
+      const staged = await call('retract_capture', { captureId: note.id, reason: 'wrong customer' });
+      expect(staged.isError).toBe(false);
+      expect(staged.data.alsoLosesEvidence.money).toEqual([
+        expect.objectContaining({ eventId, jobId: job.id, kind: 'payment_received', amountCents: 50000 }),
+      ]);
+      expect(staged.data.note).toContain('STILL COUNT');
+      expect(staged.data.note).toContain('inform_team_lead'); // a technician cannot correct money
+      expect(staged.data.note).not.toContain('record_money_event');
+
+      const done = await call('retract_capture', { confirmId: staged.data.confirmId });
+      expect(done.data.status).toBe('retracted');
+      expect(done.data.alsoLostEvidence.money.map((m: { eventId: number }) => m.eventId)).toEqual([eventId]);
+      expect(done.data.moneyNote).toContain('inform_team_lead');
+
+      // EVERY reader sums the same ledger: the payment still counts on both.
+      const ctx = await mgr('get_customer_context', { customerId: customer.id });
+      const job1 = await mgr('get_job', { jobId: job.id });
+      expect(ctx.data.moneyByJob[job.id].balanceDueCents).toBe(30000);
+      expect(job1.data.money.balanceDueCents).toBe(30000);
+
+      // A manager sees that the job carries a retraction; a technician's page has no such key.
+      const mgrJob = ctx.data.jobs.find((j: { id: string }) => j.id === job.id);
+      expect(mgrJob.retractedCount).toBe(1);
+      const techCtx = await call('get_customer_context', { customerId: customer.id });
+      const techJob = techCtx.data.jobs.find((j: { id: string }) => j.id === job.id);
+      expect(techJob.retractedCount).toBeUndefined();
+      // …and the manager can open the trail with the reason.
+      const trail = await mgr('list_recent_captures', { jobId: job.id, includeRetracted: true });
+      const row = trail.data.captures.find((c: { captureId: string }) => c.captureId === note.id);
+      expect(row.retracted.reason).toBe('wrong customer');
+
+      // A manager retracting a money-citing note is pointed at the correction instead.
+      const note2 = await appendRawCapture({
+        tenantId,
+        channel: 'technician_note',
+        technicianRef: 'tech-mcp',
+        rawText: 'second cash note',
+        jobId: job.id,
+      });
+      await mgr('record_money_event', {
+        jobId: job.id,
+        kind: 'payment_received',
+        amountCents: 10000,
+        sourceCaptureId: note2.id,
+      });
+      const mgrStaged = await mgr('retract_capture', { captureId: note2.id, reason: 'duplicate' });
+      expect(mgrStaged.data.note).toContain('record_money_event');
+      expect(mgrStaged.data.note).toContain('correctsEventId');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+});
+
+describe('the size cap at the door', () => {
+  test('a result over SPINE_RESULT_CAP_CHARS is cut and says so, and the cut is still valid JSON', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Cap Cust', phone: '555-3377' });
+    await createJob({ tenantId, customerId: customer.id, title: 'Cap job one' });
+    await createJob({ tenantId, customerId: customer.id, title: 'Cap job two' });
+    const before = process.env.SPINE_RESULT_CAP_CHARS;
+    process.env.SPINE_RESULT_CAP_CHARS = '600';
+    try {
+      const res = await call('get_customer_context', { customerId: customer.id });
+      expect(res.isError).toBe(false);
+      // `call` already JSON.parsed the text — so the cut object parses, and it
+      // fits its own limit (escaping the embedded text must not push it over).
+      expect(res.text.length).toBeLessThanOrEqual(600);
+      expect(res.data.truncated).toBe(true);
+      expect(res.data.limit).toBe(600);
+      expect(res.data.chars).toBeGreaterThan(600);
+      expect(res.data.partial.length).toBeGreaterThan(0);
+      expect(res.data.partial.startsWith('{"customer":')).toBe(true);
+      expect(res.data.note).toContain('get_capture');
+      // The `now` rider rides on the cut object, not lost off the tail.
+      expect(typeof res.data.now).toBe('string');
+    } finally {
+      if (before === undefined) delete process.env.SPINE_RESULT_CAP_CHARS;
+      else process.env.SPINE_RESULT_CAP_CHARS = before;
+    }
+    // Back at the default, the same read comes through whole.
+    const whole = await call('get_customer_context', { customerId: customer.id });
+    expect(whole.data.truncated).toBeUndefined();
+    expect(whole.data.jobs).toHaveLength(2);
+  });
+});
+
+describe('the drill-down reads: a page, a note, a search', () => {
+  test('list_recent_captures pages with a cursor the model copies back, newest first, text cut', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Pager Cust', phone: '555-3344' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Long job' });
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const row = await appendRawCapture({
+        tenantId,
+        channel: 'technician_note',
+        technicianRef: 'tech-mcp',
+        rawText: `note ${i} ${'x'.repeat(50)}`,
+        jobId: job.id,
+      });
+      ids.push(row.id);
+    }
+    const first = await call('list_recent_captures', { jobId: job.id, limit: 2, textChars: 10 });
+    expect(first.isError).toBe(false);
+    expect(first.data.captures.map((c: { captureId: string }) => c.captureId)).toEqual([ids[4], ids[3]]);
+    expect(first.data.captures[0].text).toHaveLength(10);
+    expect(first.data.captures[0].textTruncated).toBe(true);
+    expect(first.data.hasMore).toBe(true);
+    expect(first.data.totalVisible).toBe(5);
+    expect(first.data.note).toContain('more older notes');
+    expect(first.data.note).toContain('5 you may read in all');
+    expect(typeof first.data.next).toBe('string');
+
+    const second = await call('list_recent_captures', { jobId: job.id, limit: 2, before: first.data.next });
+    expect(second.data.captures.map((c: { captureId: string }) => c.captureId)).toEqual([ids[2], ids[1]]);
+    // The note never claims a remaining count it does not have (page 2 has one left, not three).
+    expect(second.data.note).toContain('more older notes');
+    expect(second.data.note).not.toMatch(/\d+ older/);
+    const third = await call('list_recent_captures', { jobId: job.id, limit: 2, before: second.data.next });
+    expect(third.data.captures.map((c: { captureId: string }) => c.captureId)).toEqual([ids[0]]);
+    expect(third.data.hasMore).toBe(false);
+    expect(third.data.next).toBeNull();
+    expect(third.data.note).toContain('every note');
+
+    // A cursor that is not a `next` value is refused in words, not passed to the database.
+    const bad = await call('list_recent_captures', { jobId: job.id, before: 'yesterday' });
+    expect(bad.isError).toBe(true);
+    expect(bad.text).toContain('copied exactly');
+    // A job with nothing on it says so.
+    const empty = await createJob({ tenantId, customerId: customer.id, title: 'Quiet job' });
+    expect((await call('list_recent_captures', { jobId: empty.id })).data.note).toContain('no notes on file');
+  });
+
+  test('get_capture opens one note in full; a cross-tenant or malformed id is "not found", never an error', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Full Cust', phone: '555-3355' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Full job' });
+    const note = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'the whole story, every word of it',
+      jobId: job.id,
+    });
+    const got = await call('get_capture', { captureId: note.id });
+    expect(got.data.found).toBe(true);
+    expect(got.data.rawText).toBe('the whole story, every word of it');
+    expect(got.data.memberships).toEqual([{ customerId: customer.id, jobId: job.id, visitId: null, via: 'job_stamp' }]);
+    expect(got.data.metadata).toBeUndefined(); // headers are not a seat's business
+
+    expect((await call('get_capture', { captureId: 'not-a-uuid' })).data.found).toBe(false);
+    const { client: otherClient, callWith } = await clientFor({
+      tenantId: '00000000-0000-0000-0000-000000000000',
+      technicianRef: 'tech-x',
+    });
+    try {
+      expect((await callWith('get_capture', { captureId: note.id })).data.found).toBe(false);
+    } finally {
+      await otherClient.close();
+    }
+  });
+
+  test('search_captures finds by word form and by bare code, inside the scope, with snippets', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Search Cust', phone: '555-3366' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Search job' });
+    const other = await createJob({ tenantId, customerId: customer.id, title: 'Other job' });
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'Capacitors failing again, recommend replacement; lockbox 4321 by the gate',
+      jobId: job.id,
+    });
+    await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'capacitor on the other job',
+      jobId: other.id,
+    });
+    const word = await call('search_captures', { jobId: job.id, query: 'capacitor' });
+    expect(word.data.matches.map((m: { captureId: string }) => m.captureId)).toEqual([cap.id]);
+    expect(word.data.matches[0].snippet).toContain('Capacitors failing');
+    expect(word.data.note).toContain('get_capture');
+    const code = await call('search_captures', { customerId: customer.id, query: '4321' });
+    expect(code.data.matches.map((m: { captureId: string }) => m.captureId)).toEqual([cap.id]);
+    const whole = await call('search_captures', { customerId: customer.id, query: 'capacitor' });
+    expect(whole.data.count).toBe(2);
+    const none = await call('search_captures', { jobId: job.id, query: 'thermostat' });
+    expect(none.data.count).toBe(0);
+    expect(none.data.note).toContain('nothing you may read here mentions');
+  });
+});
+
 describe('retract_capture + retraction folding', () => {
   test('author two-step retraction; context stops showing the capture and its visit', async () => {
     const customer = await createCustomer({ tenantId, name: 'Retract Cust', phone: '555-3311' });
@@ -1445,14 +1639,14 @@ describe('retract_capture + retraction folding', () => {
     expect(r2.data.captureId).toBe(done.data.captureId);
     expect(await retractionRows()).toBe(1);
 
-    // Folded context: neither the capture nor its visit surfaces.
+    // Folded contents: the note no longer counts, and the trip it minted is
+    // gone with it (lastVisitAt reads over live-sourced visits only).
     const ctx = await call('get_customer_context', { customerId: customer.id });
-    expect(ctx.data.recentCaptures.map((c: { id: string }) => c.id)).not.toContain(
-      done.data.captureId,
-    );
-    expect(ctx.data.recentVisits.map((v: { id: string }) => v.id)).not.toContain(
-      done.data.visitId,
-    );
+    const job = ctx.data.jobs.find((j: { id: string }) => j.id === done.data.jobId);
+    expect(job.noteCount).toBe(0);
+    expect(job.newest).toBeNull();
+    expect(job.lastVisitAt).toBeNull();
+    expect(ctx.data.customerLevelNotes.noteCount).toBe(0);
   });
 
   test('permissions: a non-author technician cannot retract; a manager can', async () => {
@@ -1669,7 +1863,9 @@ describe('retract_capture + retraction folding', () => {
     expect(ctx.data.customer.attributes.prefers).toBeUndefined();
     const foldedJob = ctx.data.jobs.find((j: { id: string }) => j.id === job.id);
     expect(foldedJob.attributes.symptom).toBeUndefined();
-    expect(ctx.data.recentVisits.map((v: { id: string }) => v.id)).not.toContain(visit.id);
+    // The trip the note MINTED (source_capture_id = cap) goes with the note.
+    expect(foldedJob.lastVisitAt).toBeNull();
+    expect(foldedJob.noteCount).toBe(0);
   });
 
   // RUNG 9b: a note LINKS a trip it did not create, so "linked to the capture"
@@ -1716,9 +1912,12 @@ describe('retract_capture + retraction folding', () => {
     expect(done.data.alsoRemoved.visits).toEqual([]);
     expect(done.data.alsoLostEvidence.visits).toEqual(staged.data.alsoLosesEvidence.visits);
 
-    // The half that would actually hurt: the trip is still on the record.
+    // The half that would actually hurt: the trip is still on the record
+    // (it was booked, not minted by the note — its source_capture_id is null).
     const ctx = await call('get_customer_context', { customerId: customer.id });
-    expect(ctx.data.recentVisits.map((v: { id: string }) => v.id)).toContain(booked.id);
+    const foldedJob = ctx.data.jobs.find((j: { id: string }) => j.id === job.id);
+    expect(foldedJob.lastVisitAt).toContain('2026-08-16');
+    expect(foldedJob.noteCount).toBe(0); // the note itself is gone
   });
 
   test('fold impact: a capture nothing cites previews and commits empty, with no restoreHint', async () => {
@@ -1792,10 +1991,13 @@ describe('retract_capture + retraction folding', () => {
 
     // Folded (default): target gone, retraction row gone, good row kept.
     const folded = await call('list_recent_captures', { customerId: customer.id });
-    const foldedIds = folded.data.map((r: { id: string }) => r.id);
+    const foldedIds = folded.data.captures.map((r: { captureId: string }) => r.captureId);
     expect(foldedIds).toContain(kept.id);
     expect(foldedIds).not.toContain(bad.id);
     expect(foldedIds).not.toContain(c.data.retractionId);
+    expect(folded.data.totalVisible).toBe(1);
+    expect(folded.data.hasMore).toBe(false);
+    expect(folded.data.next).toBeNull();
 
     // Technician toggle rejected.
     const deniedToggle = await call('list_recent_captures', {
@@ -1815,12 +2017,19 @@ describe('retract_capture + retraction folding', () => {
         customerId: customer.id,
         includeRetracted: true,
       });
-      const badRow = trail.data.find((r: { id: string }) => r.id === bad.id);
-      expect(badRow.retracted).toBe(true);
-      expect(badRow.retraction.reason).toBe('belongs to Tom');
-      expect(badRow.retraction.by).toBe('tech-mcp');
-      // The retraction row itself appears in the trail, as-is.
-      expect(trail.data.map((r: { id: string }) => r.id)).toContain(c.data.retractionId);
+      const badRow = trail.data.captures.find((r: { captureId: string }) => r.captureId === bad.id);
+      expect(badRow.retracted).toMatchObject({
+        id: c.data.retractionId,
+        reason: 'belongs to Tom',
+        by: 'tech-mcp',
+      });
+      // The retraction row itself appears in the trail, as an ordinary row that
+      // says what it retracts.
+      const retractionRow = trail.data.captures.find(
+        (r: { captureId: string }) => r.captureId === c.data.retractionId,
+      );
+      expect(retractionRow.retractsCaptureId).toBe(bad.id);
+      expect(retractionRow.retracted).toBeNull();
     } finally {
       await mgrClient.close();
     }
@@ -2856,8 +3065,8 @@ describe('send_email tool (outbound seam stubbed)', () => {
   });
 });
 
-describe('sensitivity filtering (manager_only L1 rows)', () => {
-  test('technician reads omit manager_only captures; manager reads include them; synthesizer ctx is filtered', { timeout: 30_000 }, async () => {
+describe('the tier gate on captures (option A: by channel, plus the manager_only stamp)', () => {
+  test('a technician sees technician-channel notes and a restricted COUNT; a manager sees everything', { timeout: 30_000 }, async () => {
     const customer = await createCustomer({ tenantId, name: 'Sensitive Cust', phone: '555-9900' });
     const job = await createJob({ tenantId, customerId: customer.id, title: 'Paid Job' });
     await appendRawCapture({
@@ -2882,32 +3091,32 @@ describe('sensitivity filtering (manager_only L1 rows)', () => {
     // Technician badge (the main client): the marked row is invisible on every
     // capture-bearing read.
     const byCust = await call('list_recent_captures', { customerId: customer.id });
-    expect(byCust.data.map((c: { raw_text: string }) => c.raw_text)).toEqual(['ordinary visit note']);
+    expect(byCust.data.captures.map((c: { text: string }) => c.text)).toEqual(['ordinary visit note']);
+    expect(byCust.data.restrictedCount).toBe(1);
     const byJob = await call('list_recent_captures', { jobId: job.id });
-    expect(byJob.data).toHaveLength(1);
+    expect(byJob.data.captures).toHaveLength(1);
+    // …and the full-words read refuses it the same way, with no distinct error.
+    const hidden = byJob.data.captures[0].captureId;
+    expect((await call('get_capture', { captureId: hidden })).data.found).toBe(true);
+    const restrictedId = (
+      await pg.query<{ id: string }>(
+        "select id from raw_captures where job_id = $1 and channel = 'agent_action'",
+        [job.id],
+      )
+    ).rows[0].id;
+    expect((await call('get_capture', { captureId: restrictedId })).data.found).toBe(false);
+    // The technician's keyword search sees only what the technician sees.
+    const searched = await call('search_captures', { jobId: job.id, query: 'STRIPE' });
+    expect(searched.data.count).toBe(0);
+    const searchedOk = await call('search_captures', { jobId: job.id, query: 'ordinary' });
+    expect(searchedOk.data.matches.map((m: { captureId: string }) => m.captureId)).toEqual([hidden]);
+    // The contents page counts the note and says ONE more is outside the view
+    // — never its text, and never silently.
     const ctx = await call('get_customer_context', { customerId: customer.id });
-    expect(
-      ctx.data.recentCaptures.some((c: { sensitivity: string | null }) => c.sensitivity === 'manager_only'),
-    ).toBe(false);
-
-    // The synthesizers receive the FILTERED ctx (a technician cannot leak the
-    // row through a briefing).
-    let brieferSaw: string[] = [];
-    const { client: briefClient, callWith: briefCall } = await clientFor(
-      { tenantId, technicianRef: 'tech-mcp' },
-      {
-        brief: async (bctx) => {
-          brieferSaw = bctx.recentCaptures.map((c) => c.raw_text ?? '');
-          return { briefing: 'stub', citations: [] };
-        },
-      },
-    );
-    try {
-      await briefCall('brief_customer', { customerId: customer.id });
-      expect(brieferSaw).toEqual(['ordinary visit note']);
-    } finally {
-      await briefClient.close();
-    }
+    const techJob = ctx.data.jobs.find((j: { id: string }) => j.id === job.id);
+    expect(techJob.noteCount).toBe(1);
+    expect(techJob.restrictedCount).toBe(1);
+    expect(techJob.newest.snippet).toBe('ordinary visit note');
 
     // Manager badge sees both rows.
     const { client: mgrClient, callWith: mgrCall } = await clientFor({
@@ -2916,13 +3125,16 @@ describe('sensitivity filtering (manager_only L1 rows)', () => {
     });
     try {
       const mgrList = await mgrCall('list_recent_captures', { customerId: customer.id });
-      expect(mgrList.data).toHaveLength(2);
+      expect(mgrList.data.captures).toHaveLength(2);
+      expect(mgrList.data.restrictedCount).toBe(0);
+      // …but search is the technician's tool: a manager is pointed at query_spine.
+      const refused = await mgrCall('search_captures', { jobId: job.id, query: 'ordinary' });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('query_spine');
       const mgrCtx = await mgrCall('get_customer_context', { customerId: customer.id });
-      expect(
-        mgrCtx.data.recentCaptures.some(
-          (c: { sensitivity: string | null }) => c.sensitivity === 'manager_only',
-        ),
-      ).toBe(true);
+      const mgrJob = mgrCtx.data.jobs.find((j: { id: string }) => j.id === job.id);
+      expect(mgrJob.noteCount).toBe(2);
+      expect(mgrJob.restrictedCount).toBe(0);
     } finally {
       await mgrClient.close();
     }
@@ -4048,9 +4260,10 @@ describe('record_standing_fact (staged two-step)', () => {
         customerId: customer.id,
         includeRetracted: true,
       });
-      const evidence = audit.data.find((c: { id: string }) => c.id === cDone.data.captureId);
-      expect(evidence.retracted).toBe(true);
-      expect(evidence.retraction.reason).toBe('wrong customer preference');
+      const evidence = audit.data.captures.find(
+        (c: { captureId: string }) => c.captureId === cDone.data.captureId,
+      );
+      expect(evidence.retracted.reason).toBe('wrong customer preference');
     } finally {
       await mgrClient.close();
     }

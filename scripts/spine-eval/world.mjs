@@ -297,7 +297,7 @@ async function resetPilotTenant(spec) {
             `  clearing that reference is an UPDATE on raw_captures, which the append-only trigger\n` +
             `  refuses. L1 pins L2: those rows are undeletable for the life of the database.\n\n` +
             `  This is not a bug to work around — dropping the stamps instead would gut\n` +
-            `  get_customer_context (src/db/context.ts reads them as a customer's evidence).\n\n` +
+            `  get_customer_context (the capture_membership view counts them as a customer's evidence).\n\n` +
             `  To re-anchor an existing pilot world, SHIFT it rather than rebuild it: visit dates are\n` +
             `  the only anchor-dependent part, and visits are mutable. Whole-week shifts only\n` +
             `  (weekday alignment), in two passes (no_confirmed_overlap is a non-deferrable GiST\n` +

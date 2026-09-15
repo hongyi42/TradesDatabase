@@ -1456,9 +1456,10 @@ const CUSTOMER_VISITS_SELECT = 'visits(*, visit_participants(technician_id,creat
 // Every trip that HAS HAPPENED across a customer's jobs, newest first. Visits
 // carry no customer_id, so we reach them through the jobs relation and flatten.
 //
-// FILTERED TO 'completed' (rung 9b): this feeds `recentVisits`, which the tool
-// surface documents as evidence of PAST work — the schedule half is
-// listUpcomingVisitsForCustomer. Before the merge that distinction was free,
+// FILTERED TO 'completed' (rung 9b): evidence of PAST work — the schedule half
+// is listUpcomingVisitsForCustomer. (No tool reads this since the contents page
+// took over the customer read, plan 2026-09-15-the-retrieval-layer-1; kept for
+// the visit page plan 4 will build.) Before the merge that distinction was free,
 // because the old table only ever held reported trips; now one table holds
 // both, so an unfiltered read would brief three future bookings as three past
 // visits AND list them again as upcoming.
@@ -1472,10 +1473,10 @@ export async function listVisitsForCustomer(customerId: string): Promise<VisitWi
   const visits = (data ?? []).flatMap((job) => job.visits as unknown as VisitWithTechnician[]);
   return (
     visits
-      // The embed's foreign keys are ID-ONLY, and THESE ROWS ARE RETURNED RAW
-      // to get_customer_context, which spreads them into the agent's tool
-      // result. participantsOf's re-check protects the readers that call it;
-      // this payload has no such reader, so the sanitising happens here — a
+      // The embed's foreign keys are ID-ONLY, and these rows were once RETURNED
+      // RAW to get_customer_context, spread into the agent's tool result.
+      // participantsOf's re-check protects the readers that call it; this
+      // payload has no such reader, so the sanitising happens here — a
       // participant from another tenant is dropped, and a technician row from
       // another tenant is nulled rather than having its name serialised.
       .map((v) => ({

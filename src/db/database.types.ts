@@ -2738,6 +2738,17 @@ export type Database = {
       }
     }
     Views: {
+      capture_membership: {
+        Row: {
+          capture_id: string | null
+          customer_id: string | null
+          job_id: string | null
+          tenant_id: string | null
+          via: string | null
+          visit_id: string | null
+        }
+        Relationships: []
+      }
       mv_escalation_fates: {
         Row: {
           by_planner: boolean | null
@@ -3027,16 +3038,6 @@ export type Database = {
           capture_id: string | null
           created_at: string | null
           customer_id: string | null
-        }
-        Insert: {
-          capture_id?: string | null
-          created_at?: string | null
-          customer_id?: string | null
-        }
-        Update: {
-          capture_id?: string | null
-          created_at?: string | null
-          customer_id?: string | null
         }
         Relationships: [
           {
@@ -3715,6 +3716,49 @@ export type Database = {
       }
     }
     Functions: {
+      capture_full: {
+        Args: {
+          p_caller_tier: string
+          p_capture: string
+          p_include_retracted?: boolean
+          p_tenant: string
+        }
+        Returns: Json
+      }
+      capture_is_live: { Args: { p_capture: string }; Returns: boolean }
+      capture_scope_found: {
+        Args: { p_scope: string; p_scope_id: string; p_tenant: string }
+        Returns: boolean
+      }
+      capture_scope_members: {
+        Args: { p_scope: string; p_scope_id: string; p_tenant: string }
+        Returns: {
+          capture_id: string
+          via: string[]
+        }[]
+      }
+      capture_visible: {
+        Args: {
+          p_channel: Database["public"]["Enums"]["capture_channel"]
+          p_sensitivity: string
+          p_tier: string
+        }
+        Returns: boolean
+      }
+      captures_page: {
+        Args: {
+          p_before_at?: string
+          p_before_id?: string
+          p_caller_tier: string
+          p_include_retracted?: boolean
+          p_limit?: number
+          p_scope: string
+          p_scope_id: string
+          p_tenant: string
+          p_text_chars?: number
+        }
+        Returns: Json
+      }
       claim_next_call: {
         Args: never
         Returns: {
@@ -3745,6 +3789,17 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      customer_contents: {
+        Args: {
+          p_caller_tier: string
+          p_customer: string
+          p_recent_jobs?: number
+          p_snippet_chars?: number
+          p_tenant: string
+          p_terminal_statuses?: string[]
+        }
+        Returns: Json
+      }
       query_spine: {
         Args: { p_max_rows?: number; p_sql: string; p_tenant: string }
         Returns: Json
@@ -3756,6 +3811,18 @@ export type Database = {
           tenants_touched: number
           unpriced_events: number
         }[]
+      }
+      search_captures: {
+        Args: {
+          p_caller_tier: string
+          p_limit?: number
+          p_query: string
+          p_scope: string
+          p_scope_id: string
+          p_snippet_chars?: number
+          p_tenant: string
+        }
+        Returns: Json
       }
       tenant_cost_detail: {
         Args: { p_period_start: string; p_tenant_id: string }

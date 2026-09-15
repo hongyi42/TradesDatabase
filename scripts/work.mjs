@@ -167,7 +167,7 @@ function ensureRecord(main) {
 
 /**
  * Tolerant `key: value` frontmatter, deliberately the same shape the decision index parses
- * (scripts/decision-index.mjs:54-75) so the two records read alike. Split on the FIRST colon so
+ * (`parseFrontmatter` in scripts/decision-index.mjs) so the two records read alike. Split on the FIRST colon so
  * titles and prose may contain colons freely.
  */
 function parseFrontmatter(text) {
@@ -1677,7 +1677,9 @@ function cmdBoard(main) {
   const open = tasks.filter((t) => t.fm.status === 'open' || t.fm.status === 'active');
   out.push(`TASKS (${open.length} open/active of ${tasks.length})`);
   if (tasks.length === 0) {
-    out.push('  none — park one with /park, or: node scripts/work.mjs park --title "..."');
+    // /park only, never the raw verb: /park asks the operator first (user, 2026-09-14), and a hint
+    // that offers the bare command teaches a session to skip that question.
+    out.push('  none — /park puts an item here, after the operator says yes');
   } else {
     out.push([pad('id', 30), pad('kind', 8), pad('status', 8), pad('where', 18), pad('files', 6), pad('origin', 22), 'title'].join(' '));
     for (const t of tasks) {

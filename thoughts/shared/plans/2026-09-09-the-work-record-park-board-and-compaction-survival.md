@@ -257,6 +257,8 @@ open items, downstream effects → the same path with `handoff --body -`; if the
 
 **`.claude/commands/implement.md`** — after line 19 add the bullet "An issue outside this phase's
 scope: `/park` it and continue"; line 32 gains ", then `/handoff`".
+*Amended 2026-09-14 by `2026-09-14-the-task-board-is-the-operators.md`: parking needs the operator's
+yes; small fixes are made in place.*
 
 **`src/work/work-cli.test.ts`** — add: `packet --for-session` from the worktree names the
 MEMORY.md path and at least one title from a fixture `HOME`, and its total length is under

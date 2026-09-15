@@ -19,6 +19,11 @@
       "Bash(npm test*)",
       "Bash(npx tsc*)",
       "Bash(curl -s http://localhost*)"
+    ],
+    "ask": [
+      "Bash(node \"$(git rev-parse --path-format=absolute --git-common-dir)/../scripts/work.mjs\" park *)",
+      "Bash(node scripts/work.mjs park *)",
+      "Bash(npm run work -- park *)"
     ]
   },
   "hooks": {

@@ -40,9 +40,13 @@ existing event reaches a session already running. What IS picked up live is a ch
 that edits `settings.json`, restart the session; an old one keeps its original hook set and fails
 silently, since every hook command here ends in `; true` so it can never cost you an edit.
 
-Find something out of scope mid-task? **`/park` it** — that is what lets it be picked up in
-parallel instead of serialized behind the current work, and **`/spawn <id>`** is what picks it up:
-its own worktree, after a sized check against everything in flight. Finishing a task? **`/handoff`** records
+**The board is the operator's.** Notice something mid-task? A small fix that needs no decision is
+made in place and named in your report; anything too big to fix in place, or that needs the
+operator's decision, is **asked** (a side effect of your own change is never "out of scope"). Only big work
+that needs a decision (or whatever the operator asks to park) goes on the board, and only after
+the operator's yes: **`/park`** asks, and a
+`permissions.ask` rule makes Claude Code prompt on the park command itself. **`/spawn <id>`** is
+what picks a parked item up: its own worktree, after a sized check against everything in flight. Finishing a task? **`/handoff`** records
 what a diff cannot: what was decided, what you assumed, what is still open. Then `work.mjs done
 <id>` and `work.mjs promote <id>` writes it to `thoughts/shared/findings/` and archives it out of
 the live record. Never promote a task that is not `done` or `dropped`.
@@ -158,8 +162,8 @@ the code changes they describe.
 
 ### Parallel work — park, spawn, integrate
 
-Parallel work is many threads, not two features known up front. Out of scope mid-task → `/park`
-it. Parked and able to start now → **`/spawn <id>`**: it checks the item against every active
+Parallel work is many threads, not two features known up front. Big work needing the operator's
+decision, approved by them → `/park`. Parked and able to start now → **`/spawn <id>`**: it checks the item against every active
 task with the code graph (`scripts/code-graph.mjs` — exported functions, their signatures, who
 calls them, read by the TypeScript compiler), and on any overlap it **stops and shows how big each
 one is; the operator decides** before `--proceed` (user, 2026-09-10). It cuts

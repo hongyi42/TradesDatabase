@@ -123,9 +123,9 @@ open-work guard, booking.ts:350): stage → confirm with no move still cancels. 
 `/^(badge_hash|composio_|telegram_user_id|connected_email|host_id|tenant_id)/`.
 
 ### Automated verification
-- [ ] Red first: the move test fails on current code (the visit is cancelled); the leak assertion fails
-- [ ] `npx vitest run src/mcp/server.test.ts src/schedule/booking.test.ts`
-- [ ] `npm run typecheck`, `npm run lint`
+- [x] Red first: the move test fails on current code (the visit is cancelled); the leak assertion fails
+- [x] `npx vitest run src/mcp/server.test.ts src/schedule/booking.test.ts`
+- [x] `npm run typecheck`, `npm run lint`
 
 ### Live / manual verification
 None — both behaviours are fully exercised through the real MCP server on the local stack.
@@ -162,10 +162,10 @@ exact. Fix the comment at :379-380 to match.
   holds what seats sent you, not what you sent.
 
 ### Automated verification
-- [ ] Red first: the desk probe row is visible before the migration
-- [ ] `npx vitest run src/db/querySpine.test.ts src/mcp/server.test.ts src/teamLead`
-- [ ] `grep -rn "sixteen views\|seats, BOTH ways\|five views\|customer promise\|promises included" src` → no hits
-- [ ] `npm run typecheck`, `npm run lint`
+- [x] Red first: the desk probe row is visible before the migration
+- [x] `npx vitest run src/db/querySpine.test.ts src/mcp/server.test.ts src/teamLead`
+- [x] `grep -rn "sixteen views\|seats, BOTH ways\|five views\|customer promise\|promises included" src` → no hits
+- [x] `npm run typecheck`, `npm run lint`
 
 ### Live verification (agent-executable, pre-merge)
 - Prerequisites: `supabase-test` MCP; the operator's go.

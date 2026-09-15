@@ -193,7 +193,7 @@ const ADMIN_TOOLS = [
       'no un-cancel; work that revives later is a NEW job), it leaves the loose bucket, and ' +
       'every remaining scheduled visit comes off the calendar with it. ALWAYS two-step: the ' +
       'first call returns {status:"needs_confirmation", confirmId} with a preview naming the ' +
-      'job and each visit that would die (with any customer promise) — show it, get an ' +
+      'job and each visit that would die — show it, get an ' +
       'explicit yes, call again with ONLY confirmId. Call with jobId + reason. For taking ' +
       'ONE visit off the calendar while the work continues, use unschedule_visit instead. ' +
       'If the manager\'s words could mean either ("cancel the Hendersons"), ASK which they ' +
@@ -604,8 +604,8 @@ async function handleCancelJob(toolCtx: ToolContext): Promise<unknown> {
           preview: staged.preview ?? preview,
           note:
             'Nothing was cancelled. This is TERMINAL — show the manager exactly this ' +
-            'preview: the JOB closes for good and every listed visit comes off the calendar ' +
-            '(promises included). On their explicit yes call again with ONLY confirmId.',
+            'preview: the JOB closes for good and every listed visit comes off the calendar. ' +
+            'On their explicit yes call again with ONLY confirmId.',
         };
       }
       // CONFIRM — consume-first (unschedule_visit idiom).

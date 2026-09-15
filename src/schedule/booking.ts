@@ -1286,8 +1286,8 @@ export interface CancelJobPreview {
   jobId: string;
   jobTitle: string | null;
   customerName: string | null;
-  // Every live (confirmed/proposed) visit that dies with the job — promises
-  // included, so the confirm dialog states the full stake.
+  // Every live (confirmed/proposed) visit that dies with the job, so the
+  // confirm dialog states the full stake.
   visits: CancelJobVisit[];
   // ALWAYS true — single-sourced here like every requiresConfirmation, so no
   // surface can ever grow a one-shot arm for a terminal action.

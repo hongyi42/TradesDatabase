@@ -1269,6 +1269,13 @@ async function handleMoveVisit(toolCtx: ToolContext): Promise<unknown> {
           };
 }
 
+// "YYYY-MM-DD HH:MM" from a stored timestamp, or null for an untimed visit. The
+// same date + HH:MM slices get_team_schedule serves: times are stored
+// naive-local, so the raw column's '+00:00' is a marker the model would act on.
+function wallClock(ts: string | null | undefined): string | null {
+  return ts ? `${ts.slice(0, 10)} ${ts.slice(11, 16)}` : null;
+}
+
 async function handleUnscheduleVisit(toolCtx: ToolContext): Promise<unknown> {
   const { identity, tenantId, str } = toolCtx;
       const subjectRef = identity.technicianRef;
@@ -1279,6 +1286,11 @@ async function handleUnscheduleVisit(toolCtx: ToolContext): Promise<unknown> {
         const reason = str('reason')?.trim();
         if (!visitId) throw new Error('visitId is required');
         if (!reason) throw new Error('reason is required — say why the visit is being unscheduled');
+        // WHAT IS BEING APPROVED is this visit at THIS time. Moves keep the id
+        // (rung 9b), so the yes re-checks the time against this snapshot. Read
+        // BEFORE the preview: a move landing between the two reads then refuses
+        // at the yes instead of becoming the approved time.
+        const snapshot = await getVisitForTenant(visitId, tenantId);
         const preview = await previewUnscheduleVisit(tenantId, visitId);
         // Doctrine (2026-07-17, verdict computed in booking.ts): cancelling an
         // UNPROMISED visit is internal + reversible (the job stays open;
@@ -1319,6 +1331,13 @@ async function handleUnscheduleVisit(toolCtx: ToolContext): Promise<unknown> {
             visitId,
             reason,
             preview: preview as unknown as Json,
+            // Wall-clock slices, never the raw column: list_pending_reviews
+            // returns this detail to the model, and raw `+00:00` timestamps
+            // there are the 2026-07-22 defect (see get_team_schedule's note).
+            expected: {
+              startsAt: wallClock(snapshot?.starts_at),
+              endsAt: wallClock(snapshot?.ends_at),
+            },
             stagedAt: new Date().toISOString(),
           } as unknown as Json,
         });
@@ -1338,13 +1357,37 @@ async function handleUnscheduleVisit(toolCtx: ToolContext): Promise<unknown> {
       if (!item) {
         throw new Error('confirmation not found — call unschedule_visit again with visitId + reason to restage');
       }
-      const d = (item.detail ?? {}) as { visitId?: string; reason?: string; stagedAt?: string };
+      const d = (item.detail ?? {}) as {
+        visitId?: string;
+        reason?: string;
+        stagedAt?: string;
+        expected?: { startsAt?: string | null; endsAt?: string | null };
+      };
       if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
         throw new Error('confirmation expired — restage the unschedule and confirm again');
       }
       if (!d.visitId || !d.reason) {
         throw new Error('staged unschedule is malformed — restage with visitId + reason');
+      }
+      // The yes approved THIS visit at the staged time. If it moved, lost its
+      // time, or is gone, cancelling now would cancel something nobody saw. A
+      // token staged before `expected` existed carries no snapshot: refused the
+      // same way (fail closed; the 15-minute window bounds it).
+      const now = await getVisitForTenant(d.visitId, tenantId);
+      const expected = d.expected;
+      if (
+        !now ||
+        !expected ||
+        expected.startsAt === undefined ||
+        wallClock(now.starts_at) !== expected.startsAt ||
+        wallClock(now.ends_at) !== expected.endsAt
+      ) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'visit moved while the confirmation was pending');
+        throw new Error(
+          'visit NOT unscheduled: it moved (or lost its time) since the manager approved — nothing was ' +
+            'cancelled; restage to see its current time',
+        );
       }
       const consumed = await resolveReviewItem(
         item.id,

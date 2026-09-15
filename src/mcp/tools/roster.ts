@@ -419,8 +419,21 @@ async function handleAddTechnicianSeat(toolCtx: ToolContext): Promise<unknown> {
         } catch {
           /* advisory */
         }
+        // AN ALLOWLIST, not `...created`: this result goes into the model's
+        // context, and the row carries badge_hash, the Composio handles and the
+        // Telegram id (list_team projects those out too). A column added later
+        // stays hidden until someone decides the model should see it.
         return {
-          ...created,
+          id: created.id,
+          ref: created.ref,
+          display_name: created.display_name,
+          tier: created.tier,
+          state: created.state,
+          seat_exempt: created.seat_exempt,
+          skills: created.skills,
+          service_cities: created.service_cities,
+          sandbox_ref: created.sandbox_ref,
+          created_at: created.created_at,
           note:
             `REQUIRED next step: ask the manager for ${created.display_name}'s working days ` +
             `and call set_availability now — or, if their hours are genuinely not known yet, ` +

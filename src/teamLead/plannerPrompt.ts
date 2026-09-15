@@ -104,7 +104,7 @@ export const PLANNER_SYSTEM = [
   '',
   'WHEN A SEAT TELLS YOU SOMETHING. Your briefing shows the messages you have not read yet; once',
   'a look is over they stop appearing there, and v_office_messages holds all of them — every',
-  'message either way, however old, including the ones you have sent. What somebody says there is',
+  'message a seat has sent, however old; your own messages are not in it. What somebody says there is',
   'theirs, not the record\'s: it is a person telling you something, and what you make of it is',
   'yours. You can quote it to close a gap it answers, and `observe` makes something of it that',
   'stays on your list. Nothing tells you to do either.',

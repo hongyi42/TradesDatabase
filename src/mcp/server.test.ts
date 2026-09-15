@@ -975,6 +975,13 @@ describe('MCP server', () => {
         state: 'invited',
         seat_exempt: false, // no seatExempt arg = a normal seat-occupying add
       });
+      // The confirm result goes into the model's context: never the badge hash,
+      // the Composio handles or the Telegram id (list_team projects them out too).
+      for (const key of Object.keys(added.data)) {
+        expect(key).not.toMatch(
+          /^(badge_hash|composio_|telegram_user_id|connected_email|host_id|tenant_id)/,
+        );
+      }
 
       // Duplicate display name now fails at STAGE time (dup pre-check) —
       // before any yes is spent on it.
@@ -4863,6 +4870,74 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
     }
   });
 
+  test('a staged unschedule is REFUSED when the visit moved before the yes', async () => {
+    // Moves keep the visit id (rung 9b), and the confirm used to cancel by id
+    // alone: the manager approved cancelling Wednesday 09:00 and lost Thursday
+    // 13:00. The staged time is the thing approved, so it is checked at the yes.
+    const moving = await createCustomer({ tenantId, name: 'Moving Mo' });
+    const steady = await createCustomer({ tenantId, name: 'Steady Sal' });
+    const { client: mgrClient, callWith } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const booked = await callWith('book_visit', {
+        customerId: moving.id,
+        technicianRef: 'tech-mcp',
+        date: '2026-12-09',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      expect(booked.data.status).toBe('booked');
+      const visitId = booked.data.visitId as string;
+      const staged = await callWith('unschedule_visit', { visitId, reason: 'customer cancelled' });
+      expect(staged.data.status).toBe('needs_confirmation');
+      // The snapshot is WALL-CLOCK text: list_pending_reviews hands this detail
+      // to the model, and a raw '+00:00' timestamp there is the 2026-07-22 defect.
+      const snap = await pg.query<{ expected: unknown }>(
+        `select detail->'expected' as expected from review_items where id = $1`,
+        [staged.data.confirmId],
+      );
+      expect(snap.rows[0].expected).toEqual({ startsAt: '2026-12-09 09:00', endsAt: '2026-12-09 10:00' });
+      const moved = await callWith('move_visit', {
+        visitId,
+        date: '2026-12-10',
+        startTime: '13:00',
+        reason: 'customer asked for Thursday',
+      });
+      expect(moved.data.status).toBe('moved');
+
+      const refused = await callWith('unschedule_visit', { confirmId: staged.data.confirmId });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('moved');
+      const row = await pg.query<{ status: string; starts_at: Date }>(
+        'select status, starts_at from visits where id = $1',
+        [visitId],
+      );
+      expect(row.rows[0].status).toBe('confirmed');
+      expect(row.rows[0].starts_at.toISOString().slice(0, 10)).toBe('2026-12-10');
+
+      // With no move in between, the same flow still cancels.
+      const steadyBooked = await callWith('book_visit', {
+        customerId: steady.id,
+        technicianRef: 'tech-mcp',
+        date: '2026-12-11',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      expect(steadyBooked.data.status).toBe('booked');
+      const steadyStaged = await callWith('unschedule_visit', {
+        visitId: steadyBooked.data.visitId,
+        reason: 'customer cancelled',
+      });
+      const done = await callWith('unschedule_visit', { confirmId: steadyStaged.data.confirmId });
+      expect(done.isError).toBe(false);
+      expect(done.data.status).toBe('unscheduled');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
   test('an impossible booking is refused on the call (unknown tech, overlap)', async () => {
     const customer = await createCustomer({ tenantId, name: 'Impossible Iva' });
     const { client: mgrClient, callWith } = await clientFor({
@@ -5193,7 +5268,7 @@ describe('schedule-input verbs (Plan 3a)', () => {
       expect(write.isError).toBe(true);
       expect(write.text).toContain('query_spine rejected that query');
 
-      // A base table is invisible; only the five views exist to this role.
+      // A base table is invisible; only the spine views exist to this role.
       const base = await callWith('query_spine', { sql: 'select * from customers' });
       expect(base.isError).toBe(true);
       expect(base.text).toMatch(/permission denied/i);
@@ -7665,9 +7740,11 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
       'record_caller',
     ]);
     const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
-    // the catalog — fourteen since v_roster_events (build 6.5 Phase 1); the
+    // the catalog — eighteen, matching querySpine.test.ts's grant list; the
     // count and the list must move together or the description lies to the model
-    expect(desc).toContain('sixteen views'); // +v_visit_participants, rung 9c
+    expect(desc).toContain('eighteen views'); // it said sixteen while listing 18 (fixed 2026-09-15)
+    // v_office_messages is the inbox only — the catalog must not promise the planner's own messages
+    expect(desc).not.toContain('BOTH ways');
     // v_schedule's crew columns are ARRAYS now, and its singular one is gone —
     // an agent told `technician_ref` there would write SQL against a column
     // that does not exist and get a 42703 instead of an answer. (The singular

@@ -4963,7 +4963,12 @@ as first written exposed `to_agent` bodies — the planner's own send text — a
 CITABLE. That is the self-citation laundering build 6 Phase 4 found by live probe and shut, reopened
 by a view added **in the same commit** that excluded desk pairs from `readText` for exactly that
 reason. The view is now `direction = 'to_planner'` only. **Two guards elsewhere in a commit do not
-protect a third door opened in it.**
+protect a third door opened in it.** **And the door was still ajar (found 2026-09-15):** the desk
+writes its answers as `direction 'to_planner', kind 'desk'` — not `to_agent`, as the view's own
+comment assumed — so every desk answer stayed citable. `20260916130000_desk_answers_not_citable`
+also filters `kind is distinct from 'desk'`. The desk cannot write `to_agent` instead: the table's
+CHECK demands a technician_id on every non-`to_planner` row. A filter written against what a
+writer is *believed* to store is only as good as the belief; the probe test now inserts a real desk row.
 - Also fixed: money authorised a record-basis close on a `planner_observation` (the first kind whose
   hole no code-computed fact can speak to — a deposit would have closed "the customer sounded ready
   to walk" on the record); and a jobless observation asserted a firm-wide negative from a job-scoped

@@ -233,12 +233,12 @@ test('findRetractionsFor reads past the 8192-byte URL wall, once per retraction'
 ```
 
 ### Automated verification
-- [ ] Red first: with ONLY the test added, `npx vitest run src/db/retractions.test.ts` fails with a
+- [x] Red first: with ONLY the test added, `npx vitest run src/db/retractions.test.ts` fails with a
       `findRetractionsFor failed:` error. **If it passes before the fix, stop and tell the
       operator** — the local stack does not reproduce the wall and the test cannot pin it.
-- [ ] After the change the same command passes, including the existing empty-input test at :96.
-- [ ] `npx vitest run src/db/context.test.ts src/mcp/server.test.ts` passes (fold consumers).
-- [ ] `npm run typecheck` and `npm run lint` pass.
+- [x] After the change the same command passes, including the existing empty-input test at :96.
+- [x] `npx vitest run src/db/context.test.ts src/mcp/server.test.ts` passes (fold consumers).
+- [x] `npm run typecheck` and `npm run lint` pass.
 
 ### Live / manual verification
 None — nothing deploys from this plan; the codified test hits the URL limit locally.

@@ -3110,6 +3110,7 @@ export type Database = {
           id: string | null
           name: string | null
           phone: string | null
+          phone_key: string | null
           postal_code: string | null
           state: string | null
         }
@@ -3121,6 +3122,7 @@ export type Database = {
           id?: string | null
           name?: string | null
           phone?: string | null
+          phone_key?: string | null
           postal_code?: string | null
           state?: string | null
         }
@@ -3132,6 +3134,7 @@ export type Database = {
           id?: string | null
           name?: string | null
           phone?: string | null
+          phone_key?: string | null
           postal_code?: string | null
           state?: string | null
         }
@@ -3805,6 +3808,17 @@ export type Database = {
       }
       query_spine: {
         Args: { p_max_rows?: number; p_sql: string; p_tenant: string }
+        Returns: Json
+      }
+      review_queue_page: {
+        Args: {
+          p_after_created?: string
+          p_after_id?: string
+          p_detail_chars?: number
+          p_kind?: string
+          p_limit?: number
+          p_tenant: string
+        }
         Returns: Json
       }
       rollup_costs: {

@@ -276,13 +276,13 @@ spine-specific sentence.
   cappingForward(parsed.id) : defaultForward)`.
 
 ### Automated verification
-- [ ] `src/composio/relayHandler.test.ts`, with a local upstream `http.createServer` AND a local front
+- [x] `src/composio/relayHandler.test.ts`, with a local upstream `http.createServer` AND a local front
       server calling `handleComposioRelay` (the existing `fakeRes` lacks `on`/`destroy`),
       `SPINE_RESULT_CAP_CHARS=400`: small JSON → byte-identical; big non-ASCII JSON → valid, same `id`,
       `truncated: true`, no `structuredContent`, correct byte length; SSE (`\r\n` framing) with a
       progress event then a big response, upstream held OPEN afterwards → client receives both and the
       response ends within a second; upstream 500 → unchanged; `initialize`/`tools/list` → piped.
-- [ ] `src/mcp/resultCap.test.ts`: custom `note`. `npm run typecheck`, `lint`, `test`, `build`.
+- [x] `src/mcp/resultCap.test.ts`: custom `note`. `npm run typecheck`, `lint`, `test`, `build`.
 
 ### Manual verification (needs a paired manager seat)
 - [ ] After deploy, from the s2 manager seat: "my last 3 emails" answers normally; "list my last 100

@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
 import { createHmac } from 'node:crypto';
+import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Technician } from '../db/technicians.js';
 import { handleComposioRelay, isRelayPath, type ForwardFn, type RelayDeps } from './relayHandler.js';
@@ -382,5 +383,157 @@ describe('handleComposioRelay', () => {
     await handleComposioRelay(fakeReq({ method: 'GET' }), fakeRes().res, '', deps({ forward }));
     expect(calls).toHaveLength(1);
     expect(calls[0].method).toBe('GET');
+  });
+});
+
+// ─── The size cap on the tools/call leg (retrieval layer 4) ─────────────────
+//
+// Real sockets, both sides: an upstream standing in for the Composio session MCP,
+// and a front server calling handleComposioRelay, because the capping leg uses
+// the parts of a response the stub above does not have (write, on('close'),
+// destroy). SPINE_RESULT_CAP_CHARS is lowered so a small fixture is "too big".
+describe('cappingForward — Composio results through the size cap', () => {
+  let upstreamHandler: (req: IncomingMessage, res: ServerResponse) => void = () => {};
+  let upstream: http.Server;
+  let front: http.Server;
+  let upstreamUrl = '';
+  let frontUrl = '';
+  const sockets = new Set<import('node:net').Socket>();
+  let prevCap: string | undefined;
+
+  beforeAll(async () => {
+    prevCap = process.env.SPINE_RESULT_CAP_CHARS;
+    upstream = http.createServer((req, res) => upstreamHandler(req, res));
+    upstream.on('connection', (s) => {
+      sockets.add(s);
+      s.on('close', () => sockets.delete(s));
+    });
+    front = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        void handleComposioRelay(req, res, Buffer.concat(chunks).toString('utf8'), {
+          getTech: async () => tech(),
+          getMcpUrl: async () => upstreamUrl,
+          recordCost: async () => undefined,
+        });
+      });
+    });
+    await new Promise<void>((r) => upstream.listen(0, '127.0.0.1', () => r()));
+    await new Promise<void>((r) => front.listen(0, '127.0.0.1', () => r()));
+    upstreamUrl = `http://127.0.0.1:${(upstream.address() as import('node:net').AddressInfo).port}/mcp`;
+    frontUrl = `http://127.0.0.1:${(front.address() as import('node:net').AddressInfo).port}/composio`;
+  });
+
+  afterAll(async () => {
+    if (prevCap === undefined) delete process.env.SPINE_RESULT_CAP_CHARS;
+    else process.env.SPINE_RESULT_CAP_CHARS = prevCap;
+    for (const s of sockets) s.destroy();
+    await new Promise<void>((r) => upstream.close(() => r()));
+    await new Promise<void>((r) => front.close(() => r()));
+  });
+
+  const post = (rpc: unknown) =>
+    fetch(frontUrl, {
+      method: 'POST',
+      headers: { ...identityHeaders(), 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify(rpc),
+    });
+  const toolCall = { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'GMAIL_FETCH_EMAILS', arguments: {} } };
+
+  test('a result under the cap comes back byte-for-byte', async () => {
+    process.env.COMPOSIO_API_KEY = 'k';
+    process.env.SPINE_RESULT_CAP_CHARS = '400';
+    const payload = JSON.stringify({ jsonrpc: '2.0', id: 7, result: { content: [{ type: 'text', text: 'two emails' }] } });
+    upstreamHandler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(payload);
+    };
+    const resp = await post(toolCall);
+    expect(resp.status).toBe(200);
+    expect(await resp.text()).toBe(payload);
+  });
+
+  test('a big JSON result is cut, announced, stays valid JSON-RPC, and its byte length is right', async () => {
+    process.env.COMPOSIO_API_KEY = 'k';
+    process.env.SPINE_RESULT_CAP_CHARS = '400';
+    const text = 'émail '.repeat(400); // non-ASCII: bytes != characters
+    upstreamHandler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 7,
+          result: {
+            content: [{ type: 'text', text }, { type: 'image', data: 'x'.repeat(5000), mimeType: 'image/png' }],
+            structuredContent: { emails: text },
+          },
+        }),
+      );
+    };
+    const resp = await post(toolCall);
+    const body = await resp.text();
+    expect(Number(resp.headers.get('content-length'))).toBe(Buffer.byteLength(body));
+    const msg = JSON.parse(body) as { id: number; result: { content: Array<{ text: string }>; structuredContent?: unknown } };
+    expect(msg.id).toBe(7);
+    expect(msg.result.structuredContent).toBeUndefined();
+    expect(msg.result.content).toHaveLength(1);
+    const capped = JSON.parse(msg.result.content[0].text) as { truncated: boolean; note: string; partial: string };
+    expect(capped.truncated).toBe(true);
+    expect(capped.note).toContain('1 non-text block(s) were dropped');
+    expect(capped.note).toContain('Ask the app for fewer results');
+    expect(msg.result.content[0].text.length).toBeLessThanOrEqual(400);
+  });
+
+  test('SSE: notifications pass through, the response is cut, and the reply ends even if upstream keeps the stream open', async () => {
+    process.env.COMPOSIO_API_KEY = 'k';
+    process.env.SPINE_RESULT_CAP_CHARS = '400';
+    const progress = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/progress', params: { progress: 1 } });
+    const response = JSON.stringify({ jsonrpc: '2.0', id: 7, result: { content: [{ type: 'text', text: 'z'.repeat(3000) }] } });
+    upstreamHandler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`event: message\r\ndata: ${progress}\r\n\r\n`);
+      // Split the response event across two writes, mid-JSON.
+      res.write(`event: message\r\ndata: ${response.slice(0, 50)}`);
+      setTimeout(() => res.write(`${response.slice(50)}\r\n\r\n`), 20);
+      // …and never end: a server SHOULD close after the response, not MUST.
+    };
+    const started = Date.now();
+    const resp = await post(toolCall);
+    const body = await resp.text();
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(body).toContain(`data: ${progress}\r\n\r\n`);
+    const events = body.split(/\r\n\r\n|\n\n/).filter(Boolean);
+    const last = events[events.length - 1];
+    expect(last).toContain('event: message');
+    const data = last.split(/\r\n|\n/).find((l) => l.startsWith('data: '))!.slice(6);
+    const msg = JSON.parse(data) as { id: number; result: { content: Array<{ text: string }> } };
+    expect(msg.id).toBe(7);
+    expect((JSON.parse(msg.result.content[0].text) as { truncated: boolean }).truncated).toBe(true);
+  });
+
+  test('an upstream error status passes through unchanged', async () => {
+    process.env.COMPOSIO_API_KEY = 'k';
+    process.env.SPINE_RESULT_CAP_CHARS = '400';
+    const errBody = JSON.stringify({ error: 'x'.repeat(2000) });
+    upstreamHandler = (_req, res) => {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(errBody);
+    };
+    const resp = await post(toolCall);
+    expect(resp.status).toBe(500);
+    expect(await resp.text()).toBe(errBody);
+  });
+
+  test('protocol traffic (tools/list) is piped, never cut', async () => {
+    process.env.COMPOSIO_API_KEY = 'k';
+    process.env.SPINE_RESULT_CAP_CHARS = '400';
+    const catalog = JSON.stringify({ jsonrpc: '2.0', id: 2, result: { tools: [{ name: 'T', description: 'd'.repeat(3000) }] } });
+    upstreamHandler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(catalog);
+    };
+    const resp = await post({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+    expect(await resp.text()).toBe(catalog);
   });
 });

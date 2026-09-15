@@ -1,9 +1,11 @@
 import http from 'node:http';
 import https from 'node:https';
+import { StringDecoder } from 'node:string_decoder';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolveIdentityFromHeaders } from '../mcp/identity.js';
 import { getTechnician, isInactiveState, recordComposioCall } from '../db/index.js';
 import { ensurePersonSession, getSessionMcpUrl } from './sessions.js';
+import { capToolResult, resultCapChars } from '../mcp/resultCap.js';
 
 // The composio-doorman relay: sandbox → doorman → THIS route → that person's
 // Composio session MCP. The caller controls request content only — destination
@@ -36,7 +38,7 @@ export interface RelayDeps {
 // Composio bills the tool CALL. An MCP request body carrying any other method —
 // initialize, notifications/initialized, tools/list — costs nothing, so counting
 // every relayed request would inflate the Composio line substantially.
-function isToolCall(parsed: unknown): boolean {
+function isToolCall(parsed: unknown): parsed is { method: 'tools/call'; id?: unknown } {
   return (
     typeof parsed === 'object' &&
     parsed !== null &&
@@ -120,6 +122,237 @@ const defaultForward: ForwardFn = (urlStr, method, headers, body, res) =>
     });
     upReq.end(body);
   });
+
+// ─── The size cap on Composio results (retrieval layer 4, operator ruling 3) ───
+//
+// Composio results used to be piped straight back, so the one path that never
+// went through the hub's cap could flood a manager's window with a mailbox
+// listing. A `tools/call` response is now cut to the same limit with the same
+// announcement. No spine FILTER applies here (tier, retraction fold): they are
+// rules about the spine's own record, and which apps a badge reaches is already
+// decided by the Composio session it is pinned to.
+//
+// MCP allows a request's response to be one JSON object OR an SSE stream that
+// carries notifications and then the response
+// (https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http).
+// The stream is transformed AS IT ARRIVES and never held to its end: a server
+// SHOULD, not MUST, close it after the response, and an older revision may send
+// something mid-stream that the client has to see before the answer comes.
+
+export const COMPOSIO_CAP_ADVICE =
+  'Ask the app for fewer results: a narrower search, a smaller page, or one item by id.';
+
+// A body larger than this is not buffered at all (a pathological attachment
+// dump): the relay answers 502 rather than hold it in memory.
+const MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
+
+type ContentBlock = { type?: unknown; text?: unknown };
+
+// The capped form of one tools/call RESULT, or null when it already fits (the
+// caller then forwards the original bytes untouched). Only text survives a cut:
+// images and resources are the bulk the cap exists for, and structuredContent
+// duplicates the text a tool SHOULD also send (MCP tools spec). What was
+// dropped is said, never silent.
+export function capMcpToolResult(
+  result: Record<string, unknown>,
+  cap: number = resultCapChars(),
+): Record<string, unknown> | null {
+  if (cap <= 0 || JSON.stringify(result).length <= cap) return null;
+  const blocks = Array.isArray(result.content) ? (result.content as ContentBlock[]) : [];
+  const texts = blocks.filter((b) => b && b.type === 'text' && typeof b.text === 'string');
+  const dropped = blocks.length - texts.length;
+  const joined =
+    texts.length > 0
+      ? texts.map((b) => b.text as string).join('\n')
+      : JSON.stringify(result.structuredContent ?? result.content ?? null);
+  const droppedNote =
+    (dropped > 0 ? `${dropped} non-text block(s) were dropped. ` : '') +
+    (result.structuredContent !== undefined ? 'The structured copy was dropped. ' : '');
+  const body = capToolResult(joined, cap, {}, droppedNote + COMPOSIO_CAP_ADVICE);
+  const content: Array<{ type: 'text'; text: string }> = [{ type: 'text', text: body }];
+  // The text alone fit, so capToolResult returned it as it was — the cut was
+  // the dropped blocks, and that still has to be said.
+  if (body === joined) {
+    content.push({
+      type: 'text',
+      text: `[relay] This result was over the ${cap}-character limit. ${droppedNote}${COMPOSIO_CAP_ADVICE}`,
+    });
+  }
+  return {
+    ...(result.resultType !== undefined ? { resultType: result.resultType } : {}),
+    content,
+    ...(result.isError === true ? { isError: true } : {}),
+  };
+}
+
+// One JSON-RPC message's text, capped when it is THE response to this request
+// and carries a result. Returns null when there is nothing to change (not the
+// response, an error response, unparseable, or already under the cap).
+function capResponseText(text: string, requestId: string | number): { capped: string | null; isResponse: boolean } {
+  let msg: unknown;
+  try {
+    msg = JSON.parse(text);
+  } catch {
+    return { capped: null, isResponse: false };
+  }
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return { capped: null, isResponse: false };
+  const m = msg as { id?: unknown; result?: unknown; error?: unknown };
+  const isResponse = m.id === requestId && ('result' in m || 'error' in m);
+  if (!isResponse || !m.result || typeof m.result !== 'object' || Array.isArray(m.result)) {
+    return { capped: null, isResponse };
+  }
+  const result = capMcpToolResult(m.result as Record<string, unknown>);
+  return { capped: result ? JSON.stringify({ ...m, result }) : null, isResponse };
+}
+
+// Split a buffer of SSE text into complete events and the unfinished remainder.
+// Each event keeps the exact separator that ended it, so an untouched event is
+// forwarded byte-for-byte.
+const EVENT_END = /\r\n\r\n|\n\n|\r\r/;
+function takeEvents(pending: string): { events: Array<{ block: string; sep: string }>; rest: string } {
+  const events: Array<{ block: string; sep: string }> = [];
+  let rest = pending;
+  for (;;) {
+    const m = EVENT_END.exec(rest);
+    if (!m) return { events, rest };
+    events.push({ block: rest.slice(0, m.index), sep: m[0] });
+    rest = rest.slice(m.index + m[0].length);
+  }
+}
+
+function eventData(block: string): string | null {
+  const data = block
+    .split(/\r\n|\n|\r/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).replace(/^ /, ''));
+  return data.length > 0 ? data.join('\n') : null;
+}
+
+function withData(block: string, data: string): string {
+  const kept = block.split(/\r\n|\n|\r/).filter((line) => !line.startsWith('data:'));
+  return [...kept, `data: ${data}`].join('\n');
+}
+
+export const cappingForward =
+  (requestId: string | number): ForwardFn =>
+  (urlStr, method, headers, body, res) =>
+    new Promise((resolve) => {
+      const url = new URL(urlStr);
+      const lib = url.protocol === 'http:' ? http : https;
+      let upstream: IncomingMessage | null = null;
+      // The client going away cancels the request (MCP: closing the stream IS
+      // the cancellation), so the upstream leg is torn down with it.
+      res.on('close', () => {
+        upReq.destroy();
+        resolve();
+      });
+      const upReq = lib.request(
+        {
+          hostname: url.hostname,
+          port: url.port || (url.protocol === 'http:' ? 80 : 443),
+          path: url.pathname + url.search,
+          method,
+          // Identity encoding: a compressed body cannot be read to be capped.
+          headers: { ...headers, 'accept-encoding': 'identity' },
+        },
+        (upRes) => {
+          upstream = upRes;
+          const status = upRes.statusCode ?? 502;
+          const contentType = String(upRes.headers['content-type'] ?? '').toLowerCase();
+          const encoding = String(upRes.headers['content-encoding'] ?? 'identity').toLowerCase();
+          const isJson = contentType.startsWith('application/json');
+          const isSse = contentType.startsWith('text/event-stream');
+          const outHeaders = { ...upRes.headers };
+          delete outHeaders['content-length'];
+          delete outHeaders['transfer-encoding'];
+          upRes.on('error', () => res.destroy());
+
+          if (status < 200 || status >= 300 || encoding !== 'identity' || (!isJson && !isSse)) {
+            // Nothing this relay can read to cap: the old pipe.
+            res.writeHead(status, upRes.headers);
+            upRes.pipe(res);
+            upRes.on('end', resolve);
+            return;
+          }
+
+          if (isJson) {
+            const chunks: Buffer[] = [];
+            let size = 0;
+            upRes.on('data', (chunk: Buffer) => {
+              size += chunk.length;
+              if (size > MAX_BUFFERED_BYTES) {
+                upRes.destroy();
+                if (!res.headersSent) jsonError(res, 502, 'Composio result too large to relay');
+                else res.destroy();
+                resolve();
+                return;
+              }
+              chunks.push(chunk);
+            });
+            upRes.on('end', () => {
+              if (res.headersSent) return resolve();
+              const raw = Buffer.concat(chunks);
+              const { capped } = capResponseText(raw.toString('utf8'), requestId);
+              const out = capped === null ? raw : Buffer.from(capped, 'utf8');
+              res.writeHead(status, { ...outHeaders, 'content-length': String(Buffer.byteLength(out)) });
+              res.end(out);
+              resolve();
+            });
+            return;
+          }
+
+          // SSE: forward event by event; only the response event is rewritten.
+          res.writeHead(status, outHeaders);
+          const decoder = new StringDecoder('utf8');
+          let pending = '';
+          let done = false;
+          const finish = () => {
+            if (done) return;
+            done = true;
+            res.end();
+            upRes.destroy();
+            resolve();
+          };
+          upRes.on('data', (chunk: Buffer) => {
+            if (done) return;
+            pending += decoder.write(chunk);
+            if (pending.length > MAX_BUFFERED_BYTES) {
+              // One unterminated event this large: cut the client loose.
+              done = true;
+              res.destroy();
+              upRes.destroy();
+              resolve();
+              return;
+            }
+            const { events, rest } = takeEvents(pending);
+            pending = rest;
+            for (const { block, sep } of events) {
+              const data = eventData(block);
+              const { capped, isResponse } =
+                data === null ? { capped: null, isResponse: false } : capResponseText(data, requestId);
+              res.write(capped === null ? block + sep : withData(block, capped) + sep);
+              if (isResponse) {
+                finish();
+                return;
+              }
+            }
+          });
+          upRes.on('end', () => {
+            if (done) return;
+            pending += decoder.end();
+            if (pending) res.write(pending);
+            finish();
+          });
+        },
+      );
+      upReq.on('error', () => {
+        if (!res.headersSent) jsonError(res, 502, 'upstream error');
+        else res.destroy(); // mid-stream fault: cut the client loose rather than hang it
+        upstream?.destroy();
+        resolve();
+      });
+      upReq.end(body);
+    });
 
 export async function handleComposioRelay(
   req: IncomingMessage,
@@ -214,5 +447,15 @@ export async function handleComposioRelay(
     });
   }
 
-  await (deps.forward ?? defaultForward)(url, req.method ?? 'POST', headers, body, res);
+  // A tools/call carries the result a model will read, so its response goes
+  // through the size cap; every other relayed request (initialize, tools/list,
+  // notifications) is protocol and stays a plain pipe. An injected `forward`
+  // (tests) replaces both legs.
+  const requestId = isToolCall(parsed) ? parsed.id : undefined;
+  const leg =
+    deps.forward ??
+    (req.method === 'POST' && (typeof requestId === 'string' || typeof requestId === 'number')
+      ? cappingForward(requestId)
+      : defaultForward);
+  await leg(url, req.method ?? 'POST', headers, body, res);
 }

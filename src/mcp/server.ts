@@ -200,7 +200,9 @@ const SPINE_VIEW_CATALOG =
   'note attached twice comes back twice: select distinct the note, or group by its id. `via` says ' +
   "how: 'job_stamp'/'customer_stamp'/'visit_stamp' (the note named it), 'created_job'/" +
   "'created_customer'/'created_visit' (the row was made from this note), 'job_link' (a call or " +
-  "email landed on a job with no trip), 'visit_note' (a field note reported a trip), " +
+  "email landed on a job with no trip), 'visit_note' (attached to a trip — a technician's " +
+  "report OR a customer's call or email about a booked visit, so check v_captures.channel " +
+  'before treating it as the report), ' +
   "'customer_link' (the record knew WHO wrote, not which work). `where customer_id = …` includes " +
   'the notes on every one of their jobs; a row whose job_id is NULL names no job for THAT ' +
   'attachment only — the same note may sit on a job through another row. ' +

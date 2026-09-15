@@ -78,6 +78,7 @@ const ADMIN_TOOLS = [
 // as the database rendered it, microseconds kept, so the next page starts after
 // the precise row (a timestamp without its id would re-serve tied rows).
 const REVIEW_CURSOR = /^([^|]+)\|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function handleListPendingReviews(toolCtx: ToolContext): Promise<unknown> {
   const { args, tenantId, str } = toolCtx;
@@ -92,7 +93,8 @@ async function handleListPendingReviews(toolCtx: ToolContext): Promise<unknown> 
       }
       const reviewItemId = str('reviewItemId');
       if (reviewItemId) {
-        const item = await getOpenReviewItem(reviewItemId, tenantId);
+        // A malformed id is "no such item" in words, not a raw uuid cast error.
+        const item = UUID_SHAPE.test(reviewItemId) ? await getOpenReviewItem(reviewItemId, tenantId) : null;
         return item
           ? { item }
           : { item: null, note: 'no OPEN review item with that id on this firm — it may already be closed' };

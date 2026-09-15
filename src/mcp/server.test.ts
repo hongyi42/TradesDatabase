@@ -10027,9 +10027,19 @@ describe('list_pending_reviews pages (retrieval layer 4)', () => {
       for (let i = 0; i < 25; i++) {
         const { rows } = await pg.query<{ id: string }>(
           `insert into review_items (tenant_id, kind, subject_ref, detail, created_at)
-           values ($1, 'rl4_page_probe', $2, $3::jsonb, timestamptz '2027-01-01 00:00+00' + ($4 || ' seconds')::interval)
+           values ($1, 'rl4_page_probe', $2, $3::jsonb, $4::timestamptz)
            returning id`,
-          [tenantId, `rl4-${i}`, JSON.stringify(i === 3 ? { words: 'y'.repeat(3000) } : { i }), String(i)],
+          [
+            tenantId,
+            `rl4-${i}`,
+            JSON.stringify(i === 3 ? { words: 'y'.repeat(3000) } : { i }),
+            // Items 18..21 share ONE microsecond timestamp, so the page boundary
+            // (after the 20th) falls inside the tie: a cursor that lost its
+            // microseconds or its id would repeat or skip a row here.
+            i >= 18 && i <= 21
+              ? '2027-01-01 00:00:18.123456+00'
+              : `2027-01-01 00:00:${String(i).padStart(2, '0')}.000001+00`,
+          ],
         );
         made.push(rows[0].id);
       }
@@ -10060,8 +10070,12 @@ describe('list_pending_reviews pages (retrieval layer 4)', () => {
       const notMine = await callWith('list_pending_reviews', { reviewItemId: foreign.rows[0].id });
       expect(notMine.isError).toBe(false);
       expect(notMine.data.item).toBeNull();
+      expect(p1.data.next).toContain('.123456');
       const badCursor = await callWith('list_pending_reviews', { after: 'page-two' });
       expect(badCursor.isError).toBe(true);
+      const notAnId = await callWith('list_pending_reviews', { reviewItemId: 'not-a-uuid' });
+      expect(notAnId.isError).toBe(false);
+      expect(notAnId.data.item).toBeNull();
       const empty = await callWith('list_pending_reviews', { kind: 'rl4_no_such_kind' });
       expect(empty.data.items).toEqual([]);
       expect(empty.data.note).toContain('no open review items');

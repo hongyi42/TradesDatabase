@@ -247,8 +247,9 @@ the test is now PLACEMENT:
 - **Outside accounts go through Composio, first move (AGENTS.md rule 8, added 2026-09-07).**
   Gmail: the agent calls `get_connect_link` (Gmail-only, manager-tier) and hands over the URL.
   Other accounts (Sheets, Excel, Drive): a manager's seat connects them through Composio's own
-  connection tool (the manager session has `manageConnections: true`); a technician's seat
-  cannot connect accounts and says so (corrected 2026-09-15 — the first wording routed all four
+  connection tool (the manager session has `manageConnections: true`), never Gmail that way (only
+  `get_connect_link` starts the mailbox check); a technician's seat connects no account, Gmail
+  included, and says so (corrected 2026-09-15 — the first wording routed all four
   to `get_connect_link`). No web search, no alternative integration, no self-authentication.
   Everything after the browser approval is already automatic and is NOT the agent's to do —
   `checkPairing` (`src/composio/pairing.ts`) adopts the ACTIVE account, opens the

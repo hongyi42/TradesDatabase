@@ -1371,18 +1371,23 @@ async function handleUnscheduleVisit(toolCtx: ToolContext): Promise<unknown> {
         throw new Error('staged unschedule is malformed — restage with visitId + reason');
       }
       // The yes approved THIS visit at the staged time. If it moved, lost its
-      // time, or is gone, cancelling now would cancel something nobody saw. A
-      // token staged before `expected` existed carries no snapshot: refused the
-      // same way (fail closed; the 15-minute window bounds it).
-      const now = await getVisitForTenant(d.visitId, tenantId);
+      // time, or is gone, cancelling now would cancel something nobody saw.
+      // Checked HERE so a refusal dismisses the token before it is consumed; the
+      // cancel below repeats the check atomically (unscheduleVisit's
+      // `expectedTimes`), because a move can still land between this read and
+      // the update.
       const expected = d.expected;
-      if (
-        !now ||
-        !expected ||
-        expected.startsAt === undefined ||
-        wallClock(now.starts_at) !== expected.startsAt ||
-        wallClock(now.ends_at) !== expected.endsAt
-      ) {
+      if (!expected || expected.startsAt === undefined) {
+        // Staged before the snapshot existed: fail closed, the 15-minute window bounds it.
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'staged before the time check existed');
+        throw new Error('this confirmation predates a safety check — nothing was cancelled; restage the unschedule and confirm again');
+      }
+      const now = await getVisitForTenant(d.visitId, tenantId);
+      if (!now) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'visit no longer found');
+        throw new Error('visit NOT unscheduled: it no longer exists for this firm — nothing was cancelled');
+      }
+      if (wallClock(now.starts_at) !== expected.startsAt || wallClock(now.ends_at) !== expected.endsAt) {
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'visit moved while the confirmation was pending');
         throw new Error(
           'visit NOT unscheduled: it moved (or lost its time) since the manager approved — nothing was ' +
@@ -1405,6 +1410,9 @@ async function handleUnscheduleVisit(toolCtx: ToolContext): Promise<unknown> {
           visitId: d.visitId,
           reason: d.reason,
           actorRef: subjectRef,
+          // The approved times, enforced on the UPDATE itself: a move landing
+          // after the check above makes the cancel match no row.
+          expectedTimes: { startsAt: now.starts_at, endsAt: now.ends_at },
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

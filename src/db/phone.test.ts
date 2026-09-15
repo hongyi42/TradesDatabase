@@ -63,7 +63,7 @@ describe('phoneKey', () => {
 
   test('find_customer search reaches a stored number by any spelling of it', async () => {
     const stored = await createCustomer({ tenantId, name: 'Searchable Sue', phone: '206-555-0199' });
-    for (const q of ['206 555 0199', '+1 206 555 0199', '(206) 555-0199']) {
+    for (const q of ['206 555 0199', '+1 206 555 0199', '(206) 555-0199', '+1 206 555 01', '555 0199']) {
       const hits = await searchCustomers(tenantId, q);
       expect(hits.map((h) => h.id), q).toContain(stored.id);
     }

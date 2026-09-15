@@ -287,7 +287,10 @@ export async function searchCustomers(tenantId: string, query: string): Promise<
   const like = `%${query.trim().replace(/[,()]/g, ' ')}%`;
   const digits = query.replace(/[^0-9]/g, '');
   const looksLikePhone = /^[0-9\s+().-]+$/.test(query.trim()) && digits.length >= 4;
-  const byKey = looksLikePhone ? `,phone_key.ilike.%${phoneKey(query) ?? digits}%` : '';
+  // A PARTIAL number typed with its +1 ("+1 206 555 01") is not 11 digits, so
+  // phoneKey keeps it whole and "120655501" is in no key; drop an explicit +1 first.
+  const fragment = /^\s*\+\s*1/.test(query) ? digits.slice(1) : (phoneKey(query) ?? digits);
+  const byKey = looksLikePhone ? `,phone_key.ilike.%${fragment}%` : '';
   const { data, error } = await getClient()
     .from('customers')
     .select()

@@ -332,6 +332,10 @@ export async function updateVisitStatus(
   // caller that COMPLETES a visit often knows only that it finished (the
   // cancel_job cascade, the status walk) — a note is what usually knows when.
   completedAt?: string | null,
+  // Apply only if the row still has these starts_at/ends_at (raw column values,
+  // null = untimed). A staged cancel approved a TIME, and a move keeps the id,
+  // so the time is part of the compare-and-set, not a read before it.
+  expectedTimes?: { startsAt: string | null; endsAt: string | null },
 ): Promise<Visit> {
   const current = await getVisit(id);
   if (!current) throw new Error(`updateVisitStatus: visit ${id} not found`);
@@ -342,7 +346,7 @@ export async function updateVisitStatus(
         `(allowed: ${allowed.join(', ') || 'none'})`,
     );
   }
-  const { data, error } = await getClient()
+  let update = getClient()
     .from('visits')
     .update({
       status: next,
@@ -350,9 +354,12 @@ export async function updateVisitStatus(
       ...(next === 'completed' && completedAt != null ? { completed_at: completedAt } : {}),
     }) // updated_at is stamped by the DB trigger
     .eq('id', id)
-    .eq('status', current.status)
-    .select()
-    .maybeSingle();
+    .eq('status', current.status);
+  if (expectedTimes) {
+    update = expectedTimes.startsAt === null ? update.is('starts_at', null) : update.eq('starts_at', expectedTimes.startsAt);
+    update = expectedTimes.endsAt === null ? update.is('ends_at', null) : update.eq('ends_at', expectedTimes.endsAt);
+  }
+  const { data, error } = await update.select().maybeSingle();
   if (error) {
     throw Object.assign(new Error(`updateVisitStatus failed: ${error.message}`), {
       code: error.code,

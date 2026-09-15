@@ -950,6 +950,10 @@ export interface UnscheduleVisitInput {
   // batch caller can stamp its own identity onto the rows it writes.
   eventDetailExtra?: Json;
   actorRef: string;
+  // The visit's starts_at/ends_at exactly as the caller last read them (raw
+  // column values). When given, the cancel applies only if the row still has
+  // them — a staged confirmation approved THIS time, and a move keeps the id.
+  expectedTimes?: { startsAt: string | null; endsAt: string | null };
 }
 
 export interface UnscheduleVisitPreview {
@@ -998,7 +1002,19 @@ export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Visi
         'field note may have reported it as done; check get_team_schedule for its current state',
     );
   }
-  const cancelled = await updateVisitStatus(target.id, 'cancelled', input.reason);
+  if (
+    input.expectedTimes &&
+    (target.starts_at !== input.expectedTimes.startsAt || target.ends_at !== input.expectedTimes.endsAt)
+  ) {
+    throw new Error('the visit moved since it was approved — it was not cancelled; restage to see its current time');
+  }
+  const cancelled = await updateVisitStatus(
+    target.id,
+    'cancelled',
+    input.reason,
+    undefined,
+    input.expectedTimes,
+  );
   await appendScheduleEvent({
     tenantId: input.tenantId,
     visitId: cancelled.id,

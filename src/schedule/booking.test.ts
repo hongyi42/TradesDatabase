@@ -1043,6 +1043,56 @@ describe('unscheduleVisit', () => {
     const unplacedPreview = await previewUnscheduleVisit(tenantId, unplaced.assignment.id);
     expect(unplacedPreview.requiresConfirmation).toBe(false);
   });
+
+  test('expectedTimes: a cancel approved for one time never lands on another (check AND compare-and-set)', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Drifting Dee' });
+    const { assignment } = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      date: '2026-11-18',
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+    const approved = (await getVisitForTenant(assignment.id, tenantId))!;
+    const approvedTimes = { startsAt: approved.starts_at, endsAt: approved.ends_at };
+    await moveVisit({
+      tenantId,
+      visitId: assignment.id,
+      date: '2026-11-18',
+      startTime: '13:00',
+      reason: 'customer asked for the afternoon',
+      actorRef: 'manager-test',
+    });
+
+    // The service refuses on its own read…
+    await expect(
+      unscheduleVisit({
+        tenantId,
+        visitId: assignment.id,
+        reason: 'customer cancelled',
+        actorRef: 'manager-test',
+        expectedTimes: approvedTimes,
+      }),
+    ).rejects.toThrow(/moved since it was approved/);
+    // …and the UPDATE refuses too, for the move that lands after that read.
+    await expect(
+      updateVisitStatus(assignment.id, 'cancelled', 'customer cancelled', undefined, approvedTimes),
+    ).rejects.toThrow(/changed concurrently/);
+    expect((await getVisitForTenant(assignment.id, tenantId))?.status).toBe('confirmed');
+
+    // With the times it really has now, the same cancel applies.
+    const current = (await getVisitForTenant(assignment.id, tenantId))!;
+    const cancelled = await unscheduleVisit({
+      tenantId,
+      visitId: assignment.id,
+      reason: 'customer cancelled',
+      actorRef: 'manager-test',
+      expectedTimes: { startsAt: current.starts_at, endsAt: current.ends_at },
+    });
+    expect(cancelled.status).toBe('cancelled');
+  });
 });
 
 describe('cancelJob — the terminal verb (cancel-vocabulary plan, 2026-07-25)', () => {

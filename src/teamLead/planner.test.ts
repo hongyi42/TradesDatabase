@@ -7776,7 +7776,7 @@ describe('retrieval layer 3 — the gap ceiling, ids on the evidence, nothing cu
     }));
     const view = buildGapView(nudge(), Date.parse(NOW), rows, false, new Set());
     expect(view.block).toContain(`capture c-${at(0)}: note 0`);
-    expect(view.block).toContain('(3 earlier notes since the question went out not shown');
+    expect(view.block).toContain('(3 earlier notes on this job not shown');
     expect(view.block).toContain(`was cut at ${EVIDENCE_TEXT_CHARS} characters`);
     // A gap's rows are its OWN: another gap's copy of the same job's note is not shown here.
     const other = buildGapView(

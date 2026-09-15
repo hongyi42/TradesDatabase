@@ -1899,8 +1899,12 @@ export function buildGapView(
       });
       // NOTHING CUT SILENTLY. Both after the loop, so the [i] labels stay aligned.
       if (earlierNotes > 0) {
+        // NO WINDOW NAMED, deliberately: the count comes from the database,
+        // which floors the read at the gap's own bound OR a year back, whichever
+        // is later (EVIDENCE_FLOOR_MAX_DAYS) — so "since the question went out"
+        // would be a claim this line cannot make for a gap older than that.
         lines.push(
-          `    (${earlierNotes} earlier ${earlierNotes === 1 ? 'note' : 'notes'} since ${since} ` +
+          `    (${earlierNotes} earlier ${earlierNotes === 1 ? 'note' : 'notes'} on this job ` +
             'not shown — spine_read v_captures joined to v_capture_links on this job id for them)',
         );
       }

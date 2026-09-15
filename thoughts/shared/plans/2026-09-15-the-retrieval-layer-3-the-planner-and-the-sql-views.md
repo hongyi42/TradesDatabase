@@ -26,6 +26,15 @@ membership, folds the views, and caps what the planner is shown.
 - **Hard cap 100 gaps + noticed items, a SUGGESTED (unenforced) target under 30, both ALWAYS stated** (operator
   2026-09-15). GLM 5.3 context 1,310,720 tokens (OpenRouter `/api/v1/models`) vs ~190K worst case. Hidden: no reads, marks, stamps.
 - **A retracted call/email's gap hides its words and states a record fact** (operator, this session).
+- **A new call hidden by the ceiling is left as is** (operator 2026-09-15, after the final review): over
+  100 gaps the newest item is hidden first, so the heartbeat's backup ping for a fresh call cannot
+  show it until the backlog clears. Accepted: the Calls-worker's focused pass is uncapped and normally
+  claims it within seconds, and a firm over the ceiling is itself the alarm. Rejected: reserving slots
+  for inbound items, and inbound-first ordering.
+- **`security definer` functions name `pg_temp` last** (final review): unnamed, `pg_temp` is searched
+  FIRST, so a caller who can create temp tables could shadow `raw_captures` inside a definer body. Fixed
+  on this plan's three functions; the same hardening is OWED on plan 1's eight
+  (`20260916120000_retrieval_layer_core.sql`) and belongs to whoever next edits that file.
 - **Pushed evidence includes `manager_only` notes** (operator, this session): planner tier sees all.
 - **`query_spine`'s 5 s limit is dead; the real bound is 8 s** (measured this session, local stack):
   `pg_sleep(6)` returned at 6.03 s, `pg_sleep(12)` was cancelled at 8.05 s. `authenticator` has

@@ -38,7 +38,9 @@ create or replace function gap_evidence(
 returns jsonb
 language plpgsql
 security definer
-set search_path = public
+-- pg_temp LAST so a temp object cannot shadow a public one for this function
+-- (20260806120000's posture; unnamed, pg_temp is searched FIRST).
+set search_path = public, pg_temp
 stable
 as $$
 declare
@@ -105,7 +107,7 @@ create or replace function job_activity_since(
 returns jsonb
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, pg_temp -- see gap_evidence
 stable
 as $$
 begin
@@ -141,7 +143,7 @@ create or replace function capture_records(
 returns jsonb
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, pg_temp -- see gap_evidence
 stable
 as $$
 begin

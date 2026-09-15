@@ -19,6 +19,7 @@ import {
   cleanPlannerText,
   observationAsGapRow,
   clockLabel,
+  EVIDENCE_FLOOR_MAX_DAYS,
   EVIDENCE_PER_GAP,
   PLANNER_ACTIONS,
   plannerCadenceDue,
@@ -2832,6 +2833,51 @@ describe('the job-note line', () => {
     expect(seen.evidence).toEqual([good]);
     expect(seen.money).toEqual([good]);
     expect(seen.notes).toEqual([good]);
+  });
+
+  test('each gap asks for evidence from its OWN floor — asked, never-asked, and clamped', async () => {
+    // Retrieval layer plan 3: the floor travels per gap, and the database's
+    // `total` (what "N earlier notes not shown" will say) is only true if it is
+    // exactly the floor buildGapView applies.
+    const job = (n: number) => `4444444${n}-4444-4444-8444-444444444444`;
+    let asked: EvidenceAsk[] = [];
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [
+        nudge({ id: 'asked', subject_ref: 'a1', asked_at: '2026-08-16T10:00:00.000Z',
+          context: { ...(nudge().context as Record<string, unknown>), jobId: job(1) } }),
+        nudge({ id: 'never', subject_ref: 'a2', status: 'pending', asked_at: null,
+          created_at: '2026-08-14T09:00:00.000Z',
+          context: { ...(nudge().context as Record<string, unknown>), jobId: job(2) } }),
+        nudge({ id: 'ancient', subject_ref: 'a3', asked_at: '2024-01-01T00:00:00.000Z',
+          created_at: '2024-01-01T00:00:00.000Z',
+          context: { ...(nudge().context as Record<string, unknown>), jobId: job(3) } }),
+      ],
+      listEvidence: async (_t: string, asks: EvidenceAsk[]) => ((asked = asks), []),
+      runLoop: loopReturning([]),
+    }));
+    const floorFor = (id: string) => asked.find((a) => a.gapId === id)?.sinceIso;
+    expect(floorFor('asked')).toBe('2026-08-16T10:00:00.000Z'); // the ask
+    expect(floorFor('never')).toBe('2026-08-14T09:00:00.000Z'); // the moment it was noticed
+    expect(floorFor('ancient')).toBe(
+      new Date(Date.parse(NOW) - EVIDENCE_FLOOR_MAX_DAYS * 24 * 3_600_000).toISOString(),
+    ); // clamped, like the money read
+  });
+
+  test("a gap's evidence is its own: another gap's copy of the same note is not rendered twice", () => {
+    // Two gaps on one job each get their own rows from the database. Without the
+    // gapId filter the older gap would render the newer gap's copies as well.
+    const row = evidence('2026-08-15T13:00:00.000Z', 'the unit is running again');
+    const view = buildGapView(
+      nudge({ id: 'n1' }),
+      Date.parse(NOW),
+      [
+        { ...row, gapId: 'n1', gapTotal: 1 },
+        { ...row, gapId: 'n2', gapTotal: 1 },
+      ],
+      true,
+      new Set(),
+    );
+    expect(view.evidenceText).toEqual(['the unit is running again']);
   });
 
   test('a failing note read costs the tick nothing', async () => {

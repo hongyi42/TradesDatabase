@@ -258,11 +258,13 @@ describe('listGapEvidence', () => {
   });
 
   test('a job link cannot smuggle in ANOTHER firm’s words — evidence and activity alike', async () => {
+    // LATER than anything already on jobB: if the link leaked, the job's latest
+    // activity would move — a leak at the same instant could not be told apart.
     const foreign = await capture({
       tenantId: otherTenantId,
       jobId: null,
       text: "another firm's words, linked to our job",
-      at: after,
+      at: '2026-08-16T23:00:00.000Z',
     });
     const evidenceBefore = (await listGapEvidence(tenantId, [ask(jobB)], 20))[0]?.gapTotal ?? 0;
     const activityBefore = (await listJobActivitySince(tenantId, [jobB], FLOOR)).get(jobB);
@@ -275,6 +277,29 @@ describe('listGapEvidence', () => {
     expect(rows.map((r) => r.capture.id)).not.toContain(foreign.id);
     expect(rows[0]?.gapTotal ?? 0).toBe(evidenceBefore);
     expect((await listJobActivitySince(tenantId, [jobB], FLOOR)).get(jobB)).toBe(activityBefore);
+  });
+
+  test('a stamped capture that is ALSO linked to its job comes back once, naming both arms', async () => {
+    const stamped = await capture({ tenantId, jobId: jobA, text: 'stamped and linked', at: after });
+    await insertJobCapture({ tenantId, jobId: jobA, captureId: stamped.id });
+    const found = (await listGapEvidence(tenantId, [ask(jobA)], 20)).filter(
+      (r) => r.capture.id === stamped.id,
+    );
+    expect(found).toHaveLength(1);
+    expect(found[0].via.split(',')).toEqual(expect.arrayContaining(['job_stamp', 'job_link']));
+  });
+
+  test('an unstamped capture on BOTH a trip and a job link comes back once, naming both arms', async () => {
+    // Reachable through the retraction twin-insert, which follows its target
+    // onto every link it has.
+    const both = await capture({ tenantId, jobId: null, text: 'linked twice', at: after });
+    await reportedVisit({ tenantId, jobId: jobB, captureId: both.id });
+    await insertJobCapture({ tenantId, jobId: jobB, captureId: both.id });
+    const found = (await listGapEvidence(tenantId, [ask(jobB)], 20)).filter(
+      (r) => r.capture.id === both.id,
+    );
+    expect(found).toHaveLength(1);
+    expect(found[0].via.split(',')).toEqual(expect.arrayContaining(['visit_note', 'job_link']));
   });
 
   test('results carry their job and gap, and come back oldest-first within a gap', async () => {

@@ -171,7 +171,7 @@ exact. Fix the comment at :379-380 to match.
 
 ### Live verification (agent-executable, pre-merge)
 - Prerequisites: `supabase-test` MCP; the operator's go.
-- [ ] Apply the migration SQL to the pilot (`apply_migration`); `execute_sql` `select
+- [x] Apply the migration SQL to the pilot (`apply_migration`); `execute_sql` `select
       pg_get_viewdef('v_office_messages'::regclass, true)` contains `'desk'`; capture the output.
 
 ---
@@ -239,7 +239,7 @@ alone: both sides are Twilio E.164.
 
 ### Live verification (agent-executable, pre-merge)
 - Prerequisites: `supabase-test` MCP; the operator's go.
-- [ ] Apply the migration to the pilot; `execute_sql`: `select count(*) filter (where phone is not
+- [x] Apply the migration to the pilot; `execute_sql`: `select count(*) filter (where phone is not
       null) as with_phone, count(*) filter (where phone_key is not null) as keyed from customers`,
       and spot-check 3 rows' `phone` vs `phone_key`. Capture the output.
 
@@ -284,14 +284,14 @@ enforcement, per the Box_Setup_Stuff sync rule.
 ### Live verification (agent-executable, operator's go at each step)
 - Prerequisites: `ssh tradesbox`; before any sudo, `who` + `ps` show no other operator session
   (memory box-operators); never `openclaw config patch`.
-- [ ] Re-inventory every copy (`sudo find / -name bootstrap-box.sh -not -path '*/proc/*'` + `md5sum`;
+- [x] Re-inventory every copy (`sudo find / -name bootstrap-box.sh -not -path '*/proc/*'` + `md5sum`;
       engineering-memory :3108-3123 found seven). rsync `Box_Setup_Stuff/` to `~/Box_Setup_Stuff/`
       (wire needs the whole tree), `sudo install` over `/usr/local/sbin/bootstrap-box.sh` (the
       recycler's copy); both md5 = the repo's. Report any other stale copy, do not delete it.
-- [ ] Per seat, BEFORE `wire`: read its current `NEMOCLAW_CTX_WINDOW` from the container
+- [x] Per seat, BEFORE `wire`: read its current `NEMOCLAW_CTX_WINDOW` from the container
       (`.models.providers.inference.models[0].contextWindow`: 262144 manager, 131072 technician,
       :570-571) and pass exactly that — a wrong value silently halves a manager's window.
-- [ ] s2 (canary): `wire` prints `tools.toolSearch=false read back`; the in-container AGENTS.md shows
+- [x] s2 (canary): `wire` prints `tools.toolSearch=false read back`; the in-container AGENTS.md shows
       the new rule 8; `verify` shows no toolSearch ✗; a real turn on s2 answers (memory
       nemoclaw-status-lies-after-restart). Grep the installed OpenClaw dist for how `inference.local`
       is classified for tool search; record the answer in engineering memory.

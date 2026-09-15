@@ -1386,7 +1386,7 @@ export async function previewCancelJob(
   const job = await resolveCancelJob(tenantId, jobId);
   const customer = await getCustomer(job.customer_id);
   const rows = await liveRowsForJob(job.id);
-  // Ref resolution mirrors findDisplacementCandidates: cache per technician.
+  // Ref resolution: one tenant-scoped roster read per technician, cached.
   const refCache = new Map<string, string | null>();
   const refOf = async (technicianId: string): Promise<string | null> => {
     if (!refCache.has(technicianId)) {

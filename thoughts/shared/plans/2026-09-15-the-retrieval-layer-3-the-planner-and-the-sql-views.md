@@ -43,7 +43,16 @@ membership, folds the views, and caps what the planner is shown.
   FIRST, so a caller who can create temp tables could shadow `raw_captures` inside a definer body. Fixed
   on this plan's three functions; the same hardening is OWED on plan 1's eight
   (`20260916120000_retrieval_layer_core.sql`) and belongs to whoever next edits that file.
-- **Pushed evidence includes `manager_only` notes** (operator, this session): planner tier sees all.
+- **Pushed evidence includes `manager_only` notes** (operator, this session; CONFIRMED after the final
+  review raised the relay, operator 2026-09-15: "just do your recommendation"). The review's concern is
+  real — the planner can paraphrase such a note into a technician's message — and it stands anyway,
+  because of what is in one: `src/composio/logIngest.ts` is the ONLY writer of that stamp and it stores
+  argument KEY NAMES, never values (`Agent action: GMAIL_SEND (gmail) — argument keys: to, subject`).
+  A technician could learn that a manager mailed about their job and which fields it had; no amount, no
+  body. Against that, the planner gains "a manager already acted here", which is often the reason not to
+  chase anyone. THE CONDITION, and it is wired where the decision would be made: a comment at that
+  redaction-policy site says that capturing VALUES for a toolkit re-opens this and the fold must come
+  back with it.
 - **`query_spine`'s 5 s limit is dead; the real bound is 8 s** (measured this session, local stack):
   `pg_sleep(6)` returned at 6.03 s, `pg_sleep(12)` was cancelled at 8.05 s. `authenticator` has
   `statement_timeout=8s` locally and on the pilot (`pg_roles`); a GUC set inside a running function

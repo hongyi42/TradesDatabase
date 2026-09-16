@@ -2131,6 +2131,56 @@ const TEMPORAL_RE = new RegExp(
   'gi',
 );
 
+// Anything that reads as an amount of money. Two shapes, because one alone is
+// easy to slip past: a figure carrying a currency marker, and a bare number
+// sitting beside a money word. Deliberately broad in the same way TEMPORAL_RE is
+// — a false positive costs the planner one rewrite, a false negative puts the
+// firm's charge in front of somebody the firm did not choose to show it to.
+const MONEY_RE = new RegExp(
+  [
+    // $900 · £40.50 · €1,200
+    '[$£€]\\s?\\d[\\d,]*(?:\\.\\d+)?',
+    // 900 dollars · 40 bucks · 1,200 USD · forty dollars · a few bucks
+    '(?:\\b[\\w-]+[\\s-]){0,3}\\b(?:dollars?|bucks|usd|eur|gbp)\\b',
+    // the balance is 900 · we invoiced 900 · 900 on the invoice
+    '\\b(?:invoice[a-z]*|bill(?:ed|s)?|balance|owed?|owes|paid|payment|charge[ds]?|' +
+      'quoted?|deposit|refund(?:ed|s)?|cost)\\b[^.!?\\n]{0,24}?\\b\\d[\\d,]*(?:\\.\\d+)?\\b',
+    '\\b\\d[\\d,]*(?:\\.\\d+)?\\b[^.!?\\n]{0,24}?\\b(?:invoice[a-z]*|bill(?:ed|s)?|balance|' +
+      'owed?|owes|paid|payment|charge[ds]?|quoted?|deposit|refund(?:ed|s)?|cost)\\b',
+  ].join('|'),
+  'i',
+);
+
+/**
+ * MAY THIS PERSON BE TOLD A MONEY AMOUNT HERE? (operator, 2026-09-15.)
+ *
+ * ONE QUESTION, asked in one place — never a `tier === 'technician'` test spelled
+ * out at each surface. A technician is not shown amounts BY DEFAULT: the invoice
+ * is what the firm CHARGED, which is its commercial position, and a technician
+ * who genuinely needs the figure asks a manager. But that is a DEFAULT, NOT A
+ * CEILING (same ruling): a manager may widen what their technicians see, money
+ * included, because some firms want their people to know the amount.
+ *
+ * So the grant is a PARAMETER of this question rather than an exception somebody
+ * remembers to add later — the day a money grant exists, it answers here and
+ * every caller follows. The grant itself belongs to the retrieval layer's plan 2
+ * (the technician view and the grants table) and the parked access-request flow;
+ * until one exists, `grant` is null everywhere and the tier is the whole answer.
+ *
+ * FAILS CLOSED on an unknown tier: a roster read that degraded to empty must not
+ * become a reason to start naming figures. The cost is small and bounded — in
+ * that tick `resolveTo` already refuses every NAMED addressee, so the only path
+ * left is the gap's own person, and it stays free to say where things stand in
+ * words.
+ */
+export function mayBeToldMoney(
+  recipientTier: string | undefined,
+  grant: { money?: boolean } | null = null,
+): boolean {
+  if (grant?.money === true) return true;
+  return recipientTier === 'manager';
+}
+
 /**
  * The shared shape of every string the planner writes for someone else to read.
  *
@@ -2181,7 +2231,18 @@ export function cleanPlannerText(
   // without the check. (It first lived in cleanQuestionDraft alone, held there by
   // a "do not add a second caller" comment — and the gap-less chat send, which
   // needed breaks just as much, was that second caller. Review, 2026-09-10.)
-  opts: { label: string; maxLen: number; skipDateRail?: boolean; keepBreaks?: boolean },
+  opts: {
+    label: string;
+    maxLen: number;
+    skipDateRail?: boolean;
+    keepBreaks?: boolean;
+    // THE MONEY RAIL (operator 2026-09-15), set from mayBeToldMoney by the
+    // caller that knows WHO this is for. It rides here beside the date rail for
+    // the same reason the date rail does: every string the planner writes for a
+    // person passes through this one function, so a send path added later cannot
+    // quietly skip it.
+    noMoney?: boolean;
+  },
 ): { note: string | null; why?: string } {
   if (raw === undefined || raw === null) return { note: null };
   if (typeof raw !== 'string') return { note: null, why: `${opts.label} was not a string` };
@@ -2211,6 +2272,18 @@ export function cleanPlannerText(
     return { note: null, why: `${opts.label} over ${opts.maxLen} characters` };
   }
   if (/https?:\/\//i.test(note)) return { note: null, why: `${opts.label} contained a link` };
+  if (opts.noMoney) {
+    const hit = note.match(MONEY_RE);
+    if (hit) {
+      return {
+        note: null,
+        why:
+          `${opts.label} named a money amount ("${hit[0].trim()}") — technicians are not told ` +
+          'amounts unless a manager grants it. Say where it stands in words ("invoiced, not yet ' +
+          'paid"), or tell them to ask a manager.',
+      };
+    }
+  }
   // Rides `keepBreaks`, by construction (see the option's comment). `\s+`
   // between the words, not spaces: a line break may now fall inside the
   // phrase, and "Note\nfor the assistant:" is the footer all the same.
@@ -2293,6 +2366,7 @@ export function cleanQuestionDraft(
   raw: unknown,
   dateLabels: string[],
   members: number = 1,
+  opts: { noMoney?: boolean } = {},
 ): { note: string | null; why?: string } {
   // `keepBreaks` brings the footer-impersonation refusal with it (see
   // cleanPlannerText), so that guard needs no line of its own here — and the
@@ -2301,6 +2375,7 @@ export function cleanQuestionDraft(
     label: 'question',
     maxLen: questionCapFor(members),
     keepBreaks: true,
+    noMoney: opts.noMoney,
   });
 }
 
@@ -2659,12 +2734,19 @@ export function validateDecisions(
         label: 'message',
         maxLen: 500,
         keepBreaks: as === 'chat',
+        // WHO IT IS FOR decides whether it may carry a figure — the tier as the
+        // roster knows them now, never the name.
+        noMoney: !mayBeToldMoney(reachable.get(to.ref)?.tier),
       });
       if (msg.why) noteDrops.push(`(no gap): ${msg.why}`);
       if (!msg.note) {
         push(
           'send needs `message` — it was missing, over length, carried a link, or named a ' +
-            'date. A message that is not about a gap has no dates it may use.',
+            'date. A message that is not about a gap has no dates it may use.' +
+            // THE REASON, not just the menu: `noteDrops` goes to the log, and a
+            // planner told "one of these four things" cannot tell which rail it
+            // hit — least of all the money rail, which is the newest.
+            (msg.why ? ` (${msg.why})` : ''),
           undefined,
           // The addressee RESOLVED before this rail refused the message, and
           // it is the only thing that makes the refusal legible in the corpus.
@@ -3060,15 +3142,24 @@ export function validateDecisions(
       // first draft) would have dropped the guard on exactly the message this
       // build added. Grouping is refused when `!counts`, so the ladder's
       // argument is 1 there and the caps agree either way.
+      // BOTH LEGS (the money rail): a quiet note lands in that person's OWN
+      // assistant's session, which is free to tell them what it says — so
+      // "assistant" is no safer a place for a figure than their phone is.
+      const noMoney = !mayBeToldMoney(reachable.get(addressee.ref)?.tier);
       const cleaned =
         as === 'chat'
-          ? cleanQuestionDraft(d.message, view.dateLabels, groupIds?.length ?? 1)
-          : cleanPlannerText(d.message, view.dateLabels, { label: 'message', maxLen: 500 });
+          ? cleanQuestionDraft(d.message, view.dateLabels, groupIds?.length ?? 1, { noMoney })
+          : cleanPlannerText(d.message, view.dateLabels, {
+              label: 'message',
+              maxLen: 500,
+              noMoney,
+            });
       if (cleaned.why) noteDrops.push(`${nudgeId}: ${cleaned.why}`);
       if (!cleaned.note) {
         push(
           'send needs `message` — it was missing, over length, carried a link, or named a date ' +
-            'it was not given. There is no other author: rewrite it.',
+            'it was not given. There is no other author: rewrite it.' +
+            (cleaned.why ? ` (${cleaned.why})` : ''),
         );
         continue;
       }

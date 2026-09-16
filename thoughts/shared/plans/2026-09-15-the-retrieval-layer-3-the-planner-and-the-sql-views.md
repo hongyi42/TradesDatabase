@@ -26,6 +26,11 @@ membership, folds the views, and caps what the planner is shown.
 - **Hard cap 100 gaps + noticed items, a SUGGESTED (unenforced) target under 30, both ALWAYS stated** (operator
   2026-09-15). GLM 5.3 context 1,310,720 tokens (OpenRouter `/api/v1/models`) vs ~190K worst case. Hidden: no reads, marks, stamps.
 - **A retracted call/email's gap hides its words and states a record fact** (operator, this session).
+- **A technician is never told a money AMOUNT in anything the planner sends** (operator 2026-09-15,
+  added after the final review): the invoice is what the firm charged, and a technician who needs the
+  figure asks a manager. A DEFAULT, NOT A CEILING — a manager may widen, money included — so the rail
+  asks one question, `mayBeToldMoney(tier, grant)`, with the grant as a parameter rather than an
+  exception to remember later. Phase 4.
 - **A new call hidden by the ceiling is left as is** (operator 2026-09-15, after the final review): over
   100 gaps the newest item is hidden first, so the heartbeat's backup ping for a fresh call cannot
   show it until the backlog clears. Accepted: the Calls-worker's focused pass is uncapped and normally
@@ -304,6 +309,44 @@ the old `listL2CitingCapture` (`:545-699`) and `listNoteTimesForJobs` (`visits.t
 - Prerequisites: `supabase-test` MCP; Render MCP (workspace `tea-d69903h5pdvs738dm81g`).
 - [ ] **Immediately before merge:** apply both migrations to the pilot, then do Phase 1's and Phase 2's read-backs.
 - [ ] **Right after merge:** check that the lifecycle-heart and Calls-worker deploys are on the merge commit (`list_deploys`), triggering the heartbeat's deploy if it did not start. On the next heartbeat, the planner summary shows no new `tenantErrors`, and the logs have no `gap_evidence`, `capture_records` or `job_activity_since` failures.
+
+## Phase 4: the money rail on the way out
+
+### What this phase does
+The planner relays money to technicians: its gap block lists a job's ledger lines with amounts and it
+writes that person's message itself. Plan 2 hides amounts on the technician's own reads; this closes
+the same hole on the planner's surface, where the words are model-written.
+
+### Changes required
+**`src/teamLead/planner.ts`**
+- Beside `TEMPORAL_RE`: `MONEY_RE` (a currency-marked figure — `$900`, `forty dollars`, `USD 40` — or a
+  bare number within 24 characters of a money word: invoice, bill, balance, owe, paid, payment, charge,
+  quote, deposit, refund, cost), and `export function mayBeToldMoney(recipientTier, grant = null)` —
+  true for `manager`, true when `grant.money`, false otherwise (an unknown tier FAILS CLOSED).
+- `cleanPlannerText` gains `opts.noMoney`, checked after the link check, refusing with the amount it
+  caught and what to do instead; `cleanQuestionDraft` passes it through.
+- Both send paths set it from the resolved addressee's tier (`reachable.get(ref)?.tier`), on BOTH legs
+  — a quiet note lands in that person's own assistant's session.
+- Both `send needs \`message\`` refusals append the specific reason; `noteDrops` only reaches the log,
+  and a planner told "one of these four things" cannot tell which rail it hit.
+
+**`src/teamLead/plannerPrompt.ts`** — a `MONEY` line beside WHO/HOW/WHETHER under SEND.
+
+### Automated verification
+- [x] `mayBeToldMoney`: manager true, technician false, unknown false, `{money:true}` true.
+- [x] A figure to a technician refused on chat AND assistant, the refusal naming the amount and "ask a
+      manager"; status in words accepted; a bare number beside a money word refused; a manager may be
+      told; the doctrine line pinned.
+- [x] `npm run typecheck`, `npm run lint`, `npm test` (3,197 passed, 9 skipped), `npm run build`.
+- [x] Mutation check: `mayBeToldMoney` returning true for everyone fails 3 of the new tests.
+
+### Live verification (agent-executable)
+- [ ] Covered by Phase 3's post-merge check (no new database surface).
+
+### Manual verification
+- [ ] none
+
+---
 
 ### Manual verification
 - [ ] Restart the manager seats' gateways (s2 first; `tools/list` is cached per process), then read `query_spine`'s description back: it names `v_capture_links`. This is also plan 1's owed restart.

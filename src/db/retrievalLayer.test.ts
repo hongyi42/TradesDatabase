@@ -2,7 +2,9 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from './client.js';
 import { createCustomer, insertCustomerCapture, setCustomerAttribute } from './customers.js';
-import { createJob, insertJobCapture } from './jobs.js';
+import { TERMINAL_JOB_STATUSES, createJob, insertJobCapture } from './jobs.js';
+import { insertTechnician } from './technicians.js';
+import { setTechnicianViewRule } from './technicianView.js';
 import { createTenant } from './tenants.js';
 import { createVisit, insertVisitNote } from './visits.js';
 import { appendRawCapture, type RawCapture } from './rawCaptures.js';
@@ -17,6 +19,11 @@ let tenantId: string;
 // The second firm the leak test creates. Its L1 row pins it until the truncate
 // below runs, so it is deleted AFTER that (the house pattern: spineViews.test.ts).
 let otherTenantId: string | null = null;
+// The technician the tier tests read as. Since plan 2 (the technician limited
+// view) a technician sees only the jobs she has a trip on and their customers,
+// and only when the read names her — so she is a real roster row, and each
+// technician test puts her on a trip first (tripFor).
+let techId: string;
 
 beforeAll(async () => {
   await pg.connect();
@@ -28,11 +35,19 @@ beforeAll(async () => {
     .single();
   if (error || !data) throw new Error(`could not load seed tenant: ${error?.message ?? 'none'}`);
   tenantId = data.id;
+  techId = (await insertTechnician({ tenantId, ref: 'tech-layer', displayName: 'Tech Layer', seatExempt: true })).id;
+  // The seed tenant is SHARED, and server.test.ts widens its technician view rule
+  // to whole_firm for its own suite. An interrupted run leaves that row behind,
+  // and this file's technician assertions would then be measuring a wider view
+  // without failing (measured, 2026-09-15). Start from the shipped default.
+  await setTechnicianViewRule(tenantId, null, 'retrievalLayer.test');
 });
 
 afterAll(async () => {
   // L1 is append-only by trigger — DELETE is refused, so the house pattern is TRUNCATE.
-  await pg.query('truncate table schedule_entries, customers, jobs, visits, raw_captures cascade');
+  await pg.query(
+    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, access_grants cascade',
+  );
   if (otherTenantId) await pg.query('delete from tenants where id = $1', [otherTenantId]);
   await pg.end();
 });
@@ -85,11 +100,28 @@ interface Search {
   note?: string;
 }
 
-const contents = async (customerId: string, tier: string, tenant = tenantId): Promise<Contents | null> => {
+// What every reader sends for the technician view (src/db/context.ts viewerParams).
+const viewerArgs = (viewer?: string) => ({
+  p_terminal_statuses: [...TERMINAL_JOB_STATUSES],
+  ...(viewer ? { p_viewer: viewer } : {}),
+});
+
+// Put the tier tests' technician on a trip for a job: that is what puts the job
+// (and its customer) in her view.
+const tripFor = (jobId: string) =>
+  createVisit({ tenantId, jobId, technicianId: techId, startsAt: null, endsAt: null, status: 'proposed' });
+
+const contents = async (
+  customerId: string,
+  tier: string,
+  tenant = tenantId,
+  viewer?: string,
+): Promise<Contents | null> => {
   const { data, error } = await getClient().rpc('customer_contents', {
     p_tenant: tenant,
     p_customer: customerId,
     p_caller_tier: tier,
+    ...viewerArgs(viewer),
   });
   if (error) throw new Error(error.message);
   return data as unknown as Contents | null;
@@ -100,6 +132,7 @@ const page = async (
   scopeId: string,
   tier: string,
   opts: { beforeAt?: string; beforeId?: string; limit?: number; includeRetracted?: boolean } = {},
+  viewer?: string,
 ): Promise<Page> => {
   const { data, error } = await getClient().rpc('captures_page', {
     p_tenant: tenantId,
@@ -110,29 +143,38 @@ const page = async (
     ...(opts.beforeId ? { p_before_id: opts.beforeId } : {}),
     ...(opts.limit ? { p_limit: opts.limit } : {}),
     ...(opts.includeRetracted ? { p_include_retracted: true } : {}),
+    ...viewerArgs(viewer),
   });
   if (error) throw new Error(error.message);
   return data as unknown as Page;
 };
 
-const full = async (captureId: string, tier: string, includeRetracted = false) => {
+const full = async (captureId: string, tier: string, includeRetracted = false, viewer?: string) => {
   const { data, error } = await getClient().rpc('capture_full', {
     p_tenant: tenantId,
     p_capture: captureId,
     p_caller_tier: tier,
     p_include_retracted: includeRetracted,
+    ...viewerArgs(viewer),
   });
   if (error) throw new Error(error.message);
   return data as unknown as { id: string; raw_text: string | null; memberships: { via: string }[] } | null;
 };
 
-const search = async (scope: 'job' | 'customer', scopeId: string, q: string, tier: string): Promise<Search> => {
+const search = async (
+  scope: 'job' | 'customer',
+  scopeId: string,
+  q: string,
+  tier: string,
+  viewer?: string,
+): Promise<Search> => {
   const { data, error } = await getClient().rpc('search_captures', {
     p_tenant: tenantId,
     p_scope: scope,
     p_scope_id: scopeId,
     p_query: q,
     p_caller_tier: tier,
+    ...viewerArgs(viewer),
   });
   if (error) throw new Error(error.message);
   return data as unknown as Search;
@@ -212,6 +254,7 @@ describe('the retraction fold — removed everywhere, labelled on the audit path
     const good = await techNote('good note', { jobId: job.id });
     const bad = await techNote('bad note — wrong customer', { jobId: job.id });
     const retraction = await retract(bad);
+    await tripFor(job.id);
 
     const p = await page('job', job.id, 'manager');
     expect(p.captures.map((c) => c.id)).toEqual([good.id]);
@@ -220,7 +263,7 @@ describe('the retraction fold — removed everywhere, labelled on the audit path
     // The retraction is visible to a manager AS A COUNT (the key to the audit
     // trail), and to a technician not at all.
     expect((await contents(customer.id, 'manager'))!.jobs[0].retracted_count).toBe(1);
-    expect((await contents(customer.id, 'technician'))!.jobs[0].retracted_count).toBe(0);
+    expect((await contents(customer.id, 'technician', tenantId, techId))!.jobs[0].retracted_count).toBe(0);
     expect(await full(bad.id, 'manager')).toBeNull();
     expect((await search('job', job.id, 'bad', 'manager')).matches).toEqual([]);
 
@@ -267,13 +310,15 @@ describe('the tier gate — option A, by channel; unknown tiers see nothing', ()
       jobId: job.id,
     });
     const note = await techNote('furnace igniter replaced', { jobId: job.id });
+    await tripFor(job.id);
 
-    const tech = await page('job', job.id, 'technician');
+    const tech = await page('job', job.id, 'technician', {}, techId);
     expect(tech.captures.map((c) => c.id)).toEqual([note.id]);
     expect(tech.restricted_count).toBe(1);
-    expect(await full(call.id, 'technician')).toBeNull();
-    expect((await search('job', job.id, 'quote', 'technician')).matches).toEqual([]);
-    const techContents = (await contents(customer.id, 'technician'))!.jobs[0];
+    expect(await full(call.id, 'technician', false, techId)).toBeNull();
+    expect((await full(note.id, 'technician', false, techId))?.raw_text).toBe('furnace igniter replaced');
+    expect((await search('job', job.id, 'quote', 'technician', techId)).matches).toEqual([]);
+    const techContents = (await contents(customer.id, 'technician', tenantId, techId))!.jobs[0];
     expect(techContents.note_count).toBe(1);
     expect(techContents.restricted_count).toBe(1);
 

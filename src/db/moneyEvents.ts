@@ -597,13 +597,74 @@ export async function syncJobStatusForMoney(
 }
 
 /**
- * The technician projection of a money summary — the "door numbers" only.
+ * The technician projection of a money summary — STATUS IN WORDS, NO FIGURES.
  * ONE definition of the money tier boundary (review finding: it was inline in
- * two read tools; policy encoded twice drifts): no methods, no references, no
- * history — those are manager_only by standing policy.
+ * two read tools; policy encoded twice drifts).
+ *
+ * It used to return the two "door numbers", `balanceDueCents` + `invoicedCents`.
+ * The operator removed both on 2026-09-15: the invoice amount is what the
+ * customer was charged, and balance due EQUALS it until something is paid, so
+ * keeping either one told a technician the price. A firm whose technician really
+ * needs the figure — collecting a payment on site — asks the manager for it, in
+ * life or through the access request flow. That makes it a thing you ask for
+ * rather than a default, which is the whole point.
+ *
+ * Deliberately no booleans and no "roughly": a number is a number however it is
+ * rounded, and a flag pair reconstructs one.
  */
+export type TechnicianMoneyStatus =
+  | 'nothing recorded yet'
+  | 'recorded, nothing owed'
+  | 'quoted, nothing invoiced yet'
+  | 'invoiced, not yet paid'
+  | 'part paid, balance outstanding'
+  | 'deposit paid, more to invoice'
+  | 'paid in full'
+  | 'settled, no balance due'
+  | 'the office holds a credit';
+
 export function technicianMoneyView(
   s: MoneySummary,
-): { balanceDueCents: number; invoicedCents: number } {
-  return { balanceDueCents: s.balanceDueCents, invoicedCents: s.invoicedCents };
+  // MAY SHE BE TOLD THE FIGURES? Answered by the layer — the firm's rule, or a
+  // grant on this customer or job (view_money_open) — never by a tier test here:
+  // status-only is the DEFAULT, not a ceiling (operator, 2026-09-15). When it is
+  // open she gets the door numbers beside the status: totals only, no methods,
+  // no references, no history.
+  opts: { amounts?: boolean } = {},
+): { status: TechnicianMoneyStatus; balanceDueCents?: number; invoicedCents?: number } {
+  if (opts.amounts) {
+    return {
+      ...technicianMoneyView(s),
+      balanceDueCents: s.balanceDueCents,
+      invoicedCents: s.invoicedCents,
+    };
+  }
+  return statusOnly(s);
+}
+
+function statusOnly(s: MoneySummary): { status: TechnicianMoneyStatus } {
+  // Order matters: a credit balance is read before "settled", "settled" (cleared
+  // by a credit or a write-off rather than by payment) before "paid", and a
+  // PROGRESS invoice before either — a cleared deposit is not a finished job, and
+  // the job's own state machine refuses `paid` there too (deriveStatusTarget).
+  if (s.invoicedCents === 0) {
+    // Money taken before anything was invoiced is a DEPOSIT, not a credit the
+    // firm owes back — balanceDue is negative in both, which is why this is read
+    // before the credit branch (review finding). Deposit-only chains are a real
+    // shape here: deriveStatusTarget names them too.
+    if (s.paidCents > 0) return { status: 'deposit paid, more to invoice' };
+    if (s.quotedCents > 0) return { status: 'quoted, nothing invoiced yet' };
+    // A ledger with rows whose AR totals are zero is NOT an empty ledger: a
+    // voided invoice, a $0 comped job, a fee, a material cost, an estimate that
+    // was only presented. "Nothing recorded" would be a lie the reader cannot
+    // check (review finding) — and the empty case never reaches here anyway,
+    // because both callers omit the money block when the ledger has no rows.
+    return { status: s.lastEventAt ? 'recorded, nothing owed' : 'nothing recorded yet' };
+  }
+  if (s.balanceDueCents < 0) return { status: 'the office holds a credit' };
+  if (s.balanceDueCents > 0) {
+    return { status: s.paidCents > 0 ? 'part paid, balance outstanding' : 'invoiced, not yet paid' };
+  }
+  if (s.hasProgressInvoice) return { status: 'deposit paid, more to invoice' };
+  return { status: s.paidCents >= s.invoicedCents ? 'paid in full' : 'settled, no balance due' };
 }

@@ -153,6 +153,15 @@ const RESET_TABLES = [
   'office_messages',
   // Cascades from nudges, named anyway (eng-memory §1).
   'nudge_decisions',
+  // The technician limited view (plan 2026-09-15-the-retrieval-layer-2).
+  // technician_view_rules references ONLY tenants (the tenant_settings trap: a
+  // stale whole_firm rule would quietly change what a rebuilt firm's technicians
+  // can read). access_grants cascades from customers/technicians; capture_tags
+  // carries a NO ACTION FK to raw_captures, which nothing ever deletes. Both are
+  // named anyway (eng-memory §1) — TRUNCATE … CASCADE reaches them either way.
+  'technician_view_rules',
+  'access_grants',
+  'capture_tags',
   // Infra, but the eval registers its own cold pool for bind_telegram, so stale
   // rows from a previous run would otherwise accumulate.
   'sandbox_pool',
@@ -197,6 +206,14 @@ async function reset() {
  * world a firm works in; it must not silently forget the firm's own letterhead or
  * its own detector thresholds. Both are in RESET_TABLES above, which is the
  * throwaway-eval-tenant path, where forgetting them is exactly what you want.
+ *
+ * The technician limited view (plan 2026-09-15-the-retrieval-layer-2), registered
+ * here BY NAME as deliberate absences too:
+ *   technician_view_rules — firm CONFIGURATION, the tenant_settings reasoning.
+ *   access_grants         — goes with its customers/jobs/technicians: every FK is
+ *                           `on delete cascade`, and the ledger trigger allows a
+ *                           cascaded delete (a DIRECT delete here would raise).
+ *   capture_tags          — tags on raw_captures, which a pilot rebuild keeps.
  */
 const PILOT_TENANT_SCOPED = [
   'query_audit',

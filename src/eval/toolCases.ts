@@ -14,6 +14,7 @@
 // reply name this customer", "did the row actually land in the database". That
 // keeps them robust to response-shape churn while still failing on real breakage.
 
+import { MANAGER_TOOLS_EXPECTED, TECHNICIAN_TOOLS } from '../mcp/tools/surface.expected.js';
 import type { TenantKey, TenantManifest, WorldManifest } from './worldManifest.js';
 import { captureId, customerId, customerName, jobId, visitId } from './worldManifest.js';
 import { addDays, naiveLocal, nextWorkday } from './clock.js';
@@ -395,7 +396,14 @@ export function buildToolCases(): ToolCase[] {
         args: () => ({}),
         check: (out) => {
           const names = (out.json as string[]) ?? [];
-          if (names.length !== 43) return `manager sees ${names.length} tools, expected 43`;
+          // DERIVED, not a literal: two hardcoded counts outlived plan 1's removal
+          // of brief_customer / answer_customer_question and failed this case on a
+          // green main (2026-09-15). surface.expected.ts is the one place a tier's
+          // catalog is written down — the same reason the unit tests stopped
+          // counting in 2026-09-12.
+          if (names.length !== MANAGER_TOOLS_EXPECTED.length) {
+            return `manager sees ${names.length} tools, expected ${MANAGER_TOOLS_EXPECTED.length}`;
+          }
           for (const need of ['book_visit', 'cancel_job', 'query_spine', 'add_technician_seat', 'record_money_event', 'set_firm_profile']) {
             if (!names.includes(need)) return `manager surface is missing ${need}`;
           }
@@ -421,7 +429,9 @@ export function buildToolCases(): ToolCase[] {
         args: () => ({}),
         check: (out) => {
           const names = (out.json as string[]) ?? [];
-          if (names.length !== 17) return `technician sees ${names.length} tools, expected 17`;
+          if (names.length !== TECHNICIAN_TOOLS.length) {
+            return `technician sees ${names.length} tools, expected ${TECHNICIAN_TOOLS.length}`;
+          }
           if (!names.includes('get_schedule')) return 'technician surface is missing get_schedule';
           const leaked = ['book_visit', 'cancel_job', 'add_technician_seat', 'query_spine', 'get_team_schedule'].filter(
             (n) => names.includes(n),

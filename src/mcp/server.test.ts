@@ -25,6 +25,7 @@ import {
 import { createHost } from '../db/hosts.js';
 import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
 import { createTenant, setTenantSeats } from '../db/tenants.js';
+import { insertAccessGrant, setTechnicianViewRule } from '../db/technicianView.js';
 import { PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
 import { createObservation } from '../db/observations.js';
@@ -104,6 +105,12 @@ beforeAll(async () => {
   const tech = await insertTechnician({ tenantId, ref: 'tech-mcp', displayName: 'Tech MCP' });
   await setTechnicianState(tech.id, 'active');
   techMcpId = tech.id;
+  // THE FIRM'S RULE at its widest (plan 2026-09-15-the-retrieval-layer-2): the
+  // suites below were written before the technician limited view, and what they
+  // test as `tech-mcp` is the CONTENT gate (option A), not scope. Whole-firm keeps
+  // them testing exactly that; 'the technician limited view' block resets the
+  // rule to the default and tests scope itself.
+  await setTechnicianViewRule(tenantId, { jobScope: 'whole_firm' }, 'server.test');
 
   const server = createServer({
     // Identity is injected here (the gateway/env source in prod); the agent never
@@ -131,6 +138,8 @@ afterAll(async () => {
   );
   // Restore the seed capacity (2/5) so post-suite live checks see known values.
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
+  // Tenants are never truncated, so the firm's rule would outlive the suite.
+  await setTechnicianViewRule(tenantId, null, 'server.test');
   await pg.end();
 });
 
@@ -1431,8 +1440,11 @@ describe('a retraction never moves money, and says which entries lost their evid
       // The technician (the note's author) stages the retraction.
       const staged = await call('retract_capture', { captureId: note.id, reason: 'wrong customer' });
       expect(staged.isError).toBe(false);
+      // The entry is named — id, job, kind — but NOT its amount: a technician is
+      // shown no money figure anywhere (operator 2026-09-15). inform_team_lead's
+      // wording asks her to name the entry, which is exactly what she has.
       expect(staged.data.alsoLosesEvidence.money).toEqual([
-        expect.objectContaining({ eventId, jobId: job.id, kind: 'payment_received', amountCents: 50000 }),
+        { eventId, jobId: job.id, kind: 'payment_received', occurredAt: expect.any(String) },
       ]);
       expect(staged.data.note).toContain('STILL COUNT');
       expect(staged.data.note).toContain('inform_team_lead'); // a technician cannot correct money
@@ -1440,7 +1452,11 @@ describe('a retraction never moves money, and says which entries lost their evid
 
       const done = await call('retract_capture', { confirmId: staged.data.confirmId });
       expect(done.data.status).toBe('retracted');
-      expect(done.data.alsoLostEvidence.money.map((m: { eventId: number }) => m.eventId)).toEqual([eventId]);
+      // The CONFIRM shape is pinned too, not just its ids: a technician is shown
+      // no amount on either half of the two-step (review finding).
+      expect(done.data.alsoLostEvidence.money).toEqual([
+        { eventId, jobId: job.id, kind: 'payment_received', occurredAt: expect.any(String) },
+      ]);
       expect(done.data.moneyNote).toContain('inform_team_lead');
 
       // EVERY reader sums the same ledger: the payment still counts on both.
@@ -7228,14 +7244,16 @@ describe('record_money_event + money reads (money-ledger plan phase 2)', () => {
       expect(prog.data.status).toBe('recorded');
       expect(prog.data.jobStatusChange).toBeUndefined();
 
-      // get_job tier split: manager sees summary + entries; technician sees
-      // door numbers only; an untracked job carries NO money key at all.
+      // get_job tier split: manager sees summary + entries; a technician sees
+      // the STATUS IN WORDS and no figure (operator 2026-09-15); an untracked
+      // job carries NO money key at all.
       const mgrJob = await mgr('get_job', { jobId: job.id });
       expect(mgrJob.data.money.balanceDueCents).toBe(45000);
       expect(mgrJob.data.money.recentEvents).toHaveLength(1);
       expect(mgrJob.data.money.recentEvents[0].externalRef).toBe('INV-77');
       const techJob = await call('get_job', { jobId: job.id });
-      expect(techJob.data.money).toEqual({ balanceDueCents: 45000, invoicedCents: 45000 });
+      expect(techJob.data.money).toEqual({ status: 'invoiced, not yet paid' });
+      expect(JSON.stringify(techJob.data.money)).not.toMatch(/[0-9]/);
       const cust3 = await createCustomer({ tenantId, name: 'No Money Cust', phone: '555-8813' });
       const job3 = await createJob({ tenantId, customerId: cust3.id, title: 'untracked' });
       const bare = await mgr('get_job', { jobId: job3.id });
@@ -7245,7 +7263,7 @@ describe('record_money_event + money reads (money-ledger plan phase 2)', () => {
       const ctxMgr = await mgr('get_customer_context', { customerId: cust.id });
       expect(ctxMgr.data.moneyByJob[job.id].invoicedCents).toBe(45000);
       const ctxTech = await call('get_customer_context', { customerId: cust.id });
-      expect(ctxTech.data.moneyByJob[job.id]).toEqual({ balanceDueCents: 45000, invoicedCents: 45000 });
+      expect(ctxTech.data.moneyByJob[job.id]).toEqual({ status: 'invoiced, not yet paid' });
       const ctxBare = await mgr('get_customer_context', { customerId: cust3.id });
       expect(ctxBare.data.moneyByJob).toBeUndefined();
 
@@ -9818,5 +9836,241 @@ describe('rung 10 — open_job, and the citation on what a yes creates', () => {
     const refused = await call('open_job', { customerId: customer.id, title: 'nope' });
     expect(refused.isError).toBe(true);
     expect(refused.text).toMatch(/manager/i);
+  });
+});
+
+// THE TECHNICIAN LIMITED VIEW (plan 2026-09-15-the-retrieval-layer-2): every
+// technician door agrees on what she may open. The rest of this file runs the
+// seed tenant at `whole_firm` (see beforeAll); this block puts the shipped
+// default back and tests scope itself. The rule's own edge cases live in
+// src/db/technicianView.test.ts — this is the tools' side of it.
+describe('the technician limited view', () => {
+  beforeAll(async () => {
+    await setTechnicianViewRule(tenantId, null, 'server.test');
+  });
+  afterAll(async () => {
+    await setTechnicianViewRule(tenantId, { jobScope: 'whole_firm' }, 'server.test');
+  });
+
+  test('she reads the customers she serves, and every other door says "outside your view" in words', { timeout: 30_000 }, async () => {
+    const lee = await createCustomer({ tenantId, name: 'Viewlee Lin', phone: '555-7101' });
+    const leeOpen = await createJob({ tenantId, customerId: lee.id, title: 'Viewlee AC' });
+    const leeOther = await createJob({ tenantId, customerId: lee.id, title: 'Viewlee heater' });
+    const leePaid = await createJob({ tenantId, customerId: lee.id, title: 'Viewlee old', status: 'paid' });
+    await createVisit({ tenantId, jobId: leeOpen.id, technicianId: techMcpId, startsAt: null, endsAt: null });
+    const hen = await createCustomer({ tenantId, name: 'Viewhen Henderson', phone: '555-7199' });
+    const hJob = await createJob({ tenantId, customerId: hen.id, title: 'Viewhen roof' });
+    const hNote = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'someone-else',
+      rawText: 'viewhen flashing replaced',
+      jobId: hJob.id,
+    });
+
+    // Served: the page lists her open job and the customer's other open one, and counts the paid one.
+    const ctx = await call('get_customer_context', { customerId: lee.id });
+    expect(ctx.data.jobs.map((j: { id: string }) => j.id).sort()).toEqual([leeOpen.id, leeOther.id].sort());
+    expect(ctx.data.jobsOutsideView).toBe(1);
+    expect(ctx.data.note).toContain('outside your view');
+    expect((await call('get_job', { jobId: leeOther.id })).data.title).toBe('Viewlee heater');
+    expect((await call('find_customer', { query: 'Viewlee' })).data[0].phone).toBe('555-7101');
+
+    // Not served: a name and an id, never the record.
+    const found = await call('find_customer', { query: 'Viewhen' });
+    expect(found.data).toEqual([
+      { id: hen.id, name: 'Viewhen Henderson', inView: false, note: expect.stringContaining('outside your view') },
+    ]);
+    const hCtx = await call('get_customer_context', { customerId: hen.id });
+    expect(hCtx.data.inView).toBe(false);
+    expect(hCtx.data.customer).toEqual({ id: hen.id, name: 'Viewhen Henderson' });
+    expect(hCtx.text).not.toContain('555-7199');
+    expect(hCtx.text).not.toContain('Viewhen roof');
+    const hGetJob = await call('get_job', { jobId: hJob.id });
+    expect(hGetJob.data).toEqual({
+      id: hJob.id,
+      inView: false,
+      note: expect.stringContaining('outside your view'),
+      now: expect.any(String), // the hub's grounding rider rides every object result
+    });
+    expect((await call('get_job', { jobId: leePaid.id })).data.inView).toBe(false);
+    const page = await call('list_recent_captures', { jobId: hJob.id });
+    expect(page.data.inView).toBe(false);
+    expect(page.data.captures).toEqual([]);
+    expect(page.data.note).toContain('outside your view');
+    const searched = await call('search_captures', { customerId: hen.id, query: 'flashing' });
+    expect(searched.data.inView).toBe(false);
+    expect(searched.data.count).toBe(0);
+    expect((await call('get_capture', { captureId: hNote.id })).data.found).toBe(false);
+    // The staged preview would show the value being replaced — so no staging either.
+    const fact = await call('record_standing_fact', { customerId: hen.id, key: 'gate_code', value: '1234' });
+    expect(fact.isError).toBe(true);
+    expect(fact.text).toContain('outside your view');
+    const jobFact = await call('record_standing_fact', { jobId: hJob.id, key: 'ladder', value: 'tall' });
+    expect(jobFact.isError).toBe(true);
+    expect(jobFact.text).toContain('outside your view');
+
+    // A manager's doors are untouched.
+    const { client: mgrClient, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const m = await mgr('get_customer_context', { customerId: hen.id });
+      expect(m.data.jobs.map((j: { id: string }) => j.id)).toEqual([hJob.id]);
+      expect(m.data.jobsOutsideView).toBeUndefined();
+      expect((await mgr('find_customer', { query: 'Viewhen' })).data[0].phone).toBe('555-7199');
+      expect((await mgr('get_job', { jobId: hJob.id })).data.title).toBe('Viewhen roof');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('a grant opens what the manager picked: the record, or the record and its notes', { timeout: 30_000 }, async () => {
+    const cust = await createCustomer({ tenantId, name: 'Grantee Gil' });
+    const job = await createJob({ tenantId, customerId: cust.id, title: 'Grantee deck' });
+    await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'someone-else',
+      rawText: 'deck boards soft by the stairs',
+      jobId: job.id,
+    });
+    const phone = await appendRawCapture({
+      tenantId,
+      channel: 'phone_call',
+      rawText: 'quoted $2,900 for the deck',
+      jobId: job.id,
+    });
+    expect((await call('get_customer_context', { customerId: cust.id })).data.inView).toBe(false);
+
+    await insertAccessGrant({
+      tenantId,
+      technicianId: techMcpId,
+      customerId: cust.id,
+      opens: 'record',
+      grantedBy: 'mgr-test',
+      reason: 'covering the deck job',
+    });
+    const opened = await call('get_customer_context', { customerId: cust.id });
+    const block = opened.data.jobs.find((j: { id: string }) => j.id === job.id);
+    expect(block.noteCount).toBe(1);
+    expect(block.restrictedCount).toBe(1);
+    expect((await call('get_capture', { captureId: phone.id })).data.found).toBe(false);
+
+    await insertAccessGrant({
+      tenantId,
+      technicianId: techMcpId,
+      jobId: job.id,
+      opens: 'record_and_notes',
+      grantedBy: 'mgr-test',
+      reason: 'she needs the quote',
+    });
+    const withNotes = await call('get_capture', { captureId: phone.id });
+    expect(withNotes.data.found).toBe(true);
+    expect(withNotes.data.rawText).toContain('$2,900');
+  });
+
+  test('money is words by default, and figures once the firm or a grant opens them', { timeout: 30_000 }, async () => {
+    const cust = await createCustomer({ tenantId, name: 'Moneyview Mo' });
+    const job = await createJob({ tenantId, customerId: cust.id, title: 'Moneyview panel' });
+    await createVisit({ tenantId, jobId: job.id, technicianId: techMcpId, startsAt: null, endsAt: null });
+    const { client: mgrClient, callWith: mgrCall } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      await mgrCall('record_money_event', { jobId: job.id, kind: 'invoice_issued', amountCents: 62000 });
+
+      const words = await call('get_job', { jobId: job.id });
+      expect(words.data.money).toEqual({ status: 'invoiced, not yet paid' });
+      // …and the JOB ROW's own price goes with the figures: it is the same
+      // number, one key over (review finding).
+      expect(words.data.price_cents).toBeUndefined();
+      const wordsCtx = await call('get_customer_context', { customerId: cust.id });
+      expect(wordsCtx.data.jobs[0].price_cents).toBeUndefined();
+      // A manager keeps it.
+      expect((await mgrCall('get_job', { jobId: job.id })).data).toHaveProperty('price_cents');
+
+      // The firm opens the figures for its technicians.
+      await setTechnicianViewRule(tenantId, { money: 'amounts' }, 'server.test');
+      try {
+        const withFigures = await call('get_job', { jobId: job.id });
+        expect(withFigures.data).toHaveProperty('price_cents'); // opened money keeps the price too
+        expect(withFigures.data.money).toEqual({
+          status: 'invoiced, not yet paid',
+          invoicedCents: 62000,
+          balanceDueCents: 62000,
+        });
+        const ctx = await call('get_customer_context', { customerId: cust.id });
+        expect(ctx.data.moneyByJob[job.id].invoicedCents).toBe(62000);
+      } finally {
+        await setTechnicianViewRule(tenantId, null, 'server.test');
+      }
+
+        // The manager's own retraction preview still names the amounts (the strip
+      // is the technician's, and a forgotten flag must not take a manager's).
+      const noteForMoney = await appendRawCapture({
+        tenantId,
+        channel: 'technician_note',
+        technicianRef: 'tech-mcp',
+        rawText: 'took a cheque for the panel',
+        customerId: cust.id,
+        jobId: job.id,
+      });
+      await mgrCall('record_money_event', {
+        jobId: job.id,
+        kind: 'payment_received',
+        amountCents: 20000,
+        sourceCaptureId: noteForMoney.id,
+      });
+      const mgrStage = await mgrCall('retract_capture', { captureId: noteForMoney.id, reason: 'wrong job' });
+      expect(mgrStage.data.alsoLosesEvidence.money[0]).toMatchObject({ amountCents: 20000 });
+
+      // …or one manager's grant, on this job alone.
+      await insertAccessGrant({
+        tenantId,
+        technicianId: techMcpId,
+        jobId: job.id,
+        opens: 'record',
+        opensMoney: true,
+        grantedBy: 'mgr-test',
+        reason: 'collecting the payment on site',
+      });
+      // 62000 invoiced, 20000 taken on the retracted note (money never folds).
+      const granted = await call('get_job', { jobId: job.id });
+      expect(granted.data.money).toEqual({
+        status: 'part paid, balance outstanding',
+        invoicedCents: 62000,
+        balanceDueCents: 42000,
+      });
+      const other = await createJob({ tenantId, customerId: cust.id, title: 'Moneyview second' });
+      await mgrCall('record_money_event', { jobId: other.id, kind: 'invoice_issued', amountCents: 15000 });
+      const stillWords = await call('get_job', { jobId: other.id });
+      expect(stillWords.data.money).toEqual({ status: 'invoiced, not yet paid' });
+      // A manager's own read is untouched by any of it.
+      expect((await mgrCall('get_job', { jobId: job.id })).data.money.invoicedCents).toBe(62000);
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test("under own_trips, an upcoming trip on the customer's other job is not listed", { timeout: 30_000 }, async () => {
+    const cust = await createCustomer({ tenantId, name: 'Tripwise Tia' });
+    const mine = await createJob({ tenantId, customerId: cust.id, title: 'Tripwise mine' });
+    const other = await createJob({ tenantId, customerId: cust.id, title: 'Tripwise other' });
+    await createVisit({ tenantId, jobId: mine.id, technicianId: techMcpId, startsAt: null, endsAt: null });
+    await createVisit({
+      tenantId,
+      jobId: other.id,
+      startsAt: `${relDay(4)}T10:00:00.000Z`,
+      endsAt: `${relDay(4)}T11:00:00.000Z`,
+      status: 'confirmed',
+    });
+    const served = await call('get_customer_context', { customerId: cust.id });
+    expect(served.data.upcomingVisits.map((u: { jobId: string }) => u.jobId)).toEqual([other.id]);
+
+    await setTechnicianViewRule(tenantId, { jobScope: 'own_trips' }, 'server.test');
+    try {
+      const narrow = await call('get_customer_context', { customerId: cust.id });
+      expect(narrow.data.jobs.map((j: { id: string }) => j.id)).toEqual([mine.id]);
+      expect(narrow.data.upcomingVisits).toEqual([]);
+    } finally {
+      await setTechnicianViewRule(tenantId, null, 'server.test');
+    }
   });
 });

@@ -6,7 +6,7 @@ import { createJob } from './jobs.js';
 import { createTenant } from './tenants.js';
 import { createVisit, insertVisitNote } from './visits.js';
 import { appendRawCapture, listRawCapturesForCustomer } from './rawCaptures.js';
-import { getCustomerContents } from './context.js';
+import { getCustomerContents, type CustomerContents } from './context.js';
 
 const pg = new Client({ connectionString: process.env.DATABASE_URL });
 let tenantId: string;
@@ -58,7 +58,7 @@ describe('getCustomerContents', () => {
       customerId: customer.id,
     });
 
-    const contents = (await getCustomerContents(tenantId, customer.id, 'manager'))!;
+    const contents = (await getCustomerContents(tenantId, customer.id, 'manager')) as CustomerContents;
     expect(contents.customer.id).toBe(customer.id);
     const block = contents.jobs.find((j) => j.id === job.id)!;
     expect(block.noteCount).toBe(1); // the visit-linked note, via the membership view
@@ -114,7 +114,7 @@ describe('getCustomerContents', () => {
       status: 'confirmed',
     });
 
-    const contents = (await getCustomerContents(tenantId, customer.id, 'manager'))!;
+    const contents = (await getCustomerContents(tenantId, customer.id, 'manager')) as CustomerContents;
     const ids = contents.upcomingVisits.map((u) => u.visitId);
     expect(ids).toContain(placed.id);
     expect(ids).toContain(unplaced.id);
@@ -170,12 +170,12 @@ describe('getCustomerContents', () => {
       status: 'confirmed',
     });
 
-    const contents = (await getCustomerContents(tenantId, mine.id, 'manager'))!;
+    const contents = (await getCustomerContents(tenantId, mine.id, 'manager')) as CustomerContents;
     expect(contents.upcomingVisits.map((u) => u.visitId)).not.toContain(theirRow.id);
     // Their customer under MY tenant is nothing at all — not an empty record.
     expect(await getCustomerContents(tenantId, theirs.id, 'manager')).toBeNull();
     // And reading the OTHER tenant's customer under its own tenant never mixes mine in.
-    const otherContents = (await getCustomerContents(other.id, theirs.id, 'manager'))!;
+    const otherContents = (await getCustomerContents(other.id, theirs.id, 'manager')) as CustomerContents;
     expect(otherContents.upcomingVisits.map((u) => u.visitId)).toEqual([theirRow.id]);
   });
 
@@ -186,7 +186,7 @@ describe('getCustomerContents', () => {
       const done = await createJob({ tenantId, customerId: customer.id, title: `Finished ${i}` });
       await pg.query("update jobs set status = 'paid' where id = $1", [done.id]);
     }
-    const contents = (await getCustomerContents(tenantId, customer.id, 'manager'))!;
+    const contents = (await getCustomerContents(tenantId, customer.id, 'manager')) as CustomerContents;
     expect(contents.jobsTotal).toBe(12);
     expect(contents.jobs).toHaveLength(10);
     expect(contents.olderJobs).toBe(2);

@@ -18,6 +18,7 @@ export * from './timeOff.js';
 export * from './jobTypeDurations.js';
 export * from './scheduleEvents.js';
 export * from './context.js';
+export * from './technicianView.js';
 export * from './webRequests.js';
 export * from './costs.js';
 export * from './moneyEvents.js';

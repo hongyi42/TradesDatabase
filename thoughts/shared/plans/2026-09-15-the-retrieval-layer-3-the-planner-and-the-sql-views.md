@@ -2,7 +2,7 @@
 date: 2026-09-15
 task: The retrieval layer, plan 3 of 4 — the planner and the SQL views: v_captures folds retractions, one v_capture_links replaces three link views, the planner's evidence / watcher activity / moot-fact readers move onto capture_membership, evidence and money lines carry ids and announce cuts, the gap list is capped at 100 and the planner is always told the ceiling
 research: thoughts/shared/research/2026-09-15-the-retrieval-and-delivery-layer.md
-status: draft
+status: complete
 supersedes: supabase/migrations/20260823120000_planner_read_surface.sql (its "retractions are a labelled trail, not a fold" ruling — overturned by operator ruling 3, 2026-09-15)
 ---
 

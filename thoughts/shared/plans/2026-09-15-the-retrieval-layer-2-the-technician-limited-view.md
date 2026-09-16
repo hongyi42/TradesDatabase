@@ -329,12 +329,18 @@ the other job is not listed; a manager badge on Henderson unchanged.
   sees nothing, by design"; the operator SQL for a firm's rule until the verb exists.
 
 ### Automated verification
-- [ ] `npm run build`; all four gates; `npm run seed:local` completes twice.
+- [x] `npm run build`; all four gates (npm test 3194 passed); `npm run seed:local` completes twice.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP; `OPENROUTER_API_KEY`; seeded local eval world.
-- [ ] Local: `scripts/spine-eval` cases R16, R17 and corpus Q01 as `tech-jane` (trips on `job-rich-1/2`,
-      invoiced → `edge-rich` served); record pass/fail and every `inView:false` seen.
+- [x] Local tier 1 (`npm run spine-eval:world` + `spine-eval:tools`): **48/48 cases, 366/366 dates**,
+      6 external cases skipped (no network/model/composio keys in this worktree). R16 `get_capture`
+      and R17 `search_captures` pass as `tech-jane` under the SHIPPED DEFAULT rule — her completed
+      trips on `job-rich-1/2` (invoiced, so non-terminal) make `edge-rich` a served customer, which
+      is the intended path. No `inView:false` appeared in any eval case. In-place fix found by this
+      run: G01/G02 hardcoded "43 manager tools" / "17 technician" and G01 had been failing on a green
+      main since plan 1 removed two tools — both now derive from `surface.expected.ts`.
+      Corpus Q01 (tier 2, needs a model key) NOT run — owed, see the handoff.
 - [ ] Pilot, **before the PR merges**: `apply_migration` with the file's exact body; `NOTIFY pgrst,
       'reload schema'`; read back `select proname, pronargs from pg_proc where proname in
       ('technician_view_of','capture_in_scope','capture_content_open','capture_restricted','capture_visible')`

@@ -10,6 +10,7 @@ export * from './rawCaptures.js';
 export * from './standingFacts.js';
 export * from './foldImpact.js';
 export * from './technicians.js';
+export * from './personPushes.js';
 export * from './sandboxPool.js';
 export * from './hosts.js';
 export * from './reviewItems.js';

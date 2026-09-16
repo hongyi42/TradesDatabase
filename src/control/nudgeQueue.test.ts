@@ -91,6 +91,29 @@ function chatRow(over: Record<string, unknown> = {}) {
   } as never;
 }
 
+function pushRow(over: Record<string, unknown> = {}) {
+  return {
+    id: 'push-1',
+    tenant_id: 't1',
+    kind: 'schedule',
+    body: 'Your visit moved: Tue 12 → Wed 13, now 2pm-3:30pm.',
+    status: 'queued',
+    serve_count: 0,
+    attempts: 0,
+    detail: null,
+    technicians: {
+      id: 'tech-1',
+      ref: 'ben-shelton',
+      state: 'active',
+      sandbox_ref: 'sb-1',
+      telegram_user_id: '5501',
+      host_id: 'host-1',
+      tenant_id: 't1',
+    },
+    ...over,
+  } as never;
+}
+
 function baseDeps(over: Partial<NudgeQueueDeps> = {}): NudgeQueueDeps {
   return {
     listQueued: async () => [queuedRow()],
@@ -113,9 +136,127 @@ function baseDeps(over: Partial<NudgeQueueDeps> = {}): NudgeQueueDeps {
     chatServeCount: async (_id, _t, n) => chatRow({ serve_count: n }),
     chatAttempts: async (_id, _t, n) => chatRow({ attempts: n }),
     chatDelivery: async () => chatRow({ status: 'delivered' }),
+    // THE PUSH LEG (one-bot phase 2) rides the same pull, for the same reason
+    // and with the same requirement: stubbed or it reaches the real database.
+    listQueuedPush: async () => [],
+    getQueuedPush: async () => null,
+    pushServeCount: async (_id, _t, n) => pushRow({ serve_count: n }),
+    pushAttempts: async (_id, _t, n) => pushRow({ attempts: n }),
+    pushDelivered: async () => pushRow({ status: 'delivered' }),
     ...over,
   };
 }
+
+describe('the push leg rides the nudge pull', () => {
+  test('a push serves as its own item, body verbatim, serve counted before shipping', async () => {
+    const counted: number[] = [];
+    const { nudges } = await buildNudgeDelivery('host-1', baseDeps({
+      listQueued: async () => [],
+      listQueuedPush: async () => [pushRow()],
+      pushServeCount: async (_id, _t, n) => {
+        counted.push(n);
+        return pushRow({ serve_count: n });
+      },
+    }));
+    expect(nudges).toHaveLength(1);
+    expect(nudges[0].id).toBe('push-1');
+    expect(nudges[0].sessionId).toBe('push-push-1');
+    expect(nudges[0].sandboxRef).toBe('sb-1');
+    expect(nudges[0].replyTo).toBe('5501');
+    // Verbatim: what the spine composed is byte-what-arrives. No footer strip —
+    // no push ever had one.
+    expect(Buffer.from(nudges[0].directMessageB64, 'base64').toString('utf8')).toBe(
+      'Your visit moved: Tue 12 → Wed 13, now 2pm-3:30pm.',
+    );
+    expect(counted).toEqual([1]); // counted BEFORE shipping, even if this response is lost
+  });
+
+  test('all three legs ride one pull without serving each other rows', async () => {
+    const { nudges } = await buildNudgeDelivery('host-1', baseDeps({
+      listQueuedChat: async () => [chatRow()],
+      listQueuedPush: async () => [pushRow()],
+    }));
+    expect(nudges.map((n) => n.id)).toEqual(['n1', 'msg-1', 'push-1']);
+  });
+
+  test('no Telegram binding, or gone inactive, = frozen not failed — this leg texts a phone', async () => {
+    for (const over of [
+      { technicians: { ...(pushRow() as never as { technicians: object }).technicians, telegram_user_id: null } },
+      { technicians: { ...(pushRow() as never as { technicians: object }).technicians, state: 'offboarding' } },
+      { technicians: { ...(pushRow() as never as { technicians: object }).technicians, sandbox_ref: null } },
+    ]) {
+      const { nudges } = await buildNudgeDelivery('host-1', baseDeps({
+        listQueued: async () => [],
+        listQueuedPush: async () => [pushRow(over)],
+      }));
+      expect(nudges).toHaveLength(0);
+    }
+  });
+
+  test('both caps freeze it: never re-served, never failed', async () => {
+    for (const over of [{ serve_count: MAX_SERVE_COUNT }, { attempts: MAX_DELIVERY_ATTEMPTS }]) {
+      const { nudges } = await buildNudgeDelivery('host-1', baseDeps({
+        listQueued: async () => [],
+        listQueuedPush: async () => [pushRow(over)],
+      }));
+      expect(nudges).toHaveLength(0);
+    }
+  });
+
+  test('a row that moved under us is dropped rather than served twice', async () => {
+    const { nudges } = await buildNudgeDelivery('host-1', baseDeps({
+      listQueued: async () => [],
+      listQueuedPush: async () => [pushRow()],
+      pushServeCount: async () => null,
+    }));
+    expect(nudges).toHaveLength(0);
+  });
+
+  test('a report is routed to the table that owns the id', async () => {
+    // The box posts {id, outcome} and never says which table the id came from.
+    const delivered = await completeNudgeDelivery('host-1', 'push-1', 'delivered', null, baseDeps({
+      getQueued: async () => null,
+      getQueuedPush: async () => pushRow(),
+    }));
+    expect(delivered).toBe('delivered');
+  });
+
+  test('a FAILED report bumps attempts and freezes on attempts, not on serves', async () => {
+    const bumped: Array<{ n: number; detail: string | null }> = [];
+    const deps = (attempts: number) => baseDeps({
+      getQueued: async () => null,
+      getQueuedPush: async () => pushRow({ attempts }),
+      pushAttempts: async (_id, _t, n, detail) => {
+        bumped.push({ n, detail });
+        return pushRow({ attempts: n });
+      },
+    });
+    expect(
+      await completeNudgeDelivery('host-1', 'push-1', 'failed', 'bot blocked', deps(0)),
+    ).toBe('retry');
+    expect(bumped[0]).toEqual({ n: 1, detail: 'bot blocked' });
+    // The last attempt reports 'failed' — which still FREEZES the row rather
+    // than moving it to a terminal status nobody sweeps.
+    expect(
+      await completeNudgeDelivery(
+        'host-1',
+        'push-1',
+        'failed',
+        null,
+        deps(MAX_DELIVERY_ATTEMPTS - 1),
+      ),
+    ).toBe('failed');
+  });
+
+  test('a delivered report for a row that already settled is ignored', async () => {
+    const settled = await completeNudgeDelivery('host-1', 'push-1', 'delivered', null, baseDeps({
+      getQueued: async () => null,
+      getQueuedPush: async () => pushRow(),
+      pushDelivered: async () => null, // moved under us
+    }));
+    expect(settled).toBe('ignored');
+  });
+});
 
 describe('the chat leg rides the nudge pull', () => {
   test('one pull carries BOTH kinds of item, and the chat body is the message itself', async () => {

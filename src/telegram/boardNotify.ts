@@ -1,5 +1,6 @@
 import {
   getVisitForTenant,
+  queuePersonPush,
   getTechnicianById,
   listParticipants,
   isInactiveState,
@@ -10,7 +11,6 @@ import {
   type ScheduleEvent,
   type Technician,
 } from '../db/index.js';
-import { sendBoardMessage } from './boardBot.js';
 
 // Turns the append-only schedule_events feed into canned Telegram pushes so a
 // person learns their day changed without opening anything. Plain code, no AI:
@@ -32,7 +32,10 @@ import { sendBoardMessage } from './boardBot.js';
 // and the leaver separately, and somebody on both sides hears it once.
 
 interface Push {
+  // Kept for the digest grouping and for nothing else now that the send is a
+  // queue write: one person is one row, whichever of their ids names them.
   userId: string;
+  technicianId: string;
   text: string;
 }
 
@@ -149,6 +152,7 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
         if (tech.telegram_user_id && row) {
           out.push({
             userId: tech.telegram_user_id,
+            technicianId: tech.id,
             text: `New visit on your schedule: ${when(row)}.`,
           });
         }
@@ -171,6 +175,7 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
         if (!tech.telegram_user_id || !row) continue;
         out.push({
           userId: tech.telegram_user_id,
+          technicianId: tech.id,
           text: beforeIds.has(tech.id)
             ? `Your visit moved: ${fromDay} → ${row.starts_at ? `${toDay}, now ${span(row)}` : 'no time set yet'}.`
             : `A visit landed on your schedule: ${when(row)}.`,
@@ -180,6 +185,7 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
         if (!tech.telegram_user_id || afterIds.has(tech.id)) continue;
         out.push({
           userId: tech.telegram_user_id,
+          technicianId: tech.id,
           text: `Your ${fromDay} visit was moved off your schedule.`,
         });
       }
@@ -191,6 +197,7 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
         if (!tech.telegram_user_id) continue;
         out.push({
           userId: tech.telegram_user_id,
+          technicianId: tech.id,
           text: `Your ${cancelledDay} visit was cancelled.`,
         });
       }
@@ -204,6 +211,7 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
         if (!tech.telegram_user_id) continue;
         out.push({
           userId: tech.telegram_user_id,
+          technicianId: tech.id,
           text: `A reschedule of your visit (to ${toDay}) failed — it is currently UNSCHEDULED; check the board.`,
         });
       }
@@ -250,26 +258,35 @@ export async function pollOnce(lastSeen: Map<string, number>): Promise<number> {
       advanceTo = Number(ev.id);
     }
 
-    const byUser = new Map<string, Push[]>();
+    const byPerson = new Map<string, Push[]>();
     for (const p of collected) {
-      const list = byUser.get(p.userId);
+      const list = byPerson.get(p.technicianId);
       if (list) list.push(p);
-      else byUser.set(p.userId, [p]);
+      else byPerson.set(p.technicianId, [p]);
     }
-    for (const [userId, pushes] of byUser) {
+    for (const [technicianId, pushes] of byPerson) {
       const texts =
         pushes.length > DIGEST_THRESHOLD ? [digestText(pushes)] : pushes.map((p) => p.text);
       for (const text of texts) {
         try {
-          await sendBoardMessage(userId, text);
+          // QUEUED, not sent (one-bot phase 2). Sending from here meant sending
+          // as the board bot, the one token Render holds — which is exactly the
+          // thing that kept @DashboardMan_bot alive after every seat had its
+          // own. The box drains this queue and texts each person through their
+          // OWN assistant, so their day changing and their assistant speaking
+          // arrive in the same chat instead of two.
+          //
+          // The cost is honest: delivery is a tick away rather than immediate.
+          // The tick was shortened to a minute to pay for it.
+          await queuePersonPush({ tenantId, technicianId, kind: 'schedule', body: text });
           sent++;
         } catch (err) {
-          // Best-effort per message — one blocked bot never stalls the rest.
-          // Conscious v1 trade: a digest is ONE send, so one failure here
-          // loses the whole burst's notifications (vs one message before) —
-          // same no-replay posture as the in-memory cursor; the board remains
-          // the source of truth.
-          console.error(`board notify: send to user ${userId} failed:`, err);
+          // Best-effort per message — one bad row never stalls the rest.
+          // Conscious v1 trade, unchanged by the queue: a digest is ONE message,
+          // so one failure here loses the whole burst's notifications — same
+          // no-replay posture as the in-memory cursor; the board remains the
+          // source of truth.
+          console.error(`board notify: queueing for technician ${technicianId} failed:`, err);
         }
       }
     }

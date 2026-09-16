@@ -138,12 +138,40 @@ Still manual after this, and unavoidably: creating the bot in BotFather, racking
 (`add-sandbox`, deliberately), and BotFather's "Configure Mini App" for the top-of-chat Open App
 button, which has no API.
 
-## Phase 2 — notifications (not started)
-Move the pushes off the board bot. Render cannot send them after the merge (no tokens), so the host
-picks them up on the control channel it already polls for badges and sends through the person's own
-bot. Each notification carries an "Open" button landing on the relevant day. Needs: an outbound
-queue table, a host-side sender, and a visible shape that distinguishes "the system told me" from
-"the assistant answered me" in a chat that now carries both.
+## Phase 2 — notifications (implemented 2026-09-16)
+The last thing keeping `@DashboardMan_bot` alive: schedule pushes and inbound-call alerts were sent
+from Render with `BOARD_BOT_TOKEN`, the one bot token it holds. Wire every seat perfectly and those
+still stop the moment that bot dies.
+
+The transport already existed. `nudge-runner.sh` texts a person verbatim through their own seat bot
+with `openclaw message send` in-container — no token handling, and the weekday guard's
+`message_sending` hook still fires on that path. So phase 2 is a queue and a third leg, not a new
+transport.
+
+- **A table of its own, not `office_messages`.** Its chat leg does exactly this transport and reusing
+  it was the first instinct. But every row there is written by the planner or the office tool,
+  carries a roster ref as its sender, and is read back by the planner as its own outbound record. A
+  schedule push has no sender and is none of the planner's business; filing it there would
+  contaminate what the planner reasons about. `nudgeQueue`'s own comment — the runner "never asks
+  what table an id came from" — makes a separate table with its own leg the intended shape.
+  Migration `20260916100000`, `person_pushes`.
+- **The push leg inherits the whole delivery doctrine**: served on a host-token pull until the box
+  acks so a lost tick self-heals; `serve_count` and `attempts` as two freeze ledgers, where a row
+  past either cap is FROZEN rather than failed (an undeliverable message is an operator condition,
+  not a decision anybody made); liveness re-checked at serve time, so someone who went inactive
+  between queue and serve is SKIPPED, not failed. The ack routes by id across all three legs,
+  because the box posts `{id, outcome}` and never says which table it came from.
+- **The tick drops from five minutes to one.** Schedule pushes tolerate five; an inbound-call alert
+  does not, and those were instant before. Affordable here and nowhere else: this is ONE
+  authenticated pull that usually returns an empty list, where `seat-sync` does a Telegram `getMe`
+  per seat. Cheap poll, expensive poll, different cadences.
+- **Ops alerts stay where they are.** `opsNotify` goes to the operator, not a roster member, so it
+  has no seat bot to send through. It should end up on a dedicated ops bot rather than the board bot,
+  which is a smaller job than this one and not on its critical path.
+
+What the person sees changes in one way worth naming: their day changing and their assistant speaking
+now arrive in the same chat. That was the point of the merge, and it is also the first time the two
+voices share a window — watch whether they read as one thing or two.
 
 ## Phase 3 — cutover (not started)
 Wire every seat, configure each Main Mini App, watch for a week, then retire `@DashboardMan_bot` and

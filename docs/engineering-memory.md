@@ -2171,7 +2171,7 @@ were unreachable when those items were created, the per-tick routing cap deferre
   holds for a function-level `SET` clause. The bound every RPC actually gets is the **`authenticator`
   role's `statement_timeout=8s`** (`pg_roles`, identical on the local stack and the hosted pilot;
   `service_role` and `spine_reader` carry none). The dead line was deleted in
-  `20260917120000_the_sql_views_fold.sql`; `querySpine.test.ts` pins it stays gone. Symptom that
+  `20260917130000_the_sql_views_fold.sql`; `querySpine.test.ts` pins it stays gone. Symptom that
   points elsewhere: a "5 s bounded" query that runs for 7.9 s looks like a slow database, not a no-op
   setting. Related: a `pg_get_functiondef` pin also reads comments written inside `$$`, so keep a
   comment that names the forbidden text OUTSIDE the body.

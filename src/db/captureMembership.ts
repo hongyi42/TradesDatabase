@@ -5,7 +5,7 @@ import type { RawCapture } from './rawCaptures.js';
 // The planner's and the watcher's capture readers, over the ONE membership
 // definition (retrieval layer plan 3; the rules live in
 // supabase/migrations/20260916120000_retrieval_layer_core.sql and the functions in
-// 20260917120100_planner_capture_readers.sql).
+// 20260917130100_planner_capture_readers.sql).
 //
 // Each takes its ids in an RPC BODY, never in a URL: PostgREST's gateway refuses
 // a request past ~8,192 bytes (~205 UUIDs, measured on the local stack), and the

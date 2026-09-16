@@ -101,13 +101,18 @@ cut notices on evidence lines, event ids on money lines, and "retracted" instead
 - **At merge:** the `supabase-test` MCP (apply + read back) and the Render MCP (deploys, logs).
 
 ## Phase 0: integrate
-`/integrate`: merge `origin/main` (never rebase); re-date this plan's migrations after any plan 2/4 ones; `gen:types:local`; gates.
+`/integrate`: merge `origin/main` (never rebase); `gen:types:local`; gates. MERGE ORDER, agreed across
+the three sessions 2026-09-16: plan 2 (`20260917120000_technician_view`) → plan 3 (`…130000` /
+`…130100`, re-dated from `120000`/`120100` for exactly this) → plan 4 (`…140000`), so a local
+`db reset` replays the files in the order the pilot received them. Each session applies ONLY its own
+migration to the pilot, by hand, immediately before its own merge; the other two then merge main and
+regenerate `database.types.ts` with `gen:types:local`, never by hand.
 
 ## Phase 1: the SQL views fold
 
 ### Changes required
 
-**`supabase/migrations/20260917120000_the_sql_views_fold.sql`** (new)
+**`supabase/migrations/20260917130000_the_sql_views_fold.sql`** (new)
 - `drop view v_captures, v_visit_notes, v_job_captures, v_customer_captures;` (no dependents; checked with `pg_depend`).
 - `create view v_captures as select c.id, c.captured_at, c.channel, c.technician_ref, c.raw_text,
   c.sensitivity from raw_captures c where c.tenant_id = current_setting('spine.tenant_id')::uuid and
@@ -165,7 +170,7 @@ not bound its statement; `authenticator`'s 8 s does (local + hosted, 2026-09-15)
 
 ### Changes required
 
-**`supabase/migrations/20260917120100_planner_capture_readers.sql`** (new): three `plpgsql security
+**`supabase/migrations/20260917130100_planner_capture_readers.sql`** (new): three `plpgsql security
 definer stable set search_path = public` functions returning `jsonb`, revoked from public, anon and
 authenticated and granted to `service_role` (the plan-1 block). Every uuid cast from `jsonb` sits in a
 regex-guarded `CASE`. Shared rules: live = `capture_is_live`, visible = `capture_visible(c.channel,

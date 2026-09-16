@@ -65,6 +65,11 @@ create table technician_view_rules (
   -- serving_history  + every job of a customer she serves, finished ones too
   -- whole_firm       every customer and job on the firm
   job_scope text check (job_scope in ('own_trips', 'serving', 'serving_history', 'whole_firm')),
+  -- May a technician be told MONEY AMOUNTS here? 'status' (the default) is words
+  -- only — "invoiced, not yet paid"; 'amounts' adds the figures. Operator
+  -- 2026-09-15: status-only is a DEFAULT, never a ceiling — some firms do want
+  -- their technicians to know the amount (collecting payment on site).
+  money text check (money in ('status', 'amounts')),
   technician_channels capture_channel[],
   hidden_tags text[],
   set_by text,
@@ -92,6 +97,10 @@ create table access_grants (
   -- record            the job/customer as if she served it; the content gate still applies
   -- record_and_notes  every capture in it, as a manager sees it
   opens text not null check (opens in ('record', 'record_and_notes')),
+  -- …and, independently of the record/notes axis, MONEY AMOUNTS on what this
+  -- grant covers (operator 2026-09-15). A manager opening one job's numbers for
+  -- one technician is the "she is collecting payment there" case.
+  opens_money boolean not null default false,
   expires_at timestamptz, -- null = standing
   requested_by text,
   granted_by text not null,
@@ -130,6 +139,7 @@ begin
      and new.customer_id is not distinct from old.customer_id
      and new.job_id is not distinct from old.job_id
      and new.opens = old.opens
+     and new.opens_money = old.opens_money
      and new.expires_at is not distinct from old.expires_at
      and new.requested_by is not distinct from old.requested_by
      and new.granted_by = old.granted_by
@@ -175,7 +185,13 @@ create type technician_view as (
   channels capture_channel[],
   hidden_tags text[],
   -- Her roster ref: a capture she authored is always in her scope.
-  technician_ref text
+  technician_ref text,
+  -- MAY SHE BE TOLD MONEY? The firm's posture, then the jobs and customers a
+  -- grant opened the figures on. One question every money gate asks — never a
+  -- hardcoded tier test, or the grant could not widen it later.
+  money_all boolean,
+  money_job_ids uuid[],
+  money_customer_ids uuid[]
 );
 
 -- p_terminal_statuses is passed IN from src/db/jobs.ts TERMINAL_JOB_STATUSES
@@ -202,6 +218,8 @@ declare
   v_customers uuid[];
   v_notes_jobs uuid[] := '{}'::uuid[];
   v_notes_customers uuid[] := '{}'::uuid[];
+  v_money_jobs uuid[] := '{}'::uuid[];
+  v_money_customers uuid[] := '{}'::uuid[];
   g record;
 begin
   select * into v_rule from technician_view_rules where tenant_id = p_tenant;
@@ -217,6 +235,9 @@ begin
     array['technician_voice', 'technician_note', 'technician_photo']::capture_channel[]
   );
   v_out.hidden_tags := coalesce(v_rule.hidden_tags, '{}'::text[]);
+  v_out.money_all := coalesce(v_rule.money, 'status') = 'amounts';
+  v_out.money_job_ids := '{}'::uuid[];
+  v_out.money_customer_ids := '{}'::uuid[];
 
   -- No viewer, or not a technician on THIS firm: the empty view. Checked before
   -- anything else, so a caller that never learned the viewer sees nothing
@@ -273,7 +294,7 @@ begin
   -- Live grants. The grant AND the customer (direct, or through the job) must be
   -- on this firm: a grant row naming another firm's customer opens nothing.
   for g in
-    select ag.job_id, ag.opens, cu.id as customer_id
+    select ag.job_id, ag.opens, ag.opens_money, cu.id as customer_id
       from access_grants ag
       left join jobs j on j.id = ag.job_id and j.tenant_id = ag.tenant_id
       join customers cu on cu.id = coalesce(ag.customer_id, j.customer_id) and cu.tenant_id = ag.tenant_id
@@ -289,12 +310,18 @@ begin
       if g.opens = 'record_and_notes' then
         v_notes_jobs := v_notes_jobs || g.job_id;
       end if;
+      if g.opens_money then
+        v_money_jobs := v_money_jobs || g.job_id;
+      end if;
     else
       v_jobs := v_jobs || coalesce(
         (select array_agg(j.id) from jobs j where j.tenant_id = p_tenant and j.customer_id = g.customer_id),
         '{}'::uuid[]);
       if g.opens = 'record_and_notes' then
         v_notes_customers := v_notes_customers || g.customer_id;
+      end if;
+      if g.opens_money then
+        v_money_customers := v_money_customers || g.customer_id;
       end if;
     end if;
   end loop;
@@ -303,6 +330,8 @@ begin
   select coalesce(array_agg(distinct x), '{}'::uuid[]) into v_out.customer_ids from unnest(v_customers) x;
   select coalesce(array_agg(distinct x), '{}'::uuid[]) into v_out.notes_job_ids from unnest(v_notes_jobs) x;
   select coalesce(array_agg(distinct x), '{}'::uuid[]) into v_out.notes_customer_ids from unnest(v_notes_customers) x;
+  select coalesce(array_agg(distinct x), '{}'::uuid[]) into v_out.money_job_ids from unnest(v_money_jobs) x;
+  select coalesce(array_agg(distinct x), '{}'::uuid[]) into v_out.money_customer_ids from unnest(v_money_customers) x;
   return v_out;
 end;
 $$;
@@ -317,6 +346,20 @@ immutable
 as $$
   select coalesce((p_view).all_scope, false)
       or coalesce(p_job = any((p_view).job_ids), false);
+$$;
+
+-- MAY THIS PERSON BE TOLD MONEY HERE? The one money question, asked of the view:
+-- the firm's posture, or a grant that opened this job or this customer. A
+-- manager/planner read never reaches here (it has no view and takes the whole
+-- summary).
+create or replace function view_money_open(p_view technician_view, p_job uuid, p_customer uuid)
+returns boolean
+language sql
+immutable
+as $$
+  select coalesce((p_view).money_all, false)
+      or coalesce(p_job = any((p_view).money_job_ids), false)
+      or coalesce(p_customer = any((p_view).money_customer_ids), false);
 $$;
 
 create or replace function view_has_customer(p_view technician_view, p_customer uuid)
@@ -523,6 +566,9 @@ begin
                                     and v.status = 'completed'
                                     and (v.source_capture_id is null or capture_is_live(v.source_capture_id))),
                'retracted_count', stats.retracted_count,
+               -- Whether the CALLER may be told this job's figures; the reader
+               -- projects the summary accordingly (src/db/moneyEvents.ts).
+               'money_amounts', (not v_tech) or view_money_open(v_view, j.id, p_customer),
                'money_events', (select coalesce(jsonb_agg(to_jsonb(m) order by m.id), '[]'::jsonb)
                                   from money_events m
                                  where m.job_id = j.id and m.tenant_id = j.tenant_id)
@@ -869,6 +915,7 @@ $$;
 revoke all on function access_grants_ledger() from public, anon, authenticated;
 revoke all on function technician_view_of(uuid, uuid, text[]) from public, anon, authenticated;
 revoke all on function view_has_job(technician_view, uuid) from public, anon, authenticated;
+revoke all on function view_money_open(technician_view, uuid, uuid) from public, anon, authenticated;
 revoke all on function view_has_customer(technician_view, uuid) from public, anon, authenticated;
 revoke all on function capture_in_scope(uuid, text, technician_view) from public, anon, authenticated;
 revoke all on function capture_content_open(capture_channel, text, uuid, text, technician_view) from public, anon, authenticated;
@@ -880,6 +927,7 @@ revoke all on function capture_full(uuid, uuid, text, boolean, text[], uuid) fro
 revoke all on function search_captures(uuid, text, uuid, text, text, int, int, text[], uuid) from public, anon, authenticated;
 grant execute on function technician_view_of(uuid, uuid, text[]) to service_role;
 grant execute on function view_has_job(technician_view, uuid) to service_role;
+grant execute on function view_money_open(technician_view, uuid, uuid) to service_role;
 grant execute on function view_has_customer(technician_view, uuid) to service_role;
 grant execute on function capture_in_scope(uuid, text, technician_view) to service_role;
 grant execute on function capture_content_open(capture_channel, text, uuid, text, technician_view) to service_role;

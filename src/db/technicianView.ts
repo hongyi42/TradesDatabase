@@ -31,15 +31,37 @@ export interface TechnicianView {
   allScope: boolean;
   jobIds: Set<string>;
   customerIds: Set<string>;
+  /** The firm told us her technicians may be told money figures. */
+  moneyAll: boolean;
+  /** Jobs and customers a grant opened the figures on. */
+  moneyJobIds: Set<string>;
+  moneyCustomerIds: Set<string>;
 }
 
 // A fresh object each time: the Sets are mutable, and one shared empty view
 // widened by a careless caller would widen every roster-less read after it.
-const emptyView = (): TechnicianView => ({ allScope: false, jobIds: new Set(), customerIds: new Set() });
+const emptyView = (): TechnicianView => ({
+  allScope: false,
+  jobIds: new Set(),
+  customerIds: new Set(),
+  moneyAll: false,
+  moneyJobIds: new Set(),
+  moneyCustomerIds: new Set(),
+});
 
 export const viewHasJob = (v: TechnicianView, id: string): boolean => v.allScope || v.jobIds.has(id);
 export const viewHasCustomer = (v: TechnicianView, id: string): boolean =>
   v.allScope || v.customerIds.has(id);
+
+// THE ONE MONEY QUESTION: may this person be told money here? The firm's posture,
+// or a grant on this job or this customer. The SQL twin is view_money_open.
+export const viewShowsMoney = (
+  v: TechnicianView,
+  where: { jobId?: string | null; customerId?: string | null },
+): boolean =>
+  v.moneyAll ||
+  (!!where.jobId && v.moneyJobIds.has(where.jobId)) ||
+  (!!where.customerId && v.moneyCustomerIds.has(where.customerId));
 
 // Who this technician is serving. A null id (a badge with no roster row) is the
 // empty view without a round trip — the database would answer the same.
@@ -60,6 +82,9 @@ export async function getTechnicianView(
     allScope: data.all_scope === true,
     jobIds: new Set(data.job_ids ?? []),
     customerIds: new Set(data.customer_ids ?? []),
+    moneyAll: data.money_all === true,
+    moneyJobIds: new Set(data.money_job_ids ?? []),
+    moneyCustomerIds: new Set(data.money_customer_ids ?? []),
   };
 }
 
@@ -70,6 +95,8 @@ export interface InsertAccessGrantInput {
   customerId?: string;
   jobId?: string;
   opens: GrantOpens;
+  /** …and the figures on what it covers (operator 2026-09-15: money can be opened). */
+  opensMoney?: boolean;
   expiresAt?: string | null; // null / absent = standing
   requestedBy?: string | null;
   grantedBy: string;
@@ -85,6 +112,7 @@ export async function insertAccessGrant(input: InsertAccessGrantInput): Promise<
       customer_id: input.customerId ?? null,
       job_id: input.jobId ?? null,
       opens: input.opens,
+      opens_money: input.opensMoney ?? false,
       expires_at: input.expiresAt ?? null,
       requested_by: input.requestedBy ?? null,
       granted_by: input.grantedBy,
@@ -117,6 +145,8 @@ export async function revokeAccessGrant(
 
 export interface TechnicianViewRuleInput {
   jobScope?: TechnicianJobScope | null;
+  /** 'status' (the shipped default) or 'amounts'. */
+  money?: 'status' | 'amounts' | null;
   technicianChannels?: CaptureChannel[] | null;
   hiddenTags?: string[] | null;
 }
@@ -139,6 +169,7 @@ export async function setTechnicianViewRule(
       {
         tenant_id: tenantId,
         job_scope: rule.jobScope ?? null,
+        money: rule.money ?? null,
         technician_channels: rule.technicianChannels ?? null,
         hidden_tags: rule.hiddenTags ?? null,
         set_by: setBy,

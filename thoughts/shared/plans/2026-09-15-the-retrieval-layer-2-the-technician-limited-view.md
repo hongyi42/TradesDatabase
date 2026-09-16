@@ -47,6 +47,14 @@ The request flow (ask, desk relay, `grant_access`, message back) is parked task
   `inform_team_lead` asks her to name). A grant still opens no money detail. The planner RELAY (its
   gap block renders ledger amounts and it writes the technician's text itself) is plan 3's, by the
   operator's call.
+- **Money can be OPENED (operator, 2026-09-15, correcting the line above): status-only is a
+  DEFAULT, not a ceiling.** The firm's rule (`technician_view_rules.money = 'status' | 'amounts'`)
+  and a grant (`access_grants.opens_money`, independent of the record/notes axis) each open the
+  figures; `view_money_open` / `viewShowsMoney` is the ONE question every money gate asks, so the
+  grant can widen it without a rewrite. The job row's own `price_cents` is stripped with the
+  figures (same number, one key over — review finding). Residual paths NOT closed here, recorded:
+  `jobs.attributes.correspondence` can quote a price the capture gate hides (the extractor-tags
+  task's subject), and the planner's own surfaces (gap block, desk answer) are plan 3's.
 - **A grant opens what the manager picks (operator 3C).** `access_grants.opens` = `record` (as if she
   served it; content gate still applies) or `record_and_notes` (every capture in it, as a manager sees
   it: channel, `manager_only` and tags bypassed). Money stays `technicianMoneyView` door numbers (TS,

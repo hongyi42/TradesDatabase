@@ -20,6 +20,7 @@ import {
   insertAccessGrant,
   revokeAccessGrant,
   setTechnicianViewRule,
+  viewShowsMoney,
 } from './technicianView.js';
 
 // The technician limited view (migration 20260917120000_technician_view.sql;
@@ -384,6 +385,56 @@ describe("the firm's own rule", () => {
     );
     expect(await getCaptureFull(tenantId, hCall.id, 'technician', false, jane)).not.toBeNull();
     expect(await getCaptureFull(tenantId, hSecret.id, 'technician', false, jane)).toBeNull();
+  });
+});
+
+describe('money: words by default, figures when the firm or a grant opens them', () => {
+  test("the firm's rule opens the figures for every technician", async () => {
+    const shut = await inView(lee.id);
+    expect(shut.jobs.every((j) => j.moneyAmounts === false)).toBe(true);
+    await setTechnicianViewRule(tenantId, { money: 'amounts' }, 'test');
+    const open = await inView(lee.id);
+    expect(open.jobs.every((j) => j.moneyAmounts === true)).toBe(true);
+    const v = await getTechnicianView(tenantId, jane);
+    expect(v.moneyAll).toBe(true);
+    expect(viewShowsMoney(v, { jobId: leeOpen.id })).toBe(true);
+  });
+
+  test('a grant can open the figures on ONE job, and nowhere else', async () => {
+    await insertAccessGrant({
+      tenantId,
+      technicianId: jane,
+      jobId: leeOpen.id,
+      opens: 'record',
+      opensMoney: true,
+      grantedBy: 'mgr-test',
+      reason: 'she is collecting the payment on site',
+    });
+    const v = await getTechnicianView(tenantId, jane);
+    expect(v.moneyAll).toBe(false);
+    expect(viewShowsMoney(v, { jobId: leeOpen.id })).toBe(true);
+    expect(viewShowsMoney(v, { jobId: leeOther.id })).toBe(false);
+    const page = await inView(lee.id);
+    expect(page.jobs.find((j) => j.id === leeOpen.id)!.moneyAmounts).toBe(true);
+    expect(page.jobs.find((j) => j.id === leeOther.id)!.moneyAmounts).toBe(false);
+  });
+
+  test("a customer grant opens the figures on all of that customer's jobs", async () => {
+    await insertAccessGrant({
+      tenantId,
+      technicianId: jane,
+      customerId: henderson.id,
+      opens: 'record',
+      opensMoney: true,
+      grantedBy: 'mgr-test',
+      reason: 'covering the roof job',
+    });
+    const v = await getTechnicianView(tenantId, jane);
+    expect(viewShowsMoney(v, { customerId: henderson.id })).toBe(true);
+    expect((await inView(henderson.id)).jobs[0].moneyAmounts).toBe(true);
+    // A revoke closes it again — the grant is the only thing holding it open.
+    await pg.query('truncate table access_grants');
+    expect(viewShowsMoney(await getTechnicianView(tenantId, jane), { customerId: henderson.id })).toBe(false);
   });
 });
 

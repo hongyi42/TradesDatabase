@@ -99,6 +99,8 @@ export type JobContents = Job & {
   newest: CaptureSnippet | null;
   lastVisitAt: string | null;
   money: MoneySummary | null;
+  /** May the caller be told this job's money FIGURES (see view_money_open)? */
+  moneyAmounts: boolean;
 };
 
 export interface CustomerContents {
@@ -152,6 +154,7 @@ interface RawJobBlock {
   last_capture_at: string | null;
   newest: RawSnippet | null;
   last_visit_at: string | null;
+  money_amounts: boolean;
   money_events: MoneyEvent[];
 }
 interface RawOutside {
@@ -231,6 +234,7 @@ export async function getCustomerContents(
     // would read as "fully paid"). Every row counts — money never folds with a
     // retraction (operator 2026-09-15) — so this agrees with get_job.
     money: block.money_events.length > 0 ? summarizeMoney(block.money_events) : null,
+    moneyAmounts: block.money_amounts !== false,
   }));
 
   return {

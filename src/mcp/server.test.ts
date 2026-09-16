@@ -1452,7 +1452,11 @@ describe('a retraction never moves money, and says which entries lost their evid
 
       const done = await call('retract_capture', { confirmId: staged.data.confirmId });
       expect(done.data.status).toBe('retracted');
-      expect(done.data.alsoLostEvidence.money.map((m: { eventId: number }) => m.eventId)).toEqual([eventId]);
+      // The CONFIRM shape is pinned too, not just its ids: a technician is shown
+      // no amount on either half of the two-step (review finding).
+      expect(done.data.alsoLostEvidence.money).toEqual([
+        { eventId, jobId: job.id, kind: 'payment_received', occurredAt: expect.any(String) },
+      ]);
       expect(done.data.moneyNote).toContain('inform_team_lead');
 
       // EVERY reader sums the same ledger: the payment still counts on both.
@@ -9962,6 +9966,87 @@ describe('the technician limited view', () => {
     const withNotes = await call('get_capture', { captureId: phone.id });
     expect(withNotes.data.found).toBe(true);
     expect(withNotes.data.rawText).toContain('$2,900');
+  });
+
+  test('money is words by default, and figures once the firm or a grant opens them', { timeout: 30_000 }, async () => {
+    const cust = await createCustomer({ tenantId, name: 'Moneyview Mo' });
+    const job = await createJob({ tenantId, customerId: cust.id, title: 'Moneyview panel' });
+    await createVisit({ tenantId, jobId: job.id, technicianId: techMcpId, startsAt: null, endsAt: null });
+    const { client: mgrClient, callWith: mgrCall } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      await mgrCall('record_money_event', { jobId: job.id, kind: 'invoice_issued', amountCents: 62000 });
+
+      const words = await call('get_job', { jobId: job.id });
+      expect(words.data.money).toEqual({ status: 'invoiced, not yet paid' });
+      // …and the JOB ROW's own price goes with the figures: it is the same
+      // number, one key over (review finding).
+      expect(words.data.price_cents).toBeUndefined();
+      const wordsCtx = await call('get_customer_context', { customerId: cust.id });
+      expect(wordsCtx.data.jobs[0].price_cents).toBeUndefined();
+      // A manager keeps it.
+      expect((await mgrCall('get_job', { jobId: job.id })).data).toHaveProperty('price_cents');
+
+      // The firm opens the figures for its technicians.
+      await setTechnicianViewRule(tenantId, { money: 'amounts' }, 'server.test');
+      try {
+        const withFigures = await call('get_job', { jobId: job.id });
+        expect(withFigures.data).toHaveProperty('price_cents'); // opened money keeps the price too
+        expect(withFigures.data.money).toEqual({
+          status: 'invoiced, not yet paid',
+          invoicedCents: 62000,
+          balanceDueCents: 62000,
+        });
+        const ctx = await call('get_customer_context', { customerId: cust.id });
+        expect(ctx.data.moneyByJob[job.id].invoicedCents).toBe(62000);
+      } finally {
+        await setTechnicianViewRule(tenantId, null, 'server.test');
+      }
+
+        // The manager's own retraction preview still names the amounts (the strip
+      // is the technician's, and a forgotten flag must not take a manager's).
+      const noteForMoney = await appendRawCapture({
+        tenantId,
+        channel: 'technician_note',
+        technicianRef: 'tech-mcp',
+        rawText: 'took a cheque for the panel',
+        customerId: cust.id,
+        jobId: job.id,
+      });
+      await mgrCall('record_money_event', {
+        jobId: job.id,
+        kind: 'payment_received',
+        amountCents: 20000,
+        sourceCaptureId: noteForMoney.id,
+      });
+      const mgrStage = await mgrCall('retract_capture', { captureId: noteForMoney.id, reason: 'wrong job' });
+      expect(mgrStage.data.alsoLosesEvidence.money[0]).toMatchObject({ amountCents: 20000 });
+
+      // …or one manager's grant, on this job alone.
+      await insertAccessGrant({
+        tenantId,
+        technicianId: techMcpId,
+        jobId: job.id,
+        opens: 'record',
+        opensMoney: true,
+        grantedBy: 'mgr-test',
+        reason: 'collecting the payment on site',
+      });
+      // 62000 invoiced, 20000 taken on the retracted note (money never folds).
+      const granted = await call('get_job', { jobId: job.id });
+      expect(granted.data.money).toEqual({
+        status: 'part paid, balance outstanding',
+        invoicedCents: 62000,
+        balanceDueCents: 42000,
+      });
+      const other = await createJob({ tenantId, customerId: cust.id, title: 'Moneyview second' });
+      await mgrCall('record_money_event', { jobId: other.id, kind: 'invoice_issued', amountCents: 15000 });
+      const stillWords = await call('get_job', { jobId: other.id });
+      expect(stillWords.data.money).toEqual({ status: 'invoiced, not yet paid' });
+      // A manager's own read is untouched by any of it.
+      expect((await mgrCall('get_job', { jobId: job.id })).data.money.invoicedCents).toBe(62000);
+    } finally {
+      await mgrClient.close();
+    }
   });
 
   test("under own_trips, an upcoming trip on the customer's other job is not listed", { timeout: 30_000 }, async () => {

@@ -397,6 +397,22 @@ describe('material_cost — a COST kind is inert in every revenue number (plan 2
     expect(at([mk('invoice_issued', 45_000), mk('payment_received', 45_000)])).toBe('paid in full');
     expect(at([mk('invoice_issued', 45_000), mk('write_off', 45_000)])).toBe('settled, no balance due');
     expect(at([mk('payment_received', 30_000)])).toBe('the office holds a credit');
+    // A cleared DEPOSIT is not a finished job — the job's own state machine
+    // refuses `paid` here too, and "paid in full" is what a technician would
+    // repeat to the customer (review finding).
+    const deposit = mk('invoice_issued', 10_000, { detail: { progress: true } });
+    expect(at([mk('estimate_approved', 90_000), deposit, mk('payment_received', 10_000)])).toBe(
+      'deposit paid, more to invoice',
+    );
+    // A ledger that HAS rows but owes nothing is not an empty ledger: a voided
+    // invoice, a comped job, a fee, a cost, an estimate merely presented.
+    const invoice = mk('invoice_issued', 45_000);
+    expect(at([invoice, mk('invoice_voided', null, { corrects_event_id: invoice.id })])).toBe(
+      'recorded, nothing owed',
+    );
+    expect(at([mk('material_cost', 4_000)])).toBe('recorded, nothing owed');
+    expect(at([mk('estimate_presented', 90_000)])).toBe('recorded, nothing owed');
+    expect(at([mk('fee_charged', 9_500)])).toBe('recorded, nothing owed');
   });
 
   test('material_cost is a real enum value the DB accepts (and stays non-negative)', async () => {

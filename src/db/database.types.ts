@@ -43,6 +43,7 @@ export type Database = {
           id: string
           job_id: string | null
           opens: string
+          opens_money: boolean
           reason: string
           requested_by: string | null
           revoke_reason: string | null
@@ -59,6 +60,7 @@ export type Database = {
           id?: string
           job_id?: string | null
           opens: string
+          opens_money?: boolean
           reason: string
           requested_by?: string | null
           revoke_reason?: string | null
@@ -75,6 +77,7 @@ export type Database = {
           id?: string
           job_id?: string | null
           opens?: string
+          opens_money?: boolean
           reason?: string
           requested_by?: string | null
           revoke_reason?: string | null
@@ -2413,6 +2416,7 @@ export type Database = {
           created_at: string
           hidden_tags: string[] | null
           job_scope: string | null
+          money: string | null
           set_by: string | null
           technician_channels:
             | Database["public"]["Enums"]["capture_channel"][]
@@ -2424,6 +2428,7 @@ export type Database = {
           created_at?: string
           hidden_tags?: string[] | null
           job_scope?: string | null
+          money?: string | null
           set_by?: string | null
           technician_channels?:
             | Database["public"]["Enums"]["capture_channel"][]
@@ -2435,6 +2440,7 @@ export type Database = {
           created_at?: string
           hidden_tags?: string[] | null
           job_scope?: string | null
+          money?: string | null
           set_by?: string | null
           technician_channels?:
             | Database["public"]["Enums"]["capture_channel"][]
@@ -4144,6 +4150,14 @@ export type Database = {
         }
         Returns: boolean
       }
+      view_money_open: {
+        Args: {
+          p_customer: string
+          p_job: string
+          p_view: Database["public"]["CompositeTypes"]["technician_view"]
+        }
+        Returns: boolean
+      }
       working_hours_between: {
         Args: { from_ts: string; to_ts: string; tz: string }
         Returns: number
@@ -4213,6 +4227,9 @@ export type Database = {
         channels: Database["public"]["Enums"]["capture_channel"][] | null
         hidden_tags: string[] | null
         technician_ref: string | null
+        money_all: boolean | null
+        money_job_ids: string[] | null
+        money_customer_ids: string[] | null
       }
     }
   }

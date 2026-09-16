@@ -45,6 +45,7 @@ import {
   upsertOpenReviewItem,
   viewHasCustomer,
   viewHasJob,
+  viewShowsMoney,
 } from '../../db/index.js';
 import type {
   JobPriority,
@@ -358,6 +359,16 @@ function withoutPhoneKey<T extends { phone_key?: unknown }>(row: T): Omit<T, 'ph
   return shown;
 }
 
+// A job row as a technician may see it when money is NOT open to her: without
+// `price_cents`, the agreed price. It is the same figure the money block was
+// reduced to words for — and it sat right beside it until this strip (review
+// finding, 2026-09-15). Money open (the firm's rule or a grant) keeps it.
+function withoutPrice<T extends { price_cents?: unknown }>(row: T): Omit<T, 'price_cents'> {
+  const { price_cents, ...shown } = row;
+  void price_cents;
+  return shown;
+}
+
 async function handleFindCustomer(toolCtx: ToolContext): Promise<unknown> {
   const { tenantId, str } = toolCtx;
       const query = str('query');
@@ -394,7 +405,9 @@ async function handleFindCustomer(toolCtx: ToolContext): Promise<unknown> {
 }
 
 async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> {
-  const { tenantId, str, activeManager } = toolCtx;
+  // No activeManager here any more: the money split is by TIER (the planner reads
+  // everything, like a manager) and then by the view's money answer.
+  const { tenantId, str } = toolCtx;
       const customerId = str('customerId');
       if (!customerId) throw new Error('customerId is required');
       // THE CONTENTS PAGE (plan 2026-09-15-the-retrieval-layer-1). The database
@@ -429,11 +442,18 @@ async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> 
       // Money position per job (money-ledger plan): summaries only — the entry
       // list lives on get_job. Jobs with an empty ledger are OMITTED from the
       // map (absence = "no money recorded"; a zero-summary would read as
-      // "fully paid"). A technician gets the STATUS IN WORDS, never a figure
-      // (operator 2026-09-15) — technicianMoneyView is that one boundary.
+      // "fully paid"). A technician gets the STATUS IN WORDS — and the figures
+      // only where the layer says she may be told them (the firm's rule, or a
+      // grant on this job/customer: `moneyAmounts`, from view_money_open). The
+      // PLANNER reads everything, so it takes the summary whole, like a manager.
       const moneyByJob: Record<string, unknown> = {};
+      const fullMoney = callerTierOf(toolCtx) !== 'technician';
       for (const j of contents.jobs) {
-        if (j.money) moneyByJob[j.id] = activeManager ? j.money : technicianMoneyView(j.money);
+        if (j.money) {
+          moneyByJob[j.id] = fullMoney
+            ? j.money
+            : technicianMoneyView(j.money, { amounts: j.moneyAmounts });
+        }
       }
       const contextResult: Record<string, unknown> = {
         // The contents function emits the whole customers row (customers%rowtype).
@@ -442,7 +462,7 @@ async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> 
         // tier-filtered map above (undefined is dropped by JSON.stringify).
         // retractedCount is a manager/planner signal; a technician never sees the key.
         jobs: contents.jobs.map((j) => ({
-          ...j,
+          ...(callerTierOf(toolCtx) === 'technician' && !j.moneyAmounts ? withoutPrice(j) : j),
           money: undefined,
           ...(callerTierOf(toolCtx) === 'technician' ? { retractedCount: undefined } : {}),
         })),
@@ -482,7 +502,7 @@ async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> 
 }
 
 async function handleGetJob(toolCtx: ToolContext): Promise<unknown> {
-  const { tenantId, str, activeManager } = toolCtx;
+  const { tenantId, str } = toolCtx;
       const jobId = str('jobId');
       if (!jobId) throw new Error('jobId is required');
       const job = await getJob(jobId);
@@ -490,11 +510,14 @@ async function handleGetJob(toolCtx: ToolContext): Promise<unknown> {
       if (!job || job.tenant_id !== tenantId) return null;
       // THE TECHNICIAN LIMITED VIEW (plan 2): a job she may not open is named by
       // its id and nothing more — not its title, attributes or money.
-      if (callerTierOf(toolCtx) === 'technician') {
-        const view = await getTechnicianView(tenantId, viewerIdOf(toolCtx));
-        if (!viewHasJob(view, job.id)) {
-          return { id: job.id, inView: false, note: OUTSIDE_VIEW_NOTE };
-        }
+      // The same view answers both questions: may she open this job, and may she
+      // be told its figures. One read, not two.
+      const view =
+        callerTierOf(toolCtx) === 'technician'
+          ? await getTechnicianView(tenantId, viewerIdOf(toolCtx))
+          : null;
+      if (view && !viewHasJob(view, job.id)) {
+        return { id: job.id, inView: false, note: OUTSIDE_VIEW_NOTE };
       }
       // Money position + retraction fold are independent reads — parallel
       // (one round-trip of latency instead of two on every get_job).
@@ -517,15 +540,16 @@ async function handleGetJob(toolCtx: ToolContext): Promise<unknown> {
       // "fully paid"). A fully-VOIDED ledger still attaches its zeros — that
       // is truthful: money was discussed and nothing is owed. Tier split:
       // managers also get the recent entries (ids are what correction/void
-      // cite); a technician gets the STATUS IN WORDS and no figure at all —
-      // no amount, no balance, no methods, no refs, no history (operator
-      // 2026-09-15; technicianMoneyView is the ONE definition of that boundary).
+      // cite); a technician gets the STATUS IN WORDS, plus the door numbers
+      // only where the layer says she may be told them — never methods, refs or
+      // history (operator 2026-09-15; technicianMoneyView is that one boundary,
+      // and it is answered by the view, never by a tier test).
       const moneySummary = summarizeMoney(moneyEvents);
       const money =
         moneyEvents.length === 0
           ? {}
           : {
-              money: activeManager
+              money: callerTierOf(toolCtx) !== 'technician'
                 ? {
                     ...moneySummary,
                     recentEvents: moneyEvents.slice(-10).map((e) => ({
@@ -538,7 +562,9 @@ async function handleGetJob(toolCtx: ToolContext): Promise<unknown> {
                       correctsEventId: e.corrects_event_id,
                     })),
                   }
-                : technicianMoneyView(moneySummary),
+                : technicianMoneyView(moneySummary, {
+                    amounts: view ? viewShowsMoney(view, { jobId: job.id, customerId: job.customer_id }) : false,
+                  }),
             };
       // Fold standing facts whose evidence was retracted — the raw-row tool
       // must agree with the folded context view. Single exit: every branch
@@ -551,7 +577,10 @@ async function handleGetJob(toolCtx: ToolContext): Promise<unknown> {
         retracted.size > 0
           ? foldRetractedCorrespondence(foldRetractedFacts(job.attributes, retracted), retracted)
           : job.attributes;
-      return { ...job, attributes, ...money };
+      const shownJob = view && !viewShowsMoney(view, { jobId: job.id, customerId: job.customer_id })
+        ? withoutPrice(job)
+        : job;
+      return { ...shownJob, attributes, ...money };
 }
 
 async function handleOpenJob(toolCtx: ToolContext): Promise<unknown> {

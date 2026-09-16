@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 259 documents · 248 live · 11 superseded.
+Regenerate with `npm run decisions:index`. 260 documents · 249 live · 11 superseded.
 
 ## Superseded — do not build on these
 
@@ -51,6 +51,7 @@ Regenerate with `npm run decisions:index`. 259 documents · 248 live · 11 super
 ## Live
 
 - `2026-09-15` `finding` [2026-09-15-customer-context-becomes-a-table-of-cont](shared/findings/2026-09-15-customer-context-becomes-a-table-of-cont.md) `describes 1 deleted file` — the retrieval-and-delivery layer for technicians, managers and the planner: every tool meets the retrieval go…
+- `2026-09-15` `finding` [2026-09-15-retrieval-layer-2-the-technician-limited](shared/findings/2026-09-15-retrieval-layer-2-the-technician-limited.md) `describes 1 deleted file` — retrieval layer 2: the technician limited view — scope gate (their visits, their customers' current jobs), gr…
 - `2026-09-15` `plan` [2026-09-15-fix-the-small-board-findings-part-2](shared/plans/2026-09-15-fix-the-small-board-findings-part-2.md) — small board findings part 2 — unschedule confirm re-check, desk answers not citable, seat-add row leak, drift…
 - `2026-09-15` `plan` [2026-09-15-the-retrieval-layer-1-captures-and-the-customer-read](shared/plans/2026-09-15-the-retrieval-layer-1-captures-and-the-customer-read.md) — The retrieval layer, plan 1 of 4 — captures and the customer read: one membership definition in the database,…
 - `2026-09-15` `plan` [2026-09-15-the-retrieval-layer-2-the-technician-limited-view](shared/plans/2026-09-15-the-retrieval-layer-2-the-technician-limited-view.md) — The retrieval layer, plan 2 of 4 — the technician limited view: scope (their trips, the customers they serve,…

@@ -176,6 +176,43 @@ async function clientFor(
   return { client: isolated, callWith };
 }
 
+// get_team_schedule's recall lists are PAGES (retrieval layer 4): the shared seed
+// tenant accumulates parked visits and bare jobs across this file, so a fixture's
+// row can sit on any page. This walks one queue to the end.
+async function recallAll(
+  callWith: Awaited<ReturnType<typeof clientFor>>['callWith'],
+  queue: 'visits' | 'jobs',
+): Promise<Array<Record<string, unknown>>> {
+  const out: Array<Record<string, unknown>> = [];
+  let after: string | null = null;
+  for (let n = 0; n < 500; n++) {
+    const res = await callWith('get_team_schedule', { unassignedOnly: true, queue, ...(after ? { after } : {}) });
+    if (res.isError || res.data.status !== 'ok') throw new Error(`recall page failed: ${res.text}`);
+    out.push(...(res.data[queue] as Array<Record<string, unknown>>));
+    after = res.data[`${queue}Next`] as string | null;
+    if (!after) return out;
+  }
+  throw new Error('recall paging never ended');
+}
+
+// list_pending_reviews is a page too (retrieval layer 4); this walks one kind's
+// queue to the end, so an assertion that an item is ABSENT means something.
+async function reviewsAll(
+  callWith: Awaited<ReturnType<typeof clientFor>>['callWith'],
+  kind: string,
+): Promise<Array<Record<string, unknown>>> {
+  const out: Array<Record<string, unknown>> = [];
+  let after: string | null = null;
+  for (let n = 0; n < 500; n++) {
+    const res = await callWith('list_pending_reviews', { kind, limit: 50, ...(after ? { after } : {}) });
+    if (res.isError) throw new Error(`review page failed: ${res.text}`);
+    out.push(...(res.data.items as Array<Record<string, unknown>>));
+    after = res.data.next as string | null;
+    if (!after) return out;
+  }
+  throw new Error('review paging never ended');
+}
+
 /**
  * The surface assertion, by NAME rather than by count (2026-09-12).
  *
@@ -351,7 +388,7 @@ describe('MCP server', () => {
     expect(lastFriday.data.date < today).toBe(true);
   });
 
-  test('every object tool result carries the temporal grounding rider `now`; arrays keep their shape', async () => {
+  test('every tool result carries the temporal grounding rider `now` — arrays are wrapped, so none is left out', async () => {
     // The rider is the eval's condition-B line, firm-local (seed tenant tz =
     // America/Los_Angeles) — computed here with the same Intl formatting so a
     // wiring or timezone regression fails loudly. Computed via a THUNK and
@@ -382,17 +419,21 @@ describe('MCP server', () => {
     expect(rd.data.today).toBeDefined();
     expect(rd.data.timezone).toBe('America/Los_Angeles');
 
-    // …and array results stay arrays (the rider must not change their shape).
+    // …and a lookup that used to be a bare array is a named object now, so it
+    // gets the rider and says "nothing" in words (retrieval layer 4).
+    const before3 = lineNow();
     const rows = await call('find_customer', { query: 'no-such-customer-zzz' });
-    expect(Array.isArray(rows.data)).toBe(true);
+    expect(rows.data.customers).toEqual([]);
+    expect(rows.data.note).toContain('no customer on this firm matches');
+    expect([before3, lineNow()]).toContain(rows.data.now);
   });
 
   test('find_customer never shows the phone MATCH key, only the phone as written', async () => {
     await createCustomer({ tenantId, name: 'Keyless Kim', phone: '(206) 555-0181' });
     const found = await call('find_customer', { query: 'Keyless Kim' });
-    expect(found.data).toHaveLength(1);
-    expect(found.data[0].phone).toBe('(206) 555-0181');
-    expect(found.data[0]).not.toHaveProperty('phone_key');
+    expect(found.data.customers).toHaveLength(1);
+    expect(found.data.customers[0].phone).toBe('(206) 555-0181');
+    expect(found.data.customers[0]).not.toHaveProperty('phone_key');
   });
 
   test('an ambiguous note asks who, then RECORDS on the answer (no third call)', async () => {
@@ -1072,7 +1113,7 @@ describe('MCP server', () => {
 
       // list_team: roster facts only — no Composio ids in the payload.
       const team = await callWith('list_team', {});
-      const bob = team.data.find((t: { ref: string }) => t.ref === 'bob-marley');
+      const bob = team.data.team.find((t: { ref: string }) => t.ref === 'bob-marley');
       expect(bob).toMatchObject({ displayName: 'Bob Marley', state: 'offboarding' });
       expect(Object.keys(bob)).not.toContain('composio_connected_account_id');
 
@@ -1083,8 +1124,10 @@ describe('MCP server', () => {
         subjectRef: 'tehc-bob',
         suggestion: 'bob-marley',
       });
-      const pending = await callWith('list_pending_reviews', {});
-      expect(pending.data.map((i: { id: string }) => i.id)).toContain(item.id);
+      // kind narrows the page, so the item is found however long the shared
+      // tenant's queue has grown (retrieval layer 4: the list is paged).
+      const pending = await reviewsAll(callWith, 'sheet_ref_mismatch');
+      expect(pending.map((i) => i.id)).toContain(item.id);
 
       // ④b fourth rail: a gap item's briefing rides detail to the manager's
       // agent verbatim — and the tool description carries the never-relay rule.
@@ -1108,8 +1151,8 @@ describe('MCP server', () => {
           agentContext: 'Job aa: asked once on the visit day; ledger empty; a figure unblocks the invoice.',
         },
       });
-      const withBriefing = await callWith('list_pending_reviews', {});
-      const briefed = (withBriefing.data as Array<{ id: string; detail?: { agentContext?: string } }>).find(
+      const withBriefing = await reviewsAll(callWith, 'overdue_visit_gap');
+      const briefed = (withBriefing as Array<{ id: string; detail?: { agentContext?: string } }>).find(
         (r) => r.id === gapItem.id,
       );
       expect(briefed?.detail?.agentContext).toBe(
@@ -1300,14 +1343,14 @@ describe('MCP server', () => {
 
       // list_team surfaces the flag on every row.
       const team = await callWith('list_team', {});
-      expect(team.data.find((t: { ref: string }) => t.ref === 'helper-hman')).toMatchObject({
+      expect(team.data.team.find((t: { ref: string }) => t.ref === 'helper-hman')).toMatchObject({
         seatExempt: true,
         state: 'active',
         sandboxRef: null,
         botUsername: null,
       });
       expect(
-        team.data.find((t: { ref: string }) => t.ref === 'mgr-test'),
+        team.data.team.find((t: { ref: string }) => t.ref === 'mgr-test'),
       ).toMatchObject({ seatExempt: false });
 
       // Deactivate ↔ reactivate round-trip AT THE FULL CAP: comes back ACTIVE
@@ -1395,7 +1438,7 @@ describe('spine tool_call cost counter', () => {
     );
     const res = await callWith('find_customer', { query: 'nobody-by-this-name' });
     expect(res.isError).toBe(false);
-    expect(res.data).toEqual([]);
+    expect(res.data.customers).toEqual([]);
   });
 
   test('a REFUSED call still counts — the agent burned a turn on it', async () => {
@@ -2338,9 +2381,9 @@ describe('bind_telegram (manager tool + cold-pool auto-allocation)', () => {
 
       // list_team surfaces the handle too, so the manager can re-ask later.
       const team = await callWith('list_team', {});
-      const coldRow = team.data.find((t: { ref: string }) => t.ref === 'tg-cold');
+      const coldRow = team.data.team.find((t: { ref: string }) => t.ref === 'tg-cold');
       expect(coldRow).toMatchObject({ sandboxRef: 'pool-x', botUsername: '@poolx_bot' });
-      const aRow = team.data.find((t: { ref: string }) => t.ref === 'tg-a');
+      const aRow = team.data.team.find((t: { ref: string }) => t.ref === 'tg-a');
       expect(aRow).toMatchObject({ sandboxRef: 's-existing', botUsername: null });
       const row2 = await pg.query<{ sandbox_ref: string; host_id: string; telegram_user_id: string }>(
         "select sandbox_ref, host_id, telegram_user_id from technicians where tenant_id=$1 and ref='tg-cold'",
@@ -4275,7 +4318,7 @@ describe('record_standing_fact (staged two-step)', () => {
 
     // find_customer folds the same way.
     const found = await call('find_customer', { query: 'Fact Fold Cust' });
-    const row = found.data.find((c: { id: string }) => c.id === customer.id);
+    const row = found.data.customers.find((c: { id: string }) => c.id === customer.id);
     expect(row.attributes.prefers_contact).toBeUndefined();
 
     // Retract the JOB fact's evidence → get_job folds too.
@@ -4392,16 +4435,13 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       // it rides the `untimed` list rather than a day group. The straddling-
       // range clamp it used to need is gone with the range itself: there is no
       // date to clamp, and therefore no way to mis-date it.
-      const recall = await callWith('get_team_schedule', { unassignedOnly: true });
-      const untimed = recall.data.untimed as Array<Record<string, unknown>>;
-      const mine = untimed.find((st) => st.visitId === visitId);
+      const recallVisits = await recallAll(callWith, 'visits');
+      const mine = recallVisits.find((st) => st.visitId === visitId);
       expect(mine).toBeDefined();
       expect(mine?.unassigned).toBe(true);
-      // …and it appears on no day group at all.
-      const dayStops = (
-        recall.data.days as Array<{ date: string; stops: Array<Record<string, unknown>> }>
-      ).flatMap((d) => d.stops);
-      expect(dayStops.some((st) => st.visitId === visitId)).toBe(false);
+      // …and it sits on no day at all (retrieval layer 4: the recall list carries
+      // untimed visits with date null, never on a date).
+      expect(mine?.date).toBeNull();
 
       // find_slots on the untimed visit: duration from the JOB's recorded
       // length. The search window no longer defaults to the visit's own days
@@ -4476,13 +4516,15 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       // no range, so it lands on NO day — and rides the top-level `untimed`
       // list instead, which is what keeps it reachable.
       const full = await callWith('get_team_schedule', {
-        from: '2026-12-20', to: '2026-12-24',
+        from: '2026-12-20', to: '2026-12-24', stops: true,
       });
-      const fullStops = (
-        full.data.days as Array<{ date: string; stops: Array<Record<string, unknown>> }>
-      ).flatMap((d) => d.stops);
+      const fullStops = full.data.stops as Array<Record<string, unknown>>;
       expect(fullStops.some((st) => st.visitId === visitId)).toBe(false);
-      const untimed = full.data.untimed as Array<Record<string, unknown>>;
+      // Retrieval layer 4: the windowed page COUNTS untimed visits and the recall
+      // list names them — never both lists in one result.
+      expect(full.data.untimed).toBeUndefined();
+      expect(full.data.counts.untimed).toBeGreaterThanOrEqual(1);
+      const untimed = await recallAll(callWith, 'visits');
       expect(untimed.find((u) => u.visitId === visitId)).toMatchObject({
         technicianRef: 'tech-mcp',
         unassigned: false,
@@ -4494,17 +4536,12 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       // Every window says the same thing: there is no date to make it appear
       // in one window and not another.
       const outside = await callWith('get_team_schedule', {
-        from: '2026-12-26', to: '2026-12-28',
+        from: '2026-12-26', to: '2026-12-28', stops: true,
       });
-      const outsideStops = (
-        outside.data.days as Array<{ stops: Array<Record<string, unknown>> }>
-      ).flatMap((d) => d.stops);
+      const outsideStops = outside.data.stops as Array<Record<string, unknown>>;
       expect(outsideStops.some((st) => st.visitId === visitId)).toBe(false);
-      expect(
-        (outside.data.untimed as Array<Record<string, unknown>>).some(
-          (u) => u.visitId === visitId,
-        ),
-      ).toBe(true);
+      // …and the untimed count does not depend on the window either.
+      expect(outside.data.counts.untimed).toBe(full.data.counts.untimed);
 
       // find_slots still works on an untimed subject. The "range wider than
       // the 14-day cap" clamp it needed is gone with the stored range: every
@@ -4548,15 +4585,25 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         total: number;
         untimed: number;
       };
+      // The counts page names no customers: stops come only when asked.
+      expect(counted.data.stops).toBeUndefined();
       expect(counts.byDay['2026-12-21']).toBe(1);
       expect(counts.byDay['2026-12-22']).toBe(1);
       expect(counts.total).toBe(2);
       expect(counts.untimed).toBeGreaterThanOrEqual(1); // 'assigned tbd' above
       // Zero-days are DATA: every requested day appears, so "which days are
-      // free" is a read, not an inference from absence. And rung 9a made that
-      // answer unambiguous — no untimed visit half-occupies a day any more, so
-      // `windowCoverByDay` is gone and a byDay of 0 simply means free.
+      // empty" is a read, not an inference from absence — in `days` too.
       expect(counts.byDay['2026-12-24']).toBe(0);
+      expect(
+        (counted.data.days as Array<{ date: string; visits: number }>).map((d) => [d.date, d.visits]),
+      ).toEqual([
+        ['2026-12-20', 0],
+        ['2026-12-21', 1],
+        ['2026-12-22', 1],
+        ['2026-12-23', 0],
+        ['2026-12-24', 0],
+      ]);
+      expect(counted.data.days[1].byTechnician).toEqual({ 'tech-mcp': 1 });
       expect((counts as Record<string, unknown>).windowCoverByDay).toBeUndefined();
       // Counts cover the REQUESTED range only.
       const total = Object.values(counts.byDay).reduce((a, b) => a + b, 0);
@@ -4566,11 +4613,9 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       }
 
       // GROUNDING_LEAN=1 (date-eval Arm B, 2026-08-23): the derived crutches
-      // disappear — counts/countsNote off get_team_schedule, upcomingVisits/
-      // openWorkNote off get_customer_context — while the DATA (days, jobs)
-      // stays. Presence with the flag OFF is pinned by the counts assertions
-      // above and the upcomingVisits check here, so normal operation cannot
-      // silently serve the lean shape.
+      // disappear — upcomingVisits/openWorkNote off get_customer_context — while
+      // the DATA stays. get_team_schedule's counts STAY under the flag since
+      // retrieval layer 4: they are the page itself, not a crutch beside a dump.
       const fullCtx = await callWith('get_customer_context', { customerId: customer.id });
       expect(fullCtx.data.upcomingVisits).toBeDefined();
       process.env.GROUNDING_LEAN = '1';
@@ -4580,8 +4625,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
           to: '2026-12-24',
         });
         expect(leanSched.data.status).toBe('ok');
-        expect(leanSched.data.counts).toBeUndefined();
-        expect(leanSched.data.countsNote).toBeUndefined();
+        expect(leanSched.data.counts.total).toBe(2);
         expect(Array.isArray(leanSched.data.days)).toBe(true);
         const leanCtx = await callWith('get_customer_context', { customerId: customer.id });
         expect(leanCtx.data.upcomingVisits).toBeUndefined();
@@ -4653,11 +4697,11 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
 
       // Team view: the manager sees ANOTHER technician's stop, with a
       // scheduleVersion.
-      const team = await callWith('get_team_schedule', { from: '2026-12-01', to: '2026-12-01' });
+      const team = await callWith('get_team_schedule', { from: '2026-12-01', to: '2026-12-01', stops: true });
       expect(team.data.status).toBe('ok');
       const v1 = team.data.scheduleVersion as number;
       expect(v1).toBeGreaterThan(0);
-      const stops = team.data.days[0].stops as Array<Record<string, unknown>>;
+      const stops = team.data.stops as Array<Record<string, unknown>>;
       const stop = stops.find((s) => s.visitId === visitId);
       expect(stop).toMatchObject({
         technicianRef: 'tech-mcp',
@@ -4673,6 +4717,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(stop).not.toHaveProperty('end');
       // Server-computed weekday on every emitted date (the find_slots lesson).
       expect(team.data.days[0].weekday).toBe('Tue');
+      expect(stop?.weekday).toBe('Tue');
+      expect(stop?.date).toBe('2026-12-01');
       expect(stop?.address).toContain('40 Elm Ave');
 
       // MOVE to another day: one call, no gate (rung 9a).
@@ -4734,8 +4780,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(cancelled.data.status).toBe('unscheduled');
       expect(cancelled.data.note).toContain('loose bucket');
       // The unscheduled visit no longer appears on the board.
-      const gone = await callWith('get_team_schedule', { from: '2026-12-02', to: '2026-12-02' });
-      expect(gone.data.days).toHaveLength(0);
+      const gone = await callWith('get_team_schedule', { from: '2026-12-02', to: '2026-12-02', stops: true });
+      expect((gone.data.stops as Array<{ visitId: string }>).map((s) => s.visitId)).not.toContain(movedId);
     } finally {
       await mgrClient.close();
     }
@@ -4764,8 +4810,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(booked.data.jobDurationMinutes).toBe(60);
       const id = booked.data.visitId as string;
 
-      const team = await callWith('get_team_schedule', { from: '2026-12-15', to: '2026-12-15' });
-      const stop = (team.data.days[0].stops as Array<Record<string, unknown>>).find(
+      const team = await callWith('get_team_schedule', { from: '2026-12-15', to: '2026-12-15', stops: true });
+      const stop = (team.data.stops as Array<Record<string, unknown>>).find(
         (s) => s.visitId === id,
       );
       expect(stop).toBeDefined();
@@ -5024,8 +5070,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       const id = booked.data.visitId as string;
 
       // The board window covering the day flags it person-less.
-      const team = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05' });
-      const stop = (team.data.days[0].stops as Array<Record<string, unknown>>).find(
+      const team = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05', stops: true });
+      const stop = (team.data.stops as Array<Record<string, unknown>>).find(
         (s) => s.visitId === id,
       );
       expect(stop).toMatchObject({ unassigned: true, technicianRef: null, technicianName: null });
@@ -5039,8 +5085,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         reason: 'assigning tech',
       });
       expect(moved.data.status).toBe('moved');
-      const after = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05' });
-      const attached = (after.data.days[0].stops as Array<Record<string, unknown>>).find(
+      const after = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05', stops: true });
+      const attached = (after.data.stops as Array<Record<string, unknown>>).find(
         (s) => s.visitId === moved.data.visitId,
       );
       expect(attached).toMatchObject({ unassigned: false, technicianRef: 'tech-mcp' });
@@ -5075,10 +5121,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(aBooked.data.status).toBe('booked');
 
       // Default board read (today) does NOT show the far-out visit…
-      const today = await callWith('get_team_schedule', {});
-      const todaysIds = (today.data.days as Array<{ stops: Array<{ visitId: string }> }>)
-        .flatMap((d) => d.stops)
-        .map((s) => s.visitId);
+      const today = await callWith('get_team_schedule', { stops: true });
+      const todaysIds = (today.data.stops as Array<{ visitId: string }>).map((s) => s.visitId);
       expect(todaysIds).not.toContain(farId);
       // …and a >14-day range without the flag still errors (cap unchanged).
       const capped = await callWith('get_team_schedule', { from: '2027-01-01', to: '2027-03-01' });
@@ -5089,10 +5133,16 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(recall.data.status).toBe('ok');
       expect(recall.data.unassignedOnly).toBe(true);
       expect(recall.data.scheduleVersion).toBeGreaterThan(0);
-      const recallStops = (recall.data.days as Array<{ stops: Array<Record<string, unknown>> }>)
-        .flatMap((d) => d.stops);
+      expect(recall.data.counts.parkedVisits).toBeGreaterThanOrEqual(1);
+      const recallStops = await recallAll(callWith, 'visits');
       const farStop = recallStops.find((s) => s.visitId === farId);
-      expect(farStop).toMatchObject({ unassigned: true, customer: 'Recall Roy' });
+      expect(farStop).toMatchObject({
+        unassigned: true,
+        customer: 'Recall Roy',
+        date: '2027-02-10',
+        startTime: '09:00',
+        jobId: booked.data.jobId,
+      });
       // Assigned visits never appear here.
       expect(recallStops.map((s) => s.visitId)).not.toContain(aBooked.data.visitId);
 
@@ -5105,7 +5155,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         priority: 'urgent',
       });
       const recall2 = await callWith('get_team_schedule', { unassignedOnly: true });
-      const jobs = recall2.data.unscheduledJobs as Array<Record<string, unknown>>;
+      const jobs = await recallAll(callWith, 'jobs');
       const bare = jobs.find((j) => j.jobId === bareJob.id);
       expect(bare).toMatchObject({
         title: 'Recall bare job',
@@ -5114,16 +5164,173 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       });
       // Jobs with a live visit (the far-out booking's job) stay OUT.
       expect(jobs.map((j) => j.jobId)).not.toContain(booked.data.jobId);
-      expect(recall2.data.note).toContain('unscheduledJobs');
-      // The windowed mode does NOT carry the jobs half.
+      expect(recall2.data.note).toContain('jobs are open jobs with NO visit');
+      // The windowed mode COUNTS the jobs half and never lists it.
       const windowed = await callWith('get_team_schedule', {});
-      expect(windowed.data.unscheduledJobs).toBeUndefined();
+      expect(windowed.data.jobs).toBeUndefined();
+      expect(windowed.data.counts.unscheduledJobs).toBe(recall2.data.counts.unscheduledJobs);
 
       // Garbage flag type is rejected.
       const bad = await callWith('get_team_schedule', { unassignedOnly: 'yes' });
       expect(bad.data.status).toBe('invalid_range');
     } finally {
       await mgrClient.close();
+    }
+  });
+
+  test('the counts page: stops page by 25, crews found by any member, completed counted, overdue recall, value cursors (retrieval layer 4)', { timeout: 60_000 }, async () => {
+    const customer = await createCustomer({ tenantId, name: 'Paging Pam' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'paging work' });
+    // Schedule-only people: they take no seat, so the file's seat-capped tests
+    // below are unaffected.
+    const first = await insertTechnician({ tenantId, ref: 'page-a', displayName: 'Page A', seatExempt: true });
+    const second = await insertTechnician({ tenantId, ref: 'page-b', displayName: 'Page B', seatExempt: true });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // 30 person-less trips on one day (nobody on them, so no overlap guard).
+      const day = '2027-04-06';
+      const tripIds: string[] = [];
+      for (let i = 0; i < 30; i++) {
+        const hh = String(6 + Math.floor(i / 2)).padStart(2, '0');
+        const mm = i % 2 === 0 ? '00' : '30';
+        const v = await createVisit({
+          tenantId,
+          jobId: job.id,
+          startsAt: `${day}T${hh}:${mm}:00Z`,
+          endsAt: `${day}T${hh}:${mm === '00' ? '20' : '50'}:00Z`,
+          status: 'confirmed',
+        });
+        tripIds.push(v.id);
+      }
+      // A crew trip where page-b is the SECOND member, and a completed one.
+      const crew = await createVisit({
+        tenantId,
+        jobId: job.id,
+        technicianIds: [first.id, second.id],
+        startsAt: `${day}T21:00:00Z`,
+        endsAt: `${day}T22:00:00Z`,
+        status: 'confirmed',
+      });
+      await createVisit({
+        tenantId,
+        jobId: job.id,
+        startsAt: `${day}T23:00:00Z`,
+        endsAt: `${day}T23:30:00Z`,
+        status: 'completed',
+      });
+
+      const counted = await callWith('get_team_schedule', { from: day, to: day });
+      expect(counted.data.stops).toBeUndefined();
+      expect(counted.data.days[0]).toMatchObject({ visits: 32, completed: 1, unassigned: 31 });
+      expect(counted.data.days[0].byTechnician).toMatchObject({ 'page-a': 1, 'page-b': 1 });
+
+      const p1 = await callWith('get_team_schedule', { from: day, to: day, stops: true });
+      expect(p1.data.stops).toHaveLength(25);
+      expect(p1.data.hasMore).toBe(true);
+      const p2 = await callWith('get_team_schedule', { from: day, to: day, stops: true, after: p1.data.next });
+      expect(p2.data.stops).toHaveLength(7);
+      expect(p2.data.hasMore).toBe(false);
+      const ids = [...p1.data.stops, ...p2.data.stops].map((s: { visitId: string }) => s.visitId);
+      expect(new Set(ids).size).toBe(32);
+      const done = p2.data.stops.find((s: { status: string }) => s.status === 'completed');
+      expect(done).toMatchObject({ stage: 'happened', startTime: '23:00' });
+
+      // A crew trip is found by EITHER member — never just the first lane. The
+      // two were added in one statement, so which is FIRST is the id tiebreak:
+      // read the order, then search by whoever is second.
+      const byA = await callWith('get_team_schedule', { from: day, to: day, stops: true, technicianRef: 'page-a' });
+      // The counts stay the whole team's even when the stop list is one person's,
+      // and the note says which number answers "how many does X have".
+      expect(byA.data.counts.total).toBe(32);
+      expect(byA.data.days[0].byTechnician['page-a']).toBe(1);
+      expect(byA.data.countsNote).toContain("byTechnician['page-a']");
+      expect(byA.data.stops.map((s: { visitId: string }) => s.visitId)).toEqual([crew.id]);
+      const crewRefs = byA.data.stops[0].technicianRefs as string[];
+      expect([...crewRefs].sort()).toEqual(['page-a', 'page-b']);
+      const bySecond = await callWith('get_team_schedule', { from: day, to: day, stops: true, technicianRef: crewRefs[1] });
+      expect(bySecond.data.stops.map((s: { visitId: string }) => s.visitId)).toEqual([crew.id]);
+      expect(bySecond.data.stops[0].technicianRef).toBe(crewRefs[0]);
+      const recallFiltered = await callWith('get_team_schedule', { unassignedOnly: true, technicianRef: 'page-a' });
+      expect(recallFiltered.data.status).toBe('invalid_range');
+      const unknown = await callWith('get_team_schedule', { from: day, to: day, stops: true, technicianRef: 'nobody-here' });
+      expect(unknown.data.status).toBe('invalid_range');
+      expect(unknown.data.note).toContain('list_team');
+      const garbage = await callWith('get_team_schedule', { from: day, to: day, stops: true, after: 'page two' });
+      expect(garbage.data.status).toBe('invalid_range');
+
+      // An overdue parked visit is in the recall list, flagged (the old recall
+      // view floored at today and lost it).
+      const overdue = await createVisit({
+        tenantId,
+        jobId: job.id,
+        startsAt: '2026-01-05T09:00:00Z',
+        endsAt: '2026-01-05T10:00:00Z',
+        status: 'confirmed',
+      });
+      const recalled = await recallAll(callWith, 'visits');
+      expect(recalled.find((v) => v.visitId === overdue.id)).toMatchObject({ overdue: true, unassigned: true });
+
+      // Value cursors: the row a cursor names can leave the queue (the manager
+      // just dealt with it) and the next page still starts right after it.
+      const q1 = await callWith('get_team_schedule', { unassignedOnly: true, queue: 'visits' });
+      expect(q1.data.visits).toHaveLength(25);
+      expect(q1.data.jobs).toBeUndefined();
+      const cursorRow = q1.data.visits[24] as { visitId: string };
+      const expectedNext = await callWith('get_team_schedule', { unassignedOnly: true, queue: 'visits', after: q1.data.visitsNext });
+      await pg.query(`update visits set status = 'cancelled' where id = $1`, [cursorRow.visitId]);
+      const q2 = await callWith('get_team_schedule', { unassignedOnly: true, queue: 'visits', after: q1.data.visitsNext });
+      expect(q2.data.visits.map((v: { visitId: string }) => v.visitId)).toEqual(
+        expectedNext.data.visits.map((v: { visitId: string }) => v.visitId),
+      );
+      const firstIds = new Set(q1.data.visits.map((v: { visitId: string }) => v.visitId));
+      expect(q2.data.visits.some((v: { visitId: string }) => firstIds.has(v.visitId))).toBe(false);
+      const noQueue = await callWith('get_team_schedule', { unassignedOnly: true, after: q1.data.visitsNext });
+      expect(noQueue.data.status).toBe('invalid_range');
+    } finally {
+      await mgrClient.close();
+      // Leave the shared tenant's schedule and roster as the later tests expect.
+      await pg.query(`update visits set status = 'cancelled' where job_id = $1`, [job.id]);
+      await pg.query('delete from visit_participants where technician_id = any($1::uuid[])', [[first.id, second.id]]);
+      await pg.query('delete from technicians where id = any($1::uuid[])', [[first.id, second.id]]);
+    }
+  });
+
+  test('a busy fortnight stays a small page without stops (retrieval layer 4)', { timeout: 60_000 }, async () => {
+    // The operator's rule the counts page exists for: a schedule read never dumps
+    // into the seat's window. 10 people × 5 trips a day × 14 days = 700 visits.
+    const customer = await createCustomer({ tenantId, name: 'Busy Bella' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'busy fortnight' });
+    const techs: string[] = [];
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      for (let t = 0; t < 10; t++) {
+        const tech = await insertTechnician({ tenantId, ref: `busy-${t}`, displayName: `Busy ${t}`, seatExempt: true });
+        techs.push(tech.id);
+        const { rows } = await pg.query<{ id: string }>(
+          `insert into visits (tenant_id, job_id, starts_at, ends_at, status)
+           select $1, $2,
+                  timestamptz '2028-01-03 07:00+00' + (d || ' days')::interval + ((h * 2) || ' hours')::interval,
+                  timestamptz '2028-01-03 08:00+00' + (d || ' days')::interval + ((h * 2) || ' hours')::interval,
+                  'confirmed'
+             from generate_series(0, 13) as d, generate_series(0, 4) as h
+           returning id`,
+          [tenantId, job.id],
+        );
+        await pg.query(
+          `insert into visit_participants (tenant_id, visit_id, technician_id)
+           select $1, v, $2 from unnest($3::uuid[]) as v`,
+          [tenantId, tech.id, rows.map((r) => r.id)],
+        );
+      }
+      const page = await callWith('get_team_schedule', { from: '2028-01-03', to: '2028-01-16' });
+      expect(page.data.counts.total).toBe(700);
+      expect(page.data.days[0].byTechnician['busy-0']).toBe(5);
+      expect(page.text.length).toBeLessThan(8000);
+    } finally {
+      await mgrClient.close();
+      await pg.query(`update visits set status = 'cancelled' where job_id = $1`, [job.id]);
+      await pg.query('delete from visit_participants where technician_id = any($1::uuid[])', [techs]);
+      await pg.query('delete from technicians where id = any($1::uuid[])', [techs]);
     }
   });
 
@@ -5501,9 +5708,9 @@ describe('schedule-input verbs (Plan 3a)', () => {
 
       // list_team surfaces both new fields.
       const team = await callWith('list_team', {});
-      const row = (team.data as Array<Record<string, unknown>>).find((t) => t.ref === 'input-probe');
+      const row = (team.data.team as Array<Record<string, unknown>>).find((t) => t.ref === 'input-probe');
       expect(row).toMatchObject({ skills: ['boilers', 'gas-line'], availabilityConfigured: true });
-      const goneRow = (team.data as Array<Record<string, unknown>>).find((t) => t.ref === 'input-gone');
+      const goneRow = (team.data.team as Array<Record<string, unknown>>).find((t) => t.ref === 'input-gone');
       expect(goneRow).toMatchObject({ skills: [], availabilityConfigured: false });
 
       // Clearing skills is a valid "back to unknown".
@@ -5599,19 +5806,17 @@ describe('schedule-input verbs (Plan 3a)', () => {
       expect(added.data.note).toContain('REQUIRED next step');
       expect(added.data.note).toContain('set_availability');
 
-      const pending = await callWith('list_pending_reviews', {});
-      const item = (pending.data as Array<Record<string, unknown>>).find(
-        (r) => r.kind === 'availability_setup' && r.subject_ref === 'onboard-one',
+      const item = (await reviewsAll(callWith, 'availability_setup')).find(
+        (r) => r.kind === 'availability_setup' && r.subjectRef === 'onboard-one',
       );
       expect(item).toBeDefined();
 
       // Setting the pattern closes the obligation.
       const set = await callWith('set_availability', { ref: 'onboard-one', pattern: PATTERN_MON_FRI });
       expect(set.isError).toBe(false);
-      const after = await callWith('list_pending_reviews', {});
       expect(
-        (after.data as Array<Record<string, unknown>>).find(
-          (r) => r.kind === 'availability_setup' && r.subject_ref === 'onboard-one',
+        (await reviewsAll(callWith, 'availability_setup')).find(
+          (r) => r.kind === 'availability_setup' && r.subjectRef === 'onboard-one',
         ),
       ).toBeUndefined();
 
@@ -5621,9 +5826,8 @@ describe('schedule-input verbs (Plan 3a)', () => {
         seatExempt: true,
       });
       await callWith('add_technician_seat', { confirmId: stage2.data.confirmId });
-      const pending2 = await callWith('list_pending_reviews', {});
-      const item2 = (pending2.data as Array<Record<string, unknown>>).find(
-        (r) => r.kind === 'availability_setup' && r.subject_ref === 'onboard-two',
+      const item2 = (await reviewsAll(callWith, 'availability_setup')).find(
+        (r) => r.kind === 'availability_setup' && r.subjectRef === 'onboard-two',
       );
       expect(item2).toBeDefined();
       const dismissed = await callWith('resolve_review', {
@@ -5644,10 +5848,9 @@ describe('schedule-input verbs (Plan 3a)', () => {
       const added3 = await callWith('add_technician_seat', { confirmId: stage3.data.confirmId });
       expect(added3.isError).toBe(false);
       expect(added3.data.note).toContain('REQUIRED next step');
-      const pending3 = await callWith('list_pending_reviews', {});
       expect(
-        (pending3.data as Array<Record<string, unknown>>).find(
-          (r) => r.kind === 'availability_setup' && r.subject_ref === 'onboard-three',
+        (await reviewsAll(callWith, 'availability_setup')).find(
+          (r) => r.kind === 'availability_setup' && r.subjectRef === 'onboard-three',
         ),
       ).toBeDefined();
     } finally {
@@ -7036,10 +7239,8 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
       expect(still.rows[0].status).toBe('open');
 
       // The job is in the recall view's unscheduledJobs before the confirm…
-      const before = await callWith('get_team_schedule', { unassignedOnly: true });
-      expect(
-        (before.data.unscheduledJobs as Array<{ jobId: string }>).map((j) => j.jobId),
-      ).toContain(bare.id);
+      const before = await recallAll(callWith, 'jobs');
+      expect(before.map((j) => j.jobId)).toContain(bare.id);
 
       // Restage supersedes the caller's prior token: the old confirmId dies.
       const stage2 = await callWith('cancel_job', { jobId: bare.id, reason: 'duplicate entry' });
@@ -7057,10 +7258,8 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
       expect(after.rows[0].status).toBe('cancelled');
       // …and gone from it after (the bucket-exit contract: the freeze must
       // never see dead work).
-      const recall = await callWith('get_team_schedule', { unassignedOnly: true });
-      expect(
-        (recall.data.unscheduledJobs as Array<{ jobId: string }>).map((j) => j.jobId),
-      ).not.toContain(bare.id);
+      const recall = await recallAll(callWith, 'jobs');
+      expect(recall.map((j) => j.jobId)).not.toContain(bare.id);
 
       // A used token cannot commit twice.
       const replay = await callWith('cancel_job', { confirmId: stage2.data.confirmId });
@@ -7100,8 +7299,10 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
         { visitId: booked.data.visitId, day: '2027-02-01' },
       ]);
       // Off the board.
-      const day = await callWith('get_team_schedule', { from: '2027-02-01', to: '2027-02-01' });
-      expect(day.data.days).toHaveLength(0);
+      const day = await callWith('get_team_schedule', { from: '2027-02-01', to: '2027-02-01', stops: true });
+      expect((day.data.stops as Array<{ visitId: string }>).map((s) => s.visitId)).not.toContain(
+        booked.data.visitId,
+      );
       // Terminal: a second cancel_job on the same job refuses with the truth.
       const again = await callWith('cancel_job', { jobId, reason: 'again' });
       expect(again.isError).toBe(true);
@@ -9841,6 +10042,82 @@ describe('rung 10 — open_job, and the citation on what a yes creates', () => {
   });
 });
 
+describe('list_pending_reviews pages (retrieval layer 4)', () => {
+  test('20 + next → 5, counts over the whole queue, a withheld detail opens by id, another firm\'s id is not found', async () => {
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    const other = await createTenant('rl4-review-other', { managerSeats: 1 });
+    const made: string[] = [];
+    try {
+      // A kind no other test writes, so the counts are exactly this fixture.
+      for (let i = 0; i < 25; i++) {
+        const { rows } = await pg.query<{ id: string }>(
+          `insert into review_items (tenant_id, kind, subject_ref, detail, created_at)
+           values ($1, 'rl4_page_probe', $2, $3::jsonb, $4::timestamptz)
+           returning id`,
+          [
+            tenantId,
+            `rl4-${i}`,
+            JSON.stringify(i === 3 ? { words: 'y'.repeat(3000) } : { i }),
+            // Items 18..21 share ONE microsecond timestamp, so the page boundary
+            // (after the 20th) falls inside the tie: a cursor that lost its
+            // microseconds or its id would repeat or skip a row here.
+            i >= 18 && i <= 21
+              ? '2027-01-01 00:00:18.123456+00'
+              : `2027-01-01 00:00:${String(i).padStart(2, '0')}.000001+00`,
+          ],
+        );
+        made.push(rows[0].id);
+      }
+      const foreign = await pg.query<{ id: string }>(
+        `insert into review_items (tenant_id, kind, subject_ref) values ($1, 'rl4_page_probe', 'rl4-foreign') returning id`,
+        [other.id],
+      );
+
+      const p1 = await callWith('list_pending_reviews', { kind: 'rl4_page_probe' });
+      expect(p1.data.items).toHaveLength(20);
+      expect(p1.data.total).toBe(25);
+      expect(p1.data.byKind.rl4_page_probe).toBe(25);
+      expect(p1.data.hasMore).toBe(true);
+      expect(p1.data.now).toBeDefined();
+      const p2 = await callWith('list_pending_reviews', { kind: 'rl4_page_probe', after: p1.data.next });
+      expect(p2.data.items).toHaveLength(5);
+      expect(p2.data.next).toBeNull();
+      const refs = [...p1.data.items, ...p2.data.items].map((i: { subjectRef: string }) => i.subjectRef);
+      expect(new Set(refs).size).toBe(25);
+      expect(refs).not.toContain('rl4-foreign');
+
+      const big = p1.data.items.find((i: { subjectRef: string }) => i.subjectRef === 'rl4-3');
+      expect(big).toMatchObject({ detail: null, detailWithheld: true });
+      expect(p1.data.note).toContain('reviewItemId');
+      const opened = await callWith('list_pending_reviews', { reviewItemId: big.id });
+      expect(opened.data.item.detail.words).toHaveLength(3000);
+      // The same field names the page uses — the drill-down must not rename them.
+      expect(opened.data.item).toMatchObject({ id: big.id, subjectRef: 'rl4-3', detailWithheld: false });
+      expect(opened.data.item.createdAt).toBeDefined();
+      expect(opened.data.item).not.toHaveProperty('subject_ref');
+
+      const notMine = await callWith('list_pending_reviews', { reviewItemId: foreign.rows[0].id });
+      expect(notMine.isError).toBe(false);
+      expect(notMine.data.item).toBeNull();
+      expect(p1.data.next).toContain('.123456');
+      const badCursor = await callWith('list_pending_reviews', { after: 'page-two' });
+      expect(badCursor.isError).toBe(true);
+      const notAnId = await callWith('list_pending_reviews', { reviewItemId: 'not-a-uuid' });
+      expect(notAnId.isError).toBe(false);
+      expect(notAnId.data.item).toBeNull();
+      const empty = await callWith('list_pending_reviews', { kind: 'rl4_no_such_kind' });
+      expect(empty.data.items).toEqual([]);
+      expect(empty.data.note).toContain('no open review items');
+      await pg.query('delete from review_items where id = $1', [foreign.rows[0].id]);
+    } finally {
+      await mgrClient.close();
+      await pg.query('delete from review_items where id = any($1::uuid[])', [made]);
+      await pg.query('delete from review_items where tenant_id = $1', [other.id]);
+      await pg.query('delete from tenants where id = $1', [other.id]);
+    }
+  });
+});
+
 // THE TECHNICIAN LIMITED VIEW (plan 2026-09-15-the-retrieval-layer-2): every
 // technician door agrees on what she may open. The rest of this file runs the
 // seed tenant at `whole_firm` (see beforeAll); this block puts the shipped
@@ -9876,11 +10153,15 @@ describe('the technician limited view', () => {
     expect(ctx.data.jobsOutsideView).toBe(1);
     expect(ctx.data.note).toContain('outside your view');
     expect((await call('get_job', { jobId: leeOther.id })).data.title).toBe('Viewlee heater');
-    expect((await call('find_customer', { query: 'Viewlee' })).data[0].phone).toBe('555-7101');
+    expect((await call('find_customer', { query: 'Viewlee' })).data.customers[0].phone).toBe('555-7101');
 
     // Not served: a name and an id, never the record.
     const found = await call('find_customer', { query: 'Viewhen' });
-    expect(found.data).toEqual([
+    // EXACTLY four keys inside the wrapper (retrieval layer 4 put matches under
+    // `customers`): this row is the access-request flow's hook, and a fold or a
+    // wrapper refactor spreading the customer row back onto it would hand a
+    // technician the record she is not served.
+    expect(found.data.customers).toEqual([
       { id: hen.id, name: 'Viewhen Henderson', inView: false, note: expect.stringContaining('outside your view') },
     ]);
     const hCtx = await call('get_customer_context', { customerId: hen.id });
@@ -9918,7 +10199,7 @@ describe('the technician limited view', () => {
       const m = await mgr('get_customer_context', { customerId: hen.id });
       expect(m.data.jobs.map((j: { id: string }) => j.id)).toEqual([hJob.id]);
       expect(m.data.jobsOutsideView).toBeUndefined();
-      expect((await mgr('find_customer', { query: 'Viewhen' })).data[0].phone).toBe('555-7199');
+      expect((await mgr('find_customer', { query: 'Viewhen' })).data.customers[0].phone).toBe('555-7199');
       expect((await mgr('get_job', { jobId: hJob.id })).data.title).toBe('Viewhen roof');
     } finally {
       await mgrClient.close();

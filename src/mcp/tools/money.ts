@@ -12,7 +12,9 @@
 import {
   MONEY_EVENT_KINDS,
   appendMoneyEvent,
+  hitRowCap,
   listMoneyEventsForJob,
+  rowCapNote,
   summarizeMoney,
   syncJobStatusForMoney,
 } from '../../db/index.js';
@@ -186,6 +188,9 @@ async function handleRecordMoneyEvent(toolCtx: ToolContext): Promise<unknown> {
         kind: event.kind,
         amountCents: event.amount_cents,
         ...(events ? { money: summarizeMoney(events) } : {}),
+        // Told, not paged (operator ruling 2026-09-15): read in id order, so a
+        // cut at the row limit drops the newest entries — this one included.
+        ...(events && hitRowCap(events.length) ? { moneyNote: rowCapNote('ledger entries') } : {}),
         ...(statusMove ? { jobStatusChange: statusMove } : {}),
         ...(statusSyncWarning ? { statusSyncWarning } : {}),
         note:

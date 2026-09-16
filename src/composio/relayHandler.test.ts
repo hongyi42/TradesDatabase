@@ -1,8 +1,17 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
 import { createHmac } from 'node:crypto';
+import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Technician } from '../db/technicians.js';
-import { handleComposioRelay, isRelayPath, type ForwardFn, type RelayDeps } from './relayHandler.js';
+import {
+  capMcpToolResult,
+  cappingForward,
+  takeEvents,
+  handleComposioRelay,
+  isRelayPath,
+  type ForwardFn,
+  type RelayDeps,
+} from './relayHandler.js';
 
 // Pure unit tests — every Composio/DB touchpoint stubbed via RelayDeps
 // (sessions.test.ts pattern). Identity is real: headers are signed with the
@@ -75,6 +84,12 @@ function fakeRes(): CapturedResponse {
   captured.res = {
     get headersSent() {
       return sent;
+    },
+    on() {
+      return this;
+    },
+    destroy() {
+      return this;
     },
     writeHead(status: number, headers?: Record<string, unknown>) {
       sent = true;
@@ -382,5 +397,327 @@ describe('handleComposioRelay', () => {
     await handleComposioRelay(fakeReq({ method: 'GET' }), fakeRes().res, '', deps({ forward }));
     expect(calls).toHaveLength(1);
     expect(calls[0].method).toBe('GET');
+  });
+});
+
+// ─── The size cap on the tools/call leg (retrieval layer 4) ─────────────────
+//
+// Real sockets, both sides: an upstream standing in for the Composio session MCP,
+// and a front server calling handleComposioRelay, because the capping leg uses
+// the parts of a response the stub above does not have (write, on('close'),
+// destroy). SPINE_RESULT_CAP_CHARS is lowered so a small fixture is "too big".
+describe('cappingForward — Composio results through the size cap', () => {
+  let upstreamHandler: (req: IncomingMessage, res: ServerResponse) => void = () => {};
+  let upstream: http.Server;
+  let front: http.Server;
+  let upstreamUrl = '';
+  let frontUrl = '';
+  const sockets = new Set<import('node:net').Socket>();
+  let prevCap: string | undefined;
+
+  beforeAll(async () => {
+    prevCap = process.env.SPINE_RESULT_CAP_CHARS;
+    upstream = http.createServer((req, res) => upstreamHandler(req, res));
+    upstream.on('connection', (s) => {
+      sockets.add(s);
+      s.on('close', () => sockets.delete(s));
+    });
+    front = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        void handleComposioRelay(req, res, Buffer.concat(chunks).toString('utf8'), {
+          getTech: async () => tech(),
+          getMcpUrl: async () => upstreamUrl,
+          recordCost: async () => undefined,
+        });
+      });
+    });
+    await new Promise<void>((r) => upstream.listen(0, '127.0.0.1', () => r()));
+    await new Promise<void>((r) => front.listen(0, '127.0.0.1', () => r()));
+    upstreamUrl = `http://127.0.0.1:${(upstream.address() as import('node:net').AddressInfo).port}/mcp`;
+    frontUrl = `http://127.0.0.1:${(front.address() as import('node:net').AddressInfo).port}/composio`;
+  });
+
+  afterAll(async () => {
+    if (prevCap === undefined) delete process.env.SPINE_RESULT_CAP_CHARS;
+    else process.env.SPINE_RESULT_CAP_CHARS = prevCap;
+    for (const s of sockets) s.destroy();
+    await new Promise<void>((r) => upstream.close(() => r()));
+    await new Promise<void>((r) => front.close(() => r()));
+  });
+
+  const post = (rpc: unknown) =>
+    fetch(frontUrl, {
+      method: 'POST',
+      headers: { ...identityHeaders(), 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify(rpc),
+    });
+  const toolCall = { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'GMAIL_FETCH_EMAILS', arguments: {} } };
+
+  test('a result under the cap comes back byte-for-byte', async () => {
+    process.env.COMPOSIO_API_KEY = 'k';
+    process.env.SPINE_RESULT_CAP_CHARS = '400';
+    const payload = JSON.stringify({ jsonrpc: '2.0', id: 7, result: { content: [{ type: 'text', text: 'two emails' }] } });
+    upstreamHandler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(payload);
+    };
+    const resp = await post(toolCall);
+    expect(resp.status).toBe(200);
+    expect(await resp.text()).toBe(payload);
+  });
+
+  test('a big JSON result is cut, announced, stays valid JSON-RPC, and its byte length is right', async () => {
+    process.env.COMPOSIO_API_KEY = 'k';
+    process.env.SPINE_RESULT_CAP_CHARS = '400';
+    const text = 'émail '.repeat(400); // non-ASCII: bytes != characters
+    upstreamHandler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 7,
+          result: {
+            content: [{ type: 'text', text }, { type: 'image', data: 'x'.repeat(5000), mimeType: 'image/png' }],
+            structuredContent: { emails: text },
+          },
+        }),
+      );
+    };
+    const resp = await post(toolCall);
+    const body = await resp.text();
+    expect(Number(resp.headers.get('content-length'))).toBe(Buffer.byteLength(body));
+    const msg = JSON.parse(body) as { id: number; result: { content: Array<{ text: string }>; structuredContent?: unknown } };
+    expect(msg.id).toBe(7);
+    expect(msg.result.structuredContent).toBeUndefined();
+    expect(msg.result.content).toHaveLength(1);
+    const capped = JSON.parse(msg.result.content[0].text) as { truncated: boolean; note: string; partial: string };
+    expect(capped.truncated).toBe(true);
+    expect(capped.note).toContain('1 non-text block(s) were dropped');
+    expect(capped.note).toContain('Ask the app for fewer results');
+    expect(msg.result.content[0].text.length).toBeLessThanOrEqual(400);
+  });
+
+  test('SSE: notifications pass through, the response is cut, and the reply ends even if upstream keeps the stream open', async () => {
+    process.env.COMPOSIO_API_KEY = 'k';
+    process.env.SPINE_RESULT_CAP_CHARS = '400';
+    const progress = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/progress', params: { progress: 1 } });
+    const response = JSON.stringify({ jsonrpc: '2.0', id: 7, result: { content: [{ type: 'text', text: 'z'.repeat(3000) }] } });
+    upstreamHandler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`event: message\r\ndata: ${progress}\r\n\r\n`);
+      // Split the response event across two writes, mid-JSON.
+      res.write(`event: message\r\ndata: ${response.slice(0, 50)}`);
+      setTimeout(() => res.write(`${response.slice(50)}\r\n\r\n`), 20);
+      // …and never end: a server SHOULD close after the response, not MUST.
+    };
+    const started = Date.now();
+    const resp = await post(toolCall);
+    const body = await resp.text();
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(body).toContain(`data: ${progress}\r\n\r\n`);
+    const events = body.split(/\r\n\r\n|\n\n/).filter(Boolean);
+    const last = events[events.length - 1];
+    expect(last).toContain('event: message');
+    const data = last.split(/\r\n|\n/).find((l) => l.startsWith('data: '))!.slice(6);
+    const msg = JSON.parse(data) as { id: number; result: { content: Array<{ text: string }> } };
+    expect(msg.id).toBe(7);
+    expect((JSON.parse(msg.result.content[0].text) as { truncated: boolean }).truncated).toBe(true);
+  });
+
+  test('SSE: a notification reaches the client BEFORE the response is ready (streamed, not buffered)', async () => {
+    process.env.COMPOSIO_API_KEY = 'k';
+    process.env.SPINE_RESULT_CAP_CHARS = '400';
+    const progress = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/progress', params: { progress: 1 } });
+    const response = JSON.stringify({ jsonrpc: '2.0', id: 7, result: { content: [{ type: 'text', text: 'z'.repeat(3000) }] } });
+    let release: (() => void) | null = null;
+    upstreamHandler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${progress}\r\n\r\n`);
+      // The response only goes out once the test says so, from the client side.
+      release = () => {
+        // The event SEPARATOR is split across writes — the boundary scan has to
+        // survive "\r\n" arriving before "\r\n".
+        res.write(`data: ${response}\r\n`);
+        res.write('\r\n');
+      };
+    };
+    const resp = await post(toolCall);
+    const reader = resp.body!.getReader();
+    const decoder = new TextDecoder();
+    const first = decoder.decode((await reader.read()).value);
+    expect(first).toContain('notifications/progress');
+    expect(first).not.toContain('"id":7');
+    expect(release).not.toBeNull();
+    release!();
+    let rest = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      rest += decoder.decode(value);
+    }
+    const data = rest.split(/\r\n|\n/).find((l) => l.startsWith('data: '))!.slice(6);
+    const msg = JSON.parse(data) as { id: number; result: { content: Array<{ text: string }> } };
+    expect(msg.id).toBe(7);
+    expect((JSON.parse(msg.result.content[0].text) as { truncated: boolean }).truncated).toBe(true);
+  });
+
+  test('SSE: a stream that ENDS without a blank line still has its response cut', async () => {
+    process.env.COMPOSIO_API_KEY = 'k';
+    process.env.SPINE_RESULT_CAP_CHARS = '400';
+    const response = JSON.stringify({ jsonrpc: '2.0', id: 7, result: { content: [{ type: 'text', text: 'q'.repeat(3000) }] } });
+    upstreamHandler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(`data: ${response}`); // no trailing blank line
+    };
+    const body = await (await post(toolCall)).text();
+    const data = body.split(/\r\n|\n/).find((l) => l.startsWith('data: '))!.slice(6);
+    const msg = JSON.parse(data) as { result: { content: Array<{ text: string }> } };
+    expect((JSON.parse(msg.result.content[0].text) as { truncated: boolean }).truncated).toBe(true);
+  });
+
+  test('an upstream error status passes through unchanged', async () => {
+    process.env.COMPOSIO_API_KEY = 'k';
+    process.env.SPINE_RESULT_CAP_CHARS = '400';
+    const errBody = JSON.stringify({ error: 'x'.repeat(2000) });
+    upstreamHandler = (_req, res) => {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(errBody);
+    };
+    const resp = await post(toolCall);
+    expect(resp.status).toBe(500);
+    expect(await resp.text()).toBe(errBody);
+  });
+
+  test('protocol traffic (tools/list) is piped, never cut', async () => {
+    process.env.COMPOSIO_API_KEY = 'k';
+    process.env.SPINE_RESULT_CAP_CHARS = '400';
+    const catalog = JSON.stringify({ jsonrpc: '2.0', id: 2, result: { tools: [{ name: 'T', description: 'd'.repeat(3000) }] } });
+    upstreamHandler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(catalog);
+    };
+    const resp = await post({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+    expect(await resp.text()).toBe(catalog);
+  });
+});
+
+describe('capMcpToolResult — what counts as too big, and what is never lost', () => {
+  test('a text that FITS is left alone even though its JSON form does not', () => {
+    // Composio results are JSON-in-text: escaping inflates them 15-35%. Measuring
+    // the serialized result announced a cut on results the model could read whole,
+    // which tells it to re-query for nothing.
+    const text = JSON.stringify({ emails: Array.from({ length: 12 }, (_, i) => ({ id: i, subject: 'hi "there"' })) });
+    const cap = text.length; // the text fits EXACTLY
+    expect(JSON.stringify({ content: [{ type: 'text', text }] }).length).toBeGreaterThan(cap);
+    expect(capMcpToolResult({ content: [{ type: 'text', text }] }, cap)).toBeNull();
+  });
+
+  test('a result with no content array keeps its payload as text instead of becoming "null"', () => {
+    const capped = capMcpToolResult({ resultType: 'task', task: { id: 't1', words: 'w'.repeat(2000) } }, 400);
+    expect(capped?.resultType).toBe('task');
+    const body = (capped?.content as Array<{ text: string }>)[0].text;
+    expect(body).toContain('t1');
+    expect(body).not.toBe('null');
+  });
+
+  test('dropping blocks is announced even when the text itself fits — and no cut is claimed', () => {
+    const capped = capMcpToolResult(
+      { content: [{ type: 'text', text: 'short' }, { type: 'image', data: 'x'.repeat(900) }], isError: true },
+      400,
+    );
+    const blocks = capped?.content as Array<{ text: string }>;
+    expect(blocks[0].text).toBe('short');
+    expect(blocks[1].text).toContain('1 non-text block(s) were dropped');
+    // The text was NOT cut, so it must not say it was.
+    expect(blocks[1].text).not.toContain('was cut');
+    expect(capped?.isError).toBe(true);
+  });
+
+  test('a small result keeps its structured copy — a tool with an outputSchema MUST send one', () => {
+    const result = { content: [{ type: 'text', text: '{"ok":true}' }], structuredContent: { ok: true } };
+    expect(capMcpToolResult(result, 20_000)).toBeNull();
+  });
+
+  test('a structured-only result is served as its JSON, and never announced as dropped', () => {
+    const capped = capMcpToolResult({ structuredContent: { id: 'x', words: 'w'.repeat(2000) } }, 400);
+    const body = (capped?.content as Array<{ text: string }>)[0].text;
+    expect(body).toContain('truncated');
+    expect(JSON.stringify(capped)).not.toContain('The structured copy was dropped');
+  });
+
+  test('a result of images only is NAMED, never re-served as base64 text', () => {
+    const capped = capMcpToolResult(
+      { content: [{ type: 'image', data: 'B'.repeat(4000), mimeType: 'image/png' }] },
+      400,
+    );
+    const body = (capped?.content as Array<{ text: string }>)[0].text;
+    expect(body).toContain('carried no text, only: image');
+    expect(body).not.toContain('BBBB');
+  });
+});
+
+describe('takeEvents — the SSE boundary scanner', () => {
+  // An SSE line ends with CRLF, LF or CR, so a boundary is ANY TWO in a row —
+  // '\n\r\n' and '\r\n\r' included — while a single CRLF is ONE ending, never two.
+  test.each([
+    ['CRLF CRLF', 'a\r\n\r\nb', ['a'], 'b'],
+    ['LF LF', 'a\n\nb', ['a'], 'b'],
+    ['CR CR', 'a\r\rb', ['a'], 'b'],
+    ['LF CRLF', 'a\n\r\nb', ['a'], 'b'],
+    ['CRLF CR', 'a\r\n\rb', ['a'], 'b'],
+    ['a lone CRLF is not a boundary', 'a\r\nb', [], 'a\r\nb'],
+    ['two events', 'a\n\nb\n\nc', ['a', 'b'], 'c'],
+  ])('%s', (_label, input, blocks, rest) => {
+    const out = takeEvents(input);
+    expect(out.events.map((e) => e.block)).toEqual(blocks);
+    expect(out.rest).toBe(rest);
+    // Nothing is ever lost: block + separator + remainder is the input again.
+    expect(out.events.map((e) => e.block + e.sep).join('') + out.rest).toBe(input);
+  });
+
+  test('a boundary split across chunks is still found, and the resume offset never skips one', () => {
+    const feed = ['event: message\r\ndata: 1\r', '\n\r', '\ndata: 2\n', '\nrest'];
+    let pending = '';
+    let scanned = 0;
+    const seen: string[] = [];
+    for (const chunk of feed) {
+      pending += chunk;
+      const out = takeEvents(pending, scanned);
+      seen.push(...out.events.map((e) => e.block));
+      pending = out.rest;
+      scanned = out.scanned;
+    }
+    expect(seen).toEqual(['event: message\r\ndata: 1', 'data: 2']);
+    expect(pending).toBe('rest');
+  });
+
+  test('a lone CR at the end of a chunk waits for the byte that may complete it', () => {
+    // '\r' could still become '\r\n': calling it a boundary now would split a CRLF.
+    const first = takeEvents('a\n\r');
+    expect(first.events).toEqual([]);
+    expect(takeEvents('a\n\r\nb', first.scanned).events.map((e) => e.block)).toEqual(['a']);
+  });
+});
+
+describe('cappingForward — faults answer once, and in the contracted shape', () => {
+  test('a malformed session URL answers the relay\'s 502, never the identity 401', async () => {
+    const captured = fakeRes();
+    await cappingForward(1)('not a url', 'POST', {}, Buffer.from(''), captured.res);
+    expect(captured.status).toBe(502);
+  });
+
+  test('a header value http.request refuses answers 502 JSON, never an uncaught throw', async () => {
+    const captured = fakeRes();
+    await cappingForward(1)(
+      'http://127.0.0.1:9/mcp',
+      'POST',
+      { 'x-api-key': 'abc\n' }, // a pasted env var's trailing newline
+      Buffer.from(''),
+      captured.res,
+    );
+    expect(captured.status).toBe(502);
+    expect(JSON.parse(captured.body)).toMatchObject({ error: 'the Composio session endpoint could not be called' });
   });
 });

@@ -17,6 +17,8 @@ import {
   addTimeOff,
   annotateResolvedReviewItem,
   appendJobCorrespondence,
+  countUnscheduledOpenJobs,
+  countUntimedVisits,
   deleteTimeOff,
   durationError,
   factSourceIds,
@@ -27,23 +29,20 @@ import {
   getCustomer,
   getJob,
   getOpenReviewItem,
+  getTechnician,
   getTechnicianById,
   getTenant,
   getVisitForTenant,
   isValidDuration,
   latestScheduleVersion,
   listJobTypeDurations,
-  listJobsWithCustomerByIds,
   listOpenJobsForCustomer,
   listParticipants,
   listTeam,
   listTimeOffForTechnician,
-  listUnassignedVisits,
-  listUnplaced,
-  listVisitsForTenant,
-  participantIdsOf,
   resolveOpenReviewItemFor,
   resolveReviewItem,
+  rowCapNote,
   setTechnicianAvailability,
   setTechnicianHorizonDays,
   stageOf,
@@ -76,7 +75,8 @@ import {
   summarizeWeeklyPattern,
 } from '../../schedule/availability.js';
 import {
-  readUnscheduledJobs,
+  readBoardDays,
+  readLooseBucket,
 } from '../../schedule/boardRead.js';
 import {
   bookVisit,
@@ -116,7 +116,6 @@ import {
 } from '../../writePath/recordFieldNote.js';
 import {
   inboundAskFor,
-  leanGrounding,
   resolveScheduleInputTarget,
 } from './shared.js';
 import type {
@@ -232,31 +231,52 @@ const ADMIN_TOOLS = [
     name: 'get_team_schedule',
     description:
       "The whole team's schedule, and a manager's ONLY schedule read (it includes visits you " +
-      'hold yourself — there is no separate personal view): for each day in [from,to] ' +
-      "(YYYY-MM-DD; both optional — default today in the firm's timezone; capped at 14 days), " +
-      "every technician's confirmed visits with customer, address and times. Stops with " +
-      'unassigned:true have NOBODY attached yet and need a person (attach with move_visit). ' +
-      'Pass unassignedOnly:true to list ALL upcoming visits with nobody attached, however far ' +
-      'out (no 14-day cap) — use it when the manager asks what still needs assigning. Stops ' +
-      'The windowed response also carries an `untimed` list: visits booked with NO time set, ' +
-      'sitting on no day at all — say "no time set yet", never place one on a date. ' +
-      'The windowed response carries counts ' +
-      '(counts.byDay + counts.total, server-computed for the requested range) — for ANY ' +
-      'how-many/busiest/lightest/compare question USE THOSE NUMBERS VERBATIM; you are ' +
-      'unreliable at counting rows, so never tally the stops yourself. Also ' +
-      'returns scheduleVersion — quote it when discussing changes so staleness is detectable. ' +
-      'When the result carries boardNote, ALWAYS end your reply with its exact ' +
-      '[See it on the board](…) line — EVERY schedule answer ends with it, plain reads included; ' +
-      'no boardNote → say nothing about the board.',
+      'hold yourself — there is no separate personal view). For [from,to] (YYYY-MM-DD; both ' +
+      "optional — default today in the firm's timezone; capped at 14 days) it returns the " +
+      'COUNTS PAGE: every day in the range with how many visits, how many are completed, how ' +
+      'many have nobody attached (unassigned), and how many each technician has (byTechnician) — ' +
+      'plus counts of untimed visits (booked with no time set) and open jobs with no visit at ' +
+      'all. For ANY how-many/busiest/lightest/compare question USE THOSE NUMBERS VERBATIM; you ' +
+      'are unreliable at counting, so never tally anything yourself. A day with 0 visits has ' +
+      'nothing booked — whether someone can take more work is find_slots\' answer, never yours. ' +
+      'The counts page names NO customers. For WHO is going WHERE (customer, address, times, crew) ' +
+      'pass stops:true — add technicianRef for one person\'s visits — and you get 25 visits per ' +
+      'page with a `next` value: copy it into `after` for the following page. ' +
+      'Pass unassignedOnly:true for what still needs assigning, however far out or overdue: ' +
+      'parked visits with nobody on them (overdue:true = the day passed with nobody attached), ' +
+      'untimed visits (say "no time set yet", never a date) and jobs with no visit at all — 15 of ' +
+      'each; for more pass queue ("visits" or "jobs") with that queue\'s `after`. Unassigned ' +
+      'visits are attached with move_visit. Also returns scheduleVersion — quote it when ' +
+      'discussing changes so staleness is detectable. When the result carries boardNote, ALWAYS ' +
+      'end your reply with its exact [See it on the board](…) line — EVERY schedule answer ends ' +
+      'with it, plain reads included; no boardNote → say nothing about the board.',
     inputSchema: {
       type: 'object',
       properties: {
         from: { type: 'string', description: 'Start date YYYY-MM-DD (default: today).' },
         to: { type: 'string', description: 'End date YYYY-MM-DD inclusive (default: from).' },
+        stops: {
+          type: 'boolean',
+          description:
+            'true = also list the visits themselves (customer, address, times, crew), 25 per page. Omit for counts only.',
+        },
+        technicianRef: {
+          type: 'string',
+          description: 'With stops:true — only visits this person is on (a crew visit counts for every member).',
+        },
         unassignedOnly: {
           type: 'boolean',
           description:
-            'true = only visits with no technician attached, from `from` onward with NO upper bound (`to` and the 14-day cap ignored).',
+            'true = what still needs assigning: parked visits, untimed visits and jobs with no visit, from any date (`from`, `to` and the 14-day cap ignored).',
+        },
+        queue: {
+          type: 'string',
+          enum: ['visits', 'jobs'],
+          description: 'With unassignedOnly:true — page just this list (25 per page) from its `after`.',
+        },
+        after: {
+          type: 'string',
+          description: 'The `next` value (or visitsNext/jobsNext) from the previous page, copied exactly.',
         },
       },
       required: [],
@@ -705,6 +725,52 @@ async function handleGetSchedule(toolCtx: ToolContext): Promise<unknown> {
       };
 }
 
+// THE COUNTS PAGE (retrieval layer 4, operator ruling 7, 2026-09-15). This read
+// used to hand the model every stop of up to 14 days — the week, dumped into the
+// seat's window, when the scheduling UI already carries the week view. It now
+// returns counts by default and the stops themselves only when asked, a page at
+// a time. The rules — which visits sit on which day, who is on a trip, what the
+// loose bucket holds — are NOT restated here: they come from the board's own
+// readers (src/schedule/boardRead.ts), which the board, the console and this
+// tool share (operator, 2026-09-15: the schedule's one definition stays there).
+const STOPS_PAGE = 25;
+const RECALL_FIRST_PAGE = 15;
+const RECALL_QUEUE_PAGE = 25;
+
+// Element-wise string comparison of two sort keys. Every key component is fixed
+// width or an id (YYYY-MM-DD, HH:MM, ISO timestamps from one column, uuids), so
+// string order IS the intended order.
+function compareKeys(a: readonly string[], b: readonly string[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] ?? '';
+    const y = b[i] ?? '';
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+// One keyset page over rows already in key order. The cursor carries VALUES,
+// not a position: a row that left the list between two calls (the manager just
+// assigned it) cannot shift the next page — it starts strictly after the values.
+function keysetPage<T>(
+  rows: T[],
+  keyOf: (row: T) => string[],
+  after: string[] | null,
+  size: number,
+): { page: T[]; next: string | null } {
+  const rest = after ? rows.filter((r) => compareKeys(keyOf(r), after) > 0) : rows;
+  const page = rest.slice(0, size);
+  return {
+    page,
+    next: rest.length > size ? keyOf(page[page.length - 1]).join('|') : null,
+  };
+}
+
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const STOP_CURSOR = new RegExp(`^\\d{4}-\\d{2}-\\d{2}\\|\\d{2}:\\d{2}\\|${UUID}$`, 'i');
+const VISIT_CURSOR = new RegExp(`^(d\\|\\d{4}-\\d{2}-\\d{2}\\|\\d{2}:\\d{2}|u\\|[^|]+)\\|${UUID}$`, 'i');
+const JOB_CURSOR = new RegExp(`^[^|]+\\|${UUID}$`, 'i');
+
 async function handleGetTeamSchedule(toolCtx: ToolContext): Promise<unknown> {
   const { args, tenantId, str } = toolCtx;
       // Same validation contract as get_schedule (non-string rejection, firm-
@@ -715,19 +781,112 @@ async function handleGetTeamSchedule(toolCtx: ToolContext): Promise<unknown> {
       ) {
         return { status: 'invalid_range', note: 'from/to must be YYYY-MM-DD strings' };
       }
-      if (args.unassignedOnly !== undefined && typeof args.unassignedOnly !== 'boolean') {
-        return { status: 'invalid_range', note: 'unassignedOnly must be a boolean' };
+      for (const key of ['unassignedOnly', 'stops'] as const) {
+        if (args[key] !== undefined && typeof args[key] !== 'boolean') {
+          return { status: 'invalid_range', note: `${key} must be a boolean` };
+        }
+      }
+      for (const key of ['technicianRef', 'queue', 'after'] as const) {
+        if (args[key] !== undefined && typeof args[key] !== 'string') {
+          return { status: 'invalid_range', note: `${key} must be a string` };
+        }
       }
       const unassignedOnly = args.unassignedOnly === true;
-      // Recall view's jobs half kicks off FIRST — independent of every read
-      // below it (final-review efficiency finding: it was awaited serially
-      // last). Shared projection: the board tray calls the same function.
-      const unscheduledJobsPromise = unassignedOnly ? readUnscheduledJobs(tenantId) : null;
+      const wantStops = args.stops === true;
+      const technicianRef = str('technicianRef') || undefined;
+      const queue = str('queue') || undefined;
+      const after = str('after') || undefined;
+      if (queue !== undefined && queue !== 'visits' && queue !== 'jobs') {
+        return { status: 'invalid_range', note: 'queue must be "visits" or "jobs"' };
+      }
+      if (queue !== undefined && !unassignedOnly) {
+        return { status: 'invalid_range', note: 'queue pages the unassignedOnly:true lists — pass unassignedOnly:true with it' };
+      }
+      // The recall lists are the firm's whole queue: a person filter or a stop
+      // list there would be silently ignored, and the answer would read as
+      // that person's. Refused in words instead.
+      if (unassignedOnly && (technicianRef !== undefined || wantStops)) {
+        return {
+          status: 'invalid_range',
+          note: 'unassignedOnly:true lists the whole queue — technicianRef and stops apply to the dated schedule read, not to it',
+        };
+      }
+      if (unassignedOnly && after !== undefined && queue === undefined) {
+        return { status: 'invalid_range', note: 'after needs queue ("visits" or "jobs") — say which list you are paging' };
+      }
+      if (!unassignedOnly && (after !== undefined || technicianRef !== undefined) && !wantStops) {
+        return { status: 'invalid_range', note: 'after and technicianRef page the visit list — pass stops:true with them' };
+      }
       // Tenant fetched regardless of `from` now: the response carries the
       // technician-horizon setting for discovery ("what is it now?" — Plan 4a;
       // manager tool, not the board button path, so one read is fine).
       const teamTenant = await getTenant(tenantId);
       const technicianHorizonDays = horizonDaysFor(teamTenant);
+
+      if (unassignedOnly) {
+        // THE LOOSE BUCKET — the board tray's own read, so the agent and the tray
+        // agree by construction: parked visits from ANY date (an overdue one is
+        // flagged, never dropped — the old recall view floored at today and lost
+        // it), untimed visits, and open jobs with no visit. `from`/`to` are
+        // ignored by design. The clock is the tenant's served one, so an
+        // eval-anchored firm's `overdue` agrees with its own today.
+        if (after !== undefined) {
+          const shape = queue === 'jobs' ? JOB_CURSOR : VISIT_CURSOR;
+          if (!shape.test(after)) {
+            return { status: 'invalid_range', note: `after is not a ${queue} cursor — copy ${queue}Next exactly` };
+          }
+        }
+        // Version BEFORE the snapshot (both modes): a booking that lands between
+        // the two reads then makes a later "changed since version N?" check fire
+        // (false positive, fail-safe) instead of vouching for a snapshot missing it.
+        const scheduleVersion = await latestScheduleVersion(tenantId);
+        const bucket = await readLooseBucket(tenantId, spineNowIso(tenantId));
+        // Total order: dated parked visits by (day, start, id), then untimed ones
+        // by (age, id) — the tray's order with an id tiebreak, so pages are stable.
+        const visitKey = (v: (typeof bucket.parkedVisits)[number]): string[] =>
+          v.date !== null
+            ? ['d', v.date, v.startTime ?? '', v.visitId]
+            : ['u', v.createdAt, v.visitId];
+        const visits = [...bucket.parkedVisits]
+          .sort((a, b) => compareKeys(visitKey(a), visitKey(b)))
+          .map((v) => ({ ...v, technicianRef: v.technicianRefs[0] ?? null }));
+        const jobKey = (j: (typeof bucket.unscheduledJobs)[number]): string[] => [j.createdAt, j.jobId];
+        const jobs = [...bucket.unscheduledJobs].sort((a, b) => compareKeys(jobKey(a), jobKey(b)));
+        const cursor = after ? after.split('|') : null;
+        const visitsPage =
+          queue === 'jobs'
+            ? null
+            : keysetPage(visits, visitKey, queue === 'visits' ? cursor : null,
+                queue === 'visits' ? RECALL_QUEUE_PAGE : RECALL_FIRST_PAGE);
+        const jobsPage =
+          queue === 'visits'
+            ? null
+            : keysetPage(jobs, jobKey, queue === 'jobs' ? cursor : null,
+                queue === 'jobs' ? RECALL_QUEUE_PAGE : RECALL_FIRST_PAGE);
+        return {
+          status: 'ok',
+          unassignedOnly: true,
+          scheduleVersion,
+          technicianHorizonDays,
+          counts: {
+            parkedVisits: bucket.parkedVisits.filter((v) => v.date !== null).length,
+            overdue: bucket.parkedVisits.filter((v) => v.overdue).length,
+            untimed: bucket.parkedVisits.filter((v) => v.date === null).length,
+            unscheduledJobs: bucket.unscheduledJobs.length,
+          },
+          ...(visitsPage ? { visits: visitsPage.page, visitsNext: visitsPage.next } : {}),
+          ...(jobsPage ? { jobs: jobsPage.page, jobsNext: jobsPage.next } : {}),
+          ...(bucket.unscheduledJobsRowCapHit ? { rowCapNote: rowCapNote('open jobs') } : {}),
+          note:
+            'visits are parked visits: date set and nobody on them (overdue:true = the day ' +
+            'already passed with nobody attached), or date null = no time set yet — say "no ' +
+            'time set yet" for those, never a date. jobs are open jobs with NO visit at all — ' +
+            'booking one takes it off this list. Counts cover every row; the lists are pages: a ' +
+            'non-null visitsNext/jobsNext means more — call again with queue and that value as ' +
+            'after. Attach someone with move_visit.',
+        };
+      }
+
       let from = str('from');
       const to = str('to');
       // Truthiness, not ??=: an empty-string from means "today" (main/board
@@ -737,232 +896,148 @@ async function handleGetTeamSchedule(toolCtx: ToolContext): Promise<unknown> {
       if (!DATE.test(from)) {
         return { status: 'invalid_range', note: 'from must be YYYY-MM-DD' };
       }
-      // Windowed mode validates the window; the unassignedOnly recall view has
-      // NO upper bound by design (`to` and the 14-day cap are documented as
-      // ignored, so a stray `to` must not error the recall read).
-      let toDay: string | null = null;
-      if (!unassignedOnly) {
-        toDay = to ?? from;
-        if (!DATE.test(toDay) || from > toDay) {
-          return { status: 'invalid_range', note: 'from/to must be YYYY-MM-DD with from <= to' };
-        }
-        const spanDays =
-          (Date.parse(`${toDay}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
-        if (!Number.isFinite(spanDays)) {
-          return { status: 'invalid_range', note: 'from/to is not a real calendar date' };
-        }
-        if (spanDays > 14) {
-          return { status: 'invalid_range', note: 'range is capped at 14 days' };
-        }
+      const toDay = to || from;
+      if (!DATE.test(toDay) || from > toDay) {
+        return { status: 'invalid_range', note: 'from/to must be YYYY-MM-DD with from <= to' };
       }
-      // Version BEFORE the snapshot: a booking that lands between the two
-      // reads then makes a later "changed since version N?" check fire
-      // (false positive, fail-safe) instead of silently vouching for a
-      // snapshot that is missing it.
-      const scheduleVersion = await latestScheduleVersion(tenantId);
-      // unassignedOnly = the "assign later" recall view: EVERY upcoming visit
-      // with nobody attached, from `from` onward — the point is catching
-      // visits parked beyond any 14-day board window (their job has a live
-      // assignment, so listUnassignedOpenJobs skips it, and per-technician
-      // readers never see a null technician). Same stop shape either way —
-      // ONE builder below, so the two views can never drift.
-      // Windowed mode reads untimed rows SEPARATELY (rung 9a). They used to be
-      // folded into the day groups under their range's earliest day, because
-      // the range said which days they might land on. With no range an untimed
-      // visit belongs to no day, and putting it on one would be the invention
-      // this rung exists to stop. It still must be REACHABLE — the
-      // final-review finding that forced the fold-in stands: without it an
-      // attached untimed visit was invisible to every chat surface and the
-      // agent denied it existed — so it rides its own top-level list instead.
-      let untimedRows: Awaited<ReturnType<typeof listUnplaced>> = [];
-      const rows = unassignedOnly
-        ? await listUnassignedVisits(tenantId, `${from}T00:00:00.000Z`)
-        : await (async () => {
-            const [placed, untimed] = await Promise.all([
-              listVisitsForTenant(
-                tenantId,
-                `${from}T00:00:00.000Z`,
-                new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
-                ['confirmed'],
-              ),
-              listUnplaced(tenantId),
-            ]);
-            untimedRows = untimed;
-            return placed;
-          })();
-      const jobs = await listJobsWithCustomerByIds(tenantId, [
-        // BOTH reads (review finding): in windowed mode the untimed rows come
-        // from their own query, so their jobs are absent from `rows` and every
-        // untimed visit came back with customer: null — an visitId the
-        // agent could not put a name to, which defeats the list's purpose.
-        ...new Set([...rows, ...untimedRows].map((r) => r.job_id)),
-      ]);
-      const jobById = new Map(jobs.map((j) => [j.id, j]));
-      const techById = new Map((await listTeam(tenantId)).map((t) => [t.id, t]));
-      const byDay = new Map<string, unknown[]>();
-      // NO navigation links here, deliberately (user decision 2026-08-03, from
-      // live evidence). This read is a TEAM view by construction — a manager
-      // asking "what's on the schedule this week" is dispatching, not driving,
-      // and a directions link on their own couple of stops answered a question
-      // nobody asked. Per-stop links live on get_schedule, which IS a personal
-      // route view. Schedule viewing for managers stays on the board.
-      for (const row of rows) {
-        // Overlap semantics can pull in a row starting before `from` — clamp
-        // to the requested days by start-day, the daySource precedent (the
-        // upper arm applies only in windowed mode). An UNTIMED row (recall
-        // mode can still return one) has no day at all, so it is collected
-        // separately rather than drawn on a day nobody chose.
-        if (row.starts_at === null) {
-          untimedRows.push(row as unknown as (typeof untimedRows)[number]);
-          continue;
-        }
-        const day = row.starts_at.slice(0, 10);
-        if (day < from || (toDay !== null && day > toDay)) continue;
-        const customer = jobById.get(row.job_id)?.customers ?? null;
-        // A trip may have NOBODY on it (unassigned booking) or SEVERAL people
-        // (rung 9c). ONE row per trip either way — the counts below are counts
-        // of trips, and a crew drawn twice would say the day is twice as busy.
-        const crew = participantIdsOf(row, tenantId)
-          .map((id) => techById.get(id))
-          .filter((t): t is NonNullable<typeof t> => !!t);
-        const technician = crew[0];
-        const bucket = byDay.get(day) ?? [];
-        bucket.push({
-          visitId: row.id,
-          // The lifecycle in one word, same vocabulary as v_schedule.stage.
-          // These rows are read 'confirmed' and timed, so they are 'placed' —
-          // stated rather than left for the model to infer from two fields.
-          stage: stageOf(row, false),
-          technicianRef: technician?.ref ?? null,
-          technicianName: technician?.display_name ?? null,
-          technicianRefs: crew.map((t) => t.ref),
-          technicianNames: crew.map((t) => t.display_name),
-          // COUNTED, not named (see boardRead): a person the roster read could
-          // not resolve still occupies the trip.
-          unassigned: participantIdsOf(row, tenantId).length === 0,
-          customer: customer?.name ?? null,
-          address: customer
-            ? formatAddress({
-                address_line1: customer.address_line1,
-                address_line2: customer.address_line2,
-                city: customer.city,
-                state: customer.state,
-                postal_code: customer.postal_code,
-              })
-            : null,
-          // Wall-clock HH:MM slices, never the raw timestamptz: times are
-          // stored naive-local, so the wire's '+00:00' marker is a LIE the
-          // agent will act on (live 2026-07-22: it relabeled a 4 PM visit
-          // "4:00 PM UTC" and fabricated a "9 AM Pacific" conversion for the
-          // manager). The date rides on the day group.
-          startTime: row.starts_at.slice(11, 16),
-          endTime: row.ends_at?.slice(11, 16) ?? null,
-          status: row.status,
-          jobId: row.job_id,
-        });
-        byDay.set(day, bucket);
+      const spanDays =
+        (Date.parse(`${toDay}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
+      if (!Number.isFinite(spanDays)) {
+        return { status: 'invalid_range', note: 'from/to is not a real calendar date' };
       }
-      const days = [...byDay.entries()]
-        .sort(([a], [b]) => (a < b ? -1 : 1))
-        // weekday is server-computed everywhere a date is emitted (the
-        // find_slots lesson: the agent is unreliable at calendar math).
-        .map(([date, stops]) => ({ date, weekday: weekdayLabel(date), stops }));
-      // The untimed queue rides alongside the days in BOTH modes, never inside
-      // one: these visits are committed work with no time set, and the only
-      // honest answer to "which day is it on?" is that nobody has decided yet.
-      // Recall mode needs it just as much — that view is where a person-less
-      // untimed visit is reachable at all.
-      const untimed = untimedRows.map((r) => ({
-        visitId: r.id,
-        // 'committed': agreed to, no time set yet — the whole point of this view.
-        stage: stageOf(r, false),
-        customer: jobById.get(r.job_id)?.customers?.name ?? null,
-        jobId: r.job_id,
-        technicianRef: participantIdsOf(r, tenantId)
-          .map((id) => techById.get(id)?.ref ?? null)
-          .filter((ref): ref is string => !!ref)[0] ?? null,
-        technicianRefs: participantIdsOf(r, tenantId)
-          .map((id) => techById.get(id)?.ref ?? null)
-          .filter((ref): ref is string => !!ref),
-        unassigned: participantIdsOf(r, tenantId).length === 0,
-      }));
-      if (unassignedOnly) {
-        // Agent parity with the board's loose-bucket tray (Plan 4a): the
-        // recall view also names open jobs with NO visit at all — until now
-        // surfaced nowhere. ONE projection serves both surfaces (parity by
-        // construction, tenant re-check included — see readUnscheduledJobs).
-        // Non-null by construction (started iff unassignedOnly); ?? [] keeps
-        // the type honest without a cast.
-        const unscheduledJobs = (await unscheduledJobsPromise) ?? [];
+      if (spanDays > 14) {
+        return { status: 'invalid_range', note: 'range is capped at 14 days' };
+      }
+      if (after !== undefined && !STOP_CURSOR.test(after)) {
+        return { status: 'invalid_range', note: 'after is not a visit-list cursor — copy `next` exactly' };
+      }
+      // An unknown person is an error, never an empty list that reads as "they
+      // have nothing on".
+      if (technicianRef !== undefined && !(await getTechnician(tenantId, technicianRef))) {
         return {
-          status: 'ok',
-          from,
-          unassignedOnly: true,
-          scheduleVersion,
-          technicianHorizonDays,
-          days,
-          untimed,
-          unscheduledJobs,
-          note:
-            'unscheduledJobs are open jobs with NO visit at all — booking one takes it off ' +
-            'this list. days hold parked visits that DO have a time (booked, nobody attached); ' +
-            'untimed holds parked visits with NO time set — say "no time set yet" for those, ' +
-            'never a date.',
+          status: 'invalid_range',
+          note: `no team member with ref '${technicianRef}' — call list_team and use a ref exactly as spelled there`,
         };
       }
-      // Server-computed counts (date-eval 2026-08-13, W13): asked "this week
-      // vs next week", the model hand-counted the stop rows and got BOTH
-      // totals wrong (58/70 vs the served 57/71) — and gave a different count
-      // for the same Wednesday in two adjacent answers. Counting is
-      // arithmetic, and the model is unreliable at arithmetic; the server
-      // counts once so every count question reads a number instead of
-      // tallying rows. Untimed visits are not in `days` at all, so nothing
-      // needs excluding from the count any more.
-      const inWindow = days.filter((d) => d.date >= from && (toDay === null || d.date <= toDay));
-      const dayCount = (stops: unknown[]) => stops.length;
-      // `windowCoverByDay` died with the stored range (rung 9a). It answered
-      // "how many time-TBD visits could land on this day?" — a question that
-      // only had an answer while a visit carried a range of candidate days.
-      // An untimed visit could land on ANY day, so covering counts are all or
-      // nothing and the number told the model nothing true.
-      // Every day of the requested range, including days with no stops at all
-      // — "which days are free?" needs the zeros to be data, not absences.
-      const rangeDays: string[] = [];
-      if (toDay !== null) {
-        for (
-          let t = Date.parse(`${from}T00:00:00Z`);
-          t <= Date.parse(`${toDay}T00:00:00Z`);
-          t += 86_400_000
-        ) {
-          rangeDays.push(new Date(t).toISOString().slice(0, 10));
+
+      const scheduleVersion = await latestScheduleVersion(tenantId);
+      // Past days read as HISTORY: completed visits count (the console's status
+      // set, user decision 2026-09-07). Reading confirmed alone made a finished
+      // day look empty, and the old note called it free.
+      const [board, untimedCount, unscheduled] = await Promise.all([
+        readBoardDays({ tenantId, from, to: toDay, statuses: ['confirmed', 'completed'] }),
+        countUntimedVisits(tenantId),
+        // The COUNT, not the queue: the rows themselves are the recall view's.
+        countUnscheduledOpenJobs(tenantId),
+      ]);
+
+      // The board draws ONE LANE PER PERSON (a crew trip appears in each lane);
+      // counts here are of TRIPS, so a lane pair is one visit — except in
+      // byTechnician, which is exactly the per-person question.
+      type Trip = (typeof board.days)[number]['stops'][number] & { date: string };
+      const trips: Trip[] = [];
+      const dayRows = new Map<string, { visits: number; completed: number; unassigned: number; byTechnician: Record<string, number> }>();
+      for (const day of board.days) {
+        const seen = new Set<string>();
+        const row = { visits: 0, completed: 0, unassigned: 0, byTechnician: {} as Record<string, number> };
+        for (const lane of day.stops) {
+          if (lane.technicianRef) {
+            row.byTechnician[lane.technicianRef] = (row.byTechnician[lane.technicianRef] ?? 0) + 1;
+          }
+          if (seen.has(lane.visitId)) continue;
+          seen.add(lane.visitId);
+          row.visits += 1;
+          if (lane.status === 'completed') row.completed += 1;
+          if (lane.unassigned) row.unassigned += 1;
+          trips.push({ ...lane, date: day.date });
         }
+        dayRows.set(day.date, row);
       }
-      const stopsByDate = new Map(inWindow.map((d) => [d.date, dayCount(d.stops)]));
+      // Every day of the range, including days with nothing booked — "which days
+      // are empty?" needs the zeros to be data, not absences (the board returns
+      // only days that have stops).
+      const days: Array<{ date: string; weekday: string; visits: number; completed: number; unassigned: number; byTechnician: Record<string, number> }> = [];
+      for (let t = Date.parse(`${from}T00:00:00Z`); t <= Date.parse(`${toDay}T00:00:00Z`); t += 86_400_000) {
+        const date = new Date(t).toISOString().slice(0, 10);
+        const row = dayRows.get(date) ?? { visits: 0, completed: 0, unassigned: 0, byTechnician: {} };
+        days.push({ date, weekday: weekdayLabel(date), ...row });
+      }
       const counts = {
-        byDay: Object.fromEntries(rangeDays.map((d) => [d, stopsByDate.get(d) ?? 0])),
-        total: inWindow.reduce((n, d) => n + dayCount(d.stops), 0),
-        untimed: untimedRows.length,
+        byDay: Object.fromEntries(days.map((d) => [d.date, d.visits])),
+        total: days.reduce((n, d) => n + d.visits, 0),
+        completed: days.reduce((n, d) => n + d.completed, 0),
+        unassigned: days.reduce((n, d) => n + d.unassigned, 0),
+        untimed: untimedCount,
+        unscheduledJobs: unscheduled.count,
       };
+
+      let stopsBlock: Record<string, unknown> = {};
+      if (wantStops) {
+        // NO navigation links, deliberately (user decision 2026-08-03): this is a
+        // dispatching view; per-stop links live on get_schedule.
+        const stopKey = (s: Trip): string[] => [s.date, s.start.slice(11, 16), s.visitId];
+        const listed = trips
+          .filter((s) => technicianRef === undefined || s.technicianRefs.includes(technicianRef))
+          .sort((a, b) => compareKeys(stopKey(a), stopKey(b)));
+        const { page, next } = keysetPage(listed, stopKey, after ? after.split('|') : null, STOPS_PAGE);
+        stopsBlock = {
+          stops: page.map((s) => ({
+            visitId: s.visitId,
+            date: s.date,
+            weekday: weekdayLabel(s.date),
+            // The lifecycle in one word, v_schedule.stage's vocabulary.
+            stage: s.status === 'completed' ? 'happened' : 'placed',
+            // Wall-clock HH:MM slices, never the raw timestamptz: times are
+            // stored naive-local, so the wire's '+00:00' is a LIE the agent
+            // would act on (live 2026-07-22).
+            startTime: s.start.slice(11, 16),
+            endTime: s.end.slice(11, 16),
+            status: s.status,
+            technicianRef: s.technicianRefs[0] ?? null,
+            technicianName: s.technicianNames[0] ?? null,
+            technicianRefs: s.technicianRefs,
+            technicianNames: s.technicianNames,
+            unassigned: s.unassigned,
+            customer: s.customer,
+            address: s.address,
+            jobId: s.jobId,
+            jobTitle: s.jobTitle,
+          })),
+          hasMore: next !== null,
+          next,
+          stopsNote:
+            `${listed.length} visit(s) match; this page shows ${page.length}. ` +
+            (next
+              ? 'For the next page call again with the same from/to, stops:true' +
+                (technicianRef !== undefined ? `, technicianRef '${technicianRef}'` : '') +
+                ' and after = next.'
+              : 'That is all of them.'),
+        };
+      }
       return {
         status: 'ok',
         from,
         to: toDay,
         scheduleVersion,
         technicianHorizonDays,
-        ...(leanGrounding()
-          ? {}
-          : {
-              counts,
-              countsNote:
-                'counts.byDay/total are the visit counts for the requested range, computed here — ' +
-                'ALWAYS use these for how-many/busiest/compare questions, never count the stop rows ' +
-                'yourself. A day with byDay 0 is free. The `untimed` list is separate: those visits ' +
-                'are committed with NO time set, so they sit on no day and are counted only by ' +
-                'counts.untimed — never say one is "on" a date. The range is capped at 14 days: to ' +
-                'scan further ahead, call again starting where this range ended.',
-            }),
         days,
-        untimed,
+        counts,
+        countsNote:
+          (technicianRef !== undefined
+            ? `counts and days[].visits are the WHOLE TEAM's, not ${technicianRef}'s — for one ` +
+              "person's number read days[].byTechnician['" + technicianRef + "']. "
+            : '') +
+          'These counts are computed here — ALWAYS use them for how-many/busiest/compare questions, ' +
+          'never count anything yourself. days[].visits counts trips (a crew of two is one visit); ' +
+          'byTechnician counts each person on it. 0 visits = nothing booked that day, which is not ' +
+          'the same as free — find_slots answers that. counts.untimed are visits committed with NO ' +
+          'time set: they sit on no day — never say one is "on" a date; list them with ' +
+          'unassignedOnly:true. The range is capped at 14 days: to look further ahead, call again ' +
+          'starting where this range ended.',
+        ...(wantStops
+          ? stopsBlock
+          : { note: 'Counts only. For who is going where, call again with stops:true (and technicianRef for one person).' }),
+        ...(unscheduled.rowCapHit ? { rowCapNote: rowCapNote('open jobs') } : {}),
       };
 }
 

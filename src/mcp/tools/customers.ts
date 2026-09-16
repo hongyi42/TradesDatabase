@@ -32,6 +32,7 @@ import {
   getRawCapture,
   getTechnician,
   getTechnicianView,
+  hitRowCap,
   isOutsideView,
   listJobsForCustomer,
   listL2CitingCapture,
@@ -39,6 +40,7 @@ import {
   listOpenJobsForCustomer,
   resolveOpenReviewItemFor,
   resolveReviewItem,
+  rowCapNote,
   searchCustomers,
   summarizeMoney,
   technicianMoneyView,
@@ -396,14 +398,21 @@ async function handleFindCustomer(toolCtx: ToolContext): Promise<unknown> {
                 .map((r) => r.retracts_capture_id)
                 .filter((id): id is string => !!id),
             );
-      // The search's own order, each match whole or reduced to its name.
-      return found.map((c) =>
+      // The search's own order, each match whole or reduced to its name. A row
+      // out of view keeps EXACTLY these four keys — it is the access-request
+      // flow's hook, and the fold below must never spread anything back onto it.
+      const customers = found.map((c) =>
         !shown(c)
           ? { id: c.id, name: c.name, inView: false as const, note: OUTSIDE_VIEW_NOTE }
           : retracted.size === 0
             ? c
             : { ...c, attributes: foldRetractedFacts(c.attributes, retracted) },
       );
+      // A named object, never a bare array (retrieval layer 4): an array result
+      // gets no `now` rider, and an empty one says nothing in words.
+      return customers.length === 0
+        ? { customers, note: `no customer on this firm matches "${query}"` }
+        : { customers };
 }
 
 async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> {
@@ -582,7 +591,15 @@ async function handleGetJob(toolCtx: ToolContext): Promise<unknown> {
       const shownJob = view && !viewShowsMoney(view, { jobId: job.id, customerId: job.customer_id })
         ? withoutPrice(job)
         : job;
-      return { ...shownJob, attributes, ...money };
+      // Told, not paged (operator ruling 2026-09-15): the ledger is read in id
+      // order, so a cut at the row limit drops the NEWEST entries and the
+      // balance above would be wrong without saying so.
+      return {
+        ...shownJob,
+        attributes,
+        ...money,
+        ...(hitRowCap(moneyEvents.length) ? { moneyNote: rowCapNote('ledger entries') } : {}),
+      };
 }
 
 async function handleOpenJob(toolCtx: ToolContext): Promise<unknown> {
@@ -940,11 +957,18 @@ async function handleRecordCaller(toolCtx: ToolContext): Promise<unknown> {
       // the LINK path needs either check.
       const onFile = customerId ? await listJobsForCustomer(customerId) : [];
       const liveJobs = onFile.filter((j) => !TERMINAL_JOB_STATUSES.has(j.status));
+      // The job list is read oldest first and not paged, so at the row limit
+      // the NEWEST jobs are the ones missing — which is exactly where a refusal
+      // below would be wrong. Told, not paged (operator ruling 2026-09-15).
+      const jobsCapNote = hitRowCap(onFile.length)
+        ? ` (${rowCapNote("of this customer's jobs")})`
+        : '';
       if (customerId && !openJob && !onFile.some((j) => j.status !== 'cancelled')) {
         throw new Error(
           'there is nothing to file this call onto — that customer has no job it could land on. ' +
             'Pass `openJob` as well. If there is no work in the call at all, say so to the office ' +
-            'instead of recording it.',
+            'instead of recording it.' +
+            jobsCapNote,
         );
       }
       // A TRIP NEEDS A JOB TO SIT ON — a LIVE one. `openJob` here is the request
@@ -955,7 +979,8 @@ async function handleRecordCaller(toolCtx: ToolContext): Promise<unknown> {
       if (bookVisitArg === true && !openJob && liveJobs.length === 0) {
         throw new Error(
           'a trip needs a job to sit on — pass `openJob` as well, or name a customer who ' +
-            'already has one open.',
+            'already has one open.' +
+            jobsCapNote,
         );
       }
 

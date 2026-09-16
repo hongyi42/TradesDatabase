@@ -68,6 +68,13 @@ describe('capToolResult', () => {
     expect(capToolResult('z'.repeat(301))).toBe('z'.repeat(301));
   });
 
+  test('a caller can replace the how-to-ask-for-less advice; the announcement stays', () => {
+    const out = JSON.parse(capToolResult('z'.repeat(2_000), 500, {}, 'Ask the app for fewer results.')) as Capped;
+    expect(out.note).toContain('over the 500-character limit, and was cut');
+    expect(out.note).toContain('Ask the app for fewer results.');
+    expect(out.note).not.toContain('get_capture');
+  });
+
   test('a cap of 0 disables the backstop — an explicit choice, never the fallback', () => {
     expect(capToolResult('z'.repeat(10), 0)).toBe('z'.repeat(10));
   });

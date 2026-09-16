@@ -36,10 +36,18 @@ export const resultCapChars = (): number =>
 // A cap of 0 disables the backstop (an operator's explicit choice, never the
 // fallback). A cap too small for even the envelope returns the envelope with an
 // empty `partial`: the announcement matters more than the limit at that size.
+//
+// `advice` replaces the how-to-ask-for-less sentence, which names spine tools;
+// the Composio relay passes its own (retrieval layer 4). The announcement
+// itself — how big, what limit, that it was cut — is the same everywhere.
+export const SPINE_CAP_ADVICE =
+  'Ask for less: one job, one page (`before`), one note (get_capture), or search_captures.';
+
 export function capToolResult(
   text: string,
   cap: number = resultCapChars(),
   carry: Record<string, unknown> = {},
+  advice: string = SPINE_CAP_ADVICE,
 ): string {
   if (cap <= 0 || text.length <= cap) return text;
   const envelope = (partial: string): string =>
@@ -49,7 +57,7 @@ export function capToolResult(
       limit: cap,
       note:
         `This result was ${text.length} characters, over the ${cap}-character limit, and was cut. ` +
-        'Ask for less: one job, one page (`before`), one note (get_capture), or search_captures.',
+        advice,
       ...carry,
       partial,
     });

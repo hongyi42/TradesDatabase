@@ -488,3 +488,71 @@ describe('query_spine — the view surface is closed', () => {
     }
   });
 });
+
+describe('query_spine — local_day is the stored wall clock (plan 2026-09-15 retrieval layer 4)', () => {
+  // starts_at is NAIVE-LOCAL: the digits are the firm's wall clock and the +00
+  // lies. The views used to convert it as if it were a real UTC instant, which
+  // put a 06:00 visit for a Pacific firm on the PREVIOUS day (seven hours back)
+  // and a late-evening visit for a UTC+ firm on the NEXT one. Both directions
+  // are pinned: the Pacific case fails on the old view, the Tokyo case on the
+  // mirror-image mistake.
+  let pacific: string;
+  let tokyo: string;
+  const made: string[] = [];
+
+  beforeAll(async () => {
+    for (const [tag, tz] of [
+      ['la', 'America/Los_Angeles'],
+      ['tokyo', 'Asia/Tokyo'],
+    ] as const) {
+      // createTenant takes no timezone; the column defaults to Los Angeles.
+      const tenantId = (await createTenant(`qs-day-${tag}`, { managerSeats: 1 })).id;
+      await pg.query('update tenants set timezone = $1 where id = $2', [tz, tenantId]);
+      made.push(tenantId);
+      const customer = await createCustomer({ tenantId, name: `QS Day ${tag}` });
+      const job = await createJob({ tenantId, customerId: customer.id, title: `QS Day ${tag}` });
+      const at = tag === 'la' ? '06:00' : '22:00';
+      const until = tag === 'la' ? '07:00' : '23:00';
+      await createVisit({
+        tenantId,
+        jobId: job.id,
+        startsAt: `2027-03-09T${at}:00Z`,
+        endsAt: `2027-03-09T${until}:00Z`,
+        status: 'confirmed',
+      });
+      // A cancelled one at the same edge of the day, for v_cancelled_visits.
+      await createVisit({
+        tenantId,
+        jobId: job.id,
+        startsAt: tag === 'la' ? '2027-03-09T05:00:00Z' : '2027-03-09T23:00:00Z',
+        endsAt: tag === 'la' ? '2027-03-09T05:30:00Z' : '2027-03-09T23:30:00Z',
+        status: 'cancelled',
+      });
+      if (tag === 'la') pacific = tenantId;
+      else tokyo = tenantId;
+    }
+  });
+
+  afterAll(async () => {
+    for (const t of made) {
+      await pg.query('delete from query_audit where tenant_id = $1', [t]);
+      await pg.query('delete from visits where tenant_id = $1', [t]);
+      await pg.query('delete from jobs where tenant_id = $1', [t]);
+      await pg.query('delete from customers where tenant_id = $1', [t]);
+      await pg.query('delete from tenants where id = $1', [t]);
+    }
+  });
+
+  test.each([
+    ['a 06:00 visit for a Pacific firm', () => pacific],
+    ['a 22:00 visit for a Tokyo firm', () => tokyo],
+  ])('%s sits on its own day in v_schedule and v_cancelled_visits', async (_label, tenantOf) => {
+    for (const view of ['v_schedule', 'v_cancelled_visits']) {
+      const r = await run(tenantOf(), `select local_day, local_weekday from ${view}`);
+      const rows = r.rows[0].result as { local_day: string; local_weekday: string }[];
+      expect(rows).toHaveLength(1);
+      expect(rows[0].local_day).toBe('2027-03-09');
+      expect(rows[0].local_weekday).toBe('Tuesday');
+    }
+  });
+});

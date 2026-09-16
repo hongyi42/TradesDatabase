@@ -15,9 +15,9 @@ import {
 import {
   casTechnician,
   getOpenReviewItem,
+  getReviewQueuePage,
   getTechnician,
   isSeatCapError,
-  listOpenReviewItems,
   resolveReviewItem,
 } from '../../db/index.js';
 import {
@@ -35,8 +35,24 @@ const ADMIN_TOOLS = [
       'List open review items needing a decision (manager only): open questions on jobs and ' +
       'visits (gap items), email from unrecognized team refs, pairing verifications, pending ' +
       "confirmations. An item's detail.agentContext is a briefing from the office's planner " +
-      'FOR YOU — use it to help the manager decide; never read it aloud or relay it verbatim.',
-    inputSchema: { type: 'object', properties: {} },
+      'FOR YOU — use it to help the manager decide; never read it aloud or relay it verbatim. ' +
+      'Returns ONE PAGE, oldest first (20 by default). `total` counts what THIS call asked for ' +
+      '(the whole open queue, or just `kind` when you passed one); `byKind` always counts every ' +
+      'open kind — quote those for how-many questions. hasMore:true means more: call again ' +
+      'with after = next. Pass kind to page just one kind. An item with detailWithheld:true has ' +
+      'a detail too large for the list — open it whole with reviewItemId before acting on it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', description: 'Only items of this kind (e.g. "call_action").' },
+        after: { type: 'string', description: 'The `next` value from the previous page, copied exactly.' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Items per page (default 20, at most 50).' },
+        reviewItemId: {
+          type: 'string',
+          description: 'Open ONE open item with its whole detail (use when detailWithheld is true).',
+        },
+      },
+    },
   },
   {
     name: 'resolve_review',
@@ -59,15 +75,89 @@ const ADMIN_TOOLS = [
   },
 ];
 
+// `next` is the page's last item as "<created_at>|<id>" — the created_at exactly
+// as the database rendered it, microseconds kept, so the next page starts after
+// the precise row (a timestamp without its id would re-serve tied rows).
+const REVIEW_CURSOR = /^([^|]+)\|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function handleListPendingReviews(toolCtx: ToolContext): Promise<unknown> {
-  const { tenantId } = toolCtx;
-      // The staged solver tokens (pending_freeze / pending_resolve /
-      // pending_undo) each embedded a WHOLE plan and were summarized here so
-      // they could not flood the context. All three kinds died with the
-      // solver (rung 8, 2026-09-03); every remaining staged token is small
-      // enough to return as it stands. A future kind that embeds a plan adds
-      // its summarizer back here.
-      return await listOpenReviewItems(tenantId);
+  const { args, tenantId, str } = toolCtx;
+      // ONE PAGE, not the whole queue (retrieval layer 4). A staged token whose
+      // preview is large, or a pile of abandoned ones, used to land in the seat's
+      // window all at once; review_queue_page bounds the page and withholds any
+      // single oversized detail, which reviewItemId then opens whole.
+      for (const key of ['kind', 'after', 'reviewItemId'] as const) {
+        if (args[key] !== undefined && typeof args[key] !== 'string') {
+          throw new Error(`${key} must be a string`);
+        }
+      }
+      const reviewItemId = str('reviewItemId');
+      if (reviewItemId) {
+        // A malformed id is "no such item" in words, not a raw uuid cast error.
+        const row = UUID_SHAPE.test(reviewItemId) ? await getOpenReviewItem(reviewItemId, tenantId) : null;
+        // The SAME field names the page uses: this is the drill-down the page
+        // points at, and two vocabularies for one item is how a reply ends up
+        // reading `undefined`.
+        return row
+          ? {
+              item: {
+                id: row.id,
+                kind: row.kind,
+                subjectRef: row.subject_ref,
+                suggestion: row.suggestion,
+                createdAt: row.created_at,
+                detail: row.detail,
+                detailChars: JSON.stringify(row.detail ?? {}).length,
+                detailWithheld: false,
+              },
+            }
+          : { item: null, note: 'no OPEN review item with that id on this firm — it may already be closed' };
+      }
+      if (
+        args.limit !== undefined &&
+        (typeof args.limit !== 'number' || !Number.isInteger(args.limit) || args.limit < 1 || args.limit > 50)
+      ) {
+        throw new Error('limit must be a whole number from 1 to 50');
+      }
+      const after = str('after');
+      let afterCreated: string | undefined;
+      let afterId: string | undefined;
+      if (after) {
+        const m = REVIEW_CURSOR.exec(after);
+        if (!m || !Number.isFinite(Date.parse(m[1]))) {
+          throw new Error('after must be the `next` value from the previous page, copied exactly');
+        }
+        afterCreated = m[1];
+        afterId = m[2];
+      }
+      const kind = str('kind') || undefined;
+      const page = await getReviewQueuePage(tenantId, {
+        ...(kind ? { kind } : {}),
+        ...(afterCreated && afterId ? { afterCreated, afterId } : {}),
+        ...(args.limit !== undefined ? { limit: args.limit as number } : {}),
+      });
+      const next =
+        page.hasMore && page.nextAfterCreated && page.nextAfterId
+          ? `${page.nextAfterCreated}|${page.nextAfterId}`
+          : null;
+      return {
+        items: page.items,
+        total: page.total,
+        byKind: page.byKind,
+        hasMore: next !== null,
+        next,
+        note:
+          page.total === 0
+            ? kind
+              ? `no open review items of kind '${kind}'`
+              : 'no open review items'
+            : `${page.items.length} of ${page.total} shown` +
+              (next ? ' — call again with after = next for more.' : '.') +
+              (page.items.some((i) => i.detailWithheld)
+                ? ' Items with detailWithheld:true: open with reviewItemId before acting.'
+                : ''),
+      };
 }
 
 async function handleResolveReview(toolCtx: ToolContext): Promise<unknown> {

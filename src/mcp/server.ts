@@ -851,7 +851,14 @@ export function createServer(deps: ServerDeps = {}): Server {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     try {
-      const result = await dispatch(name, (args ?? {}) as Record<string, unknown>, deps);
+      const raw = await dispatch(name, (args ?? {}) as Record<string, unknown>, deps);
+      // NO BARE ARRAYS at the door (retrieval layer 4). Every seat tool now
+      // returns a named object; this catches any future one that does not, so
+      // its result still gets the `now` rider below and says "nothing" in words
+      // instead of handing the model a bare [].
+      const result = Array.isArray(raw)
+        ? { items: raw, count: raw.length, ...(raw.length === 0 ? { note: 'nothing matched' } : {}) }
+        : raw;
       // boardLink decoration happens HERE — one seam covering every return
       // path of the scheduling cases (dispatch has ~8 result literals across
       // book/move/cancel one-shot + staged + the two schedule reads).
@@ -888,8 +895,8 @@ export function createServer(deps: ServerDeps = {}): Server {
       // context, so tool results are the only self-refreshing channel — a
       // session crossing midnight re-grounds on its next call. It states what
       // today IS; resolve_date remains the sole authority for date ARITHMETIC.
-      // Arrays keep their shape (a rider would change the contract);
-      // object results — staged previews included — get the line. BEST-EFFORT:
+      // Every result is an object by this point (arrays are wrapped above), so
+      // every result — staged previews included — gets the line. BEST-EFFORT:
       // by this point dispatch has already committed side effects, so a
       // grounding failure (transient DB error, malformed tenant tz) must never
       // convert a committed success into an error — the agent would retry and,

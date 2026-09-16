@@ -7,6 +7,7 @@ export * from './phone.js';
 export * from './jobs.js';
 export * from './visits.js';
 export * from './rawCaptures.js';
+export * from './captureMembership.js';
 export * from './standingFacts.js';
 export * from './foldImpact.js';
 export * from './technicians.js';

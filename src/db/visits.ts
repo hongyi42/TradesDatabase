@@ -937,7 +937,7 @@ export async function listVisitsWithRefsForTenant(
 // OWN synced copy of the times and the status — the same columns the overlap
 // guard reads — so this lister and the guard can never disagree about what
 // occupies a person's day. `visits!inner` then carries the trip itself (the
-// listNoteTimesForJobs embed precedent).
+// visit_notes embed precedent).
 export async function listVisitsForTechnician(
   technicianId: string,
   fromISO: string,
@@ -1003,7 +1003,7 @@ export async function listUnassignedVisits(
   // silent 1000-row cap (`max_rows`, supabase/config.toml) would truncate it —
   // dropping rows the JS filter never gets to see, with no error. The old
   // query could not hit the cap because SQL had already narrowed to the small
-  // person-less slice. Same reasoning as listNoteTimesForJobs.
+  // person-less slice.
   const PAGE = 1000;
   const rows: VisitWithParticipants[] = [];
   for (let fromRow = 0; ; fromRow += PAGE) {
@@ -1416,42 +1416,6 @@ export async function listVisitNotesForCapture(
     .eq('capture_id', captureId);
   if (error) throw new Error(`listVisitNotesForCapture failed: ${error.message}`);
   return data ?? [];
-}
-
-// The watcher's OTHER activity home — always paired with rawCaptures'
-// listJobStampedCaptureTimes (see its two-homes note). Rung 9b re-sourced it:
-// the old reader counted VISIT ROWS minted since the floor, which worked only
-// while every note minted one. Now a note attaches to an existing trip, so the
-// signal is the LINK, not the row.
-//
-// PAGED for the same reason as listJobStampedCaptureTimes: the silent 1000-row
-// cap on an unordered read drops arbitrary rows — possibly the one note proving
-// a visit was reported, turning a filled visit into a false gap flag.
-export async function listNoteTimesForJobs(
-  tenantId: string,
-  jobIds: string[],
-  sinceUtcIso: string,
-): Promise<{ job_id: string; created_at: string }[]> {
-  if (jobIds.length === 0) return []; // PostgREST `in.()` with zero values errors
-  const PAGE = 1000;
-  const out: { job_id: string; created_at: string }[] = [];
-  for (let fromRow = 0; ; fromRow += PAGE) {
-    // !inner, so filtering on the embedded job actually filters the note rows
-    // rather than just nulling the embed.
-    const { data, error } = await getClient()
-      .from('visit_notes')
-      .select('created_at, visits!inner(job_id)')
-      .eq('tenant_id', tenantId)
-      .in('visits.job_id', jobIds)
-      .gte('created_at', sinceUtcIso)
-      .order('created_at', { ascending: true })
-      .range(fromRow, fromRow + PAGE - 1);
-    if (error) throw new Error(`listNoteTimesForJobs failed: ${error.message}`);
-    for (const row of (data ?? []) as { created_at: string; visits: { job_id: string } | null }[]) {
-      if (row.visits) out.push({ job_id: row.visits.job_id, created_at: row.created_at });
-    }
-    if (!data || data.length < PAGE) return out;
-  }
 }
 
 // ---- The customer brief's PAST-work half ----------------------------------

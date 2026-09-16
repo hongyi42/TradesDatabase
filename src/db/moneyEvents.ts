@@ -265,7 +265,9 @@ export async function listJobIdsWithCostEvents(
   const PAGE = 1000;
   // Chunked: costIds feeds an `in.()` and a very large list would blow the URL,
   // which PostgREST answers with an error rather than a truncation.
-  const CHUNK = 500;
+  // 150, not 500: an `in.()` id list rides in the URL, and PostgREST's gateway refuses
+  // past ~8,192 bytes — ~205 UUIDs, measured (rawCaptures.ts findRetractionsFor).
+  const CHUNK = 150;
 
   // (1) Every material_cost row on these jobs — id AND job_id, because step 2
   // needs the ids to ask what was cancelled.
@@ -349,7 +351,9 @@ export async function listLiveMoneyEventsForJobsSince(
 ): Promise<MoneyEvent[]> {
   if (jobIds.length === 0) return []; // PostgREST `in.()` with zero values errors
   const PAGE = 1000;
-  const CHUNK = 500;
+  // 150, not 500: an `in.()` id list rides in the URL, and PostgREST's gateway refuses
+  // past ~8,192 bytes — ~205 UUIDs, measured (rawCaptures.ts findRetractionsFor).
+  const CHUNK = 150;
 
   // (1) Everything on these jobs inside the window.
   const rows: MoneyEvent[] = [];

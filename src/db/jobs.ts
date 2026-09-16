@@ -201,7 +201,9 @@ export async function listJobsWithCustomerByIds(
   // a few thousand ids the `in.()` would blow the URL. Both failures are silent,
   // which is the only reason this is worth the loop.
   const PAGE = 1000;
-  const CHUNK = 500;
+  // 150, not 500: an `in.()` id list rides in the URL, and PostgREST's gateway refuses
+  // past ~8,192 bytes — ~205 UUIDs, measured (rawCaptures.ts findRetractionsFor).
+  const CHUNK = 150;
   const rows: JobWithCustomer[] = [];
   for (let i = 0; i < jobIds.length; i += CHUNK) {
     const slice = jobIds.slice(i, i + CHUNK);

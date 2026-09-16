@@ -9,7 +9,8 @@ import {
   listLinkedCapturesForCustomer,
 } from './customers.js';
 import { createTenant } from './tenants.js';
-import { appendRawCapture, captureHasLinkedL2, listL2CitingCapture } from './rawCaptures.js';
+import { appendRawCapture, captureHasLinkedL2 } from './rawCaptures.js';
+import { listL2CitingCapture } from './captureMembership.js';
 import { getCustomerContents, type CustomerContents } from './context.js';
 
 // THE THIRD LINK LEVEL (2026-09-12). A capture the door can place on a PERSON
@@ -103,7 +104,7 @@ describe('customer_captures — the link for "we know WHO, not WHICH"', () => {
     // L2 citing the capture, the planner would read "something was created from
     // this" and close the item, leaving a customer expecting somebody with
     // nothing on the calendar and nobody still asking.
-    expect(await listL2CitingCapture([captureId])).toEqual([]);
+    expect(await listL2CitingCapture(tenantId, [captureId])).toEqual([]);
   });
 
   test('a link carrying ANOTHER firm\'s tenant never reaches this customer\'s context', async () => {

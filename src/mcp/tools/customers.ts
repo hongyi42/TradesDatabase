@@ -892,7 +892,7 @@ async function handleRecordCaller(toolCtx: ToolContext): Promise<unknown> {
       // are L1-pinned, so they can never be deleted (a stamped capture makes its
       // customer permanently undeletable). What already cites the capture is the
       // authority on what this call still has left to do.
-      const already = await listL2CitingCapture([capture.id]);
+      const already = await listL2CitingCapture(tenantId, [capture.id]);
       if (newCustomer && already.some((r) => r.kind === 'customer')) {
         const existing = already.find((r) => r.kind === 'customer');
         throw new Error(
@@ -1083,7 +1083,7 @@ async function handleRecordCaller(toolCtx: ToolContext): Promise<unknown> {
       // call had opened it would have the planner relay "the job is open" for
       // work nobody created. Same for a trip: a job with a live visit takes no
       // second one. What cites the capture is the difference, and it is a fact.
-      const wrote = await listL2CitingCapture([capture.id]);
+      const wrote = await listL2CitingCapture(tenantId, [capture.id]);
       const openedJob = r.jobId ? wrote.some((w) => w.kind === 'job' && w.id === r.jobId) : false;
       const bookedVisit = r.visitId
         ? wrote.some((w) => w.kind === 'visit' && w.id === r.visitId)

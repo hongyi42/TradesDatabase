@@ -227,7 +227,8 @@ describe('query_spine — what it must refuse', () => {
     // revisit clause was exercised on 2026-08-23 (④ — the planner closes gaps
     // on evidence and must be able to read it). What survives of decision B is
     // the mechanism: the BASE table stays ungranted, and only the columns
-    // v_captures names — labeled trail included — are readable.
+    // v_captures names are readable (live notes only since plan 3 of the
+    // retrieval layer, 2026-09-15 — the labeled trail is gone).
     await expect(run(tenantA, 'select * from raw_captures')).rejects.toThrow(/permission denied/i);
   });
 
@@ -325,7 +326,7 @@ describe('query_spine — bounds', () => {
 });
 
 describe('query_spine — the view surface is closed', () => {
-  test('spine_reader holds SELECT on exactly the eighteen views and nothing else', async () => {
+  test('spine_reader holds SELECT on exactly the sixteen views and nothing else', async () => {
     // A new table must not become readable by default. This is the test that
     // fails when someone adds a grant without thinking.
     // v_money_events added 2026-08-15 (money-ledger plan, manager-only money
@@ -347,14 +348,11 @@ describe('query_spine — the view surface is closed', () => {
     // close a gap, superseding the 5.5 rule that office answers never fill the
     // record. Manager visibility through the shared catalog is the same
     // recorded acceptance as v_observations and v_roster_events.
-    // v_job_captures added 2026-09-07 (rung 10): the other half of the
-    // capture→job bridge. v_visit_notes answers "which note reported this
-    // trip"; this answers "which call or email landed on this job when no trip
-    // was on the calendar" — the shape that used to link nothing at all, so a
-    // customer chasing an open job read as silence.
-    // v_customer_captures added 2026-09-12: the third link level. A message the
-    // door could place on a PERSON but not on a job appears here and nowhere
-    // else — it is how "we know who wrote, not which work" is readable at all.
+    // v_job_captures (2026-09-07), v_visit_notes (2026-09-06) and
+    // v_customer_captures (2026-09-12) were three answers to "which job or
+    // customer is this note on". Plan 3 of the retrieval layer (2026-09-15)
+    // DROPPED all three for v_capture_links: capture_membership — the one
+    // definition every seat tool reads — exposed to SQL, live notes only.
     // v_visit_participants added 2026-09-06 (rung 9c): v_schedule stays ONE ROW
     // PER TRIP with the crew as arrays, so `count(*)` keeps counting trips —
     // this view is where a question about PEOPLE ("how many visits did Ben go
@@ -365,11 +363,10 @@ describe('query_spine — the view surface is closed', () => {
     );
     expect(rows.map((r) => r.table_name)).toEqual([
       'v_cancelled_visits',
+      'v_capture_links',
       'v_captures',
-      'v_customer_captures',
       'v_customers',
       'v_firm_profile',
-      'v_job_captures',
       'v_jobs',
       'v_money_events',
       'v_nudges',
@@ -380,7 +377,6 @@ describe('query_spine — the view surface is closed', () => {
       'v_schedule',
       'v_team',
       'v_time_off',
-      'v_visit_notes',
       'v_visit_participants',
     ]);
   });
@@ -436,6 +432,20 @@ describe('query_spine — the view surface is closed', () => {
       await pg.query(`delete from office_messages where technician_id = $1`, [tech.rows[0].id]);
       await pg.query(`delete from technicians where id = $1`, [tech.rows[0].id]);
     }
+  });
+
+  // THE 5-SECOND LIMIT THAT NEVER WAS (plan 3 of the retrieval layer). The
+  // original body ran `set_config('statement_timeout', '5000', true)` INSIDE the
+  // function; measured 2026-09-15 through /rpc/query_spine, pg_sleep(6) returned
+  // at 6.03 s — a statement's timer is armed when the statement starts, so a GUC
+  // changed mid-statement cannot reach it. The bound that holds is the
+  // authenticator role's statement_timeout=8s (local and hosted). Pinned so the
+  // dead line is not re-added as though it did something.
+  test('query_spine does not pretend to set its own statement timeout', async () => {
+    const { rows } = await pg.query<{ def: string }>(
+      "select pg_get_functiondef('query_spine'::regproc) as def",
+    );
+    expect(rows[0].def).not.toContain("set_config('statement_timeout'");
   });
 
   test('only service_role may execute query_spine — NOT anon or authenticated', async () => {

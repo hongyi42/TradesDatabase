@@ -40,9 +40,12 @@ close a schema-ahead-of-code window — the deploy must be triggered by hand (th
 the branch head correctly; the dashboard's "Redeploy" repeats the OLD commit).
 
 The interesting part is not the fact, it is HOW IT WAS MISSED, because both the plan-2 and plan-4
-sessions missed it the same way. It is written down twice — `docs/engineering-memory.md:6005`
-("There are FIVE services, and three have `autoDeploy: no` — `TradesDatabase` (web) …") and
-`:1237` ("six services, two with autoDeploy OFF", itself now stale on the count). What each of us
+sessions missed it the same way. It is written down in `docs/engineering-memory.md`, findable by
+QUOTE rather than line ("There are FIVE services, and three have `autoDeploy: no`") — line numbers
+in that file move under you, and this same sentence sat 16 lines apart in two worktrees on the same
+day. The §4 diagram's "six services, two with autoDeploy OFF" was stale on both counts and the
+estate table said `lifecycle-heart` auto-deploys when it does not; both are corrected as of
+2026-09-16. What each of us
 carried instead was the COMPLEMENTARY half — "Calls-worker and Calls-purge auto-deploy at merge",
 true and load-bearing for the apply-before-merge rule — and we generalised it into "merging deploys
 the code". A half-memory that is true reads exactly like a whole one. **So: never infer a service's

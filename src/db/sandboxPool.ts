@@ -312,6 +312,20 @@ export async function setSandboxBotId(input: {
   return data;
 }
 
+// Every pool row on one host, across tenants — the shape the box's own report
+// needs, because a box knows its seats by sandbox_ref and has no idea which
+// tenant each belongs to (nor should it). Retired rows are included: the caller
+// must be able to tell "unknown seat" from "retired seat" and refuse the second
+// loudly rather than silently doing nothing.
+export async function listPoolRowsForHost(hostId: string): Promise<SandboxPoolRow[]> {
+  const { data, error } = await getClient()
+    .from('sandbox_pool')
+    .select()
+    .eq('host_id', hostId);
+  if (error) throw new Error(`listPoolRowsForHost failed: ${error.message}`);
+  return data ?? [];
+}
+
 // THE ALLOWLIST behind Mini App signature checks: the numeric ids of every bot
 // we own that can currently open the app. Cross-tenant on purpose — the same
 // reasoning as findRosterByTelegramUserIdGlobal, because a launch slip proves

@@ -34,6 +34,23 @@ export interface BadgeResponse {
   // completion via POST /control/sandboxes — a lost tick self-heals. Old boxes
   // ignore the key (`.retirements // []` on the host).
   retirements: Array<{ sandboxRef: string }>;
+  // What every seat bot on this host should be showing as its menu button.
+  // Only the bot's OWN token can set it, and that token lives on the box — so
+  // the server states the intent and the box applies it. Sent on every pull so
+  // a change (a renamed label, a moved console) reaches the fleet on the next
+  // tick instead of one SSH session per bot. null when BOARD_PUBLIC_URL is
+  // unset: say nothing rather than point every bot at a guess. Old boxes ignore
+  // the key, the same contract as `retirements`.
+  menuButton: { text: string; url: string } | null;
+}
+
+// One label, one path, decided here rather than on twenty boxes.
+const MENU_BUTTON_TEXT = 'Schedule';
+
+function menuButtonFor(): BadgeResponse['menuButton'] {
+  const base = process.env.BOARD_PUBLIC_URL;
+  if (!base) return null;
+  return { text: MENU_BUTTON_TEXT, url: `${base.replace(/\/+$/, '')}/console` };
 }
 
 // Build the pull response for one host: mint-on-first-pull for assigned rows
@@ -107,5 +124,5 @@ export async function buildBadgeResponse(
       revoked: isInactiveState(current.state),
     };
   }
-  return { badgesFile, newBadges, bindings, retirements };
+  return { badgesFile, newBadges, bindings, retirements, menuButton: menuButtonFor() };
 }

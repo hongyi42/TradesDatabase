@@ -115,8 +115,14 @@ empty and `find_slots` can offer booked time), and agents are told when a list h
 - [x] `src/db/schema.test.ts`: the five index names exist. `npm run typecheck`, `lint`, `test`.
 
 ### Live verification (agent-executable; `supabase-test` MCP)
-- [ ] **At PR time, before merge** (Calls-worker auto-deploys; the web deploy calls the function):
+- [ ] **At PR time, before merge** (Calls-worker and Calls-purge auto-deploy at merge):
       `apply_migration`, `NOTIFY pgrst, 'reload schema'`, read back `pg_proc` + `pg_indexes`.
+- [ ] **After the merge, TRIGGER THE WEB DEPLOY BY HAND.** `TradesDatabase`
+      (srv-d8uqmdegvqtc73bfn83g), the seat-facing MCP server, has `autoDeploy: "no"` — verified
+      against the Render API 2026-09-16, and already recorded at `docs/engineering-memory.md:5994`.
+      Merging ships NOTHING to the seats: without this the pilot runs the new schema against the
+      old code. Use the API trigger, never the dashboard "Redeploy" button, which repeats the OLD
+      commit (`engineering-memory.md:1234`).
 
 ---
 

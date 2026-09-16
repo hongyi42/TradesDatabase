@@ -655,7 +655,7 @@ export async function recordFieldNote(
     if (input.captureId) {
       // The most recent job THAT CAN CITE. listJobsForCustomer orders created_at
       // ASCENDING, so the search runs from the tail — but a link onto a CANCELLED
-      // job is not a citation (listL2CitingCapture drops those, because a
+      // job is not a citation (capture_records drops those, because a
       // rolled-back shell is not an answer), so filing there would leave the
       // item with nothing citing it and no way to close. The MCP guard predicts
       // exactly this set, and the two must agree or the guard is fiction.

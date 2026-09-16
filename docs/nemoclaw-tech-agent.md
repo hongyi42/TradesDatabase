@@ -332,6 +332,22 @@ result carries the rider.
   `get_customer_context` (the contents page: counts and the newest note's opening per job) →
   `list_recent_captures` (a page of one job's notes) / `get_capture` (one note in full) /
   `search_captures` (keyword, technicians). Never the whole history in one result.
+- **Technicians read a limited view (2026-09-15, retrieval layer plan 2).** A technician seat
+  sees the jobs its person has a BOOKED trip on (a trip its own field note minted does not count),
+  the other UNFINISHED jobs of a customer it has unfinished work with, the profile of every customer
+  it has a trip with at all, and every technician note the person wrote. Consequence worth saying
+  out loud: recording a WALK-IN — a note that mints its own trip — leaves the seat unable to read
+  the record it just created, beyond that note. The planner is meant to notice and put it to a
+  manager (a later task); until then it is a grant. Anything else comes back as
+  name + id with `inView:false` and an "outside your view" note: `find_customer`,
+  `get_customer_context`, `get_job`, `list_recent_captures`, `search_captures`;
+  `get_capture` answers `found:false`; `record_standing_fact` refuses. MONEY is words for a
+  technician — "invoiced, not yet paid", never an amount or a balance (and the retraction preview
+  names a money entry without its amount). A manager widens it per
+  item with a grant (`access_grants`: `record` or `record_and_notes`) or per firm with
+  `technician_view_rules`. The seat verbs for both (and the ask that leads to them) are the
+  request-flow task; until then, set a firm's rule by hand (docs/engineering-memory.md §2).
+  Managers' and the planner's reads are unchanged.
 - **Web tools (2026-07-13, all tiers):** `web_search` (Brave snippets via Render — the key never
   reaches a sandbox) and `read_webpage` (hardened reader: URLs from the person or from search
   results only per the §0e rules; server enforces SSRF guard, a length cap on non-search URLs,

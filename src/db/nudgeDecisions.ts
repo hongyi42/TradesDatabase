@@ -67,7 +67,10 @@ export interface NudgeDecisionInput {
   outcomeDetail?: string | null;
 }
 
-const CHUNK = 500;
+const CHUNK = 500; // insert batches — a POST body, no URL limit
+// 150, not 500: an `in.()` id list rides in the URL, and PostgREST's gateway refuses
+// past ~8,192 bytes — ~205 UUIDs, measured (rawCaptures.ts findRetractionsFor).
+const READ_CHUNK = 150;
 const PAGE = 1000;
 
 // `job_id` is a uuid column with no FK, and the insert is one statement per
@@ -154,8 +157,8 @@ export async function listDecisionsForNudges(
 ): Promise<Map<string, NudgeDecision[]>> {
   const out = new Map<string, NudgeDecision[]>();
   if (nudgeIds.length === 0) return out;
-  for (let i = 0; i < nudgeIds.length; i += CHUNK) {
-    const slice = nudgeIds.slice(i, i + CHUNK);
+  for (let i = 0; i < nudgeIds.length; i += READ_CHUNK) {
+    const slice = nudgeIds.slice(i, i + READ_CHUNK);
     // TWO bound .in() reads, one per column, merged below — NOT one .or()
     // (code-review): the .or() form interpolates the id list twice into a GET
     // querystring (~39KB at CHUNK=500, past common proxy URL ceilings), has an

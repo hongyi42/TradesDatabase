@@ -34,6 +34,145 @@ export type Database = {
   }
   public: {
     Tables: {
+      access_grants: {
+        Row: {
+          created_at: string
+          customer_id: string | null
+          expires_at: string | null
+          granted_by: string
+          id: string
+          job_id: string | null
+          opens: string
+          opens_money: boolean
+          reason: string
+          requested_by: string | null
+          revoke_reason: string | null
+          revoked_at: string | null
+          revoked_by: string | null
+          technician_id: string
+          tenant_id: string
+        }
+        Insert: {
+          created_at?: string
+          customer_id?: string | null
+          expires_at?: string | null
+          granted_by: string
+          id?: string
+          job_id?: string | null
+          opens: string
+          opens_money?: boolean
+          reason: string
+          requested_by?: string | null
+          revoke_reason?: string | null
+          revoked_at?: string | null
+          revoked_by?: string | null
+          technician_id: string
+          tenant_id: string
+        }
+        Update: {
+          created_at?: string
+          customer_id?: string | null
+          expires_at?: string | null
+          granted_by?: string
+          id?: string
+          job_id?: string | null
+          opens?: string
+          opens_money?: boolean
+          reason?: string
+          requested_by?: string | null
+          revoke_reason?: string | null
+          revoked_at?: string | null
+          revoked_by?: string | null
+          technician_id?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "access_grants_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "access_grants_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "access_grants_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "access_grants_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "access_grants_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_money_events"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "access_grants_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "access_grants_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "access_grants_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "access_grants_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "access_grants_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "access_grants_technician_id_fkey"
+            columns: ["technician_id"]
+            isOneToOne: false
+            referencedRelation: "technicians"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "access_grants_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       call_ingest: {
         Row: {
           attempts: number
@@ -147,6 +286,55 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "call_numbers_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      capture_tags: {
+        Row: {
+          capture_id: string
+          created_at: string
+          reason: string | null
+          source: string
+          tag: string
+          tenant_id: string
+        }
+        Insert: {
+          capture_id: string
+          created_at?: string
+          reason?: string | null
+          source: string
+          tag: string
+          tenant_id: string
+        }
+        Update: {
+          capture_id?: string
+          created_at?: string
+          reason?: string | null
+          source?: string
+          tag?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "capture_tags_capture_id_fkey"
+            columns: ["capture_id"]
+            isOneToOne: false
+            referencedRelation: "raw_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "capture_tags_capture_id_fkey"
+            columns: ["capture_id"]
+            isOneToOne: false
+            referencedRelation: "v_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "capture_tags_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
             referencedRelation: "tenants"
@@ -1514,6 +1702,63 @@ export type Database = {
           },
         ]
       }
+      person_pushes: {
+        Row: {
+          attempts: number
+          body: string
+          created_at: string
+          delivered_at: string | null
+          detail: string | null
+          id: string
+          kind: string
+          serve_count: number
+          status: string
+          technician_id: string
+          tenant_id: string
+        }
+        Insert: {
+          attempts?: number
+          body: string
+          created_at?: string
+          delivered_at?: string | null
+          detail?: string | null
+          id?: string
+          kind: string
+          serve_count?: number
+          status?: string
+          technician_id: string
+          tenant_id: string
+        }
+        Update: {
+          attempts?: number
+          body?: string
+          created_at?: string
+          delivered_at?: string | null
+          detail?: string | null
+          id?: string
+          kind?: string
+          serve_count?: number
+          status?: string
+          technician_id?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "person_pushes_technician_id_fkey"
+            columns: ["technician_id"]
+            isOneToOne: false
+            referencedRelation: "technicians"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "person_pushes_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       planner_memory: {
         Row: {
           content: string
@@ -2218,6 +2463,53 @@ export type Database = {
             foreignKeyName: "technician_time_off_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      technician_view_rules: {
+        Row: {
+          created_at: string
+          hidden_tags: string[] | null
+          job_scope: string | null
+          money: string | null
+          set_by: string | null
+          technician_channels:
+            | Database["public"]["Enums"]["capture_channel"][]
+            | null
+          tenant_id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          hidden_tags?: string[] | null
+          job_scope?: string | null
+          money?: string | null
+          set_by?: string | null
+          technician_channels?:
+            | Database["public"]["Enums"]["capture_channel"][]
+            | null
+          tenant_id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          hidden_tags?: string[] | null
+          job_scope?: string | null
+          money?: string | null
+          set_by?: string | null
+          technician_channels?:
+            | Database["public"]["Enums"]["capture_channel"][]
+            | null
+          tenant_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "technician_view_rules_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: true
             referencedRelation: "tenants"
             referencedColumns: ["id"]
           },
@@ -2934,172 +3226,42 @@ export type Database = {
         }
         Relationships: []
       }
+      v_capture_links: {
+        Row: {
+          capture_id: string | null
+          customer_id: string | null
+          job_id: string | null
+          via: string | null
+          visit_id: string | null
+        }
+        Relationships: []
+      }
       v_captures: {
         Row: {
           captured_at: string | null
           channel: Database["public"]["Enums"]["capture_channel"] | null
-          customer_id: string | null
           id: string | null
-          job_id: string | null
           raw_text: string | null
-          retracted: boolean | null
-          retracted_at: string | null
-          retraction_reason: string | null
-          retracts_capture_id: string | null
           sensitivity: string | null
           technician_ref: string | null
         }
-        Relationships: [
-          {
-            foreignKeyName: "raw_captures_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "customers"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "raw_captures_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "v_cancelled_visits"
-            referencedColumns: ["customer_id"]
-          },
-          {
-            foreignKeyName: "raw_captures_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "v_customers"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "raw_captures_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "v_jobs"
-            referencedColumns: ["customer_id"]
-          },
-          {
-            foreignKeyName: "raw_captures_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "v_money_events"
-            referencedColumns: ["customer_id"]
-          },
-          {
-            foreignKeyName: "raw_captures_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "v_schedule"
-            referencedColumns: ["customer_id"]
-          },
-          {
-            foreignKeyName: "raw_captures_job_id_fkey"
-            columns: ["job_id"]
-            isOneToOne: false
-            referencedRelation: "jobs"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "raw_captures_job_id_fkey"
-            columns: ["job_id"]
-            isOneToOne: false
-            referencedRelation: "v_cancelled_visits"
-            referencedColumns: ["job_id"]
-          },
-          {
-            foreignKeyName: "raw_captures_job_id_fkey"
-            columns: ["job_id"]
-            isOneToOne: false
-            referencedRelation: "v_jobs"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "raw_captures_job_id_fkey"
-            columns: ["job_id"]
-            isOneToOne: false
-            referencedRelation: "v_schedule"
-            referencedColumns: ["job_id"]
-          },
-          {
-            foreignKeyName: "raw_captures_retracts_capture_id_fkey"
-            columns: ["retracts_capture_id"]
-            isOneToOne: false
-            referencedRelation: "raw_captures"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "raw_captures_retracts_capture_id_fkey"
-            columns: ["retracts_capture_id"]
-            isOneToOne: false
-            referencedRelation: "v_captures"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      v_customer_captures: {
-        Row: {
-          capture_id: string | null
-          created_at: string | null
-          customer_id: string | null
+        Insert: {
+          captured_at?: string | null
+          channel?: Database["public"]["Enums"]["capture_channel"] | null
+          id?: string | null
+          raw_text?: string | null
+          sensitivity?: string | null
+          technician_ref?: string | null
         }
-        Relationships: [
-          {
-            foreignKeyName: "customer_captures_capture_id_fkey"
-            columns: ["capture_id"]
-            isOneToOne: false
-            referencedRelation: "raw_captures"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "customer_captures_capture_id_fkey"
-            columns: ["capture_id"]
-            isOneToOne: false
-            referencedRelation: "v_captures"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "customer_captures_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "customers"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "customer_captures_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "v_cancelled_visits"
-            referencedColumns: ["customer_id"]
-          },
-          {
-            foreignKeyName: "customer_captures_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "v_customers"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "customer_captures_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "v_jobs"
-            referencedColumns: ["customer_id"]
-          },
-          {
-            foreignKeyName: "customer_captures_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "v_money_events"
-            referencedColumns: ["customer_id"]
-          },
-          {
-            foreignKeyName: "customer_captures_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "v_schedule"
-            referencedColumns: ["customer_id"]
-          },
-        ]
+        Update: {
+          captured_at?: string | null
+          channel?: Database["public"]["Enums"]["capture_channel"] | null
+          id?: string | null
+          raw_text?: string | null
+          sensitivity?: string | null
+          technician_ref?: string | null
+        }
+        Relationships: []
       }
       v_customers: {
         Row: {
@@ -3184,100 +3346,6 @@ export type Database = {
           updated_at?: string | null
         }
         Relationships: []
-      }
-      v_job_captures: {
-        Row: {
-          capture_id: string | null
-          created_at: string | null
-          customer_id: string | null
-          job_id: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "job_captures_capture_id_fkey"
-            columns: ["capture_id"]
-            isOneToOne: false
-            referencedRelation: "raw_captures"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "job_captures_capture_id_fkey"
-            columns: ["capture_id"]
-            isOneToOne: false
-            referencedRelation: "v_captures"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "job_captures_job_id_fkey"
-            columns: ["job_id"]
-            isOneToOne: false
-            referencedRelation: "jobs"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "job_captures_job_id_fkey"
-            columns: ["job_id"]
-            isOneToOne: false
-            referencedRelation: "v_cancelled_visits"
-            referencedColumns: ["job_id"]
-          },
-          {
-            foreignKeyName: "job_captures_job_id_fkey"
-            columns: ["job_id"]
-            isOneToOne: false
-            referencedRelation: "v_jobs"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "job_captures_job_id_fkey"
-            columns: ["job_id"]
-            isOneToOne: false
-            referencedRelation: "v_schedule"
-            referencedColumns: ["job_id"]
-          },
-          {
-            foreignKeyName: "jobs_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "customers"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "jobs_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "v_cancelled_visits"
-            referencedColumns: ["customer_id"]
-          },
-          {
-            foreignKeyName: "jobs_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "v_customers"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "jobs_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "v_jobs"
-            referencedColumns: ["customer_id"]
-          },
-          {
-            foreignKeyName: "jobs_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "v_money_events"
-            referencedColumns: ["customer_id"]
-          },
-          {
-            foreignKeyName: "jobs_customer_id_fkey"
-            columns: ["customer_id"]
-            isOneToOne: false
-            referencedRelation: "v_schedule"
-            referencedColumns: ["customer_id"]
-          },
-        ]
       }
       v_jobs: {
         Row: {
@@ -3585,79 +3653,6 @@ export type Database = {
         }
         Relationships: []
       }
-      v_visit_notes: {
-        Row: {
-          capture_id: string | null
-          created_at: string | null
-          job_id: string | null
-          visit_id: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "visit_notes_capture_id_fkey"
-            columns: ["capture_id"]
-            isOneToOne: false
-            referencedRelation: "raw_captures"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "visit_notes_capture_id_fkey"
-            columns: ["capture_id"]
-            isOneToOne: false
-            referencedRelation: "v_captures"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "visit_notes_visit_id_fkey"
-            columns: ["visit_id"]
-            isOneToOne: false
-            referencedRelation: "v_cancelled_visits"
-            referencedColumns: ["visit_id"]
-          },
-          {
-            foreignKeyName: "visit_notes_visit_id_fkey"
-            columns: ["visit_id"]
-            isOneToOne: false
-            referencedRelation: "v_schedule"
-            referencedColumns: ["visit_id"]
-          },
-          {
-            foreignKeyName: "visit_notes_visit_id_fkey"
-            columns: ["visit_id"]
-            isOneToOne: false
-            referencedRelation: "visits"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "visits_job_id_fkey"
-            columns: ["job_id"]
-            isOneToOne: false
-            referencedRelation: "jobs"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "visits_job_id_fkey"
-            columns: ["job_id"]
-            isOneToOne: false
-            referencedRelation: "v_cancelled_visits"
-            referencedColumns: ["job_id"]
-          },
-          {
-            foreignKeyName: "visits_job_id_fkey"
-            columns: ["job_id"]
-            isOneToOne: false
-            referencedRelation: "v_jobs"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "visits_job_id_fkey"
-            columns: ["job_id"]
-            isOneToOne: false
-            referencedRelation: "v_schedule"
-            referencedColumns: ["job_id"]
-          },
-        ]
-      }
       v_visit_participants: {
         Row: {
           created_at: string | null
@@ -3722,16 +3717,50 @@ export type Database = {
       }
     }
     Functions: {
+      capture_content_open: {
+        Args: {
+          p_capture: string
+          p_channel: Database["public"]["Enums"]["capture_channel"]
+          p_sensitivity: string
+          p_tier: string
+          p_view: Database["public"]["CompositeTypes"]["technician_view"]
+        }
+        Returns: boolean
+      }
       capture_full: {
         Args: {
           p_caller_tier: string
           p_capture: string
           p_include_retracted?: boolean
           p_tenant: string
+          p_terminal_statuses?: string[]
+          p_viewer?: string
         }
         Returns: Json
       }
+      capture_in_scope: {
+        Args: {
+          p_capture: string
+          p_tier: string
+          p_view: Database["public"]["CompositeTypes"]["technician_view"]
+        }
+        Returns: boolean
+      }
       capture_is_live: { Args: { p_capture: string }; Returns: boolean }
+      capture_records: {
+        Args: { p_capture_ids: string[]; p_tenant: string }
+        Returns: Json
+      }
+      capture_restricted: {
+        Args: {
+          p_capture: string
+          p_channel: Database["public"]["Enums"]["capture_channel"]
+          p_sensitivity: string
+          p_tier: string
+          p_view: Database["public"]["CompositeTypes"]["technician_view"]
+        }
+        Returns: boolean
+      }
       capture_scope_found: {
         Args: { p_scope: string; p_scope_id: string; p_tenant: string }
         Returns: boolean
@@ -3743,14 +3772,25 @@ export type Database = {
           via: string[]
         }[]
       }
-      capture_visible: {
-        Args: {
-          p_channel: Database["public"]["Enums"]["capture_channel"]
-          p_sensitivity: string
-          p_tier: string
-        }
-        Returns: boolean
-      }
+      capture_visible:
+        | {
+            Args: {
+              p_channel: Database["public"]["Enums"]["capture_channel"]
+              p_sensitivity: string
+              p_tier: string
+            }
+            Returns: boolean
+          }
+        | {
+            Args: {
+              p_capture: string
+              p_channel: Database["public"]["Enums"]["capture_channel"]
+              p_sensitivity: string
+              p_tier: string
+              p_view: Database["public"]["CompositeTypes"]["technician_view"]
+            }
+            Returns: boolean
+          }
       captures_page: {
         Args: {
           p_before_at?: string
@@ -3761,7 +3801,9 @@ export type Database = {
           p_scope: string
           p_scope_id: string
           p_tenant: string
+          p_terminal_statuses?: string[]
           p_text_chars?: number
+          p_viewer?: string
         }
         Returns: Json
       }
@@ -3803,7 +3845,21 @@ export type Database = {
           p_snippet_chars?: number
           p_tenant: string
           p_terminal_statuses?: string[]
+          p_viewer?: string
         }
+        Returns: Json
+      }
+      gap_evidence: {
+        Args: {
+          p_asks: Json
+          p_per_gap?: number
+          p_tenant: string
+          p_text_chars?: number
+        }
+        Returns: Json
+      }
+      job_activity_since: {
+        Args: { p_job_ids: string[]; p_since: string; p_tenant: string }
         Returns: Json
       }
       query_spine: {
@@ -3838,8 +3894,24 @@ export type Database = {
           p_scope_id: string
           p_snippet_chars?: number
           p_tenant: string
+          p_terminal_statuses?: string[]
+          p_viewer?: string
         }
         Returns: Json
+      }
+      technician_view_of: {
+        Args: {
+          p_technician: string
+          p_tenant: string
+          p_terminal_statuses: string[]
+        }
+        Returns: Database["public"]["CompositeTypes"]["technician_view"]
+        SetofOptions: {
+          from: "*"
+          to: "technician_view"
+          isOneToOne: true
+          isSetofReturn: false
+        }
       }
       tenant_cost_detail: {
         Args: { p_period_start: string; p_tenant_id: string }
@@ -3851,6 +3923,28 @@ export type Database = {
           sku: string
           unit: string
         }[]
+      }
+      view_has_customer: {
+        Args: {
+          p_customer: string
+          p_view: Database["public"]["CompositeTypes"]["technician_view"]
+        }
+        Returns: boolean
+      }
+      view_has_job: {
+        Args: {
+          p_job: string
+          p_view: Database["public"]["CompositeTypes"]["technician_view"]
+        }
+        Returns: boolean
+      }
+      view_money_open: {
+        Args: {
+          p_customer: string
+          p_job: string
+          p_view: Database["public"]["CompositeTypes"]["technician_view"]
+        }
+        Returns: boolean
       }
       working_hours_between: {
         Args: { from_ts: string; to_ts: string; tz: string }
@@ -3911,7 +4005,20 @@ export type Database = {
       visit_status: "proposed" | "confirmed" | "cancelled" | "completed"
     }
     CompositeTypes: {
-      [_ in never]: never
+      technician_view: {
+        tenant_id: string | null
+        all_scope: boolean | null
+        job_ids: string[] | null
+        customer_ids: string[] | null
+        notes_job_ids: string[] | null
+        notes_customer_ids: string[] | null
+        channels: Database["public"]["Enums"]["capture_channel"][] | null
+        hidden_tags: string[] | null
+        technician_ref: string | null
+        money_all: boolean | null
+        money_job_ids: string[] | null
+        money_customer_ids: string[] | null
+      }
     }
   }
 }

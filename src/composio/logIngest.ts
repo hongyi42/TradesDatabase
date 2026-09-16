@@ -256,6 +256,17 @@ export async function runLogIngestion(
         // KEY NAMES only — never argument or response VALUES (they may carry
         // legally-deletable data; L1 is undeletable). Adding value capture
         // for a toolkit = a reviewed policy entry here.
+        //
+        // AND THAT REVIEW NOW HAS A SECOND QUESTION (retrieval layer plan 3,
+        // 2026-09-15). These rows are the ONLY thing stamped `manager_only`, and
+        // the planner's pushed evidence carries them: a gap on job J renders the
+        // manager agent-actions on job J, and the planner writes the technician's
+        // message itself. That was accepted because the text is KEY NAMES — a
+        // technician learns that a manager sent mail about their job and which
+        // fields it had, never an amount or a body. Capture VALUES here and that
+        // stops being true: real values would start reaching technician-facing
+        // evidence, so the fold that was dropped (src/db/captureMembership.ts,
+        // gap_evidence's capture_visible(…, 'planner')) has to come back with it.
         channel = 'agent_action';
         rawText =
           `Agent action: ${slug} (${toolkit}) — argument keys: ` +

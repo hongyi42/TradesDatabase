@@ -5,7 +5,7 @@ import {
   getTenant,
   listVisitsByIds,
   listDecisionsForNudges,
-  listJobEvidenceSince,
+  listGapEvidence,
   listJobIdsWithCostEvents,
   listJobsWithCustomerByIds,
   listLiveMoneyEventsForJobsSince,
@@ -40,13 +40,14 @@ import {
   markObservationAsked,
   clearObservationAsked,
   stampObservationsPinged,
-  listL2CitingCapture,
+  readCaptureRecords,
   listVisitsCreatedSince,
   // The roster (build 6.5 Phase 1). `isInactiveState` is the ONE definition of
   // "this row no longer participates" — the planner must not grow a second.
   isInactiveState,
   listTeam,
   listRosterEvents,
+  type EvidenceAsk,
   type JobEvidenceRow,
   type MoneyEvent,
   type Nudge,
@@ -410,6 +411,10 @@ export interface PlannerTenantPlan {
   tenantId: string;
   outcome: PlannerTenantOutcome;
   gaps: number;
+  // How many open gaps this look did NOT show because of PLANNER_GAPS_SHOWN —
+  // present only when the ceiling bound, so a capped tick is findable in the
+  // run record. `gaps` stays the firm's TOTAL.
+  gapsHidden?: number;
   // REQUIRED even on non-planned outcomes (empty arrays / zeroes), never
   // optional. Making them optional would push `possibly undefined` onto ~30
   // existing assertions that read plans[0].dropped[0].why, turning an additive
@@ -636,6 +641,39 @@ export const EVIDENCE_PER_GAP = 6;
 // has been naming the gap for months.
 export const EVIDENCE_FLOOR_MAX_DAYS = 365;
 
+// THE GAP CEILING (retrieval layer plan 3, operator 2026-09-15). A firm with
+// hundreds of open gaps used to put every one of them into one prompt and every
+// one of their job ids into URLs that PostgREST refuses past ~205 UUIDs — so the
+// tick failed for that firm, every tick, and the run stayed green. At most this
+// many gaps and noticed items are SHOWN per look; the rest wait. The planner is
+// ALWAYS told the ceiling, and told how many it is not seeing when it binds.
+export const PLANNER_GAPS_SHOWN = 100;
+// …and the size it is ASKED to keep a firm under — advice in the count line,
+// never enforced (operator, same day).
+export const PLANNER_GAPS_TARGET = 30;
+
+/**
+ * Which open gaps one look shows (operator ruling 2026-09-15): gaps NOT on hold
+ * first, oldest first; then held ones, soonest back first. At or under the
+ * ceiling nothing is dropped and nothing moves; over it, the chosen gaps keep
+ * the order `open` already had, so the prompt reads the same way it always did.
+ */
+export function gapsToShow(open: Nudge[], nowMs: number): Nudge[] {
+  if (open.length <= PLANNER_GAPS_SHOWN) return open;
+  const heldUntil = (n: Nudge): number => {
+    const ms = n.not_before ? Date.parse(n.not_before) : NaN;
+    return Number.isNaN(ms) || ms <= nowMs ? NaN : ms;
+  };
+  const byAge = (a: Nudge, b: Nudge): number =>
+    Date.parse(a.created_at) - Date.parse(b.created_at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const unheld = open.filter((n) => Number.isNaN(heldUntil(n))).sort(byAge);
+  const held = open
+    .filter((n) => !Number.isNaN(heldUntil(n)))
+    .sort((a, b) => heldUntil(a) - heldUntil(b) || byAge(a, b));
+  const chosen = new Set([...unheld, ...held].slice(0, PLANNER_GAPS_SHOWN).map((n) => n.id));
+  return open.filter((n) => chosen.has(n.id));
+}
+
 // HOW LONG ONE TEXT ABOUT ONE CALL STANDS (rung 10). Two passes minutes apart —
 // the Calls-worker's focused pass and the half-hourly heartbeat — must never
 // both reach a manager about the same call. A day later is a different
@@ -708,7 +746,7 @@ export interface PlannerDeps {
   stampPinged?: typeof stampObservationsPinged;
   // The two moot-fact readers for the inbound kinds (rung 10) — batched once
   // per tick, because mootFactFor is a sync closure inside the per-gap loop.
-  listCiting?: typeof listL2CitingCapture;
+  listCiting?: typeof readCaptureRecords;
   listVisitsSince?: typeof listVisitsCreatedSince;
   // Build 7: the writer behind `observe`. Injected like every other one so a
   // unit test never touches the database.
@@ -734,7 +772,7 @@ export interface PlannerDeps {
   dismissGap?: typeof dismissNudge;
   recoverGap?: typeof recoverNudge;
   listDismissedNudges?: typeof listDismissedNudgeIds;
-  listEvidence?: typeof listJobEvidenceSince;
+  listEvidence?: typeof listGapEvidence;
   // The record-level test for cost gaps. Same reader the item sweep uses, so
   // "the ledger says this is filled" means one thing across the whole ladder.
   listCostEvents?: typeof listJobIdsWithCostEvents;
@@ -978,7 +1016,7 @@ export interface GapView {
   //
   // NULL for any capture a technician did not SPEAK — see
   // TECHNICIAN_SPOKEN_CHANNELS. The evidence read is job-scoped, not
-  // person-scoped (listJobEvidenceSince), so this pool also holds customer
+  // person-scoped (listGapEvidence), so this pool also holds customer
   // phone calls, inbound email and manager notes. `answered_by_capture_id` is
   // the whole definition of mv_gap_outcomes.closed_by_technician, so stamping
   // one of those would silently rewrite what that metric counts.
@@ -1390,7 +1428,7 @@ export function buildGapView(
   // day it must never name. It would also trip the asked-nudge block and the
   // pacing read, both of which are about a QUESTION in flight, which this is
   // not. So the marks travel beside the gap and only the inbound lines read them.
-  marks: { askedAt: string | null } | null = null,
+  marks: { askedAt: string | null; retracted?: boolean } | null = null,
 ): GapView {
   const jobId = ctxStr(n, 'jobId');
   const askedAtMs = n.asked_at ? Date.parse(n.asked_at) : NaN;
@@ -1410,11 +1448,23 @@ export function buildGapView(
   // only mints a gap when the job has NO activity since the visit started, so
   // everything after that instant is genuinely new information.
   const sinceMs = Number.isNaN(askedAtMs) ? Date.parse(n.created_at) : askedAtMs;
-  const relevant = Number.isNaN(sinceMs)
+  const matching = Number.isNaN(sinceMs)
     ? []
-    : evidence
-        .filter((e) => e.jobId === jobId && Date.parse(e.capture.captured_at) > sinceMs)
-        .slice(-EVIDENCE_PER_GAP);
+    : evidence.filter(
+        (e) =>
+          e.jobId === jobId &&
+          // Rows are asked for PER GAP (listGapEvidence), so two gaps on one
+          // job each get their own copy; a row without a gapId is a caller
+          // that handed over a firm-wide list and is matched by job alone.
+          (e.gapId === undefined || e.gapId === n.id) &&
+          Date.parse(e.capture.captured_at) > sinceMs,
+      );
+  const relevant = matching.slice(-EVIDENCE_PER_GAP);
+  // HOW MANY LANDED THAT THIS BLOCK DOES NOT SHOW. The database returns only
+  // the newest EVIDENCE_PER_GAP and says how many there were in all
+  // (`gapTotal`); a caller handing over a full list is counted directly.
+  const earlierNotes =
+    Math.max(matching.length, ...matching.map((e) => e.gapTotal ?? 0)) - relevant.length;
 
   const evidenceText = relevant.map((e) => flat(e.capture.raw_text ?? '', EVIDENCE_TEXT_CHARS));
   // Same map, same order — the alignment IS the mechanism, so it is built here
@@ -1463,8 +1513,10 @@ export function buildGapView(
   // summaries, never the rows. An amountless kind renders without a figure.
   const moneyAmount = (m: MoneyEvent): string =>
     `${m.kind}${m.amount_cents == null ? '' : ` $${(m.amount_cents / 100).toFixed(2)}`}`;
+  // The event id rides on the line (retrieval layer plan 3): a pointer the
+  // planner can look up in v_money_events, not a figure it has to trust blind.
   const moneyLine = (m: MoneyEvent): string =>
-    `${moneyAmount(m)}, recorded ${m.created_at.slice(0, 10)}`;
+    `${moneyAmount(m)}, recorded ${m.created_at.slice(0, 10)} (event ${m.id})`;
   // Capped like the notes are, and for the same reason: one job can carry a very
   // large number of ledger rows (the reader's own test writes 1005), and an
   // uncapped block would be both an enormous prompt and — through
@@ -1541,8 +1593,16 @@ export function buildGapView(
     // manager who this person is about a message that manager wrote.
     const outbound = n.context !== null && (n.context as { outbound?: boolean }).outbound === true;
     const sentTo = ctxStr(n, 'sentTo');
+    // RETRACTED SINCE (retrieval layer plan 3, operator 2026-09-15): the words
+    // on this gap are a COPY taken when it was raised, and no later retraction
+    // reaches a copy. A manager withdrew the message as recorded in error, so it
+    // is not on the record any more — quoting it here would put it back.
+    const retracted = marks?.retracted === true;
     lines.push(
-      outbound
+      retracted
+        ? '  the message this is about was RETRACTED as recorded in error — its words are no ' +
+          'longer on the record'
+        : outbound
         ? `  YOUR FIRM'S OWN reply${sentTo ? `, sent to ${sentTo}` : ''}` +
           `${ago ? `, ${ago}` : ''}: "${flat(ctxStr(n, 'words') ?? '', QUESTION_SHOWN_CHARS)}"`
         : `  the caller's words (${channel}${from ? `, from ${from}` : ''}` +
@@ -1554,16 +1614,16 @@ export function buildGapView(
     // to know what the first one already tried.
     const unmatched = n.kind === 'inbound_unmatched';
     const customerId = ctxStr(n, 'customerId');
+    // The matcher's `why` quotes what the extractor read out of the words (a
+    // phone number, an address), so a retracted message drops it with them.
+    const why = retracted
+      ? ''
+      : ' — why: ' +
+        `${ctxStr(n, 'matchReason') ?? 'no unique match on phone, email, thread or address'}`;
     if (unmatched && outbound) {
-      lines.push(
-        '  the firm promised this and nobody on file is the person it went to — why: ' +
-          `${ctxStr(n, 'matchReason') ?? 'no unique match on phone, email, thread or address'}`,
-      );
+      lines.push('  the firm promised this and nobody on file is the person it went to' + why);
     } else if (unmatched) {
-      lines.push(
-        '  nobody on file matches this sender — why: ' +
-          `${ctxStr(n, 'matchReason') ?? 'no unique match on phone, email, thread or address'}`,
-      );
+      lines.push('  nobody on file matches this sender' + why);
     } else if (customerId) {
       lines.push(`  customer: ${ctxStr(n, 'customerName') ?? 'unnamed'} (id ${customerId})`);
     }
@@ -1571,7 +1631,9 @@ export function buildGapView(
     // fields from the words above, and the planner weighs them against them.
     // For an unmatched sender they are not a REQUEST, they are the only
     // description of who this might be — hence the different label.
-    const asked = askedFields(n);
+    // Skipped for a retracted message: these are the extractor's reading OF its
+    // words, and would carry them back in.
+    const asked = retracted ? [] : askedFields(n);
     if (asked.length > 0) {
       lines.push(`  they ${unmatched ? 'gave' : 'asked for'}: ${asked.join('; ')}`);
     }
@@ -1604,7 +1666,7 @@ export function buildGapView(
     lines.push(`  the firm agreed to come out: ${committed ? 'yes' : 'not said'}`);
     lines.push(
       `  capture id: ${ctxStr(n, 'captureId') ?? n.subject_ref}` +
-        '   (spine_read v_captures for the full words)',
+        (retracted ? '   (retracted — it is not in v_captures)' : '   (spine_read v_captures for the full words)'),
     );
     // The ask marker, out of band — see the `marks` parameter for why it does
     // not ride on the gap row.
@@ -1829,9 +1891,36 @@ export function buildGapView(
         lines.push(
           `    [${i + 1}] ${e.capture.captured_at} via ${e.capture.channel}` +
             `${e.capture.technician_ref ? ` (${e.capture.technician_ref})` : ''}` +
+            // The capture id (retrieval layer plan 3): what the planner opens
+            // the full words with, and what it can name.
+            ` capture ${e.capture.id}` +
             `${e.capture.id === answeredBy ? '  <-- LINKED TO THIS GAP' : ''}: ${evidenceText[i]}`,
         );
       });
+      // NOTHING CUT SILENTLY. Both after the loop, so the [i] labels stay aligned.
+      if (earlierNotes > 0) {
+        // NO WINDOW NAMED, deliberately: the count comes from the database,
+        // which floors the read at the gap's own bound OR a year back, whichever
+        // is later (EVIDENCE_FLOOR_MAX_DAYS) — so "since the question went out"
+        // would be a claim this line cannot make for a gap older than that.
+        lines.push(
+          `    (${earlierNotes} earlier ${earlierNotes === 1 ? 'note' : 'notes'} on this job ` +
+            'not shown — spine_read v_captures joined to v_capture_links on this job id for them)',
+        );
+      }
+      // Decided from the SOURCE length, never from a trailing "…" — a phone
+      // turns a typed "..." into "…", and a note that really ends that way was
+      // not cut.
+      if (
+        relevant.some(
+          (e) => (e.capture.raw_text ?? '').replace(/\s+/g, ' ').trim().length > EVIDENCE_TEXT_CHARS,
+        )
+      ) {
+        lines.push(
+          `    (a line ending in … was cut at ${EVIDENCE_TEXT_CHARS} characters — spine_read ` +
+            'v_captures where id = its capture id has the full words)',
+        );
+      }
     }
     // AFTER the capture loop, always: that loop indexes evidenceText by
     // `relevant`'s own index, so anything spliced in ahead of it silently
@@ -1839,6 +1928,12 @@ export function buildGapView(
     if (moneyShown.length > 0) {
       lines.push(`  money on this job since ${since}:`);
       moneyShown.forEach((m, i) => lines.push(`    [${i + 1}] ${moneyLine(m)}`));
+      const earlierMoney = moneyHere.length - moneyShown.length;
+      if (earlierMoney > 0) {
+        lines.push(
+          `    (${earlierMoney} earlier ledger ${earlierMoney === 1 ? 'entry' : 'entries'} not shown)`,
+        );
+      }
       lines.push(
         '  That is a fact from the ledger, not a quote from a person — weigh whether it answers ' +
           'THIS question. If it does, close with basis "record".',
@@ -1984,6 +2079,32 @@ export const MIN_CITATION_WORDS = 2;
  * mis-reading one. Worth re-examining if the evaluation phase ever sees it.
  */
 export const CITABLE_TOOLS: ReadonlySet<string> = new Set(['spine_read', 'get_customer_context']);
+
+/**
+ * The texts a citable tool result may be quoted from: the result as the model saw
+ * it, PLUS every string inside it once decoded (retrieval layer plan 3).
+ *
+ * The loop hands the model JSON, where a note's `"` arrives as `\"` and a line
+ * break as `\n`. A planner that quotes the words as they read — which is what the
+ * evidence lines now point it at — would miss the escaped haystack and be refused.
+ * The decoded leaves are the same words, not new ones, so this widens nothing
+ * about WHOSE words may be quoted. A result cut by the loop's size cap is not
+ * valid JSON; it stays quotable as it was shown.
+ */
+export function citableTexts(result: string): string[] {
+  const out = [result];
+  const walk = (v: unknown): void => {
+    if (typeof v === 'string') out.push(v);
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v !== null && typeof v === 'object') Object.values(v).forEach(walk);
+  };
+  try {
+    walk(JSON.parse(result));
+  } catch {
+    // not JSON (a truncated result, or a plain string) — the raw text stands
+  }
+  return out;
+}
 
 /**
  * The code rails, applied to every decision before it can reach a writer. These
@@ -2543,7 +2664,11 @@ export function validateDecisions(
       if (!msg.note) {
         push(
           'send needs `message` — it was missing, over length, carried a link, or named a ' +
-            'date. A message that is not about a gap has no dates it may use.',
+            'date. A message that is not about a gap has no dates it may use.' +
+            // THE REASON, not just the menu: `noteDrops` goes to the log, and a
+            // planner told "one of these four things" cannot tell which rail it
+            // hit — least of all the money rail, which is the newest.
+            (msg.why ? ` (${msg.why})` : ''),
           undefined,
           // The addressee RESOLVED before this rail refused the message, and
           // it is the only thing that makes the refusal legible in the corpus.
@@ -2947,7 +3072,8 @@ export function validateDecisions(
       if (!cleaned.note) {
         push(
           'send needs `message` — it was missing, over length, carried a link, or named a date ' +
-            'it was not given. There is no other author: rewrite it.',
+            'it was not given. There is no other author: rewrite it.' +
+            (cleaned.why ? ` (${cleaned.why})` : ''),
         );
         continue;
       }
@@ -3406,6 +3532,9 @@ export function buildPlannerUserMessage(
   // about the firm, and a planner that believed it might close or dismiss on
   // the strength of an emptiness that is an artefact of the scoping.
   focused = false,
+  // How many open gaps this look does NOT show (PLANNER_GAPS_SHOWN). Defaulted
+  // so the eval renderers and tests that build a message by hand stay valid.
+  hiddenGaps = 0,
 ): string {
   return [
     // THE INDEX GOES FIRST, and the reason is the cache, not the reading order.
@@ -3436,7 +3565,16 @@ export function buildPlannerUserMessage(
     ...(reachableBlock ? [reachableBlock, ''] : []),
     focused
       ? 'This pass shows 1 item; the firm\'s other open work is not shown and is not yours now.'
-      : `This firm has ${views.length} open gap(s).`,
+      : // ONE line, starting "This firm has": the memory neutraliser keys on that
+        // prefix, so a forged copy of it inside a note is still caught.
+        `This firm has ${views.length + hiddenGaps} open gap(s). Aim to keep the firm under ` +
+        `${PLANNER_GAPS_TARGET} open gaps and noticed items by settling them, never by setting ` +
+        `aside ones that still need doing. You are shown at most ${PLANNER_GAPS_SHOWN} per look — ` +
+        'anything past that waits for a later one.' +
+        (hiddenGaps > 0
+          ? ` Right now ${hiddenGaps} more are NOT shown: you see the ones not on hold first, ` +
+            'then held ones.'
+          : ''),
     '',
     views.map((v) => v.block).join('\n\n'),
     ...(officeBlock ? ['', officeBlock] : []),
@@ -4047,7 +4185,7 @@ export async function runPlanner(
   const listOffice = deps.listOfficeMessages ?? listOfficeMessagesByStatus;
   const markRead = deps.markMessagesRead ?? markOfficeMessagesRead;
   const createOffice = deps.createOffice ?? createOfficeMessage;
-  const listEvidence = deps.listEvidence ?? listJobEvidenceSince;
+  const listEvidence = deps.listEvidence ?? listGapEvidence;
   const listCostEvents = deps.listCostEvents ?? listJobIdsWithCostEvents;
   const listMoneySince = deps.listMoneySince ?? listLiveMoneyEventsForJobsSince;
   const runLoop = deps.runLoop ?? runToolLoop;
@@ -4068,7 +4206,7 @@ export async function runPlanner(
   const markAsked = deps.markAsked ?? markObservationAsked;
   const clearAsked = deps.clearAsked ?? clearObservationAsked;
   const stampPinged = deps.stampPinged ?? stampObservationsPinged;
-  const listCiting = deps.listCiting ?? listL2CitingCapture;
+  const listCiting = deps.listCiting ?? readCaptureRecords;
   const listVisitsSince = deps.listVisitsSince ?? listVisitsCreatedSince;
   const focus = deps.focus ?? null;
   const tools = deps.tools ?? [];
@@ -4162,6 +4300,10 @@ export async function runPlanner(
     // per-tenant — the declaration is inside this loop body, not above it — so a
     // tenant never sees the previous one's views.
     const views = new Map<string, GapView>();
+    // How many open gaps the ceiling hid from this look — hoisted for the CATCH
+    // like `views`: a capped tick is the one most likely to die on the clock, and
+    // its error record must still say it was capped.
+    let hiddenGaps = 0;
     // WHAT THE MODEL LOOKED UP THIS TICK (build 6 Phase 4), filled by the tool
     // loop's onResult hook and read by validateDecisions when it checks a
     // citation. Declared HERE, per tenant, for the same reason `views` is: one
@@ -4341,6 +4483,15 @@ export async function runPlanner(
         continue;
       }
 
+      // THE CEILING (PLANNER_GAPS_SHOWN). Everything this look READS and SHOWS is
+      // built from `shown`; what stays on `open` is a FACT about the whole firm —
+      // a sibling gap on the same job, a group lead that is hidden but still open
+      // (hiding it must not render its members as leaderless), whether the ping
+      // loop is owed a call, and the totals in the record. A focused pass is one
+      // item and never capped.
+      const shown = focus ? open : gapsToShow(open, nowMs);
+      hiddenGaps = open.length - shown.length;
+
       // The recover-validation set, read only for a firm that is DUE — ids
       // only, since dismissed rows are permanent and monotonic (review F3). A
       // failed read degrades to "nothing recoverable" rather than a dead tick:
@@ -4390,11 +4541,11 @@ export async function runPlanner(
       // whose gaps had all been held — so buildGapView would filter an empty
       // array and the fix above would be silently inert. The two bounds have to
       // agree or the per-gap one is a lie.
-      const askedAt = open
+      const askedAt = shown
         .map((n) => Date.parse(n.asked_at ?? n.created_at))
         .filter((ms) => !Number.isNaN(ms));
       const jobIds = [
-        ...new Set(open.map((n) => ctxStr(n, 'jobId')).filter((v): v is string => !!v)),
+        ...new Set(shown.map((n) => ctxStr(n, 'jobId')).filter((v): v is string => !!v)),
       ];
       // WHAT MAY BE HANDED TO POSTGREST (build 7). Every read below passes ids
       // to an `in()` over a uuid column, and PostgREST rejects the WHOLE filter
@@ -4431,14 +4582,28 @@ export async function runPlanner(
         askedAt.length > 0 && jobIds.length > 0
           ? new Date(Math.max(Math.min(...askedAt), floorMs)).toISOString()
           : null;
-      const evidence = sinceIso ? await listEvidence(tenantId, readJobIds, sinceIso) : [];
+      // ASKED FOR PER GAP (retrieval layer plan 3): each gap's own floor goes to
+      // the database, which returns that gap's newest EVIDENCE_PER_GAP live
+      // captures and the TOTAL since its floor — so the block can say how many it
+      // did not show. Same uuid belt as `readJobIds`, and the SAME clamp as the
+      // money read. Still gated on `sinceIso`, never on `asks.length`: the gate
+      // is the firm-wide one the money read shares, and a firm whose job ids are
+      // not uuid-shaped simply asks for nothing.
+      const asks: EvidenceAsk[] = [];
+      for (const n of shown) {
+        const jobId = ctxStr(n, 'jobId');
+        const ms = Date.parse(n.asked_at ?? n.created_at);
+        if (!jobId || !UUID_ISH_RE.test(jobId) || Number.isNaN(ms)) continue;
+        asks.push({ gapId: n.id, jobId, sinceIso: new Date(Math.max(ms, floorMs)).toISOString() });
+      }
+      const evidence = sinceIso ? await listEvidence(tenantId, asks, EVIDENCE_PER_GAP) : [];
 
       // ONE ledger read per tenant, over the cost gaps' jobs only — the same
       // batched discipline as the evidence read. Skipped entirely when the firm
       // has no open cost gaps this tick.
       const costJobIds = [
         ...new Set(
-          open
+          shown
             .filter((n) => n.kind === 'job_cost_gap')
             .map((n) => ctxStr(n, 'jobId'))
             .filter((v): v is string => !!v),
@@ -4472,7 +4637,7 @@ export async function runPlanner(
       // parse before the uuid test — filtering the raw value would drop every
       // visit gap on the floor and the planner would see none of them.
       const subjectRefs = [
-        ...new Set(open.map((n) => visitIdOfSubject(n.subject_ref))),
+        ...new Set(shown.map((n) => visitIdOfSubject(n.subject_ref))),
       ].filter(uuidish);
       const statusJobIds = readJobIds; // same rule, one definition (build 7)
       // Started together, settled together — independent reads, and a serial
@@ -4501,7 +4666,7 @@ export async function runPlanner(
       // Batched here rather than read per gap because `mootFactFor` below is a
       // SYNC closure inside the per-gap loop — a read in there would be one
       // round trip per gap, and would not typecheck.
-      const inboundGaps = open.filter((n) => (PINGED_KINDS as string[]).includes(n.kind));
+      const inboundGaps = shown.filter((n) => (PINGED_KINDS as string[]).includes(n.kind));
       const inboundCaptureIds = [
         ...new Set(inboundGaps.map((n) => ctxStr(n, 'captureId') ?? n.subject_ref)),
       ].filter(uuidish);
@@ -4521,14 +4686,23 @@ export async function runPlanner(
           : new Date(Math.max(Date.parse(earliestNoticed), bookingFloorMs)).toISOString();
       // Degraded, not fatal: the moot fact is information the planner weighs,
       // and losing it costs one unnecessary look rather than the firm's tick.
-      let citing: Awaited<ReturnType<typeof listCiting>> = [];
+      let citing: Awaited<ReturnType<typeof listCiting>>['citing'] = [];
+      // Which inbound captures a manager has since RETRACTED — read in the same
+      // call as what cites them (capture_records). A failed read leaves it empty,
+      // which renders the words as before: the degrade the whole block shares.
+      let retractedCaptures = new Set<string>();
       let visitsSince: Awaited<ReturnType<typeof listVisitsSince>> = [];
       if (inboundGaps.length > 0) {
         try {
-          [citing, visitsSince] = await Promise.all([
-            inboundCaptureIds.length > 0 ? listCiting(inboundCaptureIds) : Promise.resolve([]),
+          const [records, since] = await Promise.all([
+            inboundCaptureIds.length > 0
+              ? listCiting(tenantId, inboundCaptureIds)
+              : Promise.resolve({ citing: [], retracted: [] }),
             bookingFloor ? listVisitsSince(tenantId, bookingFloor) : Promise.resolve([]),
           ]);
+          citing = records.citing;
+          retractedCaptures = new Set(records.retracted);
+          visitsSince = since;
         } catch (err) {
           console.error(
             `[planner] tenant ${tenantId}: the inbound record reads failed — running without`,
@@ -4549,6 +4723,11 @@ export async function runPlanner(
         // something HAVING been created.
         if ((PINGED_KINDS as string[]).includes(n.kind)) {
           const captureId = ctxStr(n, 'captureId') ?? n.subject_ref;
+          // Withdrawn as recorded in error: there is nothing left to act on,
+          // whatever else cites it — and it is a fact, so it closes on the record.
+          if (retractedCaptures.has(captureId)) {
+            return 'the message this is about was retracted — it is no longer on the record';
+          }
           const cited = citedByCapture.get(captureId) ?? [];
           // KIND-AWARE, and it has to be. `inbound_unmatched` asks WHO CALLED,
           // so a customer created from the capture — or the capture recorded
@@ -4613,7 +4792,7 @@ export async function runPlanner(
       // shape reaches the prompt; the detail is pulled with recall_decisions.
       const historyByNudge = await listDecisions(
         tenantId,
-        open.map((n) => n.id),
+        shown.map((n) => n.id),
       );
 
       // (The aging counter that stood here moved to the SWEEP's alarm pass in
@@ -4648,7 +4827,7 @@ export async function runPlanner(
       try {
         const team = await readTeam(tenantId);
         const gone = new Set(
-          open
+          shown
             .map((n) => n.technician_id)
             .filter((id): id is string => !!id)
             .filter((id) => {
@@ -4682,14 +4861,18 @@ export async function runPlanner(
       // caller knows the lead is gone; buildGapView cannot.
       // The observations' own markers, keyed by id — passed beside the gap row
       // rather than through it (see buildGapView's `marks` parameter).
-      const marksById = new Map<string, { askedAt: string | null }>(
-        openObs.map((o) => [o.id, { askedAt: o.asked_at }]),
+      const marksById = new Map<string, { askedAt: string | null; retracted: boolean }>(
+        openObs.map((o) => {
+          const ctx = (o.context ?? {}) as Record<string, unknown>;
+          const captureId = typeof ctx.captureId === 'string' && ctx.captureId ? ctx.captureId : o.subject_ref;
+          return [o.id, { askedAt: o.asked_at, retracted: retractedCaptures.has(captureId) }];
+        }),
       );
       const leadFor = (n: Nudge): Nudge | 'leaderless' | null => {
         if (!n.ask_group_id || n.ask_group_id === n.id) return null; // not a member
         return byId.get(n.ask_group_id) ?? 'leaderless';
       };
-      for (const n of open) {
+      for (const n of shown) {
         const j = ctxStr(n, 'jobId');
         views.set(
           n.id,
@@ -4861,7 +5044,7 @@ export async function runPlanner(
           [...new Set(roster.values())],
           [
             ...new Set(
-              open
+              shown
                 .map((n) => (n.technician_id ? roster.get(n.technician_id) : undefined))
                 .filter((a): a is Addressee => !!a && isInactiveState(a.state)),
             ),
@@ -4870,6 +5053,7 @@ export async function runPlanner(
         ),
         outboundBlock,
         !!focus,
+        hiddenGaps,
       );
 
       const started = Date.now();
@@ -4936,7 +5120,7 @@ export async function runPlanner(
             // the machinery — and for a refused submit_plan it echoes the
             // model's own rejected text back at it, which must never become
             // quotable on the retry.
-            if (call.ok && CITABLE_TOOLS.has(call.name)) readText.push(call.result);
+            if (call.ok && CITABLE_TOOLS.has(call.name)) readText.push(...citableTexts(call.result));
           },
           // The loop has just told the model it is repeating itself. Recorded
           // rather than merely logged: a tick that was told and then finished
@@ -5382,6 +5566,7 @@ export async function runPlanner(
         tenantId,
         outcome: 'planned',
         gaps: open.length,
+        ...(hiddenGaps > 0 ? { gapsHidden: hiddenGaps } : {}),
         decisions,
         dropped,
         refusals: [...refusals.values()],
@@ -5510,6 +5695,7 @@ export async function runPlanner(
             views.size,
             loopStarted === null ? 0 : Date.now() - loopStarted,
           ),
+          ...(hiddenGaps > 0 ? { gapsHidden: hiddenGaps } : {}),
           refusals: [...refusals.values()],
           toolsUsed,
           stalledWarnings,

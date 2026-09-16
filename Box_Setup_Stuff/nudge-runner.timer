@@ -1,14 +1,25 @@
 # /etc/systemd/system/nudge-runner.timer
-# Every 5 min, matching the badge pull: a queued nudge reaches the technician
-# within ~5 min of composing. Escape hatch: `systemctl disable --now
-# nudge-runner.timer` stops ALL delivery instantly (the spine keeps serving
-# the rows; nothing is lost).
+# Every minute. It was 5, matching the badge pull, back when this pull carried
+# only nudges — a question composed by the planner is not worse for arriving
+# four minutes later. One-bot phase 2 put SYSTEM PUSHES on the same pull:
+# "your 2pm moved to 4pm", and an inbound call alert to a manager. A call
+# notice that is five minutes late has lost most of its point, and those
+# notices used to be instant (sent from Render through the board bot), so the
+# cadence had to pay for moving them.
+#
+# A minute is affordable here and would not be on the seat-sync tick: this is
+# ONE authenticated pull that usually returns an empty list, where seat-sync
+# does a Telegram getMe per seat. Cheap poll, expensive poll — different
+# cadences, on purpose.
+#
+# Escape hatch unchanged: `systemctl disable --now nudge-runner.timer` stops
+# ALL delivery instantly (the spine keeps serving the rows; nothing is lost).
 [Unit]
-Description=Run the nudge deliverer every 5 minutes
+Description=Run the nudge deliverer every minute
 
 [Timer]
-OnBootSec=4min
-OnUnitActiveSec=5min
+OnBootSec=2min
+OnUnitActiveSec=1min
 Persistent=true
 
 [Install]

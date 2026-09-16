@@ -7,11 +7,12 @@ import { createVisit, insertVisitNote } from './visits.js';
 import { createPendingNudge } from './nudges.js';
 import { upsertOpenReviewItem } from './reviewItems.js';
 
-// ④'s four views (plan 2026-08-23): v_captures, v_visit_notes, v_nudges,
-// v_review_items — asserted against the real database, the querySpine.test.ts
-// discipline. Isolation rests on the transaction-local GUC, sensitivity is NOT
-// filtered (user ruling: the planner reads everything), and retractions are a
-// LABELED TRAIL, never a silent fold.
+// ④'s views (plan 2026-08-23), as folded by plan 3 of the retrieval layer
+// (2026-09-15): v_captures, v_capture_links, v_nudges, v_review_items — asserted
+// against the real database, the querySpine.test.ts discipline. Isolation rests
+// on the transaction-local GUC, sensitivity is NOT filtered (user ruling: the
+// planner reads everything), and a RETRACTED note is removed, not labelled
+// (operator ruling 3, 2026-09-15 — superseding the 2026-08-23 labelled trail).
 //
 // Cleanup is TRUNCATE, the rawCaptures.test.ts house pattern — this suite
 // inserts L1 rows, whose trigger refuses DELETE, so per-row cleanup dead-ends
@@ -98,7 +99,7 @@ beforeAll(async () => {
   const jobB = (await createJob({ tenantId: tenantB, customerId: customerB.id, title: 'SV Job B' })).id;
   const capB = await capture(tenantB, 'tenant B private note', { jobId: jobB });
   // A reported trip on BOTH sides. The distinctive marker used to be a string
-  // in technician_name; v_visit_notes carries only ids, so the VISIT'S OWN UUID
+  // in technician_name; v_capture_links carries only ids, so the VISIT'S OWN UUID
   // is the marker — still a value that can actually appear in a leaked row,
   // which is the property that keeps this leak scan from passing vacuously.
   visitB = (
@@ -170,7 +171,7 @@ describe('the four views — tenant isolation', () => {
     a: ['gate code', 'sv-asg-good', 'sv-item-a', visitA],
     b: ['tenant B private note', 'sv-item-b', visitB],
   });
-  test.each(['v_captures', 'v_visit_notes', 'v_nudges', 'v_review_items'])(
+  test.each(['v_captures', 'v_capture_links', 'v_nudges', 'v_review_items'])(
     '%s never returns another tenant’s rows — markers both ways',
     async (view) => {
       const a = JSON.stringify(await rows(tenantA, `select * from ${view}`));
@@ -182,7 +183,7 @@ describe('the four views — tenant isolation', () => {
   );
 
   test('every view has real rows on BOTH sides — the leak scans above are not empty-vs-empty', async () => {
-    for (const view of ['v_captures', 'v_visit_notes', 'v_review_items']) {
+    for (const view of ['v_captures', 'v_capture_links', 'v_review_items']) {
       expect((await rows(tenantA, `select * from ${view}`)).length).toBeGreaterThan(0);
       expect((await rows(tenantB, `select * from ${view}`)).length).toBeGreaterThan(0);
     }
@@ -192,33 +193,23 @@ describe('the four views — tenant isolation', () => {
   });
 });
 
-describe('v_captures — the labeled trail', () => {
-  test('a retracted capture comes back MARKED, with the reason — never silently folded', async () => {
-    const [r] = await rows(
-      tenantA,
-      `select retracted, retraction_reason, retracted_at from v_captures where id = '${capRetracted}'`,
-    );
-    expect(r.retracted).toBe(true);
-    expect(r.retraction_reason).toBe('recorded in error — wrong customer');
-    expect(r.retracted_at).toBeTruthy();
+describe('v_captures — retracted notes are removed, not labelled', () => {
+  test('a retracted capture is ABSENT, and so is the retraction row', async () => {
+    expect(await rows(tenantA, `select id from v_captures where id = '${capRetracted}'`)).toHaveLength(0);
+    // The retraction's own words ('recorded in error — wrong customer') are not
+    // a note about the job either.
+    const texts = (await rows(tenantA, 'select raw_text from v_captures')).map((r) => r.raw_text);
+    expect(texts).not.toContain('recorded in error — wrong customer');
+    expect(texts).not.toContain('quoted $450 for the pump');
   });
 
-  test('an unretracted capture is retracted:false with null reason', async () => {
-    const [r] = await rows(
-      tenantA,
-      `select retracted, retraction_reason from v_captures where id = '${capPlain}'`,
-    );
-    expect(r.retracted).toBe(false);
-    expect(r.retraction_reason).toBeNull();
+  test('the retraction columns are gone — a query naming one fails loudly', async () => {
+    await expect(rows(tenantA, 'select retracted from v_captures')).rejects.toThrow(/retracted/);
   });
 
-  test('the retraction ROW itself appears, self-identified by retracts_capture_id', async () => {
-    const found = await rows(
-      tenantA,
-      `select id, channel from v_captures where retracts_capture_id = '${capRetracted}'`,
-    );
-    expect(found).toHaveLength(1);
-    expect(found[0].channel).toBe('retraction');
+  test('an unretracted capture is still there', async () => {
+    const found = await rows(tenantA, `select raw_text from v_captures where id = '${capPlain}'`);
+    expect(found.map((r) => r.raw_text)).toEqual(['gate code is 4417, dog is friendly']);
   });
 
   test('manager_only rows ARE returned — the planner reads everything (user ruling)', async () => {
@@ -242,27 +233,65 @@ describe('v_captures — the labeled trail', () => {
       tenantA,
       `select id from v_captures where sensitivity is distinct from 'manager_only'`,
     );
-    expect(idf.length).toBeGreaterThanOrEqual(3); // plain + retracted + unstamped + retraction row
+    expect(idf).toHaveLength(2); // plain + unstamped (the retracted pair is folded away)
   });
 });
 
-describe('v_visit_notes — the note→job bridge', () => {
-  test('an UNSTAMPED note is reachable via its visit — the flagship query', async () => {
-    // A technician note's job_id is NULL by design (identity resolves after the
-    // immutable L1 append). Filtering v_captures by job_id alone would return []
-    // here and read as "nobody said anything". The bridge is the answer.
-    const direct = await rows(
-      tenantA,
-      `select id from v_captures where job_id = '${jobA}' and id = '${capUnstamped}'`,
-    );
-    expect(direct).toHaveLength(0); // the trap this view exists to escape
+describe('v_capture_links — the one note→record bridge', () => {
+  test('an UNSTAMPED note is reachable by its job — through the trip it reported', async () => {
+    // A technician note carries no job stamp by design (identity resolves after
+    // the immutable L1 append). v_captures no longer has a job column to tempt
+    // the model; the links view is the only way in, and it finds the note.
     const bridged = await rows(
       tenantA,
-      `select c.raw_text from v_captures c
-        join v_visit_notes v on v.capture_id = c.id
-       where v.job_id = '${jobA}'`,
+      `select distinct c.raw_text from v_captures c
+         join v_capture_links l on l.capture_id = c.id
+        where l.job_id = '${jobA}'`,
     );
     expect(bridged.map((r) => r.raw_text)).toContain('came to eighty dollars in parts');
+    const vias = (
+      await rows(tenantA, `select via from v_capture_links where capture_id = '${capUnstamped}'`)
+    ).map((r) => r.via);
+    expect(vias).toEqual(expect.arrayContaining(['visit_note', 'created_visit']));
+  });
+
+  test('a retracted note has no link rows', async () => {
+    expect(
+      await rows(tenantA, `select via from v_capture_links where capture_id = '${capRetracted}'`),
+    ).toHaveLength(0);
+  });
+
+  test("a link row stamped with OUR tenant pointing at ANOTHER firm's capture never appears", async () => {
+    // job_captures.capture_id is an id-only foreign key: a row carrying tenant
+    // A's tenant_id and job, but tenant B's capture, must not hand B's words to A.
+    const foreign = await capture(tenantB, 'tenant B words smuggled by a link');
+    await pg.query('insert into job_captures (tenant_id, job_id, capture_id) values ($1, $2, $3)', [
+      tenantA,
+      jobA,
+      foreign,
+    ]);
+    expect(
+      await rows(tenantA, `select capture_id from v_capture_links where capture_id = '${foreign}'`),
+    ).toHaveLength(0);
+  });
+
+  test('the view and captures_page agree on a job’s live notes — the two copies of the fold cannot drift', async () => {
+    const viaView = (
+      await rows(
+        tenantA,
+        `select distinct c.id from v_captures c join v_capture_links l on l.capture_id = c.id
+          where l.job_id = '${jobA}'`,
+      )
+    )
+      .map((r) => String(r.id))
+      .sort();
+    const page = await pg.query<{ result: { captures: { id: string }[] } }>(
+      `select captures_page($1::uuid, 'job', $2::uuid, 'planner', p_limit => 50) as result`,
+      [tenantA, jobA],
+    );
+    const viaPage = page.rows[0].result.captures.map((c) => c.id).sort();
+    expect(viaView.length).toBeGreaterThan(0);
+    expect(viaView).toEqual(viaPage);
   });
 });
 
@@ -297,8 +326,8 @@ describe('v_nudges / v_review_items', () => {
 });
 
 describe('the ACL holds', () => {
-  test('SELECT on all four views; no writes; base tables still unreachable', async () => {
-    for (const view of ['v_captures', 'v_visit_notes', 'v_nudges', 'v_review_items']) {
+  test('SELECT on the four views; no writes; base tables still unreachable', async () => {
+    for (const view of ['v_captures', 'v_capture_links', 'v_nudges', 'v_review_items']) {
       const { rows: priv } = await pg.query(
         `select has_table_privilege('spine_reader', $1, 'SELECT') as sel,
                 has_table_privilege('spine_reader', $1, 'INSERT') as ins,

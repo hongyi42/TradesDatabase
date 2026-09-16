@@ -362,6 +362,22 @@ fi
 # bindings + queued retirements retry automatically next tick; a failed badge
 # install does NOT (its plaintext existed only in this pull — it is parked in
 # the pending file and needs the manual §5b procedure). Exit 1 = unit red.
+
+# The seat doors, reconciled on the same tick rather than on a second timer:
+# every seat's menu button and its bot id, checked against what this pull just
+# said the server wants. Provisioning calls seat-sync directly so a NEW seat is
+# wired the minute it is built — this is the safety net for a button someone
+# clobbered, a console URL changed server-side, or a report that lost a round
+# trip.
+#
+# Deliberately OUTSIDE the failure accounting below: a seat-sync problem is not
+# a badge problem, and turning this unit red for one would hide the thing the
+# unit exists to signal. It says its own piece on stderr, which lands in the
+# journal either way.
+if [ -x /usr/local/sbin/seat-sync.sh ]; then
+  /usr/local/sbin/seat-sync.sh || true
+fi
+
 if [ "$badge_fail" -ne 0 ] || [ "${bind_fail:-0}" -ne 0 ] || [ "$recycle_fail" -ne 0 ]; then
   exit 1
 fi

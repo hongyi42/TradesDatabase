@@ -17,7 +17,9 @@ import {
   clearSandboxAssignmentIfRef,
   completeSandboxRecycle,
   getHostByTokenHash,
+  listPoolRowsForHost,
   pingDb,
+  setSandboxBotId,
 } from '../db/index.js';
 import { isValidService, recordOpsEvent } from '../db/opsEvents.js';
 import { recordHostMetrics } from '../db/hostMetrics.js';
@@ -418,6 +420,120 @@ async function handleOfficeReport(
   }
 }
 
+// The box's seat-bot report: "these are the bots my seats are running".
+//
+// WHY THE BOX TELLS US AND NOT THE OTHER WAY ROUND. A Mini App launch verifies
+// against the bot's NUMERIC id, and the id is learned from getMe — which needs
+// the token, which lives on the box and must never reach Render (the whole
+// point of the signature scheme). So the box, which already holds the tokens to
+// run the bots, reports the public half up the channel it already polls. This
+// is what makes a provisioned seat arrive allowlisted with nobody typing
+// anything; before it, every seat needed an operator running wire-bot with a
+// token in hand, and five seats sat unwired because their tokens were only
+// recoverable from BotFather.
+//
+// IT NEVER CREATES A POOL ROW. Racking a seat stays a deliberate operator act
+// (add-sandbox), because an auto-created row is a COLD row and bind_telegram
+// hands cold rows to the next hire — an occupied sandbox offered to a new
+// person, two people on one agent. An unknown seat is reported back as skipped
+// so the operator can see what the box has that the server does not.
+//
+// A HANDLE THAT DISAGREES IS REFUSED, per seat. Binding seat A to seat B's bot
+// would send A's launches to be verified against B forever, and nothing
+// downstream would ever notice. Same cross-check wire-bot makes.
+async function handleSeatBotReport(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const json = (code: number, body: unknown) => {
+    res.writeHead(code, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '');
+    const host = m ? await getHostByTokenHash(sha256hex(m[1].trim())) : null;
+    if (!host) {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
+    let body: unknown;
+    try {
+      body = await readBody(req);
+    } catch {
+      json(400, { error: 'malformed JSON body' });
+      return;
+    }
+    const seats = (body as { seats?: unknown })?.seats;
+    if (!Array.isArray(seats)) {
+      json(400, { error: 'seats must be an array' });
+      return;
+    }
+    // A bounded batch: a box reports its own rack, which is tens of seats, not
+    // thousands. A runaway body should be refused rather than looped over.
+    if (seats.length > 200) {
+      json(400, { error: 'too many seats in one report' });
+      return;
+    }
+    const rows = await listPoolRowsForHost(host.id);
+    const recorded: string[] = [];
+    const skipped: Array<{ sandboxRef: string; why: string }> = [];
+    for (const entry of seats) {
+      const e = (entry ?? {}) as Record<string, unknown>;
+      const sandboxRef = typeof e.sandboxRef === 'string' ? e.sandboxRef.trim() : '';
+      const botId = typeof e.botId === 'string' ? e.botId.trim() : '';
+      const handle = typeof e.botUsername === 'string' ? e.botUsername.trim() : '';
+      if (!sandboxRef) continue;
+      // Digits only. A pasted token must never become an allowlist entry, and
+      // saying so per seat beats failing the whole report.
+      if (!/^[0-9]{1,20}$/.test(botId)) {
+        skipped.push({ sandboxRef, why: 'botId is not a bare numeric id' });
+        continue;
+      }
+      if (handle && !/^@[A-Za-z0-9_]{5,32}$/.test(handle)) {
+        skipped.push({ sandboxRef, why: 'botUsername is not a Telegram handle' });
+        continue;
+      }
+      const row = rows.find((r) => r.sandbox_ref === sandboxRef);
+      if (!row) {
+        skipped.push({ sandboxRef, why: 'no pool row — rack it with add-sandbox first' });
+        continue;
+      }
+      if (row.retired_at) {
+        skipped.push({ sandboxRef, why: 'retired — a recycled seat must not keep a door' });
+        continue;
+      }
+      if (handle && row.bot_username && row.bot_username.toLowerCase() !== handle.toLowerCase()) {
+        skipped.push({ sandboxRef, why: `handle ${handle} disagrees with ${row.bot_username}` });
+        continue;
+      }
+      if (row.bot_id === botId && (!handle || row.bot_username)) continue; // already true
+      try {
+        await setSandboxBotId({
+          tenantId: row.tenant_id,
+          hostId: host.id,
+          sandboxRef,
+          botId,
+          // Only fills a gap; never overwrites a handle that was cross-checked
+          // against it above.
+          ...(handle && !row.bot_username ? { botUsername: handle } : {}),
+        });
+        recorded.push(sandboxRef);
+      } catch (err) {
+        // Per-seat isolation, the same reasoning as the mint loop: one bad row
+        // must not cost the rest of the rack its report.
+        skipped.push({ sandboxRef, why: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    json(200, { recorded, skipped });
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
 // The box's recycle-completion report: "retired sandbox X is destroyed, blank Y
 // is racked with bot Z". Same host-token auth + bare-401 posture as the pull.
 // The response's rosterCleared:false tells the box to RETRY the whole (idempotent)
@@ -726,6 +842,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // Host recycle-completion report — same host-token gate + placement.
     if (req.url === '/control/sandboxes' && req.method === 'POST') {
       await handleSandboxReport(req, res);
+      return;
+    }
+    // The box naming the bot behind each of its seats — the tokenless half of
+    // wiring, so a provisioned seat becomes a verifiable door with no operator
+    // step. Same host-token gate as every other control route.
+    if (req.url === '/control/seat-bots' && req.method === 'POST') {
+      await handleSeatBotReport(req, res);
       return;
     }
     // The voice's outbox: nudge pull + delivery report — same host-token gate

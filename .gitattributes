@@ -1,0 +1,6 @@
+# Shell scripts run on Linux boxes, and a CRLF checkout breaks them at the
+# shebang: `#!/usr/bin/env bash\r` is not an interpreter any kernel knows, and
+# the error ("no such file or directory" naming a binary that plainly exists)
+# sends people hunting in the wrong place. This repo is edited on Windows and
+# its scripts are copied to trades-box-1, so pin them.
+*.sh text eol=lf

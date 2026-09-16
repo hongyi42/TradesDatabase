@@ -31,7 +31,9 @@ import {
   getOpenReviewItem,
   getRawCapture,
   getTechnician,
+  getTechnicianView,
   hitRowCap,
+  isOutsideView,
   listJobsForCustomer,
   listL2CitingCapture,
   listMoneyEventsForJob,
@@ -43,6 +45,9 @@ import {
   summarizeMoney,
   technicianMoneyView,
   upsertOpenReviewItem,
+  viewHasCustomer,
+  viewHasJob,
+  viewShowsMoney,
 } from '../../db/index.js';
 import type {
   JobPriority,
@@ -70,12 +75,14 @@ import type {
   ResolvedIdentity,
 } from '../../writePath/recordFieldNote.js';
 import {
+  OUTSIDE_VIEW_NOTE,
   UUID_RE,
   callerTierOf,
   inboundAskFor,
   leanGrounding,
   recordCallerThroughTheDoor,
   refuseNameAsAddress,
+  viewerIdOf,
 } from './shared.js';
 import type {
   DomainTools,
@@ -85,7 +92,9 @@ import type {
 const BASE_TOOLS = [
   {
     name: 'find_customer',
-    description: 'Search customers by name, phone, or address.',
+    description:
+      'Search customers by name, phone, or address. A match marked inView:false is a customer ' +
+      'outside your view: only their name and id come back, and nothing on file about them can be read.',
     inputSchema: {
       type: 'object',
       properties: { query: { type: 'string' } },
@@ -98,15 +107,19 @@ const BASE_TOOLS = [
       'The CONTENTS PAGE for a customer — fixed size, never their whole history. It carries the ' +
       'profile and standing facts; up to 10 jobs — every job still in progress, unbooked or ' +
       'unpaid first, then the newest finished ones — each with status, attributes, ' +
-      'noteCount (notes you may read), restrictedCount (notes on file but outside your view), ' +
+      'noteCount (notes you may read), restrictedCount (notes on file here that you may not read — a manager can open them), ' +
       'retractedCount (managers: notes retracted as recorded in error — ' +
       'list_recent_captures(jobId, includeRetracted: true) shows each with its reason), ' +
       "lastCaptureAt, lastVisitAt and `newest` — the newest note's first 200 characters with its " +
-      'captureId; olderJobs says how many more (finished) jobs are on file but not shown — ' +
-      'get_job(jobId) reads one; customerLevelNotes is what was filed ' +
+      'captureId; olderJobs says how many more (finished) jobs are on file but not shown — it is a ' +
+      'COUNT, and nothing here hands you their ids, so say there are more rather than offering to ' +
+      'open one (a manager can list them with query_spine). get_job(jobId) reads any job you DO ' +
+      'have an id for. customerLevelNotes is what was filed ' +
       'on the customer with no job. To READ a job\'s notes call list_recent_captures(jobId) — it ' +
       'pages; for one note\'s full words call get_capture(captureId). Answer from what is on the ' +
       'page when it is enough, and open only what you need. ' +
+      'inView:false means the customer is outside your view (only their name comes back); ' +
+      'jobsOutsideView counts this customer\'s jobs you cannot open. ' +
       "upcomingVisits is the schedule ahead — use it for \"when is X's next visit?\" " +
       'and read each entry as-is: date + startTime are the visit as booked, and an entry with ' +
       'untimed:true is a REAL booked visit with NO time set yet — say exactly that (never say ' +
@@ -117,7 +130,9 @@ const BASE_TOOLS = [
       "Each job's lastVisitAt is past work evidence, not the schedule. When the result carries an " +
       'openWorkNote, the customer has work with NO visit booked: "next opening / availability / ' +
       'earliest you could come" questions are about THAT work — answer them with ' +
-      'find_slots(jobId), never from upcomingVisits. moneyByJob is the money position per job; ' +
+      'find_slots(jobId), never from upcomingVisits. moneyByJob is the money position per job — ' +
+      'for a technician it is a STATUS IN WORDS ("invoiced, not yet paid") with no figures: say ' +
+      'the status, never guess an amount, and if the person needs the number, the manager has it; ' +
       'A job\'s attributes.correspondence is WHAT THE CUSTOMER SAID about it on their own calls ' +
       'and emails, each entry naming the capture it came from — their words, not the firm\'s. ' +
       'within it, materialCostCents is what that job COST the firm in parts/materials — never ' +
@@ -132,12 +147,15 @@ const BASE_TOOLS = [
   {
     name: 'get_job',
     description:
-      'Fetch one job by id. If a money summary comes back, materialCostCents is what the job ' +
+      'Fetch one job by id. A technician\'s money block is a STATUS IN WORDS with no figures ' +
+      '("invoiced, not yet paid"); say it as it stands and never guess an amount — the manager ' +
+      'has the numbers. For a manager: if a money summary comes back, materialCostCents is what the job ' +
       'COST the firm in parts/materials — never add it to invoiced/paid/balance due, and never ' +
       'call revenue minus it "margin" or "profit" (there is no labour rate in it). ' +
       'attributes.correspondence is WHAT THE CUSTOMER SAID about this job on their own calls and ' +
       'emails, newest last, each entry naming the capture it came from — their words and their ' +
-      'requests, not the firm\'s notes or anything a technician did.',
+      'requests, not the firm\'s notes or anything a technician did. ' +
+      'A result marked inView:false is a job outside your view: you get its id and nothing else.',
     inputSchema: {
       type: 'object',
       properties: { jobId: { type: 'string' } },
@@ -345,33 +363,62 @@ function withoutPhoneKey<T extends { phone_key?: unknown }>(row: T): Omit<T, 'ph
   return shown;
 }
 
+// A job row as a technician may see it when money is NOT open to her: without
+// `price_cents`, the agreed price. It is the same figure the money block was
+// reduced to words for — and it sat right beside it until this strip (review
+// finding, 2026-09-15). Money open (the firm's rule or a grant) keeps it.
+function withoutPrice<T extends { price_cents?: unknown }>(row: T): Omit<T, 'price_cents'> {
+  const { price_cents, ...shown } = row;
+  void price_cents;
+  return shown;
+}
+
 async function handleFindCustomer(toolCtx: ToolContext): Promise<unknown> {
   const { tenantId, str } = toolCtx;
       const query = str('query');
       if (!query) throw new Error('query is required');
-      const rows = (await searchCustomers(tenantId, query)).map(withoutPhoneKey);
-      // A named object, never a bare array (retrieval layer 4): an array result
-      // gets no `now` rider, and an empty one says nothing in words.
-      const found = (customers: typeof rows) =>
-        customers.length === 0
-          ? { customers, note: `no customer on this firm matches "${query}"` }
-          : { customers };
+      const found = (await searchCustomers(tenantId, query)).map(withoutPhoneKey);
+      // THE TECHNICIAN LIMITED VIEW (plan 2): a customer she does not serve comes
+      // back as a name and an id — enough to say who it is and, later, to ask for
+      // access — and nothing read with it. Before the fold: its facts never load.
+      const view =
+        callerTierOf(toolCtx) === 'technician'
+          ? await getTechnicianView(tenantId, viewerIdOf(toolCtx))
+          : null;
+      const shown = (c: (typeof found)[number]) => !view || viewHasCustomer(view, c.id);
       // Fold standing facts whose evidence was retracted (one lookup across
       // all rows) — a retracted fact must not stay visible in name lookups
       // when context/briefings already hide it (fold is the removal path).
-      const ids = [...new Set(rows.flatMap((c) => factSourceIds(c.attributes)))];
-      if (ids.length === 0) return found(rows);
-      const retracted = new Set(
-        (await findRetractionsFor(ids))
-          .map((r) => r.retracts_capture_id)
-          .filter((id): id is string => !!id),
+      const ids = [...new Set(found.filter(shown).flatMap((c) => factSourceIds(c.attributes)))];
+      const retracted =
+        ids.length === 0
+          ? new Set<string>()
+          : new Set(
+              (await findRetractionsFor(ids))
+                .map((r) => r.retracts_capture_id)
+                .filter((id): id is string => !!id),
+            );
+      // The search's own order, each match whole or reduced to its name. A row
+      // out of view keeps EXACTLY these four keys — it is the access-request
+      // flow's hook, and the fold below must never spread anything back onto it.
+      const customers = found.map((c) =>
+        !shown(c)
+          ? { id: c.id, name: c.name, inView: false as const, note: OUTSIDE_VIEW_NOTE }
+          : retracted.size === 0
+            ? c
+            : { ...c, attributes: foldRetractedFacts(c.attributes, retracted) },
       );
-      if (retracted.size === 0) return found(rows);
-      return found(rows.map((c) => ({ ...c, attributes: foldRetractedFacts(c.attributes, retracted) })));
+      // A named object, never a bare array (retrieval layer 4): an array result
+      // gets no `now` rider, and an empty one says nothing in words.
+      return customers.length === 0
+        ? { customers, note: `no customer on this firm matches "${query}"` }
+        : { customers };
 }
 
 async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> {
-  const { tenantId, str, activeManager } = toolCtx;
+  // No activeManager here any more: the money split is by TIER (the planner reads
+  // everything, like a manager) and then by the view's money answer.
+  const { tenantId, str } = toolCtx;
       const customerId = str('customerId');
       if (!customerId) throw new Error('customerId is required');
       // THE CONTENTS PAGE (plan 2026-09-15-the-retrieval-layer-1). The database
@@ -379,9 +426,20 @@ async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> 
       // customer's history. The tenant guard is inside the read: a cross-tenant
       // (or unknown) id reads as no such customer — in words, so the model does
       // not read a blank as a failed lookup and retry.
-      const contents = await getCustomerContents(tenantId, customerId, callerTierOf(toolCtx));
+      const contents = await getCustomerContents(
+        tenantId,
+        customerId,
+        callerTierOf(toolCtx),
+        viewerIdOf(toolCtx),
+      );
       if (!contents) {
         return { customer: null, jobs: [], note: 'no such customer on this firm' };
+      }
+      // THE TECHNICIAN LIMITED VIEW (plan 2): a customer she does not serve is
+      // named, and nothing read with it — in words, so the seat says so instead
+      // of reading an empty page as an empty record.
+      if (isOutsideView(contents)) {
+        return { customer: contents.customer, inView: false, jobs: [], note: OUTSIDE_VIEW_NOTE };
       }
       // Served steering at the exact decision point (the B03 flake, 2026-08-14):
       // asked "when is the next OPENING for X's work?", the model reads this
@@ -395,10 +453,18 @@ async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> 
       // Money position per job (money-ledger plan): summaries only — the entry
       // list lives on get_job. Jobs with an empty ledger are OMITTED from the
       // map (absence = "no money recorded"; a zero-summary would read as
-      // "fully paid"). Technicians get door numbers only.
+      // "fully paid"). A technician gets the STATUS IN WORDS — and the figures
+      // only where the layer says she may be told them (the firm's rule, or a
+      // grant on this job/customer: `moneyAmounts`, from view_money_open). The
+      // PLANNER reads everything, so it takes the summary whole, like a manager.
       const moneyByJob: Record<string, unknown> = {};
+      const fullMoney = callerTierOf(toolCtx) !== 'technician';
       for (const j of contents.jobs) {
-        if (j.money) moneyByJob[j.id] = activeManager ? j.money : technicianMoneyView(j.money);
+        if (j.money) {
+          moneyByJob[j.id] = fullMoney
+            ? j.money
+            : technicianMoneyView(j.money, { amounts: j.moneyAmounts });
+        }
       }
       const contextResult: Record<string, unknown> = {
         // The contents function emits the whole customers row (customers%rowtype).
@@ -407,11 +473,12 @@ async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> 
         // tier-filtered map above (undefined is dropped by JSON.stringify).
         // retractedCount is a manager/planner signal; a technician never sees the key.
         jobs: contents.jobs.map((j) => ({
-          ...j,
+          ...(callerTierOf(toolCtx) === 'technician' && !j.moneyAmounts ? withoutPrice(j) : j),
           money: undefined,
           ...(callerTierOf(toolCtx) === 'technician' ? { retractedCount: undefined } : {}),
         })),
         olderJobs: contents.olderJobs,
+        ...(callerTierOf(toolCtx) === 'technician' ? { jobsOutsideView: contents.jobsOutsideView } : {}),
         customerLevelNotes: contents.customerLevel,
         upcomingVisits: contents.upcomingVisits,
         ...(Object.keys(moneyByJob).length > 0 ? { moneyByJob } : {}),
@@ -431,6 +498,10 @@ async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> 
             ? `${contents.olderJobs} more job${contents.olderJobs === 1 ? '' : 's'} on file not shown ` +
               '(live work is always shown first). '
             : '') +
+          (contents.jobsOutsideView > 0
+            ? `${contents.jobsOutsideView} more job${contents.jobsOutsideView === 1 ? '' : 's'} on file ` +
+              'for this customer are outside your view (only a manager can open them). '
+            : '') +
           'This is the contents page. list_recent_captures(jobId) pages a job\'s notes; ' +
           'get_capture(captureId) gives one note in full.',
       };
@@ -442,12 +513,23 @@ async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> 
 }
 
 async function handleGetJob(toolCtx: ToolContext): Promise<unknown> {
-  const { tenantId, str, activeManager } = toolCtx;
+  const { tenantId, str } = toolCtx;
       const jobId = str('jobId');
       if (!jobId) throw new Error('jobId is required');
       const job = await getJob(jobId);
       // Tenant guard: a cross-tenant (or unknown) id reads as not found.
       if (!job || job.tenant_id !== tenantId) return null;
+      // THE TECHNICIAN LIMITED VIEW (plan 2): a job she may not open is named by
+      // its id and nothing more — not its title, attributes or money.
+      // The same view answers both questions: may she open this job, and may she
+      // be told its figures. One read, not two.
+      const view =
+        callerTierOf(toolCtx) === 'technician'
+          ? await getTechnicianView(tenantId, viewerIdOf(toolCtx))
+          : null;
+      if (view && !viewHasJob(view, job.id)) {
+        return { id: job.id, inView: false, note: OUTSIDE_VIEW_NOTE };
+      }
       // Money position + retraction fold are independent reads — parallel
       // (one round-trip of latency instead of two on every get_job).
       // BOTH kinds of cited evidence (rung 10): standing facts AND the
@@ -469,15 +551,16 @@ async function handleGetJob(toolCtx: ToolContext): Promise<unknown> {
       // "fully paid"). A fully-VOIDED ledger still attaches its zeros — that
       // is truthful: money was discussed and nothing is owed. Tier split:
       // managers also get the recent entries (ids are what correction/void
-      // cite); technicians get the door numbers only — no methods, no refs,
-      // no history (payment detail is manager_only by standing policy;
-      // technicianMoneyView is the ONE definition of that boundary).
+      // cite); a technician gets the STATUS IN WORDS, plus the door numbers
+      // only where the layer says she may be told them — never methods, refs or
+      // history (operator 2026-09-15; technicianMoneyView is that one boundary,
+      // and it is answered by the view, never by a tier test).
       const moneySummary = summarizeMoney(moneyEvents);
       const money =
         moneyEvents.length === 0
           ? {}
           : {
-              money: activeManager
+              money: callerTierOf(toolCtx) !== 'technician'
                 ? {
                     ...moneySummary,
                     recentEvents: moneyEvents.slice(-10).map((e) => ({
@@ -490,7 +573,9 @@ async function handleGetJob(toolCtx: ToolContext): Promise<unknown> {
                       correctsEventId: e.corrects_event_id,
                     })),
                   }
-                : technicianMoneyView(moneySummary),
+                : technicianMoneyView(moneySummary, {
+                    amounts: view ? viewShowsMoney(view, { jobId: job.id, customerId: job.customer_id }) : false,
+                  }),
             };
       // Fold standing facts whose evidence was retracted — the raw-row tool
       // must agree with the folded context view. Single exit: every branch
@@ -503,11 +588,14 @@ async function handleGetJob(toolCtx: ToolContext): Promise<unknown> {
         retracted.size > 0
           ? foldRetractedCorrespondence(foldRetractedFacts(job.attributes, retracted), retracted)
           : job.attributes;
+      const shownJob = view && !viewShowsMoney(view, { jobId: job.id, customerId: job.customer_id })
+        ? withoutPrice(job)
+        : job;
       // Told, not paged (operator ruling 2026-09-15): the ledger is read in id
       // order, so a cut at the row limit drops the NEWEST entries and the
       // balance above would be wrong without saying so.
       return {
-        ...job,
+        ...shownJob,
         attributes,
         ...money,
         ...(hitRowCap(moneyEvents.length) ? { moneyNote: rowCapNote('ledger entries') } : {}),
@@ -821,7 +909,7 @@ async function handleRecordCaller(toolCtx: ToolContext): Promise<unknown> {
       // are L1-pinned, so they can never be deleted (a stamped capture makes its
       // customer permanently undeletable). What already cites the capture is the
       // authority on what this call still has left to do.
-      const already = await listL2CitingCapture([capture.id]);
+      const already = await listL2CitingCapture(tenantId, [capture.id]);
       if (newCustomer && already.some((r) => r.kind === 'customer')) {
         const existing = already.find((r) => r.kind === 'customer');
         throw new Error(
@@ -1020,7 +1108,7 @@ async function handleRecordCaller(toolCtx: ToolContext): Promise<unknown> {
       // call had opened it would have the planner relay "the job is open" for
       // work nobody created. Same for a trip: a job with a live visit takes no
       // second one. What cites the capture is the difference, and it is a fact.
-      const wrote = await listL2CitingCapture([capture.id]);
+      const wrote = await listL2CitingCapture(tenantId, [capture.id]);
       const openedJob = r.jobId ? wrote.some((w) => w.kind === 'job' && w.id === r.jobId) : false;
       const bookedVisit = r.visitId
         ? wrote.some((w) => w.kind === 'visit' && w.id === r.visitId)

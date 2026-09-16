@@ -327,6 +327,150 @@ describe('POST /control/sandboxes (recycle-completion report)', () => {
   });
 });
 
+describe('menuButton rides the badge pull', () => {
+  test('states the console button when BOARD_PUBLIC_URL is set, stays silent when it is not', async () => {
+    const prev = process.env.BOARD_PUBLIC_URL;
+    process.env.BOARD_PUBLIC_URL = 'https://example.test/';
+    try {
+      const res = await fetch(`${base}/control/badges`, {
+        headers: { authorization: `Bearer ${hostToken}` },
+      });
+      const body = (await res.json()) as { menuButton: { text: string; url: string } | null };
+      // Trailing slash trimmed: the box pastes this straight into
+      // setChatMenuButton and a double slash would be a different URL to
+      // Telegram's cache.
+      expect(body.menuButton).toEqual({ text: 'Schedule', url: 'https://example.test/console' });
+    } finally {
+      if (prev === undefined) delete process.env.BOARD_PUBLIC_URL;
+      else process.env.BOARD_PUBLIC_URL = prev;
+    }
+
+    // Unset: say nothing rather than point the whole fleet at a guess. The box
+    // treats null as "leave every button alone".
+    delete process.env.BOARD_PUBLIC_URL;
+    const quiet = await fetch(`${base}/control/badges`, {
+      headers: { authorization: `Bearer ${hostToken}` },
+    });
+    expect(((await quiet.json()) as { menuButton: unknown }).menuButton).toBeNull();
+    if (prev !== undefined) process.env.BOARD_PUBLIC_URL = prev;
+  });
+});
+
+describe('POST /control/seat-bots (the box names the bot behind each seat)', () => {
+  const report = (body: unknown, token = hostToken) =>
+    fetch(`${base}/control/seat-bots`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    });
+  const idOf = async (ref: string) =>
+    (await pg.query('select bot_id, bot_username from sandbox_pool where sandbox_ref = $1', [ref]))
+      .rows[0];
+
+  test('auth and shape: no token 401, wrong token 401, seats must be an array', async () => {
+    const noAuth = await fetch(`${base}/control/seat-bots`, { method: 'POST', body: '{}' });
+    expect(noAuth.status).toBe(401);
+    expect(await noAuth.text()).toBe('');
+    expect((await report({ seats: [] }, 'deadbeef')).status).toBe(401);
+    expect((await report('not json {{{')).status).toBe(400);
+    expect((await report({})).status).toBe(400);
+    expect((await report({ seats: 'nope' })).status).toBe(400);
+  });
+
+  test('records the id on a live row, fills a missing handle, and is idempotent', async () => {
+    const host = await getHostId();
+    await registerSandbox({ tenantId, hostId: host, sandboxRef: 'sb-live' });
+
+    const first = await report({
+      seats: [{ sandboxRef: 'sb-live', botId: '8918989737', botUsername: '@sblive_bot' }],
+    });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ recorded: ['sb-live'], skipped: [] });
+    expect(await idOf('sb-live')).toEqual({ bot_id: '8918989737', bot_username: '@sblive_bot' });
+
+    // The tick repeats every 5 minutes forever; a report that changes nothing
+    // must not write. `recorded` empty is how the box knows it is in sync.
+    const again = await report({
+      seats: [{ sandboxRef: 'sb-live', botId: '8918989737', botUsername: '@sblive_bot' }],
+    });
+    expect(await again.json()).toEqual({ recorded: [], skipped: [] });
+  });
+
+  test('refuses a handle that disagrees with the row — the wrong-token mistake', async () => {
+    const host = await getHostId();
+    await registerSandbox({
+      tenantId,
+      hostId: host,
+      sandboxRef: 'sb-handle',
+      botUsername: '@sbhandle_bot',
+    });
+    const res = await report({
+      seats: [{ sandboxRef: 'sb-handle', botId: '4242424242', botUsername: '@someoneelse_bot' }],
+    });
+    const body = (await res.json()) as { recorded: string[]; skipped: Array<{ why: string }> };
+    expect(body.recorded).toEqual([]);
+    expect(body.skipped[0].why).toContain('disagrees');
+    expect((await idOf('sb-handle')).bot_id).toBeNull();
+  });
+
+  test('a token pasted as an id never becomes an allowlist entry', async () => {
+    const host = await getHostId();
+    await registerSandbox({ tenantId, hostId: host, sandboxRef: 'sb-token' });
+    const res = await report({
+      seats: [{ sandboxRef: 'sb-token', botId: '8918989737:AAHtokenlookingthing' }],
+    });
+    const body = (await res.json()) as { recorded: string[]; skipped: Array<{ why: string }> };
+    expect(body.recorded).toEqual([]);
+    expect(body.skipped[0].why).toContain('numeric');
+    expect((await idOf('sb-token')).bot_id).toBeNull();
+  });
+
+  test('a retired seat is refused, and an unracked one is reported back, not created', async () => {
+    const host = await getHostId();
+    // Retired directly rather than through the recycle flow: this test is about
+    // the report refusing a dead seat, and the tenant's seat cap is spoken for
+    // by the suites above.
+    await registerSandbox({ tenantId, hostId: host, sandboxRef: 'sb-dead' });
+    await pg.query("update sandbox_pool set retired_at = now() where sandbox_ref = 'sb-dead'");
+
+    const res = await report({
+      seats: [
+        { sandboxRef: 'sb-dead', botId: '5150' },
+        { sandboxRef: 'sb-never-racked', botId: '5151' },
+      ],
+    });
+    const body = (await res.json()) as {
+      recorded: string[];
+      skipped: Array<{ sandboxRef: string; why: string }>;
+    };
+    expect(body.recorded).toEqual([]);
+    expect(body.skipped.find((x) => x.sandboxRef === 'sb-dead')?.why).toContain('retired');
+    expect(body.skipped.find((x) => x.sandboxRef === 'sb-never-racked')?.why).toContain(
+      'no pool row',
+    );
+    // The unracked seat must NOT have been created: an auto-created row is COLD,
+    // and bind_telegram hands cold rows to the next hire.
+    const created = await pg.query(
+      "select count(*)::int as n from sandbox_pool where sandbox_ref = 'sb-never-racked'",
+    );
+    expect(created.rows[0].n).toBe(0);
+  });
+
+  test('one bad seat does not cost the rest of the rack its report', async () => {
+    const host = await getHostId();
+    await registerSandbox({ tenantId, hostId: host, sandboxRef: 'sb-good' });
+    const res = await report({
+      seats: [
+        { sandboxRef: 'sb-never-racked', botId: '5151' },
+        { sandboxRef: 'sb-good', botId: '777000777' },
+      ],
+    });
+    const body = (await res.json()) as { recorded: string[] };
+    expect(body.recorded).toEqual(['sb-good']);
+    expect((await idOf('sb-good')).bot_id).toBe('777000777');
+  });
+});
+
 describe('POST /control/ops', () => {
   const post = (body: unknown, token = hostToken) =>
     fetch(`${base}/control/ops`, {

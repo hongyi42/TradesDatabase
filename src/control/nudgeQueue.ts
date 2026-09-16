@@ -2,6 +2,11 @@ import type { QueuedNudgeForHost } from '../db/index.js';
 import {
   getQueuedNudgeForHost,
   getQueuedOfficeMessageForHost,
+  getQueuedPersonPushForHost,
+  listQueuedPersonPushesForHost,
+  setPersonPushAttempts,
+  setPersonPushDelivered,
+  setPersonPushServeCount,
   isInactiveState,
   listQueuedOfficeMessagesForHost,
   setOfficeMessageAttempts,
@@ -86,6 +91,15 @@ export interface NudgeQueueDeps {
   asked?: typeof markNudgeAskedGroup;
   groupMembers?: typeof listQueuedNudgesInGroupForHost;
   attempts?: typeof setNudgeDeliveryAttempts;
+  // THE PUSH LEG (one-bot phase 2): verbatim system messages — a moved visit, an
+  // inbound call — which have no sender and are none of the planner's business,
+  // so they live in their own table rather than borrowing office_messages.
+  // Injected like every other reader so a unit test never touches a DB.
+  listQueuedPush?: typeof listQueuedPersonPushesForHost;
+  getQueuedPush?: typeof getQueuedPersonPushForHost;
+  pushServeCount?: typeof setPersonPushServeCount;
+  pushAttempts?: typeof setPersonPushAttempts;
+  pushDelivered?: typeof setPersonPushDelivered;
 }
 
 // Build one pull's worth of deliveries for a host. Liveness is RE-FILTERED at
@@ -258,6 +272,53 @@ export async function buildNudgeDelivery(
       console.error(`[nudgeQueue] serve of chat message ${row.id} failed`, err);
     }
   }
+  // ── THE PUSH LEG (one-bot phase 2) ────────────────────────────────────────
+  // Schedule changes and inbound-call alerts, which used to go out from Render
+  // through the one bot token it holds. Sending as a person's OWN assistant
+  // needs that assistant's token, and those never reach Render by design — so
+  // the send moves here, to the runner that already texts people verbatim
+  // through their own seat bot. This is the last thing keeping the board bot
+  // alive after the merge.
+  //
+  // Same freeze doctrine, same serve-time liveness re-check, same ledgers. No
+  // groups: a push is one row to one person.
+  const listPush = deps.listQueuedPush ?? listQueuedPersonPushesForHost;
+  const pushServe = deps.pushServeCount ?? setPersonPushServeCount;
+  for (const row of await listPush(hostId)) {
+    try {
+      const tech = row.technicians;
+      if (!tech || isInactiveState(tech.state) || !tech.sandbox_ref || !tech.telegram_user_id) {
+        continue; // frozen, not failed — a rebind may heal them
+      }
+      if (row.serve_count >= MAX_SERVE_COUNT) {
+        console.error(
+          `[nudgeQueue] push ${row.id} served ${row.serve_count}x with no delivery ack — ` +
+            'frozen; see the alarm counters',
+        );
+        continue;
+      }
+      if (row.attempts >= MAX_DELIVERY_ATTEMPTS) {
+        console.error(`[nudgeQueue] push ${row.id} failed delivery ${row.attempts}x — frozen`);
+        continue;
+      }
+      const served = await pushServe(row.id, row.tenant_id, row.serve_count + 1);
+      if (!served) continue; // moved under us
+      items.push({
+        id: row.id,
+        sandboxRef: tech.sandbox_ref,
+        replyTo: tech.telegram_user_id,
+        // Distinct from `nudge-` and `chat-`, though v2 of the runner reads
+        // none of them — the ids are uuids from different tables and cannot
+        // collide.
+        sessionId: `push-${row.id}`,
+        // Verbatim: what the spine composed is byte-what-arrives. No footer
+        // strip — no push ever had one.
+        directMessageB64: Buffer.from(row.body, 'utf8').toString('base64'),
+      });
+    } catch (err) {
+      console.error(`[nudgeQueue] serve of push ${row.id} failed`, err);
+    }
+  }
   return { nudges: items };
 }
 
@@ -292,6 +353,29 @@ export async function completeNudgeDelivery(
     // fallback at all, and a `failed` report for a chat row could never bump
     // its attempts, freezing it at MAX_SERVE_COUNT (10) instead of
     // MAX_DELIVERY_ATTEMPTS (3).
+    // ── A PUSH'S REPORT (one-bot phase 2), tried first ─────────────────────
+    // Same routing problem as the chat leg: the box posts {id, outcome} and
+    // never says which table the id came from. Ordering among the three legs is
+    // free — the ids are uuids from different tables — but each must sit ahead
+    // of the closed-lead group path below, which returns 'ignored' for any
+    // non-delivered report and swallows the rest.
+    const getPush = deps.getQueuedPush ?? getQueuedPersonPushForHost;
+    const push = await getPush(id, hostId);
+    if (push) {
+      if (report === 'delivered') {
+        const settle = deps.pushDelivered ?? setPersonPushDelivered;
+        const moved = await settle(push.id, push.tenant_id);
+        return moved ? 'delivered' : 'ignored';
+      }
+      // FAILED: bump attempts and let the next pull decide. Never a terminal
+      // status — a row past its caps FREEZES, staying visible to an operator,
+      // rather than disappearing into a status nobody sweeps.
+      const bump = deps.pushAttempts ?? setPersonPushAttempts;
+      const moved = await bump(push.id, push.tenant_id, push.attempts + 1, detail);
+      if (!moved) return 'ignored';
+      return push.attempts + 1 >= MAX_DELIVERY_ATTEMPTS ? 'failed' : 'retry';
+    }
+
     const getChat = deps.getQueuedChat ?? getQueuedOfficeMessageForHost;
     const chat = await getChat(id, hostId);
     if (chat) {

@@ -30,10 +30,19 @@ const weekdayFull = (dateISO: string): string =>
   new Date(`${dateISO}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
 
 // Who is asking. The database's tier gate (capture_visible) is keyed on this:
-// a technician sees technician-channel captures, a manager and the planner see
-// everything, and any other value sees NOTHING (fail closed). Derived by the
-// hub from the verified identity — never from a tool argument.
+// a manager and the planner see everything; a technician sees her LIMITED VIEW
+// (plan 2: the customers she serves, what a grant opens, the firm's rule) and
+// only when the reader passes her roster id; any other value sees NOTHING (fail
+// closed). Derived by the hub from the verified identity — never from a tool
+// argument.
 export type CallerTier = 'technician' | 'manager' | 'planner';
+
+// The trailing parameters every reader sends for the technician view. The id is
+// spread only when present: the generated RPC params are optional, not nullable.
+const viewerParams = (technicianId: string | null) => ({
+  p_terminal_statuses: [...TERMINAL_JOB_STATUSES],
+  ...(technicianId ? { p_viewer: technicianId } : {}),
+});
 
 // One upcoming stop, in the schedule's display conventions: date + HH:MM
 // slices of the naive-local timestamps (never timezone-converted — the wire's
@@ -90,6 +99,8 @@ export type JobContents = Job & {
   newest: CaptureSnippet | null;
   lastVisitAt: string | null;
   money: MoneySummary | null;
+  /** May the caller be told this job's money FIGURES (see view_money_open)? */
+  moneyAmounts: boolean;
 };
 
 export interface CustomerContents {
@@ -98,9 +109,12 @@ export interface CustomerContents {
   // then the newest finished ones — so work still open, unbooked or unpaid is
   // never pushed off the page by newer finished jobs.
   jobs: JobContents[];
+  // The jobs the caller may open (for a technician, the ones in her view).
   jobsTotal: number;
-  // How many jobs are on file but not on the page.
+  // How many of those are on file but not on the page.
   olderJobs: number;
+  // Technicians: jobs of this customer outside her view (0 for everyone else).
+  jobsOutsideView: number;
   // Captures filed on the customer with no job anywhere on the record (the
   // door knew WHO, not WHICH).
   customerLevel: { noteCount: number; restrictedCount: number; newest: CaptureSnippet | null };
@@ -112,6 +126,16 @@ export interface CustomerContents {
    */
   upcomingVisits: UpcomingVisit[];
 }
+
+// A customer outside a technician's view: named, and nothing more. The id is
+// what a request for access will carry (the request-flow task).
+export interface OutsideView {
+  inView: false;
+  customer: { id: string; name: string };
+}
+
+export const isOutsideView = (c: CustomerContents | OutsideView): c is OutsideView =>
+  'inView' in c && c.inView === false;
 
 // ---- the jsonb the database returns, narrowed by hand (the readTenantCostDetail idiom) ----
 interface RawSnippet {
@@ -130,12 +154,21 @@ interface RawJobBlock {
   last_capture_at: string | null;
   newest: RawSnippet | null;
   last_visit_at: string | null;
+  money_amounts: boolean;
   money_events: MoneyEvent[];
 }
+interface RawOutside {
+  in_view: false;
+  customer: { id: string; name: string };
+}
 interface RawContents {
+  in_view: true;
   customer: Customer;
   jobs_total: number;
   older_jobs: number;
+  jobs_outside_view: number;
+  // Every in-view job id of this customer, for a technician; null = no filter.
+  in_view_job_ids: string[] | null;
   jobs: RawJobBlock[];
   customer_level: { note_count: number; restricted_count: number; newest: RawSnippet | null };
   retracted_evidence_ids: string[];
@@ -160,14 +193,22 @@ export async function getCustomerContents(
   tenantId: string,
   customerId: string,
   tier: CallerTier,
-): Promise<CustomerContents | null> {
-  const [raw, upcomingVisits] = await Promise.all([
-    readContents(tenantId, customerId, tier),
+  // The technician's roster id: without it a technician sees nothing (plan 2).
+  technicianId: string | null = null,
+): Promise<CustomerContents | OutsideView | null> {
+  const [raw, upcoming] = await Promise.all([
+    readContents(tenantId, customerId, tier, technicianId),
     readUpcoming(tenantId, customerId),
   ]);
   // Wrong tenant or unknown id: the database returned nothing, and the
   // upcoming read (tenant-filtered) is discarded with it.
   if (!raw) return null;
+  // Outside a technician's view: the name, and nothing read with it.
+  if (raw.in_view === false) return { inView: false, customer: raw.customer };
+  // The schedule ahead stays inside the view too: a trip on a job she may not
+  // open is not hers to see. null = no filter (managers, planner, whole firm).
+  const inViewJobs = raw.in_view_job_ids ? new Set(raw.in_view_job_ids) : null;
+  const upcomingVisits = inViewJobs ? upcoming.filter((u) => inViewJobs.has(u.jobId)) : upcoming;
 
   // The two folds that stay here: a standing fact or a correspondence entry
   // whose evidence was retracted disappears from the default view (the only
@@ -193,6 +234,10 @@ export async function getCustomerContents(
     // would read as "fully paid"). Every row counts — money never folds with a
     // retraction (operator 2026-09-15) — so this agrees with get_job.
     money: block.money_events.length > 0 ? summarizeMoney(block.money_events) : null,
+    // `=== true`, not `!== false`: on a database that has plan 1's migration but
+    // not plan 2's, the key is ABSENT — and absent must mean "no figures", the
+    // way every other default in this layer does (review finding).
+    moneyAmounts: block.money_amounts === true,
   }));
 
   return {
@@ -200,6 +245,7 @@ export async function getCustomerContents(
     jobs,
     jobsTotal: raw.jobs_total,
     olderJobs: raw.older_jobs,
+    jobsOutsideView: raw.jobs_outside_view,
     customerLevel: {
       noteCount: raw.customer_level.note_count,
       restrictedCount: raw.customer_level.restricted_count,
@@ -231,6 +277,8 @@ export interface PageCapture {
 
 export interface CapturesPage {
   scopeFound: boolean;
+  // False when a technician's scope (the job or customer) is outside her view.
+  inView: boolean;
   captures: PageCapture[];
   hasMore: boolean;
   // Both halves of the keyset cursor, or neither: the next page is
@@ -253,6 +301,7 @@ export interface CaptureFull {
 
 export interface CaptureSearch {
   scopeFound: boolean;
+  inView: boolean;
   query: string;
   matches: { captureId: string; channel: CaptureChannel; capturedAt: string; technicianRef: string | null; snippet: string }[];
   count: number;
@@ -274,6 +323,7 @@ interface RawPageRow {
 }
 interface RawPage {
   scope_found: boolean;
+  in_view: boolean;
   captures: RawPageRow[];
   has_more: boolean;
   next_before_at: string | null;
@@ -298,6 +348,7 @@ export async function listCapturesPage(
     textChars?: number;
     includeRetracted?: boolean;
   } = {},
+  technicianId: string | null = null,
 ): Promise<CapturesPage> {
   if ((opts.beforeAt === undefined) !== (opts.beforeId === undefined)) {
     throw new Error('listCapturesPage: a cursor is both beforeAt and beforeId, or neither');
@@ -312,11 +363,15 @@ export async function listCapturesPage(
     ...(opts.limit !== undefined ? { p_limit: opts.limit } : {}),
     ...(opts.textChars !== undefined ? { p_text_chars: opts.textChars } : {}),
     ...(opts.includeRetracted ? { p_include_retracted: true } : {}),
+    ...viewerParams(technicianId),
   });
   if (error) throw new Error(`captures_page failed: ${error.message}`);
   const raw = data as unknown as RawPage;
   return {
     scopeFound: raw.scope_found,
+    // Absent key = a database without plan 2's migration: a technician sees
+    // nothing there (fail closed), everyone else is unaffected.
+    inView: raw.in_view ?? tier !== 'technician',
     captures: raw.captures.map((r) => ({
       captureId: r.id,
       channel: r.channel,
@@ -358,12 +413,14 @@ export async function getCaptureFull(
   captureId: string,
   tier: CallerTier,
   includeRetracted = false,
+  technicianId: string | null = null,
 ): Promise<CaptureFull | null> {
   const { data, error } = await getClient().rpc('capture_full', {
     p_tenant: tenantId,
     p_capture: captureId,
     p_caller_tier: tier,
     p_include_retracted: includeRetracted,
+    ...viewerParams(technicianId),
   });
   if (error) throw new Error(`capture_full failed: ${error.message}`);
   if (data === null || typeof data !== 'object' || Array.isArray(data)) return null;
@@ -387,6 +444,7 @@ export async function getCaptureFull(
 
 interface RawSearch {
   scope_found: boolean;
+  in_view: boolean;
   query: string;
   matches: { id: string; channel: CaptureChannel; captured_at: string; technician_ref: string | null; snippet: string }[];
   count: number;
@@ -403,6 +461,7 @@ export async function searchCaptures(
   query: string,
   tier: CallerTier,
   opts: { limit?: number; snippetChars?: number } = {},
+  technicianId: string | null = null,
 ): Promise<CaptureSearch> {
   const { data, error } = await getClient().rpc('search_captures', {
     p_tenant: tenantId,
@@ -412,11 +471,13 @@ export async function searchCaptures(
     p_caller_tier: tier,
     ...(opts.limit !== undefined ? { p_limit: opts.limit } : {}),
     ...(opts.snippetChars !== undefined ? { p_snippet_chars: opts.snippetChars } : {}),
+    ...viewerParams(technicianId),
   });
   if (error) throw new Error(`search_captures failed: ${error.message}`);
   const raw = data as unknown as RawSearch;
   return {
     scopeFound: raw.scope_found,
+    inView: raw.in_view ?? tier !== 'technician',
     query: raw.query,
     matches: raw.matches.map((m) => ({
       captureId: m.id,
@@ -435,17 +496,18 @@ async function readContents(
   tenantId: string,
   customerId: string,
   tier: CallerTier,
-): Promise<RawContents | null> {
+  technicianId: string | null,
+): Promise<RawContents | RawOutside | null> {
   const { data, error } = await getClient().rpc('customer_contents', {
     p_tenant: tenantId,
     p_customer: customerId,
     p_caller_tier: tier,
     // The one definition of "finished work", derived from the job state machine.
-    p_terminal_statuses: [...TERMINAL_JOB_STATUSES],
+    ...viewerParams(technicianId),
   });
   if (error) throw new Error(`customer_contents failed: ${error.message}`);
   if (data === null || typeof data !== 'object' || Array.isArray(data)) return null;
-  return data as unknown as RawContents;
+  return data as unknown as RawContents | RawOutside;
 }
 
 // Upcoming schedule, tenant-scoped by the verified tenant (the caller still

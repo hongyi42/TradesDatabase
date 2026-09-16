@@ -9,7 +9,7 @@ import {
   isUniqueViolation,
   type RawCapture,
 } from './rawCaptures.js';
-import { getCustomerContents } from './context.js';
+import { getCustomerContents, type CustomerContents } from './context.js';
 import { createCustomer } from './customers.js';
 import { createJob } from './jobs.js';
 import { createVisit, insertVisitNote } from './visits.js';
@@ -164,13 +164,13 @@ describe('getCustomerContents retraction fold', () => {
     await reported(goodNote.id, '2026-08-16T13:00:00.000Z');
     await reported(badNote.id, '2026-08-17T13:00:00.000Z');
 
-    const before = (await getCustomerContents(tenantId, customer.id, 'manager'))!;
+    const before = (await getCustomerContents(tenantId, customer.id, 'manager')) as CustomerContents;
     expect(before.jobs[0].noteCount).toBe(2);
     expect(before.jobs[0].lastVisitAt).toContain('2026-08-17');
 
     await retractionOf(badNote, { customerId: customer.id });
 
-    const folded = (await getCustomerContents(tenantId, customer.id, 'manager'))!;
+    const folded = (await getCustomerContents(tenantId, customer.id, 'manager')) as CustomerContents;
     expect(folded.jobs[0].noteCount).toBe(1);
     expect(folded.jobs[0].newest?.captureId).toBe(goodNote.id);
     // The trip the bad note MINTED goes with it (the old recentVisits fold).

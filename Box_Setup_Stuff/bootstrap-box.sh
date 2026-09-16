@@ -245,7 +245,16 @@ phase_provision() {
   local getme
   getme=$(curl -s --max-time 10 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" || true)
   printf '%s' "$getme" | grep -q '"ok":true' || fail "getMe rejected the bot token — fix $secrets before building"
-  ok "token valid ($(printf '%s' "$getme" | grep -oE '"username":"[^"]*"' || echo bot))"
+  # Both halves come out of the preflight rather than a second call: the handle
+  # for the seat file and the operator's eye, the numeric id because that — not
+  # the token — is what verifies a Mini App launch (src/telegram/initData.ts).
+  local bot_username bot_id
+  bot_username=$(printf '%s' "$getme" | grep -oE '"username":"[^"]*"' | head -1 | cut -d'"' -f4)
+  # getMe returns {"ok":true,"result":{"id":<bot id>,...} — the first "id" is the
+  # bot's, which is why head -1 is correct and not merely convenient.
+  bot_id=$(printf '%s' "$getme" | grep -oE '"id":[0-9]+' | head -1 | cut -d: -f2)
+  [ -n "$bot_username" ] && [ -n "$bot_id" ] || fail "could not parse getMe for handle and id"
+  ok "token valid (@${bot_username}, id ${bot_id})"
 
   log "non-interactive onboard as ${NEMOCLAW_USER} (~8 min, ONE build)"
   sudo -u "$NEMOCLAW_USER" --preserve-env=TELEGRAM_BOT_TOKEN,NVIDIA_INFERENCE_API_KEY,NEMOCLAW_MESSAGING_PLAN_B64,NEMOCLAW_MODEL \
@@ -289,6 +298,42 @@ phase_provision() {
   run_osh inference set -g nemoclaw --provider openrouter-prod --model @preset/trades-seats --no-verify \
     && ok "openrouter-prod / @preset/trades-seats" \
     || echo "    ! route flip failed — nemoclaw-inference-medic will self-heal, or run it by hand"
+
+  # ── Keep the token findable (2026-09-15) ───────────────────────────────────
+  # Until now provisioning read the token from whatever path the operator
+  # passed and kept nothing. The result: six seats built, /root holding ad-hoc
+  # secrets files for two of them, and no way back to the other four except
+  # BotFather. The console's per-seat wiring needs each bot's token exactly
+  # once — to set its menu button and to learn its numeric id — so a seat whose
+  # token cannot be found again is a seat that cannot be wired.
+  #
+  # The token has to be on this box anyway (openclaw resolves it in-process to
+  # run the bridge); this only makes it findable by a root process. Same host,
+  # same root-only boundary, no new custodian. NOT central: each box holds its
+  # own seats' tokens and nothing else, so a compromise costs one box's tenants
+  # rather than the fleet.
+  local seatfile="/root/seats/${agent}.env"
+  install -d -m 700 /root/seats
+  ( umask 077; cat > "$seatfile" <<SEATEOF
+TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+BOT_USERNAME=@${bot_username}
+BOT_ID=${bot_id}
+PROVISIONED_AT=$(date -Is)
+SEATEOF
+  )
+  chmod 600 "$seatfile"
+  ok "token recorded at ${seatfile} (0600) — seat-sync can wire this bot with no operator step"
+
+  # Wire it NOW rather than waiting for the tick. The five-minute reconcile is a
+  # safety net, not the delivery mechanism: a seat built this minute should be a
+  # working door this minute. Non-fatal — a seat-sync failure must not fail a
+  # build that otherwise passed every assertion, and the tick will retry.
+  if [ -x /usr/local/sbin/seat-sync.sh ]; then
+    log "wiring the console door for ${agent} (seat-sync)"
+    /usr/local/sbin/seat-sync.sh || echo "    ! seat-sync failed — the 5-minute tick will retry"
+  else
+    echo "    ! /usr/local/sbin/seat-sync.sh not installed — this seat has no console button until it is"
+  fi
 
   cat <<EOF
 

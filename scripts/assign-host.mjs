@@ -27,6 +27,13 @@
 //         without its token ever reaching Render (src/telegram/initData.ts);
 //         the token is read from the environment, never from argv, and is not
 //         stored anywhere. Re-runnable: it re-reads getMe and re-points.
+//   scripts/assign-host.mjs set-bot-id host=<h> sandbox=<s> id=<numeric> [handle=@x]
+//       → THE TOKENLESS HALF of wire-bot, for seats wired from the box by
+//         Box_Setup_Stuff/wire-console-button.sh. That script reads the token
+//         from the seat's own container, sets the menu button there, and
+//         prints the numeric id — which is public (it is the half of the
+//         signature scheme the verifier needs) and therefore safe in argv.
+//         This records it. No token, so no menu button is set here.
 //   scripts/assign-host.mjs set-badge ref=<ref> hash=<sha256-of-badge> [tenant=<uuid>]
 //       → registers a HAND-MINTED badge's fingerprint so the pull loop ships
 //         it instead of erasing it and minting a competitor (do this for any
@@ -67,6 +74,7 @@ const KNOWN_KEYS = {
   assign: ['ref', 'host', 'sandbox', 'tenant'],
   'add-sandbox': ['host', 'sandbox', 'bot', 'tenant', 'tech'],
   'wire-bot': ['host', 'sandbox', 'tenant', 'url'],
+  'set-bot-id': ['host', 'sandbox', 'id', 'handle', 'tenant'],
   'set-badge': ['ref', 'hash', 'tenant'],
   'rotate-badge': ['ref', 'tenant'],
 };
@@ -74,6 +82,7 @@ if (!command || !(command in KNOWN_KEYS)) {
   console.error(
     `Usage: assign-host.mjs create-host name=<n> | assign ref=<r> host=<h> sandbox=<s> ` +
       `| add-sandbox host=<h> sandbox=<s> | wire-bot host=<h> sandbox=<s> ` +
+      `| set-bot-id host=<h> sandbox=<s> id=<numeric> ` +
       `| set-badge ref=<r> hash=<sha256> ` +
       `| rotate-badge ref=<r>   (each: [tenant=<uuid>])`,
   );
@@ -296,6 +305,79 @@ if (command === 'create-host') {
   console.log(
     `Still manual, once per bot: BotFather → /mybots → ${handle} → Bot Settings → ` +
       `Configure Mini App → ${url}, which is what puts "Open App" at the top of the chat.`,
+  );
+} else if (command === 'set-bot-id') {
+  const tenantId = args.tenant || '82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18'; // Default Tenant (test)
+  if (!args.host || !args.sandbox || !args.id) {
+    console.error('set-bot-id requires host=<host-name> sandbox=<sandbox_ref> id=<numeric>.');
+    process.exit(1);
+  }
+  // Digits only. setSandboxBotId refuses a token too, but catching it here says
+  // WHY: a pasted token would otherwise look like a plausible allowlist entry.
+  if (!/^[0-9]{1,20}$/.test(args.id)) {
+    console.error(
+      `id='${args.id}' is not a bare numeric bot id. If you pasted a token, take the ` +
+        `digits before the colon — and rotate it, since argv is not a safe place for one.`,
+    );
+    process.exit(1);
+  }
+  let botUsername;
+  if (args.handle) {
+    botUsername = args.handle.startsWith('@') ? args.handle : `@${args.handle}`;
+    if (!/^@[A-Za-z0-9_]{5,32}$/.test(botUsername) || !/bot$/i.test(botUsername)) {
+      console.error(`handle='${args.handle}' does not look like a Telegram bot handle. Aborting.`);
+      process.exit(1);
+    }
+  }
+  const host = await getHostByName(args.host);
+  if (!host) {
+    console.error(`No host named '${args.host}'. Run create-host first.`);
+    process.exit(1);
+  }
+  const row = (await listPoolRows(tenantId)).find(
+    (r) => r.sandbox_ref === args.sandbox && r.host_id === host.id,
+  );
+  if (!row) {
+    console.error(
+      `No sandbox '${args.sandbox}' on host ${host.name} for tenant ${tenantId}. ` +
+        `Run add-sandbox first.`,
+    );
+    process.exit(1);
+  }
+  if (row.retired_at) {
+    console.error(
+      `Sandbox '${args.sandbox}' is retired — recording its bot id would hand a recycled ` +
+        `seat a working door. Re-register it first.`,
+    );
+    process.exit(1);
+  }
+  // Same cross-check wire-bot makes, and the same reason: binding seat A to
+  // seat B's bot would send A's launches to be verified against B forever.
+  if (botUsername && row.bot_username && row.bot_username.toLowerCase() !== botUsername.toLowerCase()) {
+    console.error(
+      `handle ${botUsername} disagrees with sandbox '${args.sandbox}' (${row.bot_username}). ` +
+        `Refusing — check which seat this id is for.`,
+    );
+    process.exit(1);
+  }
+  if (!botUsername && !row.bot_username) {
+    console.error(
+      `WARN: sandbox '${args.sandbox}' has no registered handle and none was given, so this ` +
+        `id could not be cross-checked against anything. Pass handle=@<name> from the box ` +
+        `script's output.`,
+    );
+  }
+  await setSandboxBotId({
+    tenantId,
+    hostId: host.id,
+    sandboxRef: args.sandbox,
+    botId: args.id,
+    ...(botUsername ? { botUsername } : {}),
+  });
+  console.log(
+    `Recorded bot id ${args.id}${botUsername ? ` (${botUsername})` : ''} for sandbox ` +
+      `'${args.sandbox}' on ${host.name}: launches from it now verify. The menu button is ` +
+      `the box script's job — this command holds no token.`,
   );
 } else {
   const tenantId = args.tenant || '82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18'; // Default Tenant (test)

@@ -2879,6 +2879,45 @@ above), and the demo schedule window it describes has expired.
   decision — Nemotron quality rules out flash-tier models). Original mechanics, revert recipe and
   citations:
   [thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md](../thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md).
+- **2026-09-16 — s7, the one seat held back on 2026-07-31, is repaired. One-bot phase 2 now
+  delivers end to end.** Symptom: schedule pushes never arrived on `@yu_nemoclaw_bot` after phase 2
+  moved them off `BOARD_BOT_TOKEN`. Cause was not phase 2 — **s7's gateway device held only
+  `operator.pairing`**, and `message send` needs `operator.write`, so every `openclaw message send`
+  on that seat had failed since the sandbox was created. A nudge would have failed identically.
+  **Repair:** the same hand-seed used on s3/s5/s6/s8, but s7 already held a **matched** token pair
+  (`devices/paired.json` and `identity/device-auth.json` carried the same 43-char secret), so only
+  the scope lists changed — `approvedScopes` → `["operator.pairing","operator.read",
+  "operator.admin"]` and `tokens.operator.scopes` → `["operator.admin","operator.pairing",
+  "operator.read","operator.write"]`, byte-matching s6 — plus `devices/pending.json` → `{}`. No new
+  secret generated, no gateway restart, backups kept in-container. Verified: `cron status` clean,
+  two `message send` probes `ok:true` (messageIds 306, 309), and the two `person_pushes` rows
+  frozen at `attempts=3` delivered on the next 1-minute tick once an operator reset them to 0.
+  **Three dead ends cost most of the session; none of them are discoverable from the error text:**
+  1. **`--url` silently disables the local pairing fallback.** `resolveLocalPairingFallback` returns
+     `null` the moment `opts.url` is a non-empty string (`devices-cli.runtime-*.js`). Every
+     "approve over loopback with `--url ws://127.0.0.1:…`" attempt is therefore structurally
+     incapable of falling back — it is not a timing or port problem.
+  2. **The Control UI (2026.6.34) has NO device-pairing screen.** Settings → Security → *Configure*
+     is provider auth profiles and backoff. `controlUi.dangerouslyDisableDeviceAuth` only exempts
+     `CONTROL_UI`/`TUI` clients **at connect** (`isOperatorUiClient`); it does not add an approval
+     surface anywhere. Do not send an operator there to approve a device.
+  3. **Cold-sandbox non-convergence reconfirmed** (issue 5 of the research doc): each approve minted
+     a fresh superseding request, `8d6dc48a…` → `12876412…`.
+  Server-side, `device.pair.approve` *does* permit a non-admin caller to approve **its own**
+  device's operator-role request (`pending.deviceId === authz.callerDeviceId`) — but the CLI never
+  reaches the method, because the bootstrap connect requesting `operator.write` is refused first.
+  **Still drifted on s7:** `openclaw.json` `gateway.port` is `18793` against a gateway listening on
+  **18789**, so `doctor` reports `[info] Tool-call device scope: could not read OpenClaw device list
+  from the sandbox`. Sends are unaffected — `nemoclaw exec` sets `OPENCLAW_GATEWAY_URL` to the
+  bridge address (`10.200.0.2:18789`) and never consults `gateway.port`.
+  **Fleet side effect of the same drift:** `openshell forward start <PORT>` uses one port for *both*
+  ends, but every seat's gateway now listens on 18789, so **`nemoclaw <seat> dashboard-url` is dead
+  on every seat except s6** (whose assigned port happens to be 18789) — `forward list` still reports
+  all of them "running". Working invocation, which takes separate ports:
+  `openshell forward service <seat> --target-port 18789 --local 127.0.0.1:<seat port>` (no `-d`; it
+  runs in the foreground). Keep the browser on the seat's own port so
+  `controlUi.allowedOrigins` still matches — tunnel `ssh -L <seat port>:127.0.0.1:<box port>`, since
+  the origin comes from the laptop side.
 - **2026-09-05 — "Programmatic tool calling" assessed as a latency lever: NOT reachable as the
   Anthropic feature, and OpenClaw's Code Mode is the tool-search bridge above under a new name.**
   Anthropic's programmatic tool calling (Claude writes code that calls tools inside the
@@ -3009,7 +3048,7 @@ above), and the demo schedule window it describes has expired.
   until the adversarial-judge mechanism exists.
 
 - **2026-07-31 — cron was dead fleet-wide, for TWO stacked reasons. Both now fixed on s2, s3, s5,
-  s6, s8 (s7 held back — in use for testing).**
+  s6, s8 (s7 held back — in use for testing; **s7 finally repaired 2026-09-16**, see that entry).**
   1. **Device pairing.** Every tool routed through `callGatewayTool` (`cron`, `nodes`, `gateway`,
      `wake`) reconnects to the Gateway as a *client* (`clientId=gateway-client`,
      `clientMode=backend`). OpenClaw waives pairing only for shared-secret clients on a **loopback**
@@ -3040,7 +3079,8 @@ above), and the demo schedule window it describes has expired.
      token it never received. No gateway restart needed (`loadState` re-reads per auth attempt), so
      it's zero-downtime on live boxes; clear `devices/pending.json` to `{}` afterwards or `doctor`
      keeps reporting `[fail]` on an inert stale request. Script + full derivation in the research
-     doc. Used on s3/s5/s6/s8 on 2026-07-31.
+     doc. Used on s3/s5/s6/s8 on 2026-07-31, and on **s7 on 2026-09-16** (scopes only — its
+     token pair already matched, so nothing secret was regenerated).
   2. **Main-session cron cannot fire here.** A `sessionTarget: "main"` + `systemEvent` job does not
      run itself — it wakes the heartbeat, and we set `agents.defaults.heartbeat.every: "0m"` on
      purpose. `heartbeat-runner` returns `{status:"skipped", reason:"disabled"}`, so cron records

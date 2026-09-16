@@ -1,25 +1,46 @@
 # /etc/systemd/system/nudge-runner.timer
-# Every minute. It was 5, matching the badge pull, back when this pull carried
-# only nudges — a question composed by the planner is not worse for arriving
-# four minutes later. One-bot phase 2 put SYSTEM PUSHES on the same pull:
-# "your 2pm moved to 4pm", and an inbound call alert to a manager. A call
-# notice that is five minutes late has lost most of its point, and those
-# notices used to be instant (sent from Render through the board bot), so the
-# cadence had to pay for moving them.
+# Every 10 seconds. The cadence has been bought down twice, each time because
+# what rides this pull changed. It was 5 minutes, matching the badge pull, when
+# the pull carried only nudges — a question composed by the planner is not
+# worse for arriving four minutes later. One-bot phase 2 put SYSTEM PUSHES on
+# it ("your 2pm moved to 4pm", and an inbound call alert to a manager); those
+# notices used to be instant, sent from Render through the board bot, so the
+# cadence paid a minute for moving them. 10s is the third step: a schedule
+# change the person is standing in front of should not feel queued.
 #
-# A minute is affordable here and would not be on the seat-sync tick: this is
-# ONE authenticated pull that usually returns an empty list, where seat-sync
-# does a Telegram getMe per seat. Cheap poll, expensive poll — different
-# cadences, on purpose.
+# THE FLOOR IS ~4s AND IT IS NOT THIS TIMER. Measured on s7 2026-09-16: a bare
+# `nemoclaw exec` round-trip is 1.2s, and exec + `openclaw` CLI boot + one
+# gateway call is 3.8s. The runner spawns that CLI in-container once per
+# message, so no poll interval buys delivery below ~4s. Going under ~5s here
+# spends real requests for latency the send path will not give back; the way
+# past the floor is long-polling the spine, not a faster tick.
+#
+# AccuracySec=1s IS LOAD-BEARING. systemd defaults AccuracySec to ONE MINUTE,
+# so a 10s timer without this line fires roughly whenever it likes and silently
+# behaves like the old cadence. If this line is ever dropped, the symptom is
+# "we set 10s and nothing got faster".
+#
+# Overlap is self-limiting: systemd will not start the unit while the previous
+# run is still going, so a batch of N messages (~4N seconds) skips ticks
+# instead of piling runs on top of each other. No lockfile needed.
+#
+# Cost: ~8,640 pulls/day instead of 1,440. Each is ONE authenticated pull that
+# usually returns an empty list — a few cheap queries per host. That is
+# affordable here and would NOT be on the seat-sync tick, which does a Telegram
+# getMe per seat. Cheap poll, expensive poll — different cadences, on purpose.
 #
 # Escape hatch unchanged: `systemctl disable --now nudge-runner.timer` stops
 # ALL delivery instantly (the spine keeps serving the rows; nothing is lost).
 [Unit]
-Description=Run the nudge deliverer every minute
+Description=Run the nudge deliverer every 10 seconds
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=1min
+OnBootSec=30s
+OnUnitActiveSec=10s
+AccuracySec=1s
+# Persistent replays a missed run after downtime. At a 10s cadence the next
+# tick is never more than 10s away, so this exists only so a reboot mid-queue
+# does not wait for OnBootSec.
 Persistent=true
 
 [Install]

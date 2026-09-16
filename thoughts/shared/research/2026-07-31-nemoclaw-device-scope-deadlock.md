@@ -255,7 +255,7 @@ Two operational notes:
 - Applied 2026-07-31 to s3, s5, s6, s8 (s2 was already paired the supported way; **s7 deliberately
   skipped** — in use for testing). All five now report
   `[ok] Tool-call device scope: no pending tool-scope approvals`, and `cron add` (operator.admin)
-  succeeds on each.
+  succeeds on each. **s7 was seeded 2026-09-16** — see the addendum below.
 
 ## Reproduction
 
@@ -295,3 +295,88 @@ Because the built-in `cron` tool exposes `gatewayUrl`/`gatewayToken` as paramete
 tries to repair these failures itself — hallucinating a gateway URL and even inventing a token —
 and burns turns on `gatewayUrl override rejected`. Consider dropping those params from the
 agent-facing schema; the tool resolves both from config/env anyway.
+
+## Addendum 2026-09-16 — s7 seeded; three dead ends that cost a session
+
+**OpenClaw 2026.6.34 (5c38f99)** — the findings below were re-read against this build, not 2026.5.27.
+
+s7 was the last seat still holding the deadlock. It surfaced from the other end: after one-bot
+phase 2 moved schedule pushes off `BOARD_BOT_TOKEN`, nothing arrived on `@yu_nemoclaw_bot`. The
+cause was not phase 2. **s7's device held only `operator.pairing`**, and `message send` requires
+`operator.write`, so every send on that seat had failed since creation — a nudge would have failed
+identically. Two `person_pushes` rows sat frozen at `attempts=3` with `detail='message send
+failed'`.
+
+**The seed was narrower than the 2026-07-31 one.** s7 already held a *matched* token pair — the
+same 43-char secret in `devices/paired.json` and `identity/device-auth.json` — so the token was
+left untouched and no new secret was generated. Only the scope lists changed, byte-matching s6:
+
+| file | field | before | after |
+|---|---|---|---|
+| `devices/paired.json` | `approvedScopes` (and `scopes`) | `[operator.pairing]` | `[operator.pairing, operator.read, operator.admin]` |
+| `devices/paired.json` | `tokens.operator.scopes` | `[operator.pairing]` | `[operator.admin, operator.pairing, operator.read, operator.write]` |
+| `identity/device-auth.json` | `tokens.operator.scopes` | `[operator.pairing]` | same four |
+| `devices/pending.json` | — | one stale request | `{}` |
+
+No gateway restart (`loadState` per auth attempt, as established above). Verified: `cron status`
+clean, two `message send` probes `ok:true`, both frozen rows delivered on the next 1-minute tick
+after an operator reset `attempts` to 0.
+
+### Three dead ends, none discoverable from the error text
+
+1. **`--url` silently disables the local pairing fallback.** In `devices-cli.runtime-*.js`:
+
+   ```js
+   function resolveLocalPairingFallback(opts, error) {
+     const details = readConnectPairingRequiredMessage(...);
+     if (!details) return null;
+     if (typeof opts.url === "string" && opts.url.trim().length > 0) return null;   // <-- here
+     ...
+   }
+   ```
+
+   Every `openclaw devices approve … --url ws://127.0.0.1:18789` attempt is therefore
+   *structurally* incapable of falling back. It is not a port, timing, or netns problem, and the
+   error says nothing about the flag. **Never pass `--url` when the point is the fallback.**
+
+2. **The Control UI has no device-pairing screen.** Settings → Security → *Configure* is provider
+   auth profiles and backoff cooldowns. `controlUi.dangerouslyDisableDeviceAuth` only exempts
+   `CONTROL_UI`/`TUI` clients **at connect time** —
+   `isOperatorUiClient(client)` is `clientId === CONTROL_UI || clientId === TUI`, and the bypass is
+   `params.isControlUi && controlUiConfig?.dangerouslyDisableDeviceAuth === true`. It does not
+   create an approval surface. Do not route an operator to the browser to approve a device.
+
+3. **Cold-sandbox non-convergence reconfirmed** (issue 5): each approve minted a fresh superseding
+   request, `8d6dc48a…` → `12876412…`.
+
+**Worth knowing, though it does not help here:** server-side, `device.pair.approve` *does* allow a
+non-admin caller to approve **its own** device's operator-role request —
+`if (!authz.isAdminCaller)` only rejects on `pending.deviceId !== authz.callerDeviceId`
+(`device-ownership-mismatch`) or `requestsNonOperatorDeviceRole`. Self-approval is permitted by
+design. The CLI still never reaches the method, because the bootstrap connect requesting
+`operator.write` is refused before any RPC is issued. That is the whole deadlock in one sentence.
+
+### Issue 3 (`gateway.port` drift) has a second, unnoticed consequence
+
+s7's `openclaw.json` still carried `gateway.port: 18793` / `allowedOrigins:
+["http://127.0.0.1:18793"]` against a gateway listening on **18789** — the drift this doc records,
+never corrected on the held-back seat. Sends are unaffected: `nemoclaw exec` sets
+`OPENCLAW_GATEWAY_URL` to the bridge address (`10.200.0.2:18789`) and never consults
+`gateway.port`. But `doctor` reports `[info] Tool-call device scope: could not read OpenClaw device
+list from the sandbox`, which reads like a permissions failure and is not one.
+
+**The fleet-wide consequence:** `openshell forward start <PORT>` uses the same port on *both* ends,
+but after the 2026-07-31 repair every gateway listens on 18789 while each seat's forward still
+targets its old per-seat port. So **`nemoclaw <seat> dashboard-url` hands out URLs that cannot
+connect, on every seat except s6** — whose assigned port happens to be 18789. `forward list`
+reports all of them `running`; the listener is a live orphan whose far end is dead, so `curl`
+returns exit 52 (empty reply) or an instant refusal rather than a timeout. Working invocation,
+which takes separate local and target ports:
+
+```sh
+openshell forward service <seat> --target-port 18789 --local 127.0.0.1:<seat port>
+```
+
+It has no `-d`, so it runs in the foreground. Keep the *browser* on the seat's own port so
+`controlUi.allowedOrigins` still matches — `ssh -L <seat port>:127.0.0.1:<box port>` satisfies it,
+since the origin comes from the laptop side of the tunnel.

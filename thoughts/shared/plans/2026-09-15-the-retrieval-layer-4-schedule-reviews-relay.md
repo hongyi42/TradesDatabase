@@ -126,8 +126,10 @@ empty and `find_slots` can offer booked time), and agents are told when a list h
       button, which repeats the OLD commit. The estate is recorded in `docs/engineering-memory.md`
       under *"There are FIVE services, and three have `autoDeploy: no`"* — cited by QUOTE because
       the line number moves (it sat 16 lines apart in two worktrees of the same file on one day).
-      The §4 diagram line *"six services, two with autoDeploy OFF"* is stale on both counts; check
-      whether plan 2's promoted finding (3bc4afa) already corrected it, and correct it if not.
+      The §4 diagram and the estate table were both wrong (the table had `lifecycle-heart` as
+      auto-deploy *yes*); plan 2 corrected both in 037f58a — TAKE THEIRS at merge, do not
+      re-edit. `docs/engineering-memory.md` is edited on both sides, so expect a small conflict
+      there and keep both.
 
 ---
 

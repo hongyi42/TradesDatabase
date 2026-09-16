@@ -873,8 +873,18 @@ begin
   select coalesce(jsonb_agg(jsonb_build_object(
            'id', p.id, 'channel', p.channel, 'captured_at', p.captured_at,
            'technician_ref', p.technician_ref,
-           'snippet', left(ts_headline('english', p.raw_text, v_tsq,
-                                       'MaxWords=40,MinWords=20,MaxFragments=1,StartSel="",StopSel=""'), v_snip),
+           -- ts_headline only knows the FULL-TEXT arm. A row that qualified on the
+           -- substring arm alone ("cap" against "run capacitor": no lexeme match,
+           -- but ilike hits) would get the head of the note back, a snippet without
+           -- the thing that was searched for, labelled a match (review finding).
+           -- There, cut a window around the hit instead.
+           'snippet', case when to_tsvector('english', p.raw_text) @@ v_tsq
+                           then left(ts_headline('english', p.raw_text, v_tsq,
+                                                 'MaxWords=40,MinWords=20,MaxFragments=1,StartSel="",StopSel=""'), v_snip)
+                           else substr(p.raw_text,
+                                       greatest(1, position(lower(v_q) in lower(p.raw_text)) - (v_snip / 3)),
+                                       v_snip)
+                      end,
            'rank', p.rank
          ) order by p.rank desc, p.captured_at desc, p.id desc), '[]'::jsonb)
     into v_rows

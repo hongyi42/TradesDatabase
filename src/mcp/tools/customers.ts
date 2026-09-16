@@ -109,8 +109,10 @@ const BASE_TOOLS = [
       'retractedCount (managers: notes retracted as recorded in error — ' +
       'list_recent_captures(jobId, includeRetracted: true) shows each with its reason), ' +
       "lastCaptureAt, lastVisitAt and `newest` — the newest note's first 200 characters with its " +
-      'captureId; olderJobs says how many more (finished) jobs are on file but not shown — ' +
-      'get_job(jobId) reads one; customerLevelNotes is what was filed ' +
+      'captureId; olderJobs says how many more (finished) jobs are on file but not shown — it is a ' +
+      'COUNT, and nothing here hands you their ids, so say there are more rather than offering to ' +
+      'open one (a manager can list them with query_spine). get_job(jobId) reads any job you DO ' +
+      'have an id for. customerLevelNotes is what was filed ' +
       'on the customer with no job. To READ a job\'s notes call list_recent_captures(jobId) — it ' +
       'pages; for one note\'s full words call get_capture(captureId). Answer from what is on the ' +
       'page when it is enough, and open only what you need. ' +

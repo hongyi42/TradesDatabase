@@ -647,8 +647,12 @@ function statusOnly(s: MoneySummary): { status: TechnicianMoneyStatus } {
   // by a credit or a write-off rather than by payment) before "paid", and a
   // PROGRESS invoice before either — a cleared deposit is not a finished job, and
   // the job's own state machine refuses `paid` there too (deriveStatusTarget).
-  if (s.balanceDueCents < 0) return { status: 'the office holds a credit' };
   if (s.invoicedCents === 0) {
+    // Money taken before anything was invoiced is a DEPOSIT, not a credit the
+    // firm owes back — balanceDue is negative in both, which is why this is read
+    // before the credit branch (review finding). Deposit-only chains are a real
+    // shape here: deriveStatusTarget names them too.
+    if (s.paidCents > 0) return { status: 'deposit paid, more to invoice' };
     if (s.quotedCents > 0) return { status: 'quoted, nothing invoiced yet' };
     // A ledger with rows whose AR totals are zero is NOT an empty ledger: a
     // voided invoice, a $0 comped job, a fee, a material cost, an estimate that
@@ -657,6 +661,7 @@ function statusOnly(s: MoneySummary): { status: TechnicianMoneyStatus } {
     // because both callers omit the money block when the ledger has no rows.
     return { status: s.lastEventAt ? 'recorded, nothing owed' : 'nothing recorded yet' };
   }
+  if (s.balanceDueCents < 0) return { status: 'the office holds a credit' };
   if (s.balanceDueCents > 0) {
     return { status: s.paidCents > 0 ? 'part paid, balance outstanding' : 'invoiced, not yet paid' };
   }

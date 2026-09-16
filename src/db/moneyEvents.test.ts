@@ -396,7 +396,6 @@ describe('material_cost — a COST kind is inert in every revenue number (plan 2
     );
     expect(at([mk('invoice_issued', 45_000), mk('payment_received', 45_000)])).toBe('paid in full');
     expect(at([mk('invoice_issued', 45_000), mk('write_off', 45_000)])).toBe('settled, no balance due');
-    expect(at([mk('payment_received', 30_000)])).toBe('the office holds a credit');
     // A cleared DEPOSIT is not a finished job — the job's own state machine
     // refuses `paid` here too, and "paid in full" is what a technician would
     // repeat to the customer (review finding).
@@ -413,6 +412,14 @@ describe('material_cost — a COST kind is inert in every revenue number (plan 2
     expect(at([mk('material_cost', 4_000)])).toBe('recorded, nothing owed');
     expect(at([mk('estimate_presented', 90_000)])).toBe('recorded, nothing owed');
     expect(at([mk('fee_charged', 9_500)])).toBe('recorded, nothing owed');
+    // A deposit taken BEFORE anything is invoiced also reads balanceDue < 0. It
+    // is money the customer has paid in, not money the firm owes back — telling a
+    // technician "the office holds a credit" there would be backwards.
+    expect(at([mk('payment_received', 50_000)])).toBe('deposit paid, more to invoice');
+    // A genuine credit: invoiced, paid, then over-credited.
+    expect(at([mk('invoice_issued', 10_000), mk('payment_received', 10_000), mk('credit_applied', 5_000)])).toBe(
+      'the office holds a credit',
+    );
   });
 
   test('material_cost is a real enum value the DB accepts (and stays non-negative)', async () => {

@@ -388,6 +388,26 @@ describe("the firm's own rule", () => {
   });
 });
 
+describe('search snippets', () => {
+  test('a SUBSTRING match gets a snippet containing what was searched for', async () => {
+    const note = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-view-jane',
+      rawText:
+        'Arrived on site, checked the thermostat wiring and the disconnect outside, then replaced ' +
+        'the run capacitor and tidied up.',
+      jobId: leeOpen.id,
+    });
+    // "cap" is no english lexeme of "capacitor", so this row qualifies on the
+    // substring arm alone — ts_headline would hand back the head of the note.
+    const found = await searchCaptures(tenantId, 'job', leeOpen.id, 'cap', 'technician', {}, jane);
+    const hit = found.matches.find((m) => m.captureId === note.id)!;
+    expect(hit).toBeDefined();
+    expect(hit.snippet.toLowerCase()).toContain('cap');
+  });
+});
+
 describe('money: words by default, figures when the firm or a grant opens them', () => {
   test("the firm's rule opens the figures for every technician", async () => {
     const shut = await inView(lee.id);

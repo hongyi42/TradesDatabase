@@ -234,7 +234,10 @@ export async function getCustomerContents(
     // would read as "fully paid"). Every row counts — money never folds with a
     // retraction (operator 2026-09-15) — so this agrees with get_job.
     money: block.money_events.length > 0 ? summarizeMoney(block.money_events) : null,
-    moneyAmounts: block.money_amounts !== false,
+    // `=== true`, not `!== false`: on a database that has plan 1's migration but
+    // not plan 2's, the key is ABSENT — and absent must mean "no figures", the
+    // way every other default in this layer does (review finding).
+    moneyAmounts: block.money_amounts === true,
   }));
 
   return {
@@ -366,7 +369,9 @@ export async function listCapturesPage(
   const raw = data as unknown as RawPage;
   return {
     scopeFound: raw.scope_found,
-    inView: raw.in_view !== false,
+    // Absent key = a database without plan 2's migration: a technician sees
+    // nothing there (fail closed), everyone else is unaffected.
+    inView: raw.in_view ?? tier !== 'technician',
     captures: raw.captures.map((r) => ({
       captureId: r.id,
       channel: r.channel,
@@ -472,7 +477,7 @@ export async function searchCaptures(
   const raw = data as unknown as RawSearch;
   return {
     scopeFound: raw.scope_found,
-    inView: raw.in_view !== false,
+    inView: raw.in_view ?? tier !== 'technician',
     query: raw.query,
     matches: raw.matches.map((m) => ({
       captureId: m.id,

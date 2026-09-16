@@ -2,7 +2,7 @@
 date: 2026-09-15
 task: The retrieval layer, plan 2 of 4 — the technician limited view: scope (their trips, the customers they serve, those customers' current jobs), the grants ledger and its check, the firm's own rule, and the content-tag hook, all inside plan 1's one capture predicate
 research: thoughts/shared/research/2026-09-15-the-retrieval-and-delivery-layer.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 

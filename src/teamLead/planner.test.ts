@@ -25,7 +25,6 @@ import {
   PLANNER_ACTIONS,
   PLANNER_GAPS_SHOWN,
   citableTexts,
-  mayBeToldMoney,
   plannerCadenceDue,
   PLANNER_TICK_MINUTES,
   PLANNER_TICK_MINUTES_OFF_HOURS,
@@ -37,6 +36,7 @@ import {
   type PlannerDeps,
 } from './planner.js';
 import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
+import { DESK_NARROW_DISCLOSURE } from './deskPrompt.js';
 import { ORPHAN_FOOTER_PREFIX } from './memory.js';
 
 import { ToolLoopLimitError, type ToolLoopCall, type ToolLoopResult } from '../model/toolLoop.js';
@@ -7864,82 +7864,29 @@ describe('retrieval layer 3 — the gap ceiling, ids on the evidence, nothing cu
   });
 });
 
-// ---- Retrieval layer plan 3: the money rail on the way out -------------------
-describe('retrieval layer 3 — a technician is never told an amount', () => {
-  const member = (over: Partial<Technician> = {}): Technician =>
-    ({
-      id: 'tech-1',
-      tenant_id: 't1',
-      ref: 'ben-shelton',
-      display_name: 'Ben Shelton',
-      tier: 'technician',
-      state: 'active',
-      seat_exempt: false,
-      host_id: 'h1',
-      sandbox_ref: 'sb-1',
-      telegram_user_id: '5501',
-      skills: [],
-      service_cities: [],
-      created_at: NOW,
-      updated_at: NOW,
-      ...over,
-    }) as unknown as Technician;
-  const sam = member({ id: 't9', ref: 'sam-ortiz', display_name: 'Sam', tier: 'manager' });
-
-  const send = async (message: string, over: Record<string, unknown> = {}) => {
-    const summary = await runPlanner(NOW, 'shadow', baseDeps({
-      listTeam: async () => [member(), sam],
-      runLoop: loopReturning([
-        {
-          nudgeId: 'n1',
-          action: 'send',
-          as: 'chat',
-          // Required for a chat to the gap's own person, and unrelated to this
-          // rail — without it the countsAsTheAsk refusal fires first.
-          countsAsTheAsk: false,
-          message,
-          confidence: 'high',
-          reason: 'asking',
-          ...over,
-        },
-      ]),
-    }));
-    return summary.plans[0];
-  };
-
-  test('mayBeToldMoney is ONE question: the tier by default, the grant when there is one', () => {
-    expect(mayBeToldMoney('manager')).toBe(true);
-    expect(mayBeToldMoney('technician')).toBe(false);
-    // Fails closed: a roster read that degraded to empty must not start naming figures.
-    expect(mayBeToldMoney(undefined)).toBe(false);
-    // THE SEAM. A manager may widen what their people see, money included
-    // (operator 2026-09-15) — the day a money grant exists it answers here, and
-    // every caller follows without a rewrite.
-    expect(mayBeToldMoney('technician', { money: true })).toBe(true);
-  });
-
-  test('a figure to a technician is refused on BOTH legs, and the refusal says what to do', async () => {
-    for (const as of ['chat', 'assistant']) {
-      const plan = await send('the invoice came to $900 — can you collect it?', { as });
-      expect(plan.decisions).toEqual([]);
-      expect(plan.dropped[0].why).toContain('money amount');
-      expect(plan.dropped[0].why).toContain('ask a manager');
-    }
-  });
-
-  test('status in WORDS goes through; a bare number beside a money word does not', async () => {
-    expect((await send('the job is invoiced, not yet paid — any update?')).decisions).toHaveLength(1);
-    expect((await send('the balance is 900, mention it when you are there')).decisions).toEqual([]);
-  });
-
-  test('a manager may be told the amount', async () => {
-    const plan = await send('Mrs Lee is invoiced $900 and has not paid', { to: 'sam-ortiz' });
-    expect(plan.dropped).toEqual([]);
-    expect(plan.decisions).toHaveLength(1);
-  });
-
-  test('the doctrine states it, so the planner does not have to learn it by being refused', () => {
+// ---- Retrieval layer plan 3: the money rule is DOCTRINE, not a rail ---------
+//
+// The operator's ruling (2026-09-15): a technician is never told a money amount,
+// and it is TAUGHT, not enforced. A keyword rail was built here and REMOVED the
+// same day — measured through runPlanner, it let 8 of 8 ordinary ways to state an
+// amount through ("the invoice is nine hundred", "her total is 900") while
+// refusing 5 of 5 harmless messages ("there are 3 invoices open for her"), and its
+// own refusal text — "say it in words" — named the phrasing that defeated it.
+// What is left is the doctrine, and what is pinned is that the doctrine is THERE:
+// a dropped line strips the rule with the suite still green unless it is held here.
+describe('retrieval layer 3 — a technician is never told an amount (doctrine)', () => {
+  test('the planner is told, in the send rules where it chooses who to write to', () => {
     expect(PLANNER_SYSTEM).toContain('A technician is never told an AMOUNT');
-    expect(PLANNER_SYSTEM).toContain('ask a manager, who decides how much their people see');
+    expect(PLANNER_SYSTEM).toContain('ask a manager, who');
+    // It says nothing downstream catches it — the one thing that makes a
+    // steering rule read as a rule rather than a preference.
+    expect(PLANNER_SYSTEM).toContain('nothing downstream checks it');
+  });
+
+  test('the DESK is told too — the third way the planner speaks to a technician', () => {
+    // A technician's ask_team_lead is answered in the planner's name, from the
+    // planner's own notes, and that text passes no rail at all.
+    expect(DESK_NARROW_DISCLOSURE).toContain('NEVER A MONEY AMOUNT');
+    expect(DESK_NARROW_DISCLOSURE).toContain('invoiced, not yet paid');
   });
 });

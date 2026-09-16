@@ -33,12 +33,22 @@ SEND was withdrawn after its own reviewer measured 8 of 8 ordinary phrasings get
 `viewShowsMoney` on the tool surface is the ONLY enforced money gate — the planner's leg is taught,
 not checked.
 
-**4. The seat-facing MCP web service does NOT auto-deploy.** `TradesDatabase`
-(srv-d8uqmdegvqtc73bfn83g) has autoDeploy OFF; only Calls-worker and Calls-purge deploy on commit,
-and lifecycle-heart is off too. Merging a PR therefore does NOT close a schema-ahead-of-code window
-— the deploy must be triggered by hand (the API trigger takes the branch head correctly; the
-dashboard's "Redeploy" repeats the OLD commit). This one was believed and stated wrongly during
-this task, and the pilot ran plan-2 schema against plan-1 code until the deploy was triggered.
+**4. The seat-facing MCP web service does NOT auto-deploy — and the repo ALREADY said so.**
+`TradesDatabase` (srv-d8uqmdegvqtc73bfn83g) has autoDeploy OFF, as do `lifecycle-heart` and
+`Board_Worker`; only Calls-worker and Calls-purge deploy on commit. Merging a PR therefore does NOT
+close a schema-ahead-of-code window — the deploy must be triggered by hand (the API trigger takes
+the branch head correctly; the dashboard's "Redeploy" repeats the OLD commit).
+
+The interesting part is not the fact, it is HOW IT WAS MISSED, because both the plan-2 and plan-4
+sessions missed it the same way. It is written down twice — `docs/engineering-memory.md:6005`
+("There are FIVE services, and three have `autoDeploy: no` — `TradesDatabase` (web) …") and
+`:1237` ("six services, two with autoDeploy OFF", itself now stale on the count). What each of us
+carried instead was the COMPLEMENTARY half — "Calls-worker and Calls-purge auto-deploy at merge",
+true and load-bearing for the apply-before-merge rule — and we generalised it into "merging deploys
+the code". A half-memory that is true reads exactly like a whole one. **So: never infer a service's
+deploy behaviour from the fact that some service auto-deploys. Read it from the API
+(`list_services` → `autoDeploy`) at the moment you plan the cutover.** On this task the pilot ran
+plan-2 schema against plan-1 code until the deploy was triggered by hand.
 
 **5. A per-firm rule row on the SHARED seed tenant is invisible to the file that does not set it.**
 `server.test.ts` widens the seed firm to `whole_firm`; `retrievalLayer.test.ts` reads the same

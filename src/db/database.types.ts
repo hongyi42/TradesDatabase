@@ -1514,6 +1514,63 @@ export type Database = {
           },
         ]
       }
+      person_pushes: {
+        Row: {
+          attempts: number
+          body: string
+          created_at: string
+          delivered_at: string | null
+          detail: string | null
+          id: string
+          kind: string
+          serve_count: number
+          status: string
+          technician_id: string
+          tenant_id: string
+        }
+        Insert: {
+          attempts?: number
+          body: string
+          created_at?: string
+          delivered_at?: string | null
+          detail?: string | null
+          id?: string
+          kind: string
+          serve_count?: number
+          status?: string
+          technician_id: string
+          tenant_id: string
+        }
+        Update: {
+          attempts?: number
+          body?: string
+          created_at?: string
+          delivered_at?: string | null
+          detail?: string | null
+          id?: string
+          kind?: string
+          serve_count?: number
+          status?: string
+          technician_id?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "person_pushes_technician_id_fkey"
+            columns: ["technician_id"]
+            isOneToOne: false
+            referencedRelation: "technicians"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "person_pushes_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       planner_memory: {
         Row: {
           content: string

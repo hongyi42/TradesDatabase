@@ -117,12 +117,17 @@ empty and `find_slots` can offer booked time), and agents are told when a list h
 ### Live verification (agent-executable; `supabase-test` MCP)
 - [ ] **At PR time, before merge** (Calls-worker and Calls-purge auto-deploy at merge):
       `apply_migration`, `NOTIFY pgrst, 'reload schema'`, read back `pg_proc` + `pg_indexes`.
-- [ ] **After the merge, TRIGGER THE WEB DEPLOY BY HAND.** `TradesDatabase`
-      (srv-d8uqmdegvqtc73bfn83g), the seat-facing MCP server, has `autoDeploy: "no"` — verified
-      against the Render API 2026-09-16, and already recorded at `docs/engineering-memory.md:5994`.
-      Merging ships NOTHING to the seats: without this the pilot runs the new schema against the
-      old code. Use the API trigger, never the dashboard "Redeploy" button, which repeats the OLD
-      commit (`engineering-memory.md:1234`).
+- [ ] **IMMEDIATELY after the merge, TRIGGER THE WEB DEPLOY BY HAND — before any checking.**
+      `TradesDatabase` (srv-d8uqmdegvqtc73bfn83g), the seat-facing MCP server, has
+      `autoDeploy: "no"` / `autoDeployTrigger: "off"` (read from the Render API 2026-09-16).
+      Merging ships NOTHING to the seats, so between the migration apply and this trigger the
+      pilot runs NEW SCHEMA ON OLD CODE — keep that window to the length of one API call and do
+      the read-backs after it, not inside it. Use the API trigger, never the dashboard "Redeploy"
+      button, which repeats the OLD commit. The estate is recorded in `docs/engineering-memory.md`
+      under *"There are FIVE services, and three have `autoDeploy: no`"* — cited by QUOTE because
+      the line number moves (it sat 16 lines apart in two worktrees of the same file on one day).
+      The §4 diagram line *"six services, two with autoDeploy OFF"* is stale on both counts; check
+      whether plan 2's promoted finding (3bc4afa) already corrected it, and correct it if not.
 
 ---
 

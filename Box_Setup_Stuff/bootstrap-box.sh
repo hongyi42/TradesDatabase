@@ -324,6 +324,17 @@ SEATEOF
   chmod 600 "$seatfile"
   ok "token recorded at ${seatfile} (0600) — seat-sync can wire this bot with no operator step"
 
+  # Wire it NOW rather than waiting for the tick. The five-minute reconcile is a
+  # safety net, not the delivery mechanism: a seat built this minute should be a
+  # working door this minute. Non-fatal — a seat-sync failure must not fail a
+  # build that otherwise passed every assertion, and the tick will retry.
+  if [ -x /usr/local/sbin/seat-sync.sh ]; then
+    log "wiring the console door for ${agent} (seat-sync)"
+    /usr/local/sbin/seat-sync.sh || echo "    ! seat-sync failed — the 5-minute tick will retry"
+  else
+    echo "    ! /usr/local/sbin/seat-sync.sh not installed — this seat has no console button until it is"
+  fi
+
   cat <<EOF
 
 provision ${agent}: ALL ASSERTIONS PASSED.

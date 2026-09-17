@@ -9,7 +9,20 @@
 # can only be set with that same token. So both halves of "wire a seat" can only
 # happen on the box, and until this script they happened by hand: an operator
 # with a token in their shell, once per bot, forever. Five seats sat unwired
-# because their tokens were only recoverable from BotFather (2026-09-12).
+# because their tokens were believed recoverable only from BotFather
+# (2026-09-12).
+#
+# THAT BELIEF WAS WRONG, corrected 2026-09-17. The openshell gateway MUST hold
+# every seat's token in order to poll Telegram for that bot, and it keeps them
+# in its own object store -- sqlite at
+# ~/.local/state/nemoclaw/openshell-docker-gateway/openshell.db, table
+# `objects`, as `provider` rows named "<seat>-telegram-bridge", inside a
+# protobuf payload. What made them LOOK unrecoverable is that the sandbox's
+# openclaw.json holds only a `openshell:resolve:env:v..._TELEGRAM_BOT_TOKEN`
+# placeholder, and the container's process env holds the same -- the gateway
+# resolves it from the store at launch. So a lost seat token is recoverable on
+# the box, and no BotFather trip is needed to wire a seat that already runs.
+# All six seats were seeded from that store on 2026-09-17.
 #
 # WHAT IT DOES, per seat with a token file in /root/seats/:
 #   1. getMe — proves the token is live, yields the handle and the numeric id.

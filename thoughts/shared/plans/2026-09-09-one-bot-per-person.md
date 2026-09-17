@@ -197,6 +197,15 @@ store, the container's process env holds only a version-scoped placeholder (an a
 from `/proc` got a 61-character non-token and a rejected `getMe`), and `/root` kept secrets files for
 two seats out of six. BotFather was the only route, once per bot, forever.
 
+**CORRECTION (2026-09-17): BotFather was never the only route.** The gateway has to hold each
+seat's token to poll Telegram for that bot, and it keeps them in its own object store --
+`~/.local/state/nemoclaw/openshell-docker-gateway/openshell.db`, table `objects`, `provider` rows
+named `<seat>-telegram-bridge`. The placeholder in the container's env is what the gateway resolves
+AT LAUNCH from that store; reading `/proc` was looking in the one place the secret is deliberately
+absent. All five unwired seats were seeded from the store on 2026-09-17, their bot ids recorded, and
+their menu buttons set -- with no BotFather step. The cost of the wrong belief was five days of
+"blocked on the owner fetching tokens" when nothing was blocked.
+
 So the tokens get an operator-only home: `ops_secrets.bot_tokens`, migration `20260915100000`. The
 control is **schema exposure, not RLS** — every application path is PostgREST with the service-role
 key, and service_role bypasses RLS by design, so a policy would protect nothing. PostgREST only

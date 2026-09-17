@@ -1,27 +1,26 @@
 import { fileURLToPath } from 'node:url';
 import { recordHeartbeat } from '../db/workerHeartbeats.js';
-import { consoleMenuChatIds, setBoardMenuButton, setConsoleMenuButtonFor } from './boardBot.js';
 import { pollOnce } from './boardNotify.js';
 
 // The board worker — a SEPARATE long-lived process (`npm run board:worker`,
 // Render Background Worker), not folded into the web server: the web tier
 // stays stateless (Architecture A) and a future >1-replica web tier can't
-// double-send notifications. Startup sets the launch button once, then the
-// process loops the schedule_events poll forever. The last-seen cursor lives
-// in memory ONLY: a restart re-seeds at current versions, so events during
-// downtime are skipped — the documented v1 trade for having no new table.
+// double-send notifications. The process loops the schedule_events poll
+// forever. The last-seen cursor lives in memory ONLY: a restart re-seeds at
+// current versions, so events during downtime are skipped — the documented v1
+// trade for having no new table.
+//
+// IT NO LONGER TOUCHES A MENU BUTTON (2026-09-17). Startup used to call
+// setBoardMenuButton() before anything else, from when the board bot was the
+// way in. Every seat now carries its own Schedule button, applied on the box by
+// seat-sync.sh with that seat's own token — the only place those tokens exist.
+// Leaving the call here would have made deleting @DashboardMan_bot fatal to
+// THIS process: the Bot API would answer 401, the unguarded await would throw,
+// and the entry point below exits 1 on a rejection — so the bot that no longer
+// sends anything would still have taken schedule notifications down with it on
+// its way out. The poll is this worker's whole job.
 
 export async function startBoardWorker(): Promise<void> {
-  await setBoardMenuButton();
-  console.error('board worker: menu button set — board launchable from every started chat');
-  // Then, for the named few only, override that button with the console. Order
-  // matters: the default is set first, so a chat dropped from the list falls
-  // back to the board on the next restart rather than to nothing.
-  const consoleChats = consoleMenuChatIds();
-  if (consoleChats.length) {
-    await setConsoleMenuButtonFor(consoleChats);
-    console.error(`board worker: console button set for ${consoleChats.length} chat(s)`);
-  }
   // Garbage/empty BOARD_POLL_MS must not become setTimeout(0) — a Render env
   // typo would otherwise turn the 30s poll into a hot loop against the DB.
   const rawMs = Number(process.env.BOARD_POLL_MS);

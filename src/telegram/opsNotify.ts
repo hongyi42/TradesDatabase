@@ -1,5 +1,5 @@
 import type { OpsOutcome } from '../db/opsEvents.js';
-import { sendBoardMessage } from './boardBot.js';
+import { opsBotToken, sendOpsMessage } from './opsBot.js';
 
 // The missing half of the ops pipeline: somebody has to be TOLD.
 //
@@ -31,9 +31,9 @@ import { sendBoardMessage } from './boardBot.js';
 
 export interface OpsNotifyDeps {
   // Injected by tests. The HTTP suite drives a real server over a real socket,
-  // so there is no other seam — and `.env` carries a REAL BOARD_BOT_TOKEN, which
+  // so there is no other seam — and `.env` carries a REAL bot token, which
   // would otherwise make `npm test` fire live Telegram messages at the operator.
-  send?: typeof sendBoardMessage;
+  send?: typeof sendOpsMessage;
 }
 
 // Where the alert goes. Deliberately NOT a tenant lookup: an ops incident is
@@ -70,9 +70,11 @@ function openedText(service: string, host: string, detail?: Record<string, unkno
  *   - `suppressed` / `noop` — not a transition. This is the anti-spam invariant:
  *     an outage notifies once, not once per 5-minute tick.
  *   - no `OPS_ALERT_CHAT_ID` — alerting is not configured here.
- *   - no `BOARD_BOT_TOKEN` — no bot to send with. Checked rather than left to
- *     throw inside sendBoardMessage, so an unconfigured deploy skips cleanly
- *     instead of logging an exception every tick.
+ *   - no ops bot token — nothing to send with. Checked rather than left to
+ *     throw inside sendOpsMessage, so an unconfigured deploy skips cleanly
+ *     instead of logging an exception every tick. `opsBotToken()` resolves
+ *     OPS_BOT_TOKEN first and falls back to BOARD_BOT_TOKEN until the board bot
+ *     is retired, so this stays silent only when NEITHER is set.
  *
  * Throws only if the send itself fails; the caller is responsible for swallowing.
  */
@@ -85,10 +87,10 @@ export async function notifyOpsTransition(
 ): Promise<void> {
   if (outcome.action !== 'opened' && outcome.action !== 'closed') return;
   const to = chatId();
-  if (!to || !process.env.BOARD_BOT_TOKEN) return;
+  if (!to || !opsBotToken()) return;
   const text =
     outcome.action === 'opened'
       ? openedText(service, host, detail)
       : `✅ ${service} recovered after ${elapsed(outcome.openMs)}.`;
-  await (deps.send ?? sendBoardMessage)(to, text);
+  await (deps.send ?? sendOpsMessage)(to, text);
 }

@@ -1,13 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Client } from 'pg';
 
-// Stub the Bot API boundary BEFORE importing the notifier — pollOnce must
-// never touch the network; everything else (events, assignments, roster) is
-// the real local stack driven through the real booking verbs.
-vi.mock('./boardBot.js', () => ({
-  sendBoardMessage: vi.fn().mockResolvedValue(undefined),
-  setBoardMenuButton: vi.fn().mockResolvedValue(undefined),
-}));
+// No Bot API stub is needed any more: pollOnce stopped touching the network
+// when one-bot phase 2 made it QUEUE a person_push instead of sending, and
+// boardBot.ts is gone entirely as of 2026-09-17. Everything here (events,
+// assignments, roster) is the real local stack driven through the real
+// booking verbs.
 // Spy-wrap the db barrel the notifier imports from (originals still run) so a
 // test can inject a TRANSIENT resolution failure mid-batch — the cursor-hold
 // contract is unreachable otherwise.

@@ -1,19 +1,26 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 
-// MANDATORY, not tidiness: src/test.setup.ts loads .env before .env.test, and
-// .env carries a REAL BOARD_BOT_TOKEN. The /control/ops block below posts
-// down/ok repeatedly, so without this stub — the moment OPS_ALERT_CHAT_ID is set
-// in a developer's .env — `npm test` would fire live Telegram messages at the
-// operator. Stubbed BEFORE createHttpServer is imported. (Precedent:
-// src/calls/notify.test.ts.) This file exercises no board route, so replacing
-// the module wholesale is safe.
-vi.mock('../telegram/boardBot.js', () => ({
-  sendBoardMessage: vi.fn(async () => {}),
-  setBoardMenuButton: vi.fn(async () => {}),
+// MANDATORY, not tidiness. The /control/ops block below posts down/ok
+// repeatedly, and since 2026-09-17 an ops alert is QUEUED as a person_push and
+// delivered by the box through the operator's own assistant. Unstubbed, these
+// tests would file real rows that a live box would then text to a real phone.
+//
+// PARTIAL mock, via importOriginal: this is an integration suite that needs the
+// rest of src/db for real, so exactly two exports are replaced — the queue
+// write (so nothing is filed) and the roster lookup (so the notifier resolves an
+// operator without this suite having to seed one). Everything else is genuine.
+//
+// Stubbed BEFORE createHttpServer is imported. Precedent: src/calls/notify.test.ts.
+vi.mock('../db/index.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../db/index.js')>()),
+  queuePersonPush: vi.fn(async () => ({}) as never),
+  findRosterByTelegramUserIdGlobal: vi.fn(async () => ({
+    technician: { id: 'tech-ops', tenant_id: 'tenant-ops' },
+  })) as never,
 }));
 
 import { createHmac } from 'node:crypto';
-import { sendBoardMessage } from '../telegram/boardBot.js';
+import { queuePersonPush } from '../db/index.js';
 import { Client } from 'pg';
 import type { AddressInfo } from 'node:net';
 import type http from 'node:http';
@@ -479,25 +486,23 @@ describe('POST /control/ops', () => {
       body: JSON.stringify(body),
     });
 
-  const alerts = vi.mocked(sendBoardMessage);
-  const saved = { chat: process.env.OPS_ALERT_CHAT_ID, token: process.env.BOARD_BOT_TOKEN };
+  const alerts = vi.mocked(queuePersonPush);
+  const saved = { ids: process.env.OPS_ALERT_TELEGRAM_IDS };
 
   beforeEach(async () => {
     await pg.query('delete from ops_events where host_id = $1', [await getHostId()]);
     vi.clearAllMocks();
-    // Alerting is OFF unless configured, and notifyOpsTransition gates on BOTH
-    // vars — so both are set explicitly. Inheriting BOARD_BOT_TOKEN from .env
-    // would make these tests pass only on a machine that happens to have one:
-    // in a fresh worktree (which CLAUDE.md's parallel workflow creates with no
-    // .env) the notifier would skip and the assertions below would fail.
-    process.env.OPS_ALERT_CHAT_ID = '5801703167';
-    process.env.BOARD_BOT_TOKEN = 'test-token';
+    // Alerting is OFF unless configured, so the operator list is set
+    // explicitly. Inheriting it from .env would make these tests pass only on a
+    // machine that happens to have one: in a fresh worktree (which CLAUDE.md's
+    // parallel workflow creates with no .env) the notifier would skip and the
+    // assertions below would fail.
+    process.env.OPS_ALERT_TELEGRAM_IDS = '8639645984';
   });
 
   afterAll(() => {
     for (const [k, v] of Object.entries({
-      OPS_ALERT_CHAT_ID: saved.chat,
-      BOARD_BOT_TOKEN: saved.token,
+      OPS_ALERT_TELEGRAM_IDS: saved.ids,
     })) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
@@ -553,12 +558,16 @@ describe('POST /control/ops', () => {
     // six times and the operator mutes the channel — which would rebuild the
     // alerting gap this notifier exists to close.
     expect(alerts).toHaveBeenCalledTimes(2);
-    expect((alerts.mock.calls[0] as [string, string])[1]).toContain('is DOWN');
-    expect((alerts.mock.calls[1] as [string, string])[1]).toContain('recovered');
+    const bodies = alerts.mock.calls.map((c) => (c[0] as { body: string; kind: string }));
+    expect(bodies[0].body).toContain('is DOWN');
+    expect(bodies[1].body).toContain('recovered');
+    // Filed as ops, not as a schedule change — `kind` is how an operator
+    // reading the queue knows why the message was owed.
+    expect(bodies.map((b) => b.kind)).toEqual(['ops', 'ops']);
   });
 
   test('a failing alert never fails the report — the reporter still gets its 200', async () => {
-    alerts.mockRejectedValueOnce(new Error('telegram sendMessage failed: chat not found'));
+    alerts.mockRejectedValueOnce(new Error('queuePersonPush failed: 23514'));
     const res = await post({ service: 'inference-medic', status: 'down' });
     expect(res.status).toBe(200);
     expect(((await res.json()) as { action: string }).action).toBe('opened');
@@ -573,8 +582,8 @@ describe('POST /control/ops', () => {
     expect(rows[0].n).toBe(1);
   });
 
-  test('alerting off (no OPS_ALERT_CHAT_ID) changes nothing about the report', async () => {
-    delete process.env.OPS_ALERT_CHAT_ID;
+  test('alerting off (no OPS_ALERT_TELEGRAM_IDS) changes nothing about the report', async () => {
+    delete process.env.OPS_ALERT_TELEGRAM_IDS;
     const res = await post({ service: 'inference-medic', status: 'down' });
     expect(res.status).toBe(200);
     expect(alerts).not.toHaveBeenCalled();

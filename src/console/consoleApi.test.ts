@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'vitest';
-import { createHmac } from 'node:crypto';
+import { createHmac, generateKeyPairSync, sign as signEd } from 'node:crypto';
 import { Client } from 'pg';
 import type { AddressInfo } from 'node:net';
 import type http from 'node:http';
@@ -11,6 +11,8 @@ import { createCustomer } from '../db/customers.js';
 import { bookVisit } from '../schedule/booking.js';
 import { updateVisitStatus } from '../db/visits.js';
 import * as rosterCache from '../telegram/rosterCache.js';
+import * as botIds from '../telegram/botIds.js';
+import { setPublicKeyForTests } from '../telegram/initData.js';
 
 // Integration: the /console routes over a real HTTP server on an ephemeral
 // port against the local stack (the boardApi.test.ts harness, reused because
@@ -59,8 +61,34 @@ function signSlip(userId: number, token = TOKEN): string {
   return params.toString();
 }
 
+// The console shares /board's auth, and that auth has accepted ONLY Telegram's
+// Ed25519 signature since the HMAC fallback was removed (2026-09-17). So every
+// slip here must be signed. `signSlip` above is kept as the negative case.
+const { publicKey: TG_PUB, privateKey: TG_PRIV } = generateKeyPairSync('ed25519');
+const TG_PUB_HEX = TG_PUB.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex');
+const CONSOLE_BOT_ID = '7000000011'; // botIdFromToken(TOKEN)
+
+function signedSlip(userId: number, botId = CONSOLE_BOT_ID): string {
+  const params = new URLSearchParams({
+    auth_date: String(Math.floor(Date.now() / 1000)),
+    query_id: 'AAconsole',
+    user: JSON.stringify({ id: userId, first_name: 'Probe' }),
+  });
+  const data = [...params.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n');
+  params.set(
+    'signature',
+    signEd(null, Buffer.from(`${botId}:WebAppData\n${data}`, 'utf8'), TG_PRIV).toString(
+      'base64url',
+    ),
+  );
+  return params.toString();
+}
+
 const tma = (userId: number): Record<string, string> => ({
-  Authorization: `tma ${signSlip(userId)}`,
+  Authorization: `tma ${signedSlip(userId)}`,
 });
 
 const MGR = 910000001;
@@ -91,6 +119,8 @@ beforeAll(async () => {
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
   prevToken = process.env.BOARD_BOT_TOKEN;
   process.env.BOARD_BOT_TOKEN = TOKEN;
+  setPublicKeyForTests(TG_PUB_HEX);
+  botIds.clear();
   prevEnabled = process.env.CONSOLE_ENABLED;
   process.env.CONSOLE_ENABLED = '1';
 
@@ -142,6 +172,8 @@ afterAll(async () => {
   await new Promise<void>((resolve, reject) => server.close((e) => (e ? reject(e) : resolve())));
   if (prevToken === undefined) delete process.env.BOARD_BOT_TOKEN;
   else process.env.BOARD_BOT_TOKEN = prevToken;
+  setPublicKeyForTests(null);
+  botIds.clear();
   if (prevEnabled === undefined) delete process.env.CONSOLE_ENABLED;
   else process.env.CONSOLE_ENABLED = prevEnabled;
   await pg.query(TRUNCATE);

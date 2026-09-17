@@ -64,8 +64,36 @@ function signSlip(userId: number, token = TOKEN): string {
   return params.toString();
 }
 
+// Since the HMAC fallback was removed (2026-09-17) the Ed25519 signature is the
+// ONLY stamp /board accepts, so every slip this suite mints must carry one.
+// This keypair stands in for Telegram; setPublicKeyForTests points the verifier
+// at it for the whole file. `signSlip` above is kept deliberately — an
+// HMAC-only slip is now a NEGATIVE case, and there is a test for it below.
+const { publicKey: TG_PUB, privateKey: TG_PRIV } = generateKeyPairSync('ed25519');
+const TG_PUB_HEX = TG_PUB.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex');
+const BOARD_BOT_ID = '7000000009'; // botIdFromToken(TOKEN)
+
+function signedSlip(userId: number, botId = BOARD_BOT_ID): string {
+  const params = new URLSearchParams({
+    auth_date: String(Math.floor(Date.now() / 1000)),
+    query_id: 'AAboard',
+    user: JSON.stringify({ id: userId, first_name: 'Probe' }),
+  });
+  const data = [...params.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n');
+  params.set(
+    'signature',
+    signEd(null, Buffer.from(`${botId}:WebAppData\n${data}`, 'utf8'), TG_PRIV).toString(
+      'base64url',
+    ),
+  );
+  return params.toString();
+}
+
 const tma = (userId: number): Record<string, string> => ({
-  Authorization: `tma ${signSlip(userId)}`,
+  Authorization: `tma ${signedSlip(userId)}`,
 });
 
 const day = (query: string, headers: Record<string, string> = {}) =>
@@ -84,6 +112,9 @@ beforeAll(async () => {
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
   prevToken = process.env.BOARD_BOT_TOKEN;
   process.env.BOARD_BOT_TOKEN = TOKEN;
+  // File-wide, because `tma` now mints a signed slip for every test.
+  setPublicKeyForTests(TG_PUB_HEX);
+  botIds.clear();
 
   // Roster: a bound manager, a bound technician, and a second technician whose
   // stops the first must NOT see. Bindings are Telegram ids (digits as text).
@@ -175,6 +206,8 @@ afterAll(async () => {
   await new Promise<void>((resolve, reject) => server.close((e) => (e ? reject(e) : resolve())));
   if (prevToken === undefined) delete process.env.BOARD_BOT_TOKEN;
   else process.env.BOARD_BOT_TOKEN = prevToken;
+  setPublicKeyForTests(null);
+  botIds.clear();
   await pg.query(TRUNCATE);
   await pg.query("delete from tenants where name = 'Board API Probe Tenant'");
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
@@ -2111,37 +2144,17 @@ describe('route ordering', () => {
 // we own. These tests stand in for Telegram with a keypair of their own and
 // exercise the real auth path end to end.
 describe('board auth accepts a slip signed for any bot we own', () => {
-  const { publicKey: TG_PUB, privateKey: TG_PRIV } = generateKeyPairSync('ed25519');
-  const TG_PUB_HEX = TG_PUB.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex');
+  // Uses the FILE-WIDE keypair and signedSlip(): only one Telegram public key
+  // can be configured at a time, and since the HMAC fallback was removed every
+  // test in this file already mints signed slips.
   const SEAT_BOT = '7300000042'; // the manager's own assistant bot
   const STRANGER_BOT = '8900000077'; // a bot nobody here owns
 
-  // Telegram's third-party scheme: bot id, the constant, a line feed, then the
-  // sorted fields — and no HMAC at all.
-  function signedSlip(userId: number, botId: string): string {
-    const params = new URLSearchParams({
-      auth_date: String(Math.floor(Date.now() / 1000)),
-      query_id: 'AAsigned',
-      user: JSON.stringify({ id: userId, first_name: 'Probe' }),
-    });
-    const data = [...params.entries()]
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([k, v]) => `${k}=${v}`)
-      .join('\n');
-    params.set(
-      'signature',
-      signEd(null, Buffer.from(`${botId}:WebAppData\n${data}`, 'utf8'), TG_PRIV).toString(
-        'base64url',
-      ),
-    );
-    return params.toString();
-  }
   const tmaSigned = (userId: number, botId: string): Record<string, string> => ({
     Authorization: `tma ${signedSlip(userId, botId)}`,
   });
 
   beforeAll(async () => {
-    setPublicKeyForTests(TG_PUB_HEX);
     // A seat on this tenant whose bot is SEAT_BOT — the allowlist reads exactly
     // these rows, so this is what makes that bot a door rather than a stranger.
     const host = await createHost(`merge-host-${Date.now()}`, `hash-${Date.now()}`);
@@ -2156,8 +2169,7 @@ describe('board auth accepts a slip signed for any bot we own', () => {
   });
 
   afterAll(() => {
-    setPublicKeyForTests(null);
-    botIds.clear();
+    botIds.clear(); // the public key belongs to the file, not this block
   });
 
   test("a manager's slip from their own assistant bot is accepted", async () => {
@@ -2181,9 +2193,16 @@ describe('board auth accepts a slip signed for any bot we own', () => {
     expect(resp.status).toBe(200);
   });
 
-  test('the old HMAC slip keeps working while the changeover runs', async () => {
-    const resp = await day(`?from=${DAY_A}&to=${DAY_A}`, tma(900000001));
-    expect(resp.status).toBe(200);
+  // The changeover is OVER (2026-09-17). An HMAC-only slip — no `signature`
+  // field, so either a pre-Bot-API-7.10 client or a forgery carrying a stolen
+  // board-bot hash — is refused outright now the fallback is gone. This is the
+  // one test that would still pass if the fallback came back, which makes it
+  // the regression guard for its removal.
+  test('an HMAC-only slip is REFUSED now that the fallback is gone', async () => {
+    const resp = await day(`?from=${DAY_A}&to=${DAY_A}`, {
+      Authorization: `tma ${signSlip(900000001)}`,
+    });
+    expect(resp.status).toBe(401);
   });
 
   test('a signature is never authorisation: an unknown account is still refused', async () => {

@@ -5,7 +5,7 @@ import type { OpsOutcome } from '../db/opsEvents.js';
 
 // Unit test for the ops alert. Every case drives the injected sender, so nothing
 // here can reach Telegram — see the deps seam in opsNotify.ts for why that
-// matters (`.env` carries a real BOARD_BOT_TOKEN).
+// matters (`.env` carries a real bot token).
 //
 // Both env vars are set EXPLICITLY rather than inherited from .env: the skip
 // branches are the behaviour under test, and a test that passes only because the
@@ -14,24 +14,32 @@ import type { OpsOutcome } from '../db/opsEvents.js';
 const OPENED: OpsOutcome = { action: 'opened', incidentId: 'inc-1' };
 const CLOSED = (openMs: number): OpsOutcome => ({ action: 'closed', incidentId: 'inc-1', openMs });
 
-// Typed to sendBoardMessage's signature so the deps seam is checked, not just
+// Typed to sendOpsMessage's signature so the deps seam is checked, not just
 // satisfied — an untyped vi.fn() would accept a wrong-shaped sender silently.
 type Sender = (chatId: string, text: string) => Promise<void>;
 
 describe('notifyOpsTransition', () => {
   let send: ReturnType<typeof vi.fn<Sender>>;
-  const saved = { chat: process.env.OPS_ALERT_CHAT_ID, token: process.env.BOARD_BOT_TOKEN };
+  const saved = {
+    chat: process.env.OPS_ALERT_CHAT_ID,
+    ops: process.env.OPS_BOT_TOKEN,
+    board: process.env.BOARD_BOT_TOKEN,
+  };
 
   beforeEach(() => {
     send = vi.fn<Sender>(async () => {});
     process.env.OPS_ALERT_CHAT_ID = '5801703167';
-    process.env.BOARD_BOT_TOKEN = 'test-token';
+    process.env.OPS_BOT_TOKEN = 'test-ops-token';
+    // Explicitly ABSENT: the point of the ops bot is that it no longer needs
+    // this. The fallback gets its own test below.
+    delete process.env.BOARD_BOT_TOKEN;
   });
 
   afterEach(() => {
     for (const [k, v] of Object.entries({
       OPS_ALERT_CHAT_ID: saved.chat,
-      BOARD_BOT_TOKEN: saved.token,
+      OPS_BOT_TOKEN: saved.ops,
+      BOARD_BOT_TOKEN: saved.board,
     })) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
@@ -108,12 +116,31 @@ describe('notifyOpsTransition', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  test('no BOARD_BOT_TOKEN → skips cleanly, no throw', async () => {
+  test('NEITHER token set → skips cleanly, no throw', async () => {
+    delete process.env.OPS_BOT_TOKEN;
     delete process.env.BOARD_BOT_TOKEN;
     await expect(
       notifyOpsTransition(OPENED, 'inference-medic', 'box', undefined, { send }),
     ).resolves.toBeUndefined();
     expect(send).not.toHaveBeenCalled();
+  });
+
+  // The transition state: the ops bot does not exist yet in this deploy, so
+  // alerting must NOT go dark just because the new env var is unset. Deleting
+  // this test is part of retiring the board bot.
+  test('no OPS_BOT_TOKEN but BOARD_BOT_TOKEN set → still alerts (fallback)', async () => {
+    delete process.env.OPS_BOT_TOKEN;
+    process.env.BOARD_BOT_TOKEN = 'legacy-board-token';
+    await notifyOpsTransition(OPENED, 'inference-medic', 'box', undefined, { send });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  // The whole point: once OPS_BOT_TOKEN exists, the board bot is irrelevant to
+  // this path, so retiring it is a config change rather than a deploy.
+  test('OPS_BOT_TOKEN alone is enough — no BOARD_BOT_TOKEN needed', async () => {
+    expect(process.env.BOARD_BOT_TOKEN).toBeUndefined();
+    await notifyOpsTransition(OPENED, 'inference-medic', 'box', undefined, { send });
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   // It propagates; the HTTP handler is what swallows. Keeping the throw here

@@ -39,6 +39,12 @@ NEMOCLAW_HOME="/home/${NEMOCLAW_USER}"
 MCP_UPSTREAM_URL="${MCP_UPSTREAM_URL:-https://tradesdatabase.onrender.com/}"
 PULL_URL="${PULL_URL:-https://tradesdatabase.onrender.com/control/badges}"
 DOORMAN_PORT=3001
+# The port every seat's OpenClaw gateway actually listens on, INSIDE its nested
+# network namespace. `openclaw.json` `gateway.port` has drifted off this value
+# fleet-wide (18790/18793 seen), which is issue 3 of the 2026-07-31 device-scope
+# research doc: the documented local pairing fallback dials this value, so a
+# drifted seat cannot self-repair. verify asserts it.
+GATEWAY_PORT=18789
 # The sandbox image ships OpenClaw 2026.5.27, whose outbound hooks cannot see
 # streamed Telegram replies — the weekday guard is DEAF on it (root-caused and
 # fixed 2026-08-12; engineering-memory.md §3). Every sandbox must run the pin
@@ -1751,6 +1757,42 @@ phase_verify() {
     fi
   done
   [ "$seen" -eq 0 ] && echo "    ! no sandbox containers running to check"
+
+  # Gateway DEVICE SCOPE — the failure that hid for six weeks.
+  # A sandbox whose paired device holds only `operator.pairing` authenticates
+  # fine and then fails EVERY gateway-backed call: `cron`, `nodes`, `wake`, and
+  # `openclaw message send`, which is how one-bot phase 2 delivers schedule
+  # pushes and call alerts. Nothing on the box logs it. The only symptom is
+  # `person_pushes` rows creeping to attempts=3 in the spine, which nobody is
+  # watching. s7 sat like this from creation until 2026-09-16.
+  #
+  # Reads the state files instead of making a gateway call: no netns gymnastics,
+  # no ~4s per seat, and it names the condition directly. A cold sandbox CANNOT
+  # be repaired with `devices approve` (the repair mints a new request that
+  # supersedes the one being approved) — the fix is to seed the scopes by hand.
+  # Derivation + procedure: thoughts/shared/research/2026-07-31-nemoclaw-device-scope-deadlock.md
+  log "sandbox gateway device scope + port (silent send-failure hazard)"
+  local scopes np gp
+  for c in $(docker ps -q --filter "name=openshell-"); do
+    nm=$(docker inspect -f '{{.Name}}' "$c" 2>/dev/null | sed 's#^/##')
+    scopes=$(docker exec -u sandbox "$c" cat /sandbox/.openclaw/devices/paired.json 2>/dev/null       | jq -r '[.[].approvedScopes // [] | .[]] | unique | join(",")' 2>/dev/null || echo '')
+    if [ -z "$scopes" ]; then
+      echo "    ✗ ${nm}: NO paired device — every gateway tool and 'openclaw message send' fails, silently"; warn=$((warn+1))
+    elif printf '%s' "$scopes" | grep -qE '(^|,)operator\.(admin|write)(,|$)'; then
+      ok "${nm}: device scope ok (${scopes})"; pass=$((pass+1))
+    else
+      echo "    ✗ ${nm}: device holds only [${scopes}] — 'message send' needs operator.write; pushes will freeze at attempts=3"; warn=$((warn+1))
+    fi
+    # A stale pending request is inert but makes `doctor` report [fail] forever.
+    np=$(docker exec -u sandbox "$c" cat /sandbox/.openclaw/devices/pending.json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
+    [ "${np:-0}" -gt 0 ] && echo "    ! ${nm}: ${np} stale pending pairing request(s) — clear devices/pending.json to {}"
+    # Port drift. Sends survive it (`nemoclaw exec` sets OPENCLAW_GATEWAY_URL to
+    # the bridge address), which is exactly why it goes unnoticed — but `doctor`
+    # cannot read the device list and `dashboard-url` hands out a dead URL.
+    gp=$(docker exec -u sandbox "$c" cat /sandbox/.openclaw/openclaw.json 2>/dev/null | jq -r '.gateway.port // "unset"' 2>/dev/null || echo unreadable)
+    if [ "$gp" = "$GATEWAY_PORT" ]; then ok "${nm}: gateway.port=${gp}"; pass=$((pass+1))
+    else echo "    ✗ ${nm}: gateway.port=${gp}, gateway listens on ${GATEWAY_PORT} — doctor is blind here and dashboard-url is dead"; warn=$((warn+1)); fi
+  done
 
   # Credential freshness: attached-provider credentials are injected into the
   # openclaw process env at PROCESS LAUNCH only (verified 2026-07-11; the egress

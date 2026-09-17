@@ -1,5 +1,5 @@
 import type { OpsOutcome } from '../db/opsEvents.js';
-import { opsBotToken, sendOpsMessage } from './opsBot.js';
+import { findRosterByTelegramUserIdGlobal, queuePersonPush } from '../db/index.js';
 
 // The missing half of the ops pipeline: somebody has to be TOLD.
 //
@@ -24,22 +24,45 @@ import { opsBotToken, sendOpsMessage } from './opsBot.js';
 // need a `notified_at` column, a migration, and would add up to 5 minutes of
 // latency to an alert whose entire value is speed.
 //
+// WHY IT QUEUES INSTEAD OF SENDING (2026-09-17). This used to call the Bot API
+// directly with BOARD_BOT_TOKEN, which was the last job keeping the board bot
+// alive after the one-bot merge. The goal is ONE bot per person — not a bot per
+// purpose — so an "ops bot" would have missed the point as squarely as the board
+// bot did. The alert now goes onto the same queue as every other person-facing
+// message and is delivered by the box through the operator's own assistant.
+//
+// WHAT THAT GIVES UP, STATED PLAINLY. Delivery now travels box → seat gateway →
+// seat bot, which are among the things an ops alert reports on. An alert about a
+// dead box cannot be delivered BY that box. No Telegram transport could fix
+// that — a bot on Render only moves the blind spot — so the box's own death is
+// covered by inverted monitoring instead: a healthchecks.io dead-man switch that
+// fires when pings STOP (deploy/n8n/README.md). Alerts about anything else — a
+// provider outage, a badge failure — arrive on the operator's phone in ~15s.
+//
 // NEVER let this break what it watches. The caller sends its 200 BEFORE calling
 // this and swallows anything thrown — same doctrine as ops-report.sh, which
 // always exits 0. A monitoring path that can fail its subject is worse than no
 // monitoring at all.
 
 export interface OpsNotifyDeps {
-  // Injected by tests. The HTTP suite drives a real server over a real socket,
-  // so there is no other seam — and `.env` carries a REAL bot token, which
-  // would otherwise make `npm test` fire live Telegram messages at the operator.
-  send?: typeof sendOpsMessage;
+  // Injected by tests, which must never reach a real database.
+  queue?: typeof queuePersonPush;
+  findRoster?: typeof findRosterByTelegramUserIdGlobal;
 }
 
-// Where the alert goes. Deliberately NOT a tenant lookup: an ops incident is
-// host-scoped infrastructure news for whoever runs the box, not something a
-// customer's manager can act on. One operator chat id, set in the environment.
-const chatId = (): string | undefined => process.env.OPS_ALERT_CHAT_ID?.trim() || undefined;
+// WHO gets told, as Telegram USER ids — deliberately not the old
+// OPS_ALERT_CHAT_ID, which held a GROUP id (negative). A group has no roster row
+// and cannot be addressed on a queue whose addressee is a technician, so several
+// operators are named here instead and each gets the alert on their own
+// assistant. Still not a tenant lookup: an ops incident is host-scoped
+// infrastructure news for whoever runs the box, not something a customer's
+// manager can act on.
+function operatorIds(): string[] {
+  return (process.env.OPS_ALERT_TELEGRAM_IDS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 // Sub-minute recoveries are real (the medic's own retry absorbs one slow probe),
 // and "recovered after 0 min" reads like a bug. Say what actually happened.
@@ -64,19 +87,18 @@ function openedText(service: string, host: string, detail?: Record<string, unkno
 }
 
 /**
- * Push one ops-incident transition to the operator.
+ * Queue one ops-incident transition for each configured operator.
  *
  * Silent by design in three cases, none of them an error:
  *   - `suppressed` / `noop` — not a transition. This is the anti-spam invariant:
  *     an outage notifies once, not once per 5-minute tick.
- *   - no `OPS_ALERT_CHAT_ID` — alerting is not configured here.
- *   - no ops bot token — nothing to send with. Checked rather than left to
- *     throw inside sendOpsMessage, so an unconfigured deploy skips cleanly
- *     instead of logging an exception every tick. `opsBotToken()` resolves
- *     OPS_BOT_TOKEN first and falls back to BOARD_BOT_TOKEN until the board bot
- *     is retired, so this stays silent only when NEITHER is set.
+ *   - no `OPS_ALERT_TELEGRAM_IDS` — alerting is not configured here.
+ *   - an id that matches no live roster row, or matches several (the ambiguous
+ *     case `findRosterByTelegramUserIdGlobal` refuses rather than guessing —
+ *     two people really do share a Telegram id on this pilot). Logged, skipped,
+ *     and never allowed to suppress the other operators' alerts.
  *
- * Throws only if the send itself fails; the caller is responsible for swallowing.
+ * Throws only if a queue write fails; the caller is responsible for swallowing.
  */
 export async function notifyOpsTransition(
   outcome: OpsOutcome,
@@ -86,11 +108,32 @@ export async function notifyOpsTransition(
   deps: OpsNotifyDeps = {},
 ): Promise<void> {
   if (outcome.action !== 'opened' && outcome.action !== 'closed') return;
-  const to = chatId();
-  if (!to || !opsBotToken()) return;
-  const text =
+  const ids = operatorIds();
+  if (ids.length === 0) return;
+  const find = deps.findRoster ?? findRosterByTelegramUserIdGlobal;
+  const queue = deps.queue ?? queuePersonPush;
+  const body =
     outcome.action === 'opened'
       ? openedText(service, host, detail)
       : `✅ ${service} recovered after ${elapsed(outcome.openMs)}.`;
-  await (deps.send ?? sendOpsMessage)(to, text);
+
+  for (const id of ids) {
+    const match = await find(id);
+    if (!match) {
+      console.error(`[opsNotify] telegram id ${id} matches no live roster row — alert not queued`);
+      continue;
+    }
+    if ('ambiguous' in match) {
+      console.error(
+        `[opsNotify] telegram id ${id} is live in ${match.tenantIds.length} tenants — refusing to guess; alert not queued`,
+      );
+      continue;
+    }
+    await queue({
+      tenantId: match.technician.tenant_id,
+      technicianId: match.technician.id,
+      kind: 'ops',
+      body,
+    });
+  }
 }

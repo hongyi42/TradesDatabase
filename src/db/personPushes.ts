@@ -7,7 +7,7 @@ import type { Technician } from './technicians.js';
 // import LEAF: nothing here reaches up into src/telegram/ or src/control/.
 
 export type PersonPush = Database['public']['Tables']['person_pushes']['Row'];
-export type PersonPushKind = 'schedule' | 'call';
+export type PersonPushKind = 'schedule' | 'call' | 'ops';
 export type PersonPushStatus = 'queued' | 'delivered' | 'failed';
 
 // The DB CHECK's twin, applied by the writer too: an over-long body is CUT,

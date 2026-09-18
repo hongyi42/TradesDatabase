@@ -108,11 +108,28 @@ export const EXTRACTION_SYSTEM =
   'Put durable long-tail facts (gate codes, pets, access notes, spotted ' +
   'replacement opportunities) in `attributes`. Set `statusSignal` only if the text ' +
   'clearly indicates the job is finished (completed) or actively underway (in_progress). ' +
+  // Measured 2026-09-17 (scripts/extract-eval, corpus v3): the model returned `in_progress`
+  // for the firm agreeing a date — and `open` → `in_progress` is a permitted transition, so
+  // that flips a job to work-underway before anybody has been out. The other direction too:
+  // a casual "your engineer finished the repair" produced no signal in 3 runs of 10.
+  'ARRANGING A VISIT IS NOT WORK UNDERWAY: a date agreed, a slot accepted or a technician ' +
+  'promised sets NO statusSignal at all — `in_progress` means somebody has actually started ' +
+  'the work. And a customer reporting the work done IS `completed`, however casually they ' +
+  'say it. ' +
   'Set `visitCommitted` true ONLY when the BUSINESS agreed to send someone out — ' +
   'never because the caller asked, requested a quote, or it is undecided. ' +
   'Set `touchesOperations` false ONLY when the message carries nothing about the firm\'s ' +
-  'operating record — no job, visit, schedule change, parts or money — such as a thank-you, ' +
-  'an acknowledgement, an auto-reply, or a wrong number. When in any doubt, leave it true. ' +
+  'operating record — no job, visit, schedule change, parts or money — such as a bare ' +
+  'thank-you, an auto-reply, or a wrong number. ' +
+  // "an acknowledgement" used to head that list and was matching on FORM: measured
+  // 2026-09-17, "Thursday works." came back `touchesOperations: false` in 9 runs of 10 and
+  // "just to let you know your engineer finished the repair" in 5 of 10. Both are
+  // acknowledgements in shape and a schedule or a job state in content. A false here is
+  // what stops anybody being asked about the message at all.
+  'LENGTH AND TONE ARE NOT THE TEST. A short, polite or acknowledging message that names a ' +
+  'day, accepts or declines a time, or reports work started or finished DOES touch the ' +
+  'record — "Thursday works", "that suits, see you then", "all done now, thanks" are each ' +
+  'true. When in any doubt, leave it true. ' +
   'You may be shown EARLIER MESSAGES from the same conversation. Take ONLY identity details out ' +
   'of them, and ONLY the CUSTOMER\'s: a name, a phone number, an address, an email that belongs ' +
   'to the person writing in. NEVER take them from your own firm\'s replies or from a signature ' +

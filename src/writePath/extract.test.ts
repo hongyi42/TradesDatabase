@@ -128,6 +128,20 @@ describe('the extraction system prompt (rung 10b)', () => {
     expect(EXTRACTION_SYSTEM).toContain('signature block');
     expect(EXTRACTION_SYSTEM).toContain('IS a commitment');
   });
+
+  // PHASE 5, STEP 1. Both sentences were written against a measurement, not a
+  // hunch (scripts/extract-eval, corpus v3, 2026-09-17): "an acknowledgement"
+  // in the touchesOperations exemption was matching short operational replies
+  // by FORM — "Thursday works." skipped in 9 runs of 10 — and the firm
+  // agreeing a date was coming back `in_progress`, which `open` accepts as a
+  // transition and so flips a job to work-underway before anybody has been out.
+  // Pinned because a later tidy-up of this prompt would silently restore both.
+  test('a short operational reply is not chit-chat, and arranging a visit is not work underway', () => {
+    expect(EXTRACTION_SYSTEM).toContain('LENGTH AND TONE ARE NOT THE TEST');
+    expect(EXTRACTION_SYSTEM).toContain('ARRANGING A VISIT IS NOT WORK UNDERWAY');
+    // The word that was doing the damage is gone from the exemption list.
+    expect(EXTRACTION_SYSTEM).not.toContain('an acknowledgement, an auto-reply');
+  });
 });
 
 describe('renderExtractionUser (rung 10b.3)', () => {

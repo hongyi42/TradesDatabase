@@ -121,13 +121,12 @@ without Phase 4 the rulings hold for the message the model read and fail on the 
   "the chooser task's `basis` + `reason` migration" as the template for its own per-capture tag
   provenance. It adds fields to the same `EXTRACTION_TOOL` on every capture, where this adds them on
   one branch. Getting the shape right here is load-bearing for it.
-- **`listLinkedCapturesForCustomer` is now orphaned** (rebase, parked). The reader this arc insisted
-  on in #235 has no production caller any more: the retrieval layer moved the customer read into the
-  `customer_contents` RPC (`src/db/context.ts:501`), and the `customer_link` arm of
-  `capture_membership` does that work in SQL. The BEHAVIOUR survived — the test was renamed to
-  `getCustomerContents` and still passes — but the TypeScript accessor is dead code. NOT parked and
-  NOT fixed here: it is a public export, so deleting it is the operator's call, and it is raised in
-  the report for this rebase rather than put on the board.
+- **`listLinkedCapturesForCustomer` is DELETED** (user, 2026-09-17). The reader this arc insisted on
+  in #235 lost its last production caller when the retrieval layer moved the customer read into the
+  `customer_contents` RPC (`src/db/context.ts:501`) and the `customer_link` arm of
+  `capture_membership` took over in SQL. Its own comment claimed it "stays for the retraction walk",
+  which was untrue — that walk keys on the capture (`listCustomerCapturesForCapture`), not the
+  customer. Its two test reads now go straight to SQL, so both assertions survive the deletion.
 - **Both 2026-09-14 parks have LANDED** (rebase): the job-order tiebreak is on main (`jobs.ts:151`,
   `bf9d5ea`) and the retracted-link exposure was resolved by the views fold. Neither is on the board.
   **Accepted:** `matchIdentity` runs twice on the automatic path — a few indexed reads.

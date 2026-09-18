@@ -252,29 +252,6 @@ export async function listCustomerCapturesForCapture(
   return data ?? [];
 }
 
-// The captures linked to this customer. Ids only. The customer read itself
-// goes through the database's capture_membership view now (migration
-// 20260916120000); this reader stays for the retraction walk and tests.
-//
-// `tenant_id` RIDES ALONG so the caller can re-check it. This is keyed on the
-// CUSTOMER, but the link's tenant is a separate column on a separate row, and
-// nothing in the schema forces the two to agree — so a link row belonging to
-// another firm would otherwise hand this customer's context another firm's
-// verbatim capture text, and `getRawCapture` is fleet-wide by id. The
-// v_job_captures migration states the rule this follows: every TypeScript
-// reader re-checks. Not reachable today, which is exactly why it is asserted
-// rather than assumed (the retraction walk's own guard, server.ts).
-export async function listLinkedCapturesForCustomer(
-  customerId: string,
-): Promise<{ capture_id: string; tenant_id: string }[]> {
-  const { data, error } = await getClient()
-    .from('customer_captures')
-    .select('capture_id, tenant_id')
-    .eq('customer_id', customerId);
-  if (error) throw new Error(`listLinkedCapturesForCustomer failed: ${error.message}`);
-  return data ?? [];
-}
-
 // Loose search across name/phone/address for the agent's find_customer tool.
 // Commas/parens are stripped because they're PostgREST `.or()` syntax characters.
 // A query that LOOKS LIKE a phone number (only digits and + - . ( ) spaces, 4+

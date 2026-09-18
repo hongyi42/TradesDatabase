@@ -34,6 +34,21 @@
 //         prints the numeric id — which is public (it is the half of the
 //         signature scheme the verifier needs) and therefore safe in argv.
 //         This records it. No token, so no menu button is set here.
+//   scripts/assign-host.mjs bind-telegram ref=<ref> telegramUserId=<numeric> [tenant=<uuid>]
+//       → records WHICH TELEGRAM ACCOUNT is this person, which is the one thing
+//         that decides whether they ever hear about a schedule change: the push
+//         leg serves a row only when the addressee is active AND has a sandbox
+//         AND has this id, and a miss is skipped SILENTLY. Somebody can own a
+//         seat, a working bot and a Schedule button and still never receive a
+//         message, with nothing logged anywhere.
+//         Managers normally do this through the bind_telegram MCP tool, which
+//         also auto-claims a cold sandbox. This is the OPERATOR half, for a row
+//         that already has its seat and whose person is not going to ask their
+//         manager -- e.g. a binding that was simply never done. Same guards,
+//         minus the auto-claim: a seatless row is refused here, not filled.
+//         The id is the person's Telegram user id -- from @userinfobot, or off
+//         any message they have already sent their bot (every incoming update
+//         carries `from.id`).
 //   scripts/assign-host.mjs set-badge ref=<ref> hash=<sha256-of-badge> [tenant=<uuid>]
 //       → registers a HAND-MINTED badge's fingerprint so the pull loop ships
 //         it instead of erasing it and minting a competitor (do this for any
@@ -48,8 +63,10 @@ import { randomBytes } from 'node:crypto';
 import {
   claimSandbox,
   createHost,
+  findTechnicianByTelegramUserId,
   getHostByName,
   getTechnician,
+  isInactiveState,
   listPoolRows,
   registerSandbox,
   setSandboxBotId,
@@ -75,6 +92,7 @@ const KNOWN_KEYS = {
   'add-sandbox': ['host', 'sandbox', 'bot', 'tenant', 'tech'],
   'wire-bot': ['host', 'sandbox', 'tenant', 'url'],
   'set-bot-id': ['host', 'sandbox', 'id', 'handle', 'tenant'],
+  'bind-telegram': ['ref', 'telegramUserId', 'tenant'],
   'set-badge': ['ref', 'hash', 'tenant'],
   'rotate-badge': ['ref', 'tenant'],
 };
@@ -83,6 +101,7 @@ if (!command || !(command in KNOWN_KEYS)) {
     `Usage: assign-host.mjs create-host name=<n> | assign ref=<r> host=<h> sandbox=<s> ` +
       `| add-sandbox host=<h> sandbox=<s> | wire-bot host=<h> sandbox=<s> ` +
       `| set-bot-id host=<h> sandbox=<s> id=<numeric> ` +
+      `| bind-telegram ref=<r> telegramUserId=<numeric> ` +
       `| set-badge ref=<r> hash=<sha256> ` +
       `| rotate-badge ref=<r>   (each: [tenant=<uuid>])`,
   );
@@ -405,6 +424,57 @@ if (command === 'create-host') {
     console.log(
       `Assigned ${updated.ref} → host ${host.name}, sandbox ${updated.sandbox_ref}. ` +
         `Badge will mint on the host's next pull.`,
+    );
+  } else if (command === 'bind-telegram') {
+    // Text, digits only, <=20 -- Telegram ids are ints, stored as text for
+    // JS number-precision safety, and only ever compared.
+    if (!/^[0-9]{1,20}$/.test(args.telegramUserId ?? '')) {
+      console.error(
+        'bind-telegram requires telegramUserId=<numeric telegram user id> -- digits only.',
+      );
+      process.exit(1);
+    }
+    // Schedule-only fence FIRST, and before the state check, for the same
+    // reason bind_telegram does it: exemption is permanent, so "reactivate
+    // first" would steer the operator into a pointless reactivation that ends
+    // at this same refusal.
+    if (tech.seat_exempt) {
+      console.error(
+        `'${args.ref}' is schedule-only (no seat) -- they cannot have an assistant or Telegram access.`,
+      );
+      process.exit(1);
+    }
+    if (isInactiveState(tech.state)) {
+      console.error(`'${args.ref}' is deactivated -- reactivate the seat first.`);
+      process.exit(1);
+    }
+    // No auto-claim here (see the usage note): an operator binding a seatless
+    // row is far more likely to be a typo'd ref than a deliberate allocation,
+    // and the manager tool exists for the real allocation path.
+    if (!tech.sandbox_ref) {
+      console.error(
+        `'${args.ref}' has no sandbox. Give them one first (assign ref=... host=... sandbox=...), ` +
+          'or let their manager run bind_telegram, which claims a cold one automatically.',
+      );
+      process.exit(1);
+    }
+    // Reject an id already answering SOMEONE ELSE's sandbox; a self-hit is a
+    // harmless re-bind. No DB uniqueness exists on this column -- this is the
+    // guard (same residual race as the manager tool).
+    const holder = await findTechnicianByTelegramUserId(tenantId, args.telegramUserId);
+    if (holder && holder.ref !== args.ref) {
+      console.error(
+        `Telegram id ${args.telegramUserId} is already bound to '${holder.ref}' -- ` +
+          'check the id, or unbind them first.',
+      );
+      process.exit(1);
+    }
+    const had = tech.telegram_user_id;
+    await updateTechnician(tech.id, { telegram_user_id: args.telegramUserId });
+    console.log(
+      `${had ? 'Rebound' : 'Bound'} ${args.ref} -> telegram ${args.telegramUserId} ` +
+        `(sandbox ${tech.sandbox_ref})${had ? `, was ${had}` : ''}. ` +
+        'Applies to the box within ~5 minutes.',
     );
   } else if (command === 'set-badge') {
     if (!/^[0-9a-f]{64}$/i.test(args.hash ?? '')) {

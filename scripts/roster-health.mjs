@@ -31,6 +31,16 @@ if (error) throw new Error(`roster read failed: ${error.message}`);
 const { data: tenants } = await db.from('tenants').select('id,name');
 const tname = Object.fromEntries((tenants ?? []).map((t) => [t.id, t.name]));
 
+// Telegram accounts KNOWN to sit on several rows on purpose. A developer
+// driving a fleet of test bots from one phone is the normal shape of this
+// pilot, not a defect -- flagging it every run trains the reader to skip the
+// section. Confirmed 2026-09-18: 5801703167 is a teammate's account behind the
+// bots they stood up for feature work.
+// Printed even when expected, because it still costs something:
+// findRosterByTelegramUserIdGlobal REFUSES an ambiguous id rather than guess,
+// so an ops alert can never be addressed to one of these.
+const EXPECTED_SHARED_TG = new Set(['5801703167']);
+
 const live = (techs ?? []).filter(isLive);
 const problems = [];
 const say = (s) => console.log(s);
@@ -55,23 +65,47 @@ for (const [tg, rows] of byTg) {
   if (rows.length < 2) continue;
   shared++;
   const who = rows.map((r) => `${r.ref}/${r.sandbox_ref ?? 'no-seat'}`).join(', ');
-  say(`  ${tg}: ${who}`);
-  // Worth knowing: ops alerts CANNOT be addressed to such an id at all --
-  // findRosterByTelegramUserIdGlobal refuses ambiguity rather than guessing.
-  problems.push(`telegram id ${tg} is live on ${rows.length} rows (${who})`);
+  const expected = EXPECTED_SHARED_TG.has(tg);
+  say(`  ${tg}: ${who}${expected ? '   [expected: one developer\'s test bots]' : ''}`);
+  if (!expected) {
+    problems.push(`telegram id ${tg} is live on ${rows.length} rows (${who})`);
+  }
 }
 if (!shared) say('  none');
 
-say('\n=== a real sandbox claimed by a non-pilot tenant');
-say('    (an eval/test fixture holding a seat a real hire cannot be given)');
-const suspect = live.filter(
-  (t) => t.sandbox_ref && /eval|test/i.test(tname[t.tenant_id] ?? ''),
-);
-for (const t of suspect) {
-  say(`  ${t.sandbox_ref.padEnd(4)} ${t.ref} — tenant ${tname[t.tenant_id]}`);
-  problems.push(`${t.sandbox_ref} is claimed by tenant ${tname[t.tenant_id]}`);
+say('\n=== sandboxes the roster and the pool disagree about');
+say('    (bind_telegram hands out whatever the POOL calls free, so a roster row');
+say('     still pointing at it means two people can end up on one bot)');
+// This replaced a heuristic that flagged any seat whose TENANT NAME matched
+// /eval|test/. That was nominal, not factual, and both its hits were wrong:
+// "Judy Testing" is a real person's own tenant (confirmed 2026-09-18 - her
+// Telegram account has 16 messages to @Hmanyt_bot), and the genuine defect on
+// s6 was never the tenant's name. sandbox_pool.technician_id is the only
+// authority on whether a sandbox is free, so compare against THAT.
+const { data: pool, error: poolErr } = await db
+  .from('sandbox_pool')
+  .select('sandbox_ref,technician_id,retired_at,tenant_id,bot_username');
+if (poolErr) throw new Error(`pool read failed: ${poolErr.message}`);
+const poolBy = new Map((pool ?? []).map((p) => [p.sandbox_ref, p]));
+let split = 0;
+for (const t of live.filter((x) => x.sandbox_ref)) {
+  const p = poolBy.get(t.sandbox_ref);
+  if (!p) {
+    split++;
+    say(`  ${t.sandbox_ref.padEnd(4)} ${t.ref} holds a sandbox with NO pool row`);
+    problems.push(`${t.sandbox_ref}: roster occupant ${t.ref} but no sandbox_pool row`);
+    continue;
+  }
+  if (p.technician_id === t.id) continue; // roster and pool agree
+  split++;
+  const what =
+    p.technician_id === null
+      ? `pool says FREE (bot ${p.bot_username ?? '?'} goes to the next hire)`
+      : `pool says it belongs to technician ${p.technician_id.slice(0, 8)}`;
+  say(`  ${t.sandbox_ref.padEnd(4)} roster: ${t.ref} (tenant ${tname[t.tenant_id]}) ${what}`);
+  problems.push(`${t.sandbox_ref}: roster occupant ${t.ref} disagrees with the pool - ${what}`);
 }
-if (!suspect.length) say('  none');
+if (!split) say('  none');
 
 say('\n=== push rows going stale in the queue');
 const { data: queued } = await db

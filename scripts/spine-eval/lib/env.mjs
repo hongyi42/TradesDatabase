@@ -112,11 +112,11 @@ export function requirePilotStack({ quiet = false } = {}) {
  *
  * Two jobs, and the second is easy to miss: the key drives the AGENT loop, but it
  * also has to be visible to the app under the names the app itself reads
- * (INFERENCE_API_KEY / _BASE_URL / _MODEL), because several TOOLS are
+ * (INFERENCE_API_KEY / _BASE_URL / _MODEL), because some TOOLS are
  * model-backed — record_field_note extracts structured fields through a forced
- * tool call, and brief_customer / answer_customer_question are synthesis calls.
- * Without the mapping those tools refuse with "INFERENCE_API_KEY is not set" and
- * a third of the surface is untestable.
+ * tool call (the two synthesis tools, brief_customer / answer_customer_question,
+ * were retired 2026-09-15). Without the mapping those tools refuse with
+ * "INFERENCE_API_KEY is not set" and part of the surface is untestable.
  *
  * Same provider, same key, so this is a rename rather than a substitution. Never
  * prints the key.

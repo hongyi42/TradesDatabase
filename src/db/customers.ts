@@ -1,5 +1,6 @@
 import type { Database, Json } from './database.types.js';
 import { getClient } from './client.js';
+import { phoneKey } from './phone.js';
 
 export type Customer = Database['public']['Tables']['customers']['Row'];
 
@@ -132,14 +133,19 @@ export async function listCustomersByIds(ids: string[]): Promise<Customer[]> {
   return data ?? [];
 }
 
-// Exact phone match within a tenant. Used by deterministic identity matching —
-// the caller decides what a unique (length === 1) result means.
+// Phone match within a tenant, on the NUMBER, not its spelling: "(206) 555-0170",
+// "206-555-0170" and "+12065550170" share one phone_key (the generated column,
+// 20260916130100). Used by deterministic identity matching — the caller decides
+// what a unique (length === 1) result means. Fewer than 7 digits is no number,
+// so it matches nobody rather than every short fragment.
 export async function findCustomersByPhone(tenantId: string, phone: string): Promise<Customer[]> {
+  const key = phoneKey(phone);
+  if (!key) return [];
   const { data, error } = await getClient()
     .from('customers')
     .select()
     .eq('tenant_id', tenantId)
-    .eq('phone', phone);
+    .eq('phone_key', key);
   if (error) throw new Error(`findCustomersByPhone failed: ${error.message}`);
   return data ?? [];
 }
@@ -246,10 +252,9 @@ export async function listCustomerCapturesForCapture(
   return data ?? [];
 }
 
-// The captures linked to this customer. Ids only: getCustomerContext already
-// owns the fetch-and-dedup of capture rows (it does the same for jobs' and
-// visits' source captures), so returning rows here would duplicate that and
-// re-fetch what it may already hold.
+// The captures linked to this customer. Ids only. The customer read itself
+// goes through the database's capture_membership view now (migration
+// 20260916120000); this reader stays for the retraction walk and tests.
 //
 // `tenant_id` RIDES ALONG so the caller can re-check it. This is keyed on the
 // CUSTOMER, but the link's tenant is a separate column on a separate row, and
@@ -272,13 +277,25 @@ export async function listLinkedCapturesForCustomer(
 
 // Loose search across name/phone/address for the agent's find_customer tool.
 // Commas/parens are stripped because they're PostgREST `.or()` syntax characters.
+// A query that LOOKS LIKE a phone number (only digits and + - . ( ) spaces, 4+
+// digits) also searches phone_key, so "206 555 0199" and "+1 206 555 0199" find
+// a number stored as "206-555-0199". Only then: "2065 Elm St" would otherwise
+// glue its digits into a phone search that returns every 206-5xx customer and,
+// under the 20-row cap, can bury the address it was actually after. The key
+// form strips a leading US 1; the fragment is digits only — no `.or()` syntax.
 export async function searchCustomers(tenantId: string, query: string): Promise<Customer[]> {
   const like = `%${query.trim().replace(/[,()]/g, ' ')}%`;
+  const digits = query.replace(/[^0-9]/g, '');
+  const looksLikePhone = /^[0-9\s+().-]+$/.test(query.trim()) && digits.length >= 4;
+  // A PARTIAL number typed with its +1 ("+1 206 555 01") is not 11 digits, so
+  // phoneKey keeps it whole and "120655501" is in no key; drop an explicit +1 first.
+  const fragment = /^\s*\+\s*1/.test(query) ? digits.slice(1) : (phoneKey(query) ?? digits);
+  const byKey = looksLikePhone ? `,phone_key.ilike.%${fragment}%` : '';
   const { data, error } = await getClient()
     .from('customers')
     .select()
     .eq('tenant_id', tenantId)
-    .or(`name.ilike.${like},phone.ilike.${like},address_line1.ilike.${like}`)
+    .or(`name.ilike.${like},phone.ilike.${like},address_line1.ilike.${like}${byKey}`)
     .limit(20);
   if (error) throw new Error(`searchCustomers failed: ${error.message}`);
   return data ?? [];

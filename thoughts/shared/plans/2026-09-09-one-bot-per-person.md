@@ -102,12 +102,76 @@ secrets.
       refused, board bot with no pool row, old HMAC slip still works, unknown account refused,
       retired seat stops being a door, token-pasted-as-id refused).
 
-## Phase 2 — notifications (not started)
-Move the pushes off the board bot. Render cannot send them after the merge (no tokens), so the host
-picks them up on the control channel it already polls for badges and sends through the person's own
-bot. Each notification carries an "Open" button landing on the relevant day. Needs: an outbound
-queue table, a host-side sender, and a visible shape that distinguishes "the system told me" from
-"the assistant answered me" in a chat that now carries both.
+## Phase 1b — the seat wires itself (implemented 2026-09-15)
+The manual `wire-bot` step does not survive contact with a fleet: it needs an operator holding each
+bot's token, once per bot, forever. Worse, it was not even reachable for the seats that already
+existed — provisioning read the token from whatever path the operator passed and kept nothing, so
+five of six seats had no recoverable token at all. An attempt to read one back from the running
+container found a 61-character version-scoped placeholder, exactly as `bootstrap-box.sh`'s own
+comments describe, and `getMe` rejected it.
+
+Three changes, all on the seam the box already polls:
+
+- **Provisioning keeps the token findable.** `/root/seats/<ref>.env`, `0600`, written at the end of
+  `phase_provision` with the handle and numeric id parsed from the `getMe` preflight it already ran.
+  The token has to be on that box to run the bridge; this only makes it findable by a root process.
+  Per-box, never central — a compromise costs one box's tenants rather than the fleet.
+- **The server states the button, the box applies it.** `menuButton` rides the badge pull (`text`
+  and `url`, or null when `BOARD_PUBLIC_URL` is unset — say nothing rather than point the fleet at a
+  guess). Only a bot's own token can set its button, so the server can only state intent. Sent every
+  pull, applied only when it differs from what the box last applied, so renaming the label or moving
+  the console reaches every bot on the next tick instead of one SSH session per seat.
+- **The box reports the ids.** `POST /control/seat-bots`, same host-token gate as every other control
+  route. It **never creates a pool row** — an auto-created row is COLD and `bind_telegram` hands cold
+  rows to the next hire, which would put two people on one agent. Unknown seats come back as
+  `skipped` so the operator can see where the rack and the box disagree. A handle that disagrees with
+  the row is refused per seat, the same cross-check `wire-bot` makes and for the same reason. Writes
+  only what differs, so a five-minute tick is not a write storm and a lost tick self-heals.
+
+`Box_Setup_Stuff/seat-sync.sh` is the box half. Run against the live (pre-deploy) server it correctly
+reported `HTTP 401 — the server has no /control/seat-bots route yet`: the pull authenticates with the
+same token, so a refusal there is diagnostic rather than mysterious. Note the symptom is 401 and not
+404 — an unknown path falls through to the MCP handler, which refuses it for having no gateway
+identity.
+
+Still manual after this, and unavoidably: creating the bot in BotFather, racking the seat
+(`add-sandbox`, deliberately), and BotFather's "Configure Mini App" for the top-of-chat Open App
+button, which has no API.
+
+## Phase 2 — notifications (implemented 2026-09-16)
+The last thing keeping `@DashboardMan_bot` alive: schedule pushes and inbound-call alerts were sent
+from Render with `BOARD_BOT_TOKEN`, the one bot token it holds. Wire every seat perfectly and those
+still stop the moment that bot dies.
+
+The transport already existed. `nudge-runner.sh` texts a person verbatim through their own seat bot
+with `openclaw message send` in-container — no token handling, and the weekday guard's
+`message_sending` hook still fires on that path. So phase 2 is a queue and a third leg, not a new
+transport.
+
+- **A table of its own, not `office_messages`.** Its chat leg does exactly this transport and reusing
+  it was the first instinct. But every row there is written by the planner or the office tool,
+  carries a roster ref as its sender, and is read back by the planner as its own outbound record. A
+  schedule push has no sender and is none of the planner's business; filing it there would
+  contaminate what the planner reasons about. `nudgeQueue`'s own comment — the runner "never asks
+  what table an id came from" — makes a separate table with its own leg the intended shape.
+  Migration `20260916100000`, `person_pushes`.
+- **The push leg inherits the whole delivery doctrine**: served on a host-token pull until the box
+  acks so a lost tick self-heals; `serve_count` and `attempts` as two freeze ledgers, where a row
+  past either cap is FROZEN rather than failed (an undeliverable message is an operator condition,
+  not a decision anybody made); liveness re-checked at serve time, so someone who went inactive
+  between queue and serve is SKIPPED, not failed. The ack routes by id across all three legs,
+  because the box posts `{id, outcome}` and never says which table it came from.
+- **The tick drops from five minutes to one.** Schedule pushes tolerate five; an inbound-call alert
+  does not, and those were instant before. Affordable here and nowhere else: this is ONE
+  authenticated pull that usually returns an empty list, where `seat-sync` does a Telegram `getMe`
+  per seat. Cheap poll, expensive poll, different cadences.
+- **Ops alerts stay where they are.** `opsNotify` goes to the operator, not a roster member, so it
+  has no seat bot to send through. It should end up on a dedicated ops bot rather than the board bot,
+  which is a smaller job than this one and not on its critical path.
+
+What the person sees changes in one way worth naming: their day changing and their assistant speaking
+now arrive in the same chat. That was the point of the merge, and it is also the first time the two
+voices share a window — watch whether they read as one thing or two.
 
 ## Phase 3 — cutover (not started)
 Wire every seat, configure each Main Mini App, watch for a week, then retire `@DashboardMan_bot` and
@@ -126,6 +190,38 @@ different sandbox. Every occupied seat needs that backfill before it can be wire
 **Retiring the board bot is gated on more than the doors.** `opsNotify` sends through
 `BOARD_BOT_TOKEN`, so deleting `@DashboardMan_bot` silences operator alerts as well as the Mini App
 button. Phase 2 has to land first, or the alerts move somewhere else first.
+
+**Where a seat's token lives, decided 2026-09-15.** Wiring an already-provisioned seat needs its
+token, and there was no way back to one: provisioning leaves the token in the openclaw credential
+store, the container's process env holds only a version-scoped placeholder (an attempt to read it
+from `/proc` got a 61-character non-token and a rejected `getMe`), and `/root` kept secrets files for
+two seats out of six. BotFather was the only route, once per bot, forever.
+
+**CORRECTION (2026-09-17): BotFather was never the only route.** The gateway has to hold each
+seat's token to poll Telegram for that bot, and it keeps them in its own object store --
+`~/.local/state/nemoclaw/openshell-docker-gateway/openshell.db`, table `objects`, `provider` rows
+named `<seat>-telegram-bridge`. The placeholder in the container's env is what the gateway resolves
+AT LAUNCH from that store; reading `/proc` was looking in the one place the secret is deliberately
+absent. All five unwired seats were seeded from the store on 2026-09-17, their bot ids recorded, and
+their menu buttons set -- with no BotFather step. The cost of the wrong belief was five days of
+"blocked on the owner fetching tokens" when nothing was blocked.
+
+So the tokens get an operator-only home: `ops_secrets.bot_tokens`, migration `20260915100000`. The
+control is **schema exposure, not RLS** — every application path is PostgREST with the service-role
+key, and service_role bypasses RLS by design, so a policy would protect nothing. PostgREST only
+routes to exposed schemas, so an unexposed one has no URL at all. Verified against the hosted project
+with the real service-role key and an explicit `Accept-Profile`: `PGRST106, Invalid schema`. Verified
+too that neither Render service carries a `DATABASE_URL`/`PG*` connection string or a secret file — a
+direct connection would ignore schema exposure entirely. RLS is enabled on the table as a second
+lock, for the day somebody adds the schema to the exposed list; it does not cover service_role.
+
+Two things to keep true: **Exposed schemas must stay `public, graphql_public`** (breaking it is
+silent), and **no `SECURITY DEFINER` function in `public` may read that table** — RPC is exposed, so
+such a function is a bridge across the line. The token sits in the clear in backups and PITR
+snapshots; at fleet scale that wants Supabase Vault rather than a `text` column.
+
+This is a lookup, not a delivery channel. The box still holds its own copy because it has to run the
+bots.
 
 **The menu button is not free.** `setChatMenuButton` with a `web_app` replaces that bot's commands
 menu — on an assistant people actually chat with, that costs the `/` list. The Main Mini App setting

@@ -2,10 +2,23 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from './client.js';
 import { createCustomer, getCustomer } from './customers.js';
-import { createJob, getJob, listJobsForCustomer, updateJobStatus } from './jobs.js';
+import {
+  createJob,
+  getJob,
+  listJobsForCustomer,
+  listOpenJobsForCustomer,
+  updateJobStatus,
+} from './jobs.js';
 import { createTenant } from './tenants.js';
-import { createVisit, insertVisitNote, listNoteTimesForJobs, listVisitsForJob } from './visits.js';
-import { appendRawCapture, listJobStampedCaptureTimes } from './rawCaptures.js';
+import {
+  createVisit,
+  insertVisitNote,
+  listUnscheduledOpenJobsWithCustomer,
+  listVisitsForCustomer,
+  listVisitsForJob,
+} from './visits.js';
+import { appendRawCapture } from './rawCaptures.js';
+import { listJobActivitySince } from './captureMembership.js';
 
 // Writes go through the app's own path (supabase-js / PostgREST). A direct pg
 // connection is used as an INDEPENDENT channel for cross-channel read-back
@@ -95,6 +108,70 @@ describe('context spine data-access layer', () => {
     });
   });
 
+  test('jobs tied on created_at come back in ONE stable order — id ascending', async () => {
+    // Two jobs minted in one transaction or one millisecond share created_at, and
+    // Postgres gives equal sort keys no order. recordFieldNote reads the list's
+    // TAIL as the newest job, so without a tiebreak the same note could land on a
+    // different job on its next delivery.
+    const customer = await createCustomer({ tenantId, name: 'Tie Cust' });
+    const jobs = await Promise.all(
+      [1, 2, 3, 4, 5].map((i) => createJob({ tenantId, customerId: customer.id, title: `tie ${i}` })),
+    );
+    const ids = jobs.map((j) => j.id);
+    // The independent channel forces the tie PostgREST cannot create on demand.
+    await pg.query('update jobs set created_at = $1 where id = any($2::uuid[])', [
+      '2026-09-01T12:00:00Z',
+      ids,
+    ]);
+    const expected = [...ids].sort(); // lowercase-hex order == Postgres uuid byte order
+    for (let i = 0; i < 3; i++) {
+      expect((await listJobsForCustomer(customer.id)).map((j) => j.id)).toEqual(expected);
+      expect((await listOpenJobsForCustomer(customer.id)).map((j) => j.id)).toEqual(expected);
+    }
+  });
+
+  test('the unscheduled work queue and a customer\'s past visits are stable on a created_at tie', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Tie Queue Cust' });
+    const jobs = await Promise.all(
+      [1, 2, 3, 4, 5].map((i) => createJob({ tenantId, customerId: customer.id, title: `queue ${i}` })),
+    );
+    const jobIds = jobs.map((j) => j.id);
+    await pg.query('update jobs set created_at = $1 where id = any($2::uuid[])', [
+      '2026-09-01T12:00:00Z',
+      jobIds,
+    ]);
+    // A job WITH a completed visit stays unscheduled (only proposed/confirmed
+    // visits take it off the queue), so these trips do not disturb the queue.
+    const visits = await Promise.all(
+      [1, 2, 3, 4, 5].map(() =>
+        createVisit({
+          tenantId,
+          jobId: jobs[0].id,
+          technicianId: null,
+          startsAt: null,
+          endsAt: null,
+          status: 'completed',
+          completedAt: '2026-08-16T13:00:00.000Z',
+        }),
+      ),
+    );
+    const visitIds = visits.map((v) => v.id);
+    await pg.query('update visits set created_at = $1 where id = any($2::uuid[])', [
+      '2026-09-01T12:00:00Z',
+      visitIds,
+    ]);
+
+    const queueOrder = [...jobIds].sort(); // oldest first, id ascending on a tie
+    const visitOrder = [...visitIds].sort().reverse(); // newest first, id descending on a tie
+    for (let i = 0; i < 3; i++) {
+      const queue = (await listUnscheduledOpenJobsWithCustomer(tenantId))
+        .map((r) => r.id)
+        .filter((id) => jobIds.includes(id));
+      expect(queue).toEqual(queueOrder);
+      expect((await listVisitsForCustomer(customer.id)).map((v) => v.id)).toEqual(visitOrder);
+    }
+  });
+
   test('job priority: stored when passed, defaults to routine (Plan 3a)', async () => {
     const customer = await createCustomer({ tenantId, name: 'Priority Test' });
     const urgent = await createJob({ tenantId, customerId: customer.id, priority: 'urgent' });
@@ -135,13 +212,13 @@ describe('context spine data-access layer', () => {
   });
 });
 
-// The Stage-0 watcher's two activity homes (plan 2026-08-15 feature A):
-// job-stamped capture times + notes LINKED to a trip on those jobs (rung 9b —
-// the home was "visit rows minted", which only worked while every note minted
-// one). captured_at / created_at are DB-stamped real UTC, so the floors below
-// are derived from the wall clock around the inserts.
-describe('watcher activity listers', () => {
-  test('both homes: floor respected, empty jobIds short-circuits, two-tenant isolation', async () => {
+// The watcher's activity probe (plan 2026-08-15 feature A), ONE read since
+// retrieval layer plan 3: every job arm of the capture membership, by the
+// capture's own time. It used to be two homes (job-stamped capture times + notes
+// LINKED to a trip), each blind to what the other saw. captured_at is DB-stamped
+// real UTC, so the floors below are derived from the wall clock around the inserts.
+describe('watcher activity probe', () => {
+  test('stamp and trip link both count; floor respected; empty jobIds short-circuits; two-tenant isolation', async () => {
     const before = new Date(Date.now() - 60_000).toISOString();
     const customer = await createCustomer({ tenantId, name: 'Activity Casa' });
     const job = await createJob({ tenantId, customerId: customer.id, title: 'Activity work' });
@@ -151,9 +228,13 @@ describe('watcher activity listers', () => {
       rawText: 'Compressor swapped, running fine',
       jobId: job.id,
     });
-    // The trip, and the note that reported it. The freshness reader walks the
-    // LINK now, not the row: a visit alone is a booking, and a booking is not
-    // activity — only a note filed against it is (rung 9b).
+    // A second note with NO job stamp, reaching the job only through the trip
+    // it reported — the shape the old job-stamped reader could not see.
+    const linkedOnly = await appendRawCapture({
+      tenantId,
+      channel: 'technician_voice',
+      rawText: 'left the filter on the bench',
+    });
     const visit = await createVisit({
       tenantId,
       jobId: job.id,
@@ -163,25 +244,23 @@ describe('watcher activity listers', () => {
       status: 'completed',
       completedAt: '2026-08-16T13:00:00.000Z',
     });
-    await insertVisitNote({ tenantId, visitId: visit.id, captureId: note.id });
+    await insertVisitNote({ tenantId, visitId: visit.id, captureId: linkedOnly.id });
 
-    // Empty jobIds → [] without touching PostgREST (`in.()` would error).
-    expect(await listJobStampedCaptureTimes(tenantId, [], before)).toEqual([]);
-    expect(await listNoteTimesForJobs(tenantId, [], before)).toEqual([]);
+    // Empty jobIds → an empty Map without a round trip.
+    expect(await listJobActivitySince(tenantId, [], before)).toEqual(new Map());
 
     // Floor respected: a past floor includes the rows, a future floor excludes.
-    const captures = await listJobStampedCaptureTimes(tenantId, [job.id], before);
-    expect(captures.map((c) => c.job_id)).toContain(job.id);
-    expect(captures.length).toBeGreaterThanOrEqual(1);
-    const visits = await listNoteTimesForJobs(tenantId, [job.id], before);
-    expect(visits.map((v) => v.job_id)).toContain(job.id);
+    const latest = await listJobActivitySince(tenantId, [job.id], before);
+    expect([...latest.keys()]).toEqual([job.id]);
+    expect(Date.parse(latest.get(job.id) ?? '')).toBe(
+      Math.max(Date.parse(note.captured_at), Date.parse(linkedOnly.captured_at)),
+    );
     const future = new Date(Date.now() + 60_000).toISOString();
-    expect(await listJobStampedCaptureTimes(tenantId, [job.id], future)).toEqual([]);
-    expect(await listNoteTimesForJobs(tenantId, [job.id], future)).toEqual([]);
+    expect(await listJobActivitySince(tenantId, [job.id], future)).toEqual(new Map());
 
-    // Two-tenant isolation: tenant-B rows stamped onto THE SAME job id (the
-    // FKs are id-only, so nothing in the schema prevents this shape) must
-    // never appear in tenant A's answer — the .eq tenant guard is the wall.
+    // Two-tenant isolation: tenant-B rows stamped onto THE SAME job id (the FKs
+    // are id-only, so nothing in the schema prevents this shape) must never
+    // appear in tenant A's answer.
     tenantB = (await createTenant(`spine-tenant-b-${Date.now()}`)).id;
     const bNote = await appendRawCapture({
       tenantId: tenantB,
@@ -200,14 +279,14 @@ describe('watcher activity listers', () => {
     });
     await insertVisitNote({ tenantId: tenantB, visitId: bVisit.id, captureId: bNote.id });
 
-    const aCaptures = await listJobStampedCaptureTimes(tenantId, [job.id], before);
-    expect(aCaptures.map((c) => c.captured_at)).toEqual([note.captured_at]);
-    const aVisits = await listNoteTimesForJobs(tenantId, [job.id], before);
-    // One link, tenant A's own — tenant B's link on the SAME job id is walled
-    // off by the .eq tenant guard, which is what this asserts.
-    expect(aVisits.map((v) => v.job_id)).toEqual([job.id]);
-    // …and tenant B sees only its own stamps on that job id.
-    expect((await listJobStampedCaptureTimes(tenantB, [job.id], before)).length).toBe(1);
-    expect((await listNoteTimesForJobs(tenantB, [job.id], before)).length).toBe(1);
+    const aLatest = await listJobActivitySince(tenantId, [job.id], before);
+    expect(Date.parse(aLatest.get(job.id) ?? '')).toBe(
+      Math.max(Date.parse(note.captured_at), Date.parse(linkedOnly.captured_at)),
+    );
+    // …and tenant B sees NOTHING on tenant A's job id: capture_membership
+    // requires the job to share the capture's tenant, so a stamp or a link onto
+    // another firm's job is walled off on BOTH sides (the old readers let tenant
+    // B's own stamp through — this is the stricter wall).
+    expect(await listJobActivitySince(tenantB, [job.id], before)).toEqual(new Map());
   });
 });

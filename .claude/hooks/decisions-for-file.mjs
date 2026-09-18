@@ -24,7 +24,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 
-// Mirrors scripts/decision-index.mjs:36 — below this, churn is ordinary maintenance.
+// Mirrors `DRIFT_LOUD` in scripts/decision-index.mjs — below this, churn is ordinary maintenance.
 const DRIFT_LOUD = 15;
 
 const quiet = () => process.exit(0);

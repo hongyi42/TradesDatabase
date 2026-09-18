@@ -2,128 +2,149 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { notifyOpsTransition } from './opsNotify.js';
 import type { OpsOutcome } from '../db/opsEvents.js';
+import type { Technician } from '../db/index.js';
 
-// Unit test for the ops alert. Every case drives the injected sender, so nothing
-// here can reach Telegram — see the deps seam in opsNotify.ts for why that
-// matters (`.env` carries a real BOARD_BOT_TOKEN).
+// Unit test for the ops alert. Every case drives the injected deps, so nothing
+// here reaches Telegram OR the database — since 2026-09-17 the alert is QUEUED
+// as a person_push and the box delivers it through the operator's own
+// assistant, so the boundary to fake is the queue, not the Bot API.
 //
-// Both env vars are set EXPLICITLY rather than inherited from .env: the skip
-// branches are the behaviour under test, and a test that passes only because the
-// developer's .env happens to be shaped a certain way is not a test.
+// OPS_ALERT_TELEGRAM_IDS is set EXPLICITLY rather than inherited from .env: the
+// skip branches are the behaviour under test, and a test that passes only
+// because the developer's .env happens to be shaped a certain way is not a test.
 
 const OPENED: OpsOutcome = { action: 'opened', incidentId: 'inc-1' };
 const CLOSED = (openMs: number): OpsOutcome => ({ action: 'closed', incidentId: 'inc-1', openMs });
 
-// Typed to sendBoardMessage's signature so the deps seam is checked, not just
-// satisfied — an untyped vi.fn() would accept a wrong-shaped sender silently.
-type Sender = (chatId: string, text: string) => Promise<void>;
+const tech = (id: string, tenantId = 'T1') =>
+  ({ id, tenant_id: tenantId, state: 'active' }) as unknown as Technician;
+
+type Queue = (input: {
+  tenantId: string;
+  technicianId: string;
+  kind: 'schedule' | 'call' | 'ops';
+  body: string;
+}) => Promise<unknown>;
+type Find = (
+  telegramUserId: string,
+) => Promise<{ technician: Technician } | { ambiguous: true; tenantIds: string[] } | null>;
 
 describe('notifyOpsTransition', () => {
-  let send: ReturnType<typeof vi.fn<Sender>>;
-  const saved = { chat: process.env.OPS_ALERT_CHAT_ID, token: process.env.BOARD_BOT_TOKEN };
+  let queue: ReturnType<typeof vi.fn<Queue>>;
+  let findRoster: ReturnType<typeof vi.fn<Find>>;
+  const saved = process.env.OPS_ALERT_TELEGRAM_IDS;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  const deps = () => ({ queue, findRoster }) as never;
 
   beforeEach(() => {
-    send = vi.fn<Sender>(async () => {});
-    process.env.OPS_ALERT_CHAT_ID = '5801703167';
-    process.env.BOARD_BOT_TOKEN = 'test-token';
+    queue = vi.fn<Queue>(async () => ({}));
+    findRoster = vi.fn<Find>(async () => ({ technician: tech('tech-op') }));
+    process.env.OPS_ALERT_TELEGRAM_IDS = '8639645984';
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
-    for (const [k, v] of Object.entries({
-      OPS_ALERT_CHAT_ID: saved.chat,
-      BOARD_BOT_TOKEN: saved.token,
-    })) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
+    if (saved === undefined) delete process.env.OPS_ALERT_TELEGRAM_IDS;
+    else process.env.OPS_ALERT_TELEGRAM_IDS = saved;
+    errSpy.mockRestore();
   });
 
-  test('opened → one message naming the service, the host, and the runbook', async () => {
-    await notifyOpsTransition(OPENED, 'inference-medic', 'trades-box-1', undefined, { send });
-    expect(send).toHaveBeenCalledTimes(1);
-    const [to, text] = send.mock.calls[0];
-    expect(to).toBe('5801703167');
-    expect(text).toContain('inference-medic');
-    expect(text).toContain('trades-box-1');
-    expect(text).toContain('docs/inference-recovery-runbook');
-    // No '.md' — Telegram would linkify it into a dead link (2026-08-19 drill).
-    expect(text).not.toContain('runbook.md');
+  test('opened → one ops row naming the service, the host, and the runbook', async () => {
+    await notifyOpsTransition(OPENED, 'inference-medic', 'trades-box-1', undefined, deps());
+    expect(queue).toHaveBeenCalledTimes(1);
+    const row = queue.mock.calls[0][0];
+    expect(row.kind).toBe('ops');
+    expect(row.tenantId).toBe('T1');
+    expect(row.technicianId).toBe('tech-op');
+    expect(row.body).toContain('inference-medic');
+    expect(row.body).toContain('trades-box-1');
+    expect(row.body).toContain('docs/inference-recovery-runbook');
+    // Not a Telegram-linkifiable ".md" — a dead link mid-incident is the worst
+    // thing to hand someone (2026-08-19 drill).
+    expect(row.body).not.toContain('runbook.md');
   });
 
-  // The route is what makes the alert diagnosable without ssh-ing to the box.
-  test('opened → renders the route when the reporter collected one', async () => {
-    await notifyOpsTransition(
-      OPENED,
-      'inference-medic',
-      'trades-box-1',
-      { route: 'fireworks-prod / accounts/fireworks/routers/glm-5p2-fast' },
-      { send },
-    );
-    expect((send.mock.calls[0])[1]).toContain('route: fireworks-prod');
+  test('route from detail is rendered when present', async () => {
+    await notifyOpsTransition(OPENED, 'svc', 'box', { route: 'openrouter/glm-5.3' }, deps());
+    expect(queue.mock.calls[0][0].body).toContain('route: openrouter/glm-5.3');
   });
 
-  // ops-report.sh omits `route` when it ran without the gateway owner's env
-  // (its documented HOME trap). A blank "route:" line would look like a bug.
-  test('opened → omits the route line entirely when absent or blank', async () => {
-    await notifyOpsTransition(OPENED, 'inference-medic', 'box', { route: '   ' }, { send });
-    expect((send.mock.calls[0])[1]).not.toContain('route:');
+  test('closed → a recovery row with the elapsed time', async () => {
+    await notifyOpsTransition(CLOSED(9 * 60_000), 'svc', 'box', undefined, deps());
+    expect(queue.mock.calls[0][0].body).toContain('recovered after 9 min');
   });
 
-  test('closed → one message with the elapsed minutes', async () => {
-    await notifyOpsTransition(CLOSED(12 * 60_000), 'inference-medic', 'box', undefined, { send });
-    expect(send).toHaveBeenCalledTimes(1);
-    expect((send.mock.calls[0])[1]).toContain('12 min');
+  test('a sub-minute recovery reads as words, not "0 min"', async () => {
+    await notifyOpsTransition(CLOSED(20_000), 'svc', 'box', undefined, deps());
+    expect(queue.mock.calls[0][0].body).toContain('less than a minute');
   });
 
-  // A sub-minute recovery is real — the medic's in-tick retry absorbs one slow
-  // probe — and "recovered after 0 min" reads like a broken clock.
-  test('closed → says "less than a minute" rather than "0 min"', async () => {
-    await notifyOpsTransition(CLOSED(8_000), 'inference-medic', 'box', undefined, { send });
-    const text = (send.mock.calls[0])[1];
-    expect(text).toContain('less than a minute');
-    expect(text).not.toContain('0 min');
+  // The anti-spam invariant: an outage notifies once, not once per 5-min tick.
+  test.each(['suppressed', 'noop'] as const)('%s is not a transition → nothing queued', async (a) => {
+    await notifyOpsTransition({ action: a } as unknown as OpsOutcome, 'svc', 'box', undefined, deps());
+    expect(queue).not.toHaveBeenCalled();
   });
 
-  // THE ANTI-SPAM INVARIANT. recordOpsEvent returns `suppressed` for every
-  // 5-minute tick during an outage; if those notified, a 30-minute outage would
-  // fire six times and the alert would be muted — which is how the alerting gap
-  // gets recreated in a new form.
-  test('suppressed and noop send NOTHING', async () => {
-    await notifyOpsTransition({ action: 'suppressed', incidentId: 'inc-1' }, 's', 'h', undefined, { send });
-    await notifyOpsTransition({ action: 'noop' }, 's', 'h', undefined, { send });
-    expect(send).not.toHaveBeenCalled();
-  });
-
-  test('no OPS_ALERT_CHAT_ID → skips cleanly, no throw', async () => {
-    delete process.env.OPS_ALERT_CHAT_ID;
+  test('no OPS_ALERT_TELEGRAM_IDS → skips cleanly, no roster read, no throw', async () => {
+    delete process.env.OPS_ALERT_TELEGRAM_IDS;
     await expect(
-      notifyOpsTransition(OPENED, 'inference-medic', 'box', undefined, { send }),
+      notifyOpsTransition(OPENED, 'svc', 'box', undefined, deps()),
     ).resolves.toBeUndefined();
-    expect(send).not.toHaveBeenCalled();
+    expect(findRoster).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
   });
 
-  test('blank OPS_ALERT_CHAT_ID is treated as unset, not sent to ""', async () => {
-    process.env.OPS_ALERT_CHAT_ID = '   ';
-    await notifyOpsTransition(OPENED, 'inference-medic', 'box', undefined, { send });
-    expect(send).not.toHaveBeenCalled();
+  test('blank / comma-only value is treated as unset', async () => {
+    process.env.OPS_ALERT_TELEGRAM_IDS = ' , ,  ';
+    await notifyOpsTransition(OPENED, 'svc', 'box', undefined, deps());
+    expect(queue).not.toHaveBeenCalled();
   });
 
-  test('no BOARD_BOT_TOKEN → skips cleanly, no throw', async () => {
-    delete process.env.BOARD_BOT_TOKEN;
+  test('several ids → one row each', async () => {
+    process.env.OPS_ALERT_TELEGRAM_IDS = '111, 222';
+    findRoster
+      .mockResolvedValueOnce({ technician: tech('tech-a', 'TA') })
+      .mockResolvedValueOnce({ technician: tech('tech-b', 'TB') });
+    await notifyOpsTransition(OPENED, 'svc', 'box', undefined, deps());
+    expect(queue).toHaveBeenCalledTimes(2);
+    expect(queue.mock.calls.map((c) => c[0].technicianId)).toEqual(['tech-a', 'tech-b']);
+  });
+
+  test('an id matching no live roster row is skipped, not thrown', async () => {
+    findRoster.mockResolvedValue(null);
     await expect(
-      notifyOpsTransition(OPENED, 'inference-medic', 'box', undefined, { send }),
+      notifyOpsTransition(OPENED, 'svc', 'box', undefined, deps()),
     ).resolves.toBeUndefined();
-    expect(send).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
+  });
+
+  // Two people really do share a Telegram id on this pilot, so the global
+  // lookup refuses rather than guessing. An ops alert must not land in the
+  // wrong person's chat.
+  test('an AMBIGUOUS id is refused, not guessed', async () => {
+    findRoster.mockResolvedValue({ ambiguous: true, tenantIds: ['T1', 'T2'] });
+    await notifyOpsTransition(OPENED, 'svc', 'box', undefined, deps());
+    expect(queue).not.toHaveBeenCalled();
+  });
+
+  // One unresolvable operator must not silence the others.
+  test('a bad id does not suppress the remaining operators', async () => {
+    process.env.OPS_ALERT_TELEGRAM_IDS = 'bad, good';
+    findRoster
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ technician: tech('tech-good', 'TG') });
+    await notifyOpsTransition(OPENED, 'svc', 'box', undefined, deps());
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(queue.mock.calls[0][0].technicianId).toBe('tech-good');
   });
 
   // It propagates; the HTTP handler is what swallows. Keeping the throw here
-  // means a send failure is visible in the server log instead of vanishing.
-  test('a failing send REJECTS — the caller owns swallowing it', async () => {
-    const boom = vi.fn<Sender>(async () => {
-      throw new Error('telegram sendMessage failed: chat not found');
-    });
+  // means a queue failure is visible in the server log instead of vanishing.
+  test('a failing queue write REJECTS — the caller owns swallowing it', async () => {
+    queue.mockRejectedValue(new Error('queuePersonPush failed: 23514'));
     await expect(
-      notifyOpsTransition(OPENED, 'inference-medic', 'box', undefined, { send: boom }),
-    ).rejects.toThrow('chat not found');
+      notifyOpsTransition(OPENED, 'svc', 'box', undefined, deps()),
+    ).rejects.toThrow('23514');
   });
 });

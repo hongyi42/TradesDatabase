@@ -1,19 +1,26 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 
-// MANDATORY, not tidiness: src/test.setup.ts loads .env before .env.test, and
-// .env carries a REAL BOARD_BOT_TOKEN. The /control/ops block below posts
-// down/ok repeatedly, so without this stub — the moment OPS_ALERT_CHAT_ID is set
-// in a developer's .env — `npm test` would fire live Telegram messages at the
-// operator. Stubbed BEFORE createHttpServer is imported. (Precedent:
-// src/calls/notify.test.ts.) This file exercises no board route, so replacing
-// the module wholesale is safe.
-vi.mock('../telegram/boardBot.js', () => ({
-  sendBoardMessage: vi.fn(async () => {}),
-  setBoardMenuButton: vi.fn(async () => {}),
+// MANDATORY, not tidiness. The /control/ops block below posts down/ok
+// repeatedly, and since 2026-09-17 an ops alert is QUEUED as a person_push and
+// delivered by the box through the operator's own assistant. Unstubbed, these
+// tests would file real rows that a live box would then text to a real phone.
+//
+// PARTIAL mock, via importOriginal: this is an integration suite that needs the
+// rest of src/db for real, so exactly two exports are replaced — the queue
+// write (so nothing is filed) and the roster lookup (so the notifier resolves an
+// operator without this suite having to seed one). Everything else is genuine.
+//
+// Stubbed BEFORE createHttpServer is imported. Precedent: src/calls/notify.test.ts.
+vi.mock('../db/index.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../db/index.js')>()),
+  queuePersonPush: vi.fn(async () => ({}) as never),
+  findRosterByTelegramUserIdGlobal: vi.fn(async () => ({
+    technician: { id: 'tech-ops', tenant_id: 'tenant-ops' },
+  })) as never,
 }));
 
 import { createHmac } from 'node:crypto';
-import { sendBoardMessage } from '../telegram/boardBot.js';
+import { queuePersonPush } from '../db/index.js';
 import { Client } from 'pg';
 import type { AddressInfo } from 'node:net';
 import type http from 'node:http';
@@ -327,6 +334,150 @@ describe('POST /control/sandboxes (recycle-completion report)', () => {
   });
 });
 
+describe('menuButton rides the badge pull', () => {
+  test('states the console button when BOARD_PUBLIC_URL is set, stays silent when it is not', async () => {
+    const prev = process.env.BOARD_PUBLIC_URL;
+    process.env.BOARD_PUBLIC_URL = 'https://example.test/';
+    try {
+      const res = await fetch(`${base}/control/badges`, {
+        headers: { authorization: `Bearer ${hostToken}` },
+      });
+      const body = (await res.json()) as { menuButton: { text: string; url: string } | null };
+      // Trailing slash trimmed: the box pastes this straight into
+      // setChatMenuButton and a double slash would be a different URL to
+      // Telegram's cache.
+      expect(body.menuButton).toEqual({ text: 'Schedule', url: 'https://example.test/console' });
+    } finally {
+      if (prev === undefined) delete process.env.BOARD_PUBLIC_URL;
+      else process.env.BOARD_PUBLIC_URL = prev;
+    }
+
+    // Unset: say nothing rather than point the whole fleet at a guess. The box
+    // treats null as "leave every button alone".
+    delete process.env.BOARD_PUBLIC_URL;
+    const quiet = await fetch(`${base}/control/badges`, {
+      headers: { authorization: `Bearer ${hostToken}` },
+    });
+    expect(((await quiet.json()) as { menuButton: unknown }).menuButton).toBeNull();
+    if (prev !== undefined) process.env.BOARD_PUBLIC_URL = prev;
+  });
+});
+
+describe('POST /control/seat-bots (the box names the bot behind each seat)', () => {
+  const report = (body: unknown, token = hostToken) =>
+    fetch(`${base}/control/seat-bots`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    });
+  const idOf = async (ref: string) =>
+    (await pg.query('select bot_id, bot_username from sandbox_pool where sandbox_ref = $1', [ref]))
+      .rows[0];
+
+  test('auth and shape: no token 401, wrong token 401, seats must be an array', async () => {
+    const noAuth = await fetch(`${base}/control/seat-bots`, { method: 'POST', body: '{}' });
+    expect(noAuth.status).toBe(401);
+    expect(await noAuth.text()).toBe('');
+    expect((await report({ seats: [] }, 'deadbeef')).status).toBe(401);
+    expect((await report('not json {{{')).status).toBe(400);
+    expect((await report({})).status).toBe(400);
+    expect((await report({ seats: 'nope' })).status).toBe(400);
+  });
+
+  test('records the id on a live row, fills a missing handle, and is idempotent', async () => {
+    const host = await getHostId();
+    await registerSandbox({ tenantId, hostId: host, sandboxRef: 'sb-live' });
+
+    const first = await report({
+      seats: [{ sandboxRef: 'sb-live', botId: '8918989737', botUsername: '@sblive_bot' }],
+    });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ recorded: ['sb-live'], skipped: [] });
+    expect(await idOf('sb-live')).toEqual({ bot_id: '8918989737', bot_username: '@sblive_bot' });
+
+    // The tick repeats every 5 minutes forever; a report that changes nothing
+    // must not write. `recorded` empty is how the box knows it is in sync.
+    const again = await report({
+      seats: [{ sandboxRef: 'sb-live', botId: '8918989737', botUsername: '@sblive_bot' }],
+    });
+    expect(await again.json()).toEqual({ recorded: [], skipped: [] });
+  });
+
+  test('refuses a handle that disagrees with the row — the wrong-token mistake', async () => {
+    const host = await getHostId();
+    await registerSandbox({
+      tenantId,
+      hostId: host,
+      sandboxRef: 'sb-handle',
+      botUsername: '@sbhandle_bot',
+    });
+    const res = await report({
+      seats: [{ sandboxRef: 'sb-handle', botId: '4242424242', botUsername: '@someoneelse_bot' }],
+    });
+    const body = (await res.json()) as { recorded: string[]; skipped: Array<{ why: string }> };
+    expect(body.recorded).toEqual([]);
+    expect(body.skipped[0].why).toContain('disagrees');
+    expect((await idOf('sb-handle')).bot_id).toBeNull();
+  });
+
+  test('a token pasted as an id never becomes an allowlist entry', async () => {
+    const host = await getHostId();
+    await registerSandbox({ tenantId, hostId: host, sandboxRef: 'sb-token' });
+    const res = await report({
+      seats: [{ sandboxRef: 'sb-token', botId: '8918989737:AAHtokenlookingthing' }],
+    });
+    const body = (await res.json()) as { recorded: string[]; skipped: Array<{ why: string }> };
+    expect(body.recorded).toEqual([]);
+    expect(body.skipped[0].why).toContain('numeric');
+    expect((await idOf('sb-token')).bot_id).toBeNull();
+  });
+
+  test('a retired seat is refused, and an unracked one is reported back, not created', async () => {
+    const host = await getHostId();
+    // Retired directly rather than through the recycle flow: this test is about
+    // the report refusing a dead seat, and the tenant's seat cap is spoken for
+    // by the suites above.
+    await registerSandbox({ tenantId, hostId: host, sandboxRef: 'sb-dead' });
+    await pg.query("update sandbox_pool set retired_at = now() where sandbox_ref = 'sb-dead'");
+
+    const res = await report({
+      seats: [
+        { sandboxRef: 'sb-dead', botId: '5150' },
+        { sandboxRef: 'sb-never-racked', botId: '5151' },
+      ],
+    });
+    const body = (await res.json()) as {
+      recorded: string[];
+      skipped: Array<{ sandboxRef: string; why: string }>;
+    };
+    expect(body.recorded).toEqual([]);
+    expect(body.skipped.find((x) => x.sandboxRef === 'sb-dead')?.why).toContain('retired');
+    expect(body.skipped.find((x) => x.sandboxRef === 'sb-never-racked')?.why).toContain(
+      'no pool row',
+    );
+    // The unracked seat must NOT have been created: an auto-created row is COLD,
+    // and bind_telegram hands cold rows to the next hire.
+    const created = await pg.query(
+      "select count(*)::int as n from sandbox_pool where sandbox_ref = 'sb-never-racked'",
+    );
+    expect(created.rows[0].n).toBe(0);
+  });
+
+  test('one bad seat does not cost the rest of the rack its report', async () => {
+    const host = await getHostId();
+    await registerSandbox({ tenantId, hostId: host, sandboxRef: 'sb-good' });
+    const res = await report({
+      seats: [
+        { sandboxRef: 'sb-never-racked', botId: '5151' },
+        { sandboxRef: 'sb-good', botId: '777000777' },
+      ],
+    });
+    const body = (await res.json()) as { recorded: string[] };
+    expect(body.recorded).toEqual(['sb-good']);
+    expect((await idOf('sb-good')).bot_id).toBe('777000777');
+  });
+});
+
 describe('POST /control/ops', () => {
   const post = (body: unknown, token = hostToken) =>
     fetch(`${base}/control/ops`, {
@@ -335,25 +486,23 @@ describe('POST /control/ops', () => {
       body: JSON.stringify(body),
     });
 
-  const alerts = vi.mocked(sendBoardMessage);
-  const saved = { chat: process.env.OPS_ALERT_CHAT_ID, token: process.env.BOARD_BOT_TOKEN };
+  const alerts = vi.mocked(queuePersonPush);
+  const saved = { ids: process.env.OPS_ALERT_TELEGRAM_IDS };
 
   beforeEach(async () => {
     await pg.query('delete from ops_events where host_id = $1', [await getHostId()]);
     vi.clearAllMocks();
-    // Alerting is OFF unless configured, and notifyOpsTransition gates on BOTH
-    // vars — so both are set explicitly. Inheriting BOARD_BOT_TOKEN from .env
-    // would make these tests pass only on a machine that happens to have one:
-    // in a fresh worktree (which CLAUDE.md's parallel workflow creates with no
-    // .env) the notifier would skip and the assertions below would fail.
-    process.env.OPS_ALERT_CHAT_ID = '5801703167';
-    process.env.BOARD_BOT_TOKEN = 'test-token';
+    // Alerting is OFF unless configured, so the operator list is set
+    // explicitly. Inheriting it from .env would make these tests pass only on a
+    // machine that happens to have one: in a fresh worktree (which CLAUDE.md's
+    // parallel workflow creates with no .env) the notifier would skip and the
+    // assertions below would fail.
+    process.env.OPS_ALERT_TELEGRAM_IDS = '8639645984';
   });
 
   afterAll(() => {
     for (const [k, v] of Object.entries({
-      OPS_ALERT_CHAT_ID: saved.chat,
-      BOARD_BOT_TOKEN: saved.token,
+      OPS_ALERT_TELEGRAM_IDS: saved.ids,
     })) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
@@ -409,12 +558,16 @@ describe('POST /control/ops', () => {
     // six times and the operator mutes the channel — which would rebuild the
     // alerting gap this notifier exists to close.
     expect(alerts).toHaveBeenCalledTimes(2);
-    expect((alerts.mock.calls[0] as [string, string])[1]).toContain('is DOWN');
-    expect((alerts.mock.calls[1] as [string, string])[1]).toContain('recovered');
+    const bodies = alerts.mock.calls.map((c) => (c[0] as { body: string; kind: string }));
+    expect(bodies[0].body).toContain('is DOWN');
+    expect(bodies[1].body).toContain('recovered');
+    // Filed as ops, not as a schedule change — `kind` is how an operator
+    // reading the queue knows why the message was owed.
+    expect(bodies.map((b) => b.kind)).toEqual(['ops', 'ops']);
   });
 
   test('a failing alert never fails the report — the reporter still gets its 200', async () => {
-    alerts.mockRejectedValueOnce(new Error('telegram sendMessage failed: chat not found'));
+    alerts.mockRejectedValueOnce(new Error('queuePersonPush failed: 23514'));
     const res = await post({ service: 'inference-medic', status: 'down' });
     expect(res.status).toBe(200);
     expect(((await res.json()) as { action: string }).action).toBe('opened');
@@ -429,8 +582,8 @@ describe('POST /control/ops', () => {
     expect(rows[0].n).toBe(1);
   });
 
-  test('alerting off (no OPS_ALERT_CHAT_ID) changes nothing about the report', async () => {
-    delete process.env.OPS_ALERT_CHAT_ID;
+  test('alerting off (no OPS_ALERT_TELEGRAM_IDS) changes nothing about the report', async () => {
+    delete process.env.OPS_ALERT_TELEGRAM_IDS;
     const res = await post({ service: 'inference-medic', status: 'down' });
     expect(res.status).toBe(200);
     expect(alerts).not.toHaveBeenCalled();

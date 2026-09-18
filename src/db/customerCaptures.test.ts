@@ -9,8 +9,9 @@ import {
   listLinkedCapturesForCustomer,
 } from './customers.js';
 import { createTenant } from './tenants.js';
-import { appendRawCapture, captureHasLinkedL2, listL2CitingCapture } from './rawCaptures.js';
-import { getCustomerContext } from './context.js';
+import { appendRawCapture, captureHasLinkedL2 } from './rawCaptures.js';
+import { listL2CitingCapture } from './captureMembership.js';
+import { getCustomerContents, type CustomerContents } from './context.js';
 
 // THE THIRD LINK LEVEL (2026-09-12). A capture the door can place on a PERSON
 // but not on a job. What these tests pin is the set of answers that link is and
@@ -103,7 +104,7 @@ describe('customer_captures — the link for "we know WHO, not WHICH"', () => {
     // L2 citing the capture, the planner would read "something was created from
     // this" and close the item, leaving a customer expecting somebody with
     // nothing on the calendar and nobody still asking.
-    expect(await listL2CitingCapture([captureId])).toEqual([]);
+    expect(await listL2CitingCapture(tenantId, [captureId])).toEqual([]);
   });
 
   test('a link carrying ANOTHER firm\'s tenant never reaches this customer\'s context', async () => {
@@ -123,27 +124,30 @@ describe('customer_captures — the link for "we know WHO, not WHICH"', () => {
     expect(await listLinkedCapturesForCustomer(customer.id)).toEqual([
       { capture_id: captureId, tenant_id: other.id },
     ]);
-    // ...but the context must refuse it: getRawCapture is fleet-wide by id, so
-    // taking this on trust would print another firm's verbatim text here.
-    const ctx = await getCustomerContext(customer.id);
-    expect(ctx.recentCaptures.map((c) => c.id)).not.toContain(captureId);
+    // ...but the read must refuse it: the membership view re-checks the link's
+    // tenant, so another firm's verbatim text is never counted here.
+    const contents = (await getCustomerContents(tenantId, customer.id, 'manager')) as CustomerContents;
+    expect(contents.customerLevel.noteCount).toBe(0);
+    expect(contents.customerLevel.newest).toBeNull();
 
     await pg.query('delete from customer_captures where capture_id = $1', [captureId]);
     await pg.query('delete from tenants where id = $1', [other.id]);
   });
 
-  test('getCustomerContext surfaces a customer-linked capture that has no L1 stamp', async () => {
+  test('getCustomerContents surfaces a customer-linked capture that has no L1 stamp', async () => {
     const customer = await createCustomer({ tenantId, name: 'Visible Vera' });
     const captureId = await unstampedCapture('the upstairs radiator is cold too');
 
-    const before = await getCustomerContext(customer.id);
-    expect(before.recentCaptures.map((c) => c.id)).not.toContain(captureId);
+    const before = (await getCustomerContents(tenantId, customer.id, 'manager')) as CustomerContents;
+    expect(before.customerLevel.noteCount).toBe(0);
 
     await insertCustomerCapture({ tenantId, customerId: customer.id, captureId });
 
     // A link nothing reads would be worse than the guess it replaces: the
-    // message would be filed correctly and still invisible to everyone.
-    const after = await getCustomerContext(customer.id);
-    expect(after.recentCaptures.map((c) => c.id)).toContain(captureId);
+    // message would be filed correctly and still invisible to everyone. It has
+    // no job, so it is the customer-level pile's newest.
+    const after = (await getCustomerContents(tenantId, customer.id, 'manager')) as CustomerContents;
+    expect(after.customerLevel.noteCount).toBe(1);
+    expect(after.customerLevel.newest?.captureId).toBe(captureId);
   });
 });

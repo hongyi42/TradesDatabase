@@ -1,21 +1,18 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Client } from 'pg';
 
-// Stub the Bot API boundary BEFORE importing the notifier — pollOnce must
-// never touch the network; everything else (events, assignments, roster) is
-// the real local stack driven through the real booking verbs.
-vi.mock('./boardBot.js', () => ({
-  sendBoardMessage: vi.fn().mockResolvedValue(undefined),
-  setBoardMenuButton: vi.fn().mockResolvedValue(undefined),
-}));
+// No Bot API stub is needed any more: pollOnce stopped touching the network
+// when one-bot phase 2 made it QUEUE a person_push instead of sending, and
+// boardBot.ts is gone entirely as of 2026-09-17. Everything here (events,
+// assignments, roster) is the real local stack driven through the real
+// booking verbs.
 // Spy-wrap the db barrel the notifier imports from (originals still run) so a
 // test can inject a TRANSIENT resolution failure mid-batch — the cursor-hold
 // contract is unreachable otherwise.
 vi.mock('../db/index.js', { spy: true });
 
-import { sendBoardMessage } from './boardBot.js';
 import { pollOnce } from './boardNotify.js';
-import { getVisitForTenant } from '../db/index.js';
+import { getVisitForTenant, queuePersonPush } from '../db/index.js';
 import { getVisitForTenant as realGetAssignmentForTenant } from '../db/visits.js';
 import { getClient } from '../db/client.js';
 import { setTenantSeats } from '../db/tenants.js';
@@ -30,11 +27,21 @@ const TRUNCATE =
 const pg = new Client({ connectionString: process.env.DATABASE_URL });
 let tenantId: string;
 let customerId: string;
-const sends = vi.mocked(sendBoardMessage);
+// The notifier QUEUES now (one-bot phase 2) rather than calling the Bot API:
+// the box delivers through each person's own assistant. What these tests assert
+// is unchanged — who was told what — so the queue write is read back through
+// the same shape, with the technician id resolved to the Telegram id the
+// assertions have always named.
+const sends = vi.mocked(queuePersonPush);
 // One cursor map across the whole suite — exactly how the worker holds it.
 const lastSeen = new Map<string, number>();
+const telegramByTechId = new Map<string, string>();
 
-const sentTo = () => sends.mock.calls.map(([userId, text]) => ({ userId, text }));
+const sentTo = () =>
+  sends.mock.calls.map(([args]) => ({
+    userId: telegramByTechId.get(args.technicianId) ?? args.technicianId,
+    text: args.body,
+  }));
 
 beforeAll(async () => {
   await pg.connect();
@@ -50,8 +57,10 @@ beforeAll(async () => {
 
   const n1 = await insertTechnician({ tenantId, ref: 'notify-n1', displayName: 'Nina One' });
   await updateTechnician(n1.id, { telegram_user_id: '910000001', state: 'active' });
+  telegramByTechId.set(n1.id, '910000001');
   const n2 = await insertTechnician({ tenantId, ref: 'notify-n2', displayName: 'Noah Two' });
   await updateTechnician(n2.id, { telegram_user_id: '910000002', state: 'active' });
+  telegramByTechId.set(n2.id, '910000002');
   await insertTechnician({ tenantId, ref: 'notify-n3', displayName: 'Unbound Uma' });
 
   customerId = (await createCustomer({ tenantId, name: 'Notify Casa' })).id;

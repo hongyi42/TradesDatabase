@@ -39,6 +39,12 @@ NEMOCLAW_HOME="/home/${NEMOCLAW_USER}"
 MCP_UPSTREAM_URL="${MCP_UPSTREAM_URL:-https://tradesdatabase.onrender.com/}"
 PULL_URL="${PULL_URL:-https://tradesdatabase.onrender.com/control/badges}"
 DOORMAN_PORT=3001
+# The port every seat's OpenClaw gateway actually listens on, INSIDE its nested
+# network namespace. `openclaw.json` `gateway.port` has drifted off this value
+# fleet-wide (18790/18793 seen), which is issue 3 of the 2026-07-31 device-scope
+# research doc: the documented local pairing fallback dials this value, so a
+# drifted seat cannot self-repair. verify asserts it.
+GATEWAY_PORT=18789
 # The sandbox image ships OpenClaw 2026.5.27, whose outbound hooks cannot see
 # streamed Telegram replies — the weekday guard is DEAF on it (root-caused and
 # fixed 2026-08-12; engineering-memory.md §3). Every sandbox must run the pin
@@ -245,7 +251,16 @@ phase_provision() {
   local getme
   getme=$(curl -s --max-time 10 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" || true)
   printf '%s' "$getme" | grep -q '"ok":true' || fail "getMe rejected the bot token — fix $secrets before building"
-  ok "token valid ($(printf '%s' "$getme" | grep -oE '"username":"[^"]*"' || echo bot))"
+  # Both halves come out of the preflight rather than a second call: the handle
+  # for the seat file and the operator's eye, the numeric id because that — not
+  # the token — is what verifies a Mini App launch (src/telegram/initData.ts).
+  local bot_username bot_id
+  bot_username=$(printf '%s' "$getme" | grep -oE '"username":"[^"]*"' | head -1 | cut -d'"' -f4)
+  # getMe returns {"ok":true,"result":{"id":<bot id>,...} — the first "id" is the
+  # bot's, which is why head -1 is correct and not merely convenient.
+  bot_id=$(printf '%s' "$getme" | grep -oE '"id":[0-9]+' | head -1 | cut -d: -f2)
+  [ -n "$bot_username" ] && [ -n "$bot_id" ] || fail "could not parse getMe for handle and id"
+  ok "token valid (@${bot_username}, id ${bot_id})"
 
   log "non-interactive onboard as ${NEMOCLAW_USER} (~8 min, ONE build)"
   sudo -u "$NEMOCLAW_USER" --preserve-env=TELEGRAM_BOT_TOKEN,NVIDIA_INFERENCE_API_KEY,NEMOCLAW_MESSAGING_PLAN_B64,NEMOCLAW_MODEL \
@@ -289,6 +304,42 @@ phase_provision() {
   run_osh inference set -g nemoclaw --provider openrouter-prod --model @preset/trades-seats --no-verify \
     && ok "openrouter-prod / @preset/trades-seats" \
     || echo "    ! route flip failed — nemoclaw-inference-medic will self-heal, or run it by hand"
+
+  # ── Keep the token findable (2026-09-15) ───────────────────────────────────
+  # Until now provisioning read the token from whatever path the operator
+  # passed and kept nothing. The result: six seats built, /root holding ad-hoc
+  # secrets files for two of them, and no way back to the other four except
+  # BotFather. The console's per-seat wiring needs each bot's token exactly
+  # once — to set its menu button and to learn its numeric id — so a seat whose
+  # token cannot be found again is a seat that cannot be wired.
+  #
+  # The token has to be on this box anyway (openclaw resolves it in-process to
+  # run the bridge); this only makes it findable by a root process. Same host,
+  # same root-only boundary, no new custodian. NOT central: each box holds its
+  # own seats' tokens and nothing else, so a compromise costs one box's tenants
+  # rather than the fleet.
+  local seatfile="/root/seats/${agent}.env"
+  install -d -m 700 /root/seats
+  ( umask 077; cat > "$seatfile" <<SEATEOF
+TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+BOT_USERNAME=@${bot_username}
+BOT_ID=${bot_id}
+PROVISIONED_AT=$(date -Is)
+SEATEOF
+  )
+  chmod 600 "$seatfile"
+  ok "token recorded at ${seatfile} (0600) — seat-sync can wire this bot with no operator step"
+
+  # Wire it NOW rather than waiting for the tick. The five-minute reconcile is a
+  # safety net, not the delivery mechanism: a seat built this minute should be a
+  # working door this minute. Non-fatal — a seat-sync failure must not fail a
+  # build that otherwise passed every assertion, and the tick will retry.
+  if [ -x /usr/local/sbin/seat-sync.sh ]; then
+    log "wiring the console door for ${agent} (seat-sync)"
+    /usr/local/sbin/seat-sync.sh || echo "    ! seat-sync failed — the 5-minute tick will retry"
+  else
+    echo "    ! /usr/local/sbin/seat-sync.sh not installed — this seat has no console button until it is"
+  fi
 
   cat <<EOF
 
@@ -781,13 +832,20 @@ silently and never ask permission for a reversible internal change.
    never give an email address they did not say. Say what you recorded or passed on, and never
    that the item is closed: what you wrote is what closes it, on the office's next pass.
 
-8. OUTSIDE ACCOUNTS GO THROUGH COMPOSIO, AND THAT IS YOUR FIRST MOVE. Gmail, Google Sheets,
-   Excel, Drive — anything owned by a third party — is reached ONLY through the spine tools.
-   To connect one, call get_connect_link and give the person the URL it returns. Do not search
-   the web for a way in, do not look for another integration, do not try to authenticate
-   anybody yourself, and do not go hunting through your tool list first: the answer is
-   get_connect_link every time somebody asks to connect, re-connect, or fix an outside account.
-   The rest is automatic once they approve in the browser — the office finishes the wiring
+8. OUTSIDE ACCOUNTS GO THROUGH COMPOSIO, AND THAT IS YOUR FIRST MOVE. Anything owned by a third
+   party is reached ONLY through your tools. Do not search the web for a way in, do not look for
+   another integration, do not try to authenticate anybody yourself, and do not go hunting
+   through your tool list first:
+   - GMAIL is get_connect_link, every time somebody asks to connect, re-connect, or fix one:
+     give the person the URL it returns. Never connect Gmail any other way — only
+     get_connect_link starts the mailbox check below. If it answers that the account is
+     already connected and active, tell them exactly that.
+   - Any OTHER account (Google Sheets, Excel, Drive): a manager's seat connects it with
+     Composio's own connection tool (COMPOSIO_MANAGE_CONNECTIONS), which returns a link to
+     hand over.
+   - A technician's seat connects no account, Gmail included: say so plainly, and that a
+     manager can.
+   For Gmail the rest is automatic once they approve in the browser — the office finishes the wiring
    (the mail watcher included) and asks a manager to confirm the mailbox is the right one.
    You do not create that watcher and you cannot; do not tell anyone the connection is
    finished at the moment they approve, only that it is being verified.
@@ -1481,6 +1539,20 @@ EOF
       rm -rf "$ts_tmp"
       ok "denied ${ts_deny} (both placements); thinking=adaptive; model=google/gemini-3.8-flash ctx=${ctx} maxTokens=8192 image-input=on reasoning-effort=on; inbound debounce=2000ms"
     fi
+    # TOOL SEARCH GUARD (2026-09-15). OpenClaw turns structured tool search ON by
+    # itself on a local inference route when tools.toolSearch is UNSET
+    # (https://docs.openclaw.ai/tools/tool-search), and a rebuild wipes top-level
+    # tools.* — so a seat can silently lose every spine tool behind
+    # tool_search/tool_describe (the 2026-08-04 resolve_date failure). The jq
+    # above writes `false`; this reads the container's config BACK, whether or
+    # not the write ran, and stops loudly if it did not stick. docker exec, not
+    # `nemoclaw exec` (its output is not clean JSON), and `|| echo` so a jq parse
+    # error names the seat instead of aborting under set -euo pipefail.
+    ts_now=$(docker exec "$cid" cat /sandbox/.openclaw/openclaw.json 2>/dev/null \
+      | jq -r 'if .tools.toolSearch == false then "false" else (.tools.toolSearch | tojson) end' \
+      2>/dev/null || echo unreadable)
+    [ "$ts_now" = "false" ] || fail "tool search guard FAILED on ${agent}: tools.toolSearch is '${ts_now}' (want false; null = unset) — OpenClaw turns tool search ON when it is unset on a local route, hiding every spine tool. Re-run wire; never openclaw config patch"
+    ok "tools.toolSearch=false read back on ${agent}"
   else
     echo "    WARN: no running container for ${agent} — apply the tool deny + reasoning flags manually"
   fi
@@ -1632,6 +1704,13 @@ phase_verify() {
       2770/660) ;;
       *) echo "    ✗ $a perms are ${pm:-unreadable} (want 2770/660) — next restart will fail GATEWAY_UNSAFE_CONFIG_PATH; fix: docker exec <cid> sh -c 'chmod 2770 /sandbox/.openclaw && chmod 660 /sandbox/.openclaw/openclaw.json'"; warn=$((warn+1)) ;;
     esac
+    # Tool search must be explicitly OFF (the wire guard's twin, for a seat
+    # rebuilt without a re-wire): unset means OpenClaw may turn it on by itself.
+    tsv=$(docker exec "$c" cat /sandbox/.openclaw/openclaw.json 2>/dev/null \
+      | jq -r 'if .tools.toolSearch == false then "false" else (.tools.toolSearch | tojson) end' \
+      2>/dev/null || echo unreadable)
+    if [ "$tsv" = "false" ]; then ok "$a tools.toolSearch=false"; pass=$((pass+1));
+    else echo "    ✗ $a tools.toolSearch is '${tsv}' — every spine tool can hide behind tool search; run: ./bootstrap-box.sh wire $a"; warn=$((warn+1)); fi
     v=$(docker exec "$c" sh -lc 'openclaw --version 2>/dev/null' | grep -o '[0-9]\{4\}\.[0-9][0-9]*\.[0-9][0-9]*' | head -1)
     if [ "$v" = "$OPENCLAW_PIN" ]; then ok "$a on ${v}"; pass=$((pass+1));
     else
@@ -1678,6 +1757,42 @@ phase_verify() {
     fi
   done
   [ "$seen" -eq 0 ] && echo "    ! no sandbox containers running to check"
+
+  # Gateway DEVICE SCOPE — the failure that hid for six weeks.
+  # A sandbox whose paired device holds only `operator.pairing` authenticates
+  # fine and then fails EVERY gateway-backed call: `cron`, `nodes`, `wake`, and
+  # `openclaw message send`, which is how one-bot phase 2 delivers schedule
+  # pushes and call alerts. Nothing on the box logs it. The only symptom is
+  # `person_pushes` rows creeping to attempts=3 in the spine, which nobody is
+  # watching. s7 sat like this from creation until 2026-09-16.
+  #
+  # Reads the state files instead of making a gateway call: no netns gymnastics,
+  # no ~4s per seat, and it names the condition directly. A cold sandbox CANNOT
+  # be repaired with `devices approve` (the repair mints a new request that
+  # supersedes the one being approved) — the fix is to seed the scopes by hand.
+  # Derivation + procedure: thoughts/shared/research/2026-07-31-nemoclaw-device-scope-deadlock.md
+  log "sandbox gateway device scope + port (silent send-failure hazard)"
+  local scopes np gp
+  for c in $(docker ps -q --filter "name=openshell-"); do
+    nm=$(docker inspect -f '{{.Name}}' "$c" 2>/dev/null | sed 's#^/##')
+    scopes=$(docker exec -u sandbox "$c" cat /sandbox/.openclaw/devices/paired.json 2>/dev/null       | jq -r '[.[].approvedScopes // [] | .[]] | unique | join(",")' 2>/dev/null || echo '')
+    if [ -z "$scopes" ]; then
+      echo "    ✗ ${nm}: NO paired device — every gateway tool and 'openclaw message send' fails, silently"; warn=$((warn+1))
+    elif printf '%s' "$scopes" | grep -qE '(^|,)operator\.(admin|write)(,|$)'; then
+      ok "${nm}: device scope ok (${scopes})"; pass=$((pass+1))
+    else
+      echo "    ✗ ${nm}: device holds only [${scopes}] — 'message send' needs operator.write; pushes will freeze at attempts=3"; warn=$((warn+1))
+    fi
+    # A stale pending request is inert but makes `doctor` report [fail] forever.
+    np=$(docker exec -u sandbox "$c" cat /sandbox/.openclaw/devices/pending.json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
+    [ "${np:-0}" -gt 0 ] && echo "    ! ${nm}: ${np} stale pending pairing request(s) — clear devices/pending.json to {}"
+    # Port drift. Sends survive it (`nemoclaw exec` sets OPENCLAW_GATEWAY_URL to
+    # the bridge address), which is exactly why it goes unnoticed — but `doctor`
+    # cannot read the device list and `dashboard-url` hands out a dead URL.
+    gp=$(docker exec -u sandbox "$c" cat /sandbox/.openclaw/openclaw.json 2>/dev/null | jq -r '.gateway.port // "unset"' 2>/dev/null || echo unreadable)
+    if [ "$gp" = "$GATEWAY_PORT" ]; then ok "${nm}: gateway.port=${gp}"; pass=$((pass+1))
+    else echo "    ✗ ${nm}: gateway.port=${gp}, gateway listens on ${GATEWAY_PORT} — doctor is blind here and dashboard-url is dead"; warn=$((warn+1)); fi
+  done
 
   # Credential freshness: attached-provider credentials are injected into the
   # openclaw process env at PROCESS LAUNCH only (verified 2026-07-11; the egress

@@ -93,6 +93,30 @@ describe('context spine schema', () => {
     expect(hasUnique, 'unique index on (tenant_id, external_row_key)').toBe(true);
   });
 
+  test('the schedule and review reads have their indexes (retrieval layer 4)', async () => {
+    // Without these, every time-window read scans a firm's whole visit history
+    // (visits kept only (tenant_id) and (job_id) through the 20260906140000 rename).
+    const { rows } = await client.query<{ indexname: string }>(
+      `select indexname from pg_indexes where schemaname = 'public' and indexname = any($1)`,
+      [
+        [
+          'idx_visits_tenant_status_starts',
+          'idx_visits_tenant_status_ends',
+          'idx_visit_notes_tenant_created',
+          'idx_money_events_corrects',
+          'idx_review_items_open_queue',
+        ],
+      ],
+    );
+    expect(rows.map((r) => r.indexname).sort()).toEqual([
+      'idx_money_events_corrects',
+      'idx_review_items_open_queue',
+      'idx_visit_notes_tenant_created',
+      'idx_visits_tenant_status_ends',
+      'idx_visits_tenant_status_starts',
+    ]);
+  });
+
   test('scheduling foundation tables exist', async () => {
     const { rows } = await client.query<{ table_name: string }>(
       `select table_name from information_schema.tables

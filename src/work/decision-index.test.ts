@@ -5,11 +5,11 @@
 // behaviour under test IS the file scanning and the ranking, and a mocked filesystem would
 // assert our assumptions back at us.
 //
-// Only the finding-specific behaviour is covered here. The rest of the index predates this and
-// has no tests; adding them is not this phase's job.
+// Only the finding-specific behaviour is covered here, plus `--check` (2026-09-14). The rest of the
+// index predates this and has no tests; adding them is not this phase's job.
 
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync,
 } from 'node:fs';
@@ -78,6 +78,18 @@ beforeAll(() => {
     '## Notes', '', 'Decided against.', '',
   ].join('\n'));
 
+  // A busy file whose four slots are wanted by PROSE mentions from docs/, each seeded at
+  // mentions 100 — the shape that hid src/mcp/server.ts's tool-registry finding (2026-09-14).
+  write('src/busy.ts', 'export const busy = 3;\n');
+  for (let i = 1; i <= 4; i++) {
+    write(`docs/busy-${i}.md`, `# Busy ${i}\n\n- src/busy.ts is mentioned in passing.\n`);
+  }
+  write('thoughts/shared/findings/2026-09-10-a-finding-on-a-busy-file.md', [
+    '---', 'date: 2026-09-10', 'task: a finding on a busy file', 'status: complete',
+    'origin: 20260910-something', 'files: src/busy.ts', 'supersedes: nothing', '---', '',
+    '## Notes', '', 'The prose never names the file a second time.', '',
+  ].join('\n'));
+
   execFileSync('node', [CLI], {
     cwd: tmp,
     encoding: 'utf8',
@@ -109,6 +121,16 @@ describe('decision-index.mjs — promoted findings', () => {
     // mentions alone it loses every tiebreak. It is here because it ranks above a plain doc.
     expect(byFile['src/foo.ts']).toHaveLength(4);
     expect(byFile['src/foo.ts'][0].kind).toBe('finding');
+  });
+
+  test('a finding outranks prose mentions from docs/, which are seeded at mentions 100', () => {
+    // Sharing a rank with a prose mention, the finding lost every tiebreak on mentions and
+    // MAX_PER_FILE dropped it — so the hook never showed it on the file its trap bites.
+    const list = byFile['src/busy.ts'];
+    expect(list).toHaveLength(4);
+    expect(list[0].kind).toBe('finding');
+    expect(list[0].where).toContain('a-finding-on-a-busy-file');
+    expect(list.slice(1).map((e) => e.kind)).toEqual(['doc', 'doc', 'doc']);
   });
 
   test('a finding attaches to any repo path it names, not just the src/*.ts prose shape', () => {
@@ -175,6 +197,50 @@ describe('decision-index.mjs — promoted findings', () => {
       expect(attached.find((e) => e.where === rel)?.kind).toBe('finding');
     } finally {
       rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('--check passes on a fresh index, fails on a stale one, and writes nothing either way', () => {
+    // Until 2026-09-14 --check regenerated all three artifacts and printed "OK" regardless, so the
+    // gate its header advertised could never fail. Run AFTER the fixture tree was indexed above.
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+    const check = () => spawnSync('node', [CLI, '--check'], { cwd: tmp, encoding: 'utf8', env });
+
+    const fresh = check();
+    expect(fresh.status, fresh.stderr).toBe(0);
+    expect(fresh.stdout).toContain('thoughts index OK');
+
+    // Both generated files made stale, so "writes nothing" is checked on each, not just one.
+    const indexPath = join(tmp, 'thoughts', 'INDEX.md');
+    const byFilePath = join(tmp, 'thoughts', 'by-file.json');
+    const byFileText = readFileSync(byFilePath, 'utf8');
+    const staleIndex = `${index}\n<!-- hand edit the generator would undo -->\n`;
+    const staleByFile = '{}\n';
+    try {
+      writeFileSync(indexPath, staleIndex);
+      writeFileSync(byFilePath, staleByFile);
+      const stale = check();
+      expect(stale.status).toBe(1);
+      expect(stale.stderr).toContain('thoughts/INDEX.md');
+      expect(stale.stderr).toContain('thoughts/by-file.json');
+      expect(readFileSync(indexPath, 'utf8')).toBe(staleIndex);
+      expect(readFileSync(byFilePath, 'utf8')).toBe(staleByFile);
+    } finally {
+      writeFileSync(indexPath, index);
+      writeFileSync(byFilePath, byFileText);
+    }
+  });
+
+  test('a CRLF copy of an unchanged index is not stale', () => {
+    // A checkout with core.autocrlf holds the same text with CRLF line ends.
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+    const indexPath = join(tmp, 'thoughts', 'INDEX.md');
+    try {
+      writeFileSync(indexPath, index.replace(/\n/g, '\r\n'));
+      const r = spawnSync('node', [CLI, '--check'], { cwd: tmp, encoding: 'utf8', env });
+      expect(r.status, r.stderr).toBe(0);
+    } finally {
+      writeFileSync(indexPath, index);
     }
   });
 

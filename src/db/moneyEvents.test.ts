@@ -375,14 +375,51 @@ describe('material_cost — a COST kind is inert in every revenue number (plan 2
     expect(s.balanceDueCents).toBe(summarizeMoney(revenue()).balanceDueCents);
   });
 
-  test('technicianMoneyView still withholds cost — it is manager-only', () => {
+  test('technicianMoneyView is STATUS IN WORDS — no figure of any kind reaches a technician', () => {
     // The tier boundary has ONE definition; a new summary field must not widen
-    // it by accident (technicians are ASKED about cost, but never shown it).
+    // it by accident. Operator 2026-09-15: the amounts went too — an invoice
+    // total is what the customer was charged, and balance due equals it until
+    // something is paid, so either number tells a technician the price.
     const s = summarizeMoney([...revenue(), mk('material_cost', 4000)]);
-    expect(technicianMoneyView(s)).toEqual({
-      balanceDueCents: s.balanceDueCents,
-      invoicedCents: s.invoicedCents,
-    });
+    const view = technicianMoneyView(s);
+    expect(Object.keys(view)).toEqual(['status']);
+    expect(JSON.stringify(view)).not.toMatch(/[0-9]/);
+
+    const at = (events: MoneyEvent[]) => technicianMoneyView(summarizeMoney(events)).status;
+    expect(at([])).toBe('nothing recorded yet');
+    expect(at([mk('estimate_presented', 90_000), mk('estimate_approved', 90_000)])).toBe(
+      'quoted, nothing invoiced yet',
+    );
+    expect(at([mk('invoice_issued', 45_000)])).toBe('invoiced, not yet paid');
+    expect(at([mk('invoice_issued', 45_000), mk('payment_received', 20_000)])).toBe(
+      'part paid, balance outstanding',
+    );
+    expect(at([mk('invoice_issued', 45_000), mk('payment_received', 45_000)])).toBe('paid in full');
+    expect(at([mk('invoice_issued', 45_000), mk('write_off', 45_000)])).toBe('settled, no balance due');
+    // A cleared DEPOSIT is not a finished job — the job's own state machine
+    // refuses `paid` here too, and "paid in full" is what a technician would
+    // repeat to the customer (review finding).
+    const deposit = mk('invoice_issued', 10_000, { detail: { progress: true } });
+    expect(at([mk('estimate_approved', 90_000), deposit, mk('payment_received', 10_000)])).toBe(
+      'deposit paid, more to invoice',
+    );
+    // A ledger that HAS rows but owes nothing is not an empty ledger: a voided
+    // invoice, a comped job, a fee, a cost, an estimate merely presented.
+    const invoice = mk('invoice_issued', 45_000);
+    expect(at([invoice, mk('invoice_voided', null, { corrects_event_id: invoice.id })])).toBe(
+      'recorded, nothing owed',
+    );
+    expect(at([mk('material_cost', 4_000)])).toBe('recorded, nothing owed');
+    expect(at([mk('estimate_presented', 90_000)])).toBe('recorded, nothing owed');
+    expect(at([mk('fee_charged', 9_500)])).toBe('recorded, nothing owed');
+    // A deposit taken BEFORE anything is invoiced also reads balanceDue < 0. It
+    // is money the customer has paid in, not money the firm owes back — telling a
+    // technician "the office holds a credit" there would be backwards.
+    expect(at([mk('payment_received', 50_000)])).toBe('deposit paid, more to invoice');
+    // A genuine credit: invoiced, paid, then over-credited.
+    expect(at([mk('invoice_issued', 10_000), mk('payment_received', 10_000), mk('credit_applied', 5_000)])).toBe(
+      'the office holds a credit',
+    );
   });
 
   test('material_cost is a real enum value the DB accepts (and stays non-negative)', async () => {

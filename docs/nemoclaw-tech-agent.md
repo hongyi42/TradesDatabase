@@ -90,10 +90,12 @@ The future **Option B** (per-bot JWT / OAuth Resource Server) swaps only the hea
 
 ## 4. Restrict the tool surface
 Allowlist only the spine tools for the technician profile (`tools.profile` / allowlist) — the
-14-tool technician surface: `record_field_note`, `find_customer`, `get_customer_context`,
-`get_job`, `resolve_date`, `list_recent_captures`, `brief_customer`, `answer_customer_question`,
+technician surface is pinned by name in `src/mcp/tools/surface.expected.ts` (`TECHNICIAN_TOOLS`,
+the authority when this list drifts): `record_field_note`, `find_customer`, `get_customer_context`,
+`get_job`, `get_capture`, `search_captures`, `resolve_date`, `list_recent_captures`,
 `web_search`, `read_webpage`, `send_email`, `retract_capture`, `record_standing_fact`,
-`get_schedule`. Outbound network policy should allow only the gateway + our server's host.
+`get_schedule`, `inform_team_lead`, `ask_team_lead`, `inform_teammate`. Outbound network policy
+should allow only the gateway + our server's host.
 
 **Route links: booked order, one per stop (2026-07-31).** `get_schedule` no longer asks Google
 Routes for a "best driving order" and no longer returns `driveMinutes`, `optimizeFailed`,
@@ -243,8 +245,12 @@ the test is now PLACEMENT:
   email address the manager did not give — and reports what it recorded, never that the item is
   closed.
 - **Outside accounts go through Composio, first move (AGENTS.md rule 8, added 2026-09-07).**
-  Gmail, Sheets, Excel, Drive: the agent calls `get_connect_link` and hands over the URL. No web
-  search, no alternative integration, no self-authentication, no hunting the tool list first.
+  Gmail: the agent calls `get_connect_link` (Gmail-only, manager-tier) and hands over the URL.
+  Other accounts (Sheets, Excel, Drive): a manager's seat connects them through Composio's own
+  connection tool (the manager session has `manageConnections: true`), never Gmail that way (only
+  `get_connect_link` starts the mailbox check); a technician's seat connects no account, Gmail
+  included, and says so (corrected 2026-09-15 — the first wording routed all four
+  to `get_connect_link`). No web search, no alternative integration, no self-authentication.
   Everything after the browser approval is already automatic and is NOT the agent's to do —
   `checkPairing` (`src/composio/pairing.ts`) adopts the ACTIVE account, opens the
   `pairing_verification` review for a manager, and calls `ensureTrigger`, which creates
@@ -282,8 +288,10 @@ timezone."` (firm-local, tenant timezone). The agent runtime injects no date int
 this line is how the model knows what today is between `resolve_date` calls; it self-refreshes
 every call, so sessions crossing midnight stay grounded. It states what today IS —
 `resolve_date` remains the only sanctioned way to compute any OTHER date (eval:
-date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). Array-shaped results
-(e.g. `list_recent_captures`) keep their shape and carry no rider.
+date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). No result is a bare
+array any more (retrieval layer 4): `find_customer` returns `{customers}`, `list_team` `{team}`,
+`list_pending_reviews` a page, and the hub wraps any other array as `{items, count}` — so every
+result carries the rider.
 - The agent calls `record_field_note({ text, channel })`. **If identity resolves to a customer or
   job that already exists, this call RECORDS** — L1 + L2 in one step, `status: 'recorded'`
   (plan ②, 2026-08-21). Idempotency comes from a content stamp
@@ -321,7 +329,25 @@ date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). Array
   time. If `alsoRemoved` is absent, the post-commit scan failed — fall back to the staged
   `willAlsoRemove`.
 - For questions ("what did the last tech do here?"), the agent uses `find_customer` →
-  `get_customer_context` / `list_recent_captures`.
+  `get_customer_context` (the contents page: counts and the newest note's opening per job) →
+  `list_recent_captures` (a page of one job's notes) / `get_capture` (one note in full) /
+  `search_captures` (keyword, technicians). Never the whole history in one result.
+- **Technicians read a limited view (2026-09-15, retrieval layer plan 2).** A technician seat
+  sees the jobs its person has a BOOKED trip on (a trip its own field note minted does not count),
+  the other UNFINISHED jobs of a customer it has unfinished work with, the profile of every customer
+  it has a trip with at all, and every technician note the person wrote. Consequence worth saying
+  out loud: recording a WALK-IN — a note that mints its own trip — leaves the seat unable to read
+  the record it just created, beyond that note. The planner is meant to notice and put it to a
+  manager (a later task); until then it is a grant. Anything else comes back as
+  name + id with `inView:false` and an "outside your view" note: `find_customer`,
+  `get_customer_context`, `get_job`, `list_recent_captures`, `search_captures`;
+  `get_capture` answers `found:false`; `record_standing_fact` refuses. MONEY is words for a
+  technician — "invoiced, not yet paid", never an amount or a balance (and the retraction preview
+  names a money entry without its amount). A manager widens it per
+  item with a grant (`access_grants`: `record` or `record_and_notes`) or per firm with
+  `technician_view_rules`. The seat verbs for both (and the ask that leads to them) are the
+  request-flow task; until then, set a firm's rule by hand (docs/engineering-memory.md §2).
+  Managers' and the planner's reads are unchanged.
 - **Web tools (2026-07-13, all tiers):** `web_search` (Brave snippets via Render — the key never
   reaches a sandbox) and `read_webpage` (hardened reader: URLs from the person or from search
   results only per the §0e rules; server enforces SSRF guard, a length cap on non-search URLs,
@@ -346,8 +372,8 @@ date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). Array
     time. It is REACTIVE: it edits the schedule only when asked.
   - *Consequences:* `book_visit` / `move_visit` are unconditionally one-shot;
     `unschedule_visit` stages only for a PLACED visit; an untimed visit sits on no day, so it
-    appears in the unscheduled queue and in `get_team_schedule`'s `untimed` list, never in a
-    day group. `find_slots(earliestDate, latestDate)` is UNAFFECTED — same words, different
+    appears in the unscheduled queue and in `get_team_schedule`'s `unassignedOnly: true` list
+    (date null), never on a day; the windowed read only counts it (`counts.untimed`). `find_slots(earliestDate, latestDate)` is UNAFFECTED — same words, different
     thing: a search range, never a commitment.
   - Reasoning and the full footprint: `docs/engineering-memory.md` §6a, and
     `thoughts/shared/plans/2026-09-05-the-rails-come-out.md`.
@@ -747,7 +773,8 @@ trigger webhook handler (verify Composio's HMAC `webhook-signature`) — are non
 - **Chat channel:** send a Telegram voice note → confirm the address in chat → read back over `pg`
   that an L1 `raw_captures` row (`channel='technician_voice'`) exists **and** an L2 job/visit links
   to it via `source_capture_id`. Then ask the bot a question and confirm it answers from
-  `get_customer_context`.
+  `get_customer_context` (the contents page) and opens the note with `get_capture` when asked
+  for the exact words.
 - **Email channel:** send a real **work** email → it appears in the spine (L1 `channel='email'` + L2
   when it matches a customer); send a **non-work** email → it is filtered out (no rows). Spot-check
   the classifier's precision on a sample of real inbox mail.

@@ -26,7 +26,7 @@ operator, and it is the part this command writes.
 2. **Write the handoff.** Five headings, each one or two sentences. Omit a heading only when it
    is genuinely empty — "none" is a useful thing to record:
    - **What changed** — the behaviour now different, not a file list. The file list is already
-     recorded automatically.
+     recorded automatically. Name any small fix you made in place along the way.
    - **Decisions** — what was chosen, the alternative, and why. This is the part that binds.
    - **Assumptions** — what you took to be true without verifying it.
    - **Open** — what is unfinished, and what the next step is.
@@ -50,6 +50,8 @@ operator, and it is the part this command writes.
    Promote when a future session would otherwise lose an afternoon: a vendor or tool contract that
    changed under us, a trap whose symptom points somewhere other than its cause, a decision whose
    rejected alternative is invisible in the code, a measurement that would otherwise be re-taken.
+   A lesson found along the way — a trap or a contract, nothing to fix — is written in this
+   handoff rather than parked, and a handoff carrying one makes the call yes.
 
    Do **not** promote a fix that a test already pins and the commit already explains. A promoted
    finding is put in front of every future edit of its files, and "this was fixed" is noise

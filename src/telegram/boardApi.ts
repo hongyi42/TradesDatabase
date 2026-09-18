@@ -1,7 +1,7 @@
 import type http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { configuredPublicKeyHex, verifyInitData, verifyInitDataSigned } from './initData.js';
+import { configuredPublicKeyHex, verifyInitDataSigned } from './initData.js';
 import * as rosterCache from './rosterCache.js';
 import * as botIds from './botIds.js';
 import { findRosterByTelegramUserIdGlobal, type Technician } from '../db/index.js';
@@ -69,33 +69,36 @@ export type BoardAuth =
 // failure: the roster lookup sits OUTSIDE the catch so an outage propagates
 // to the outer handler's logged 500 instead of masquerading as "bad slip"
 // (telling a manager to "reopen the board" during a DB outage helps nobody).
-// WHICH STAMP WE TRUST. A slip carries two: an HMAC keyed by the bot's token,
-// and (Bot API 7.10) an Ed25519 signature anyone can check with Telegram's
-// public key and the bot's numeric id. We prefer the SIGNATURE, because it
-// works for every person's own assistant bot without this process holding
-// their tokens — the whole point of the one-bot-per-person merge. The HMAC
-// stays as the fallback for the global board bot, which is the only token we
-// do hold, and is what every slip minted before the merge carries.
+// WHICH STAMP WE TRUST: the SIGNATURE, and since 2026-09-17 only the signature.
+// A slip can carry two — an HMAC keyed by the bot's token, and (Bot API 7.10) an
+// Ed25519 signature anyone can check with Telegram's public key and the bot's
+// numeric id. Only the second works for a person's own assistant bot without
+// this process holding that bot's token, which is the whole point of the
+// one-bot-per-person merge.
 //
-// Order matters for cost, not for safety: a slip with no `signature` field
-// (an older Telegram client) never touches the allowlist, so the DB-backed
-// read stays off the path it cannot serve.
+// WHY THE HMAC FALLBACK IS GONE. It existed for exactly one reason: the board
+// bot was the only token this process holds, so before every seat's bot id was
+// known, a board-bot slip had no other way to be checked. That reason expired
+// when all six seats were racked with their bot ids (2026-09-17) — the ids came
+// from the gateway's own object store, not BotFather, which is why it took five
+// days longer than it needed to. Keeping it after that bought nothing and cost
+// something real: it swallowed EVERY signature-path refusal, staleness
+// included, so a slip that also carried a valid board-bot hash could reach a
+// 24h replay window the signature path had already rejected.
+//
+// The board bot itself keeps working — `botIds.allowed()` includes its id,
+// derived from the token this process already has, so its launches verify by
+// signature like anyone else's.
+//
+// WHAT THIS REFUSES THAT IT USED TO ACCEPT: a slip with no `signature` field at
+// all, i.e. a Telegram client older than Bot API 7.10 (2024). Such a client now
+// gets a bare 401. That is the deliberate trade — every current client signs.
 async function verifySlip(raw: string): Promise<{ userId: string }> {
-  if (new URLSearchParams(raw).get('signature')) {
-    try {
-      return verifyInitDataSigned(raw, await botIds.allowed(), {
-        publicKeyHex: configuredPublicKeyHex(),
-      });
-    } catch {
-      // Fall through: a slip signed for a bot we do not (yet) know is still
-      // worth the board-token check, and a genuinely bad slip fails twice.
-      // NOTE: this swallows EVERY signature-path refusal, staleness included,
-      // so the two schemes' replay windows must move together — tightening
-      // maxAgeSec on the signature path alone would leave 24h reachable via
-      // the fallback for any slip that also carries a valid board-bot hash.
-    }
-  }
-  return verifyInitData(raw, process.env.BOARD_BOT_TOKEN ?? '');
+  // No try/catch: a refusal here IS the answer. The caller turns any throw into
+  // a bare 401, and there is no longer a second scheme to fall through to.
+  return verifyInitDataSigned(raw, await botIds.allowed(), {
+    publicKeyHex: configuredPublicKeyHex(),
+  });
 }
 
 export async function authBoard(req: http.IncomingMessage): Promise<BoardAuth> {

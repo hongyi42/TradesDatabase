@@ -14,6 +14,7 @@
 // reply name this customer", "did the row actually land in the database". That
 // keeps them robust to response-shape churn while still failing on real breakage.
 
+import { MANAGER_TOOLS_EXPECTED, TECHNICIAN_TOOLS } from '../mcp/tools/surface.expected.js';
 import type { TenantKey, TenantManifest, WorldManifest } from './worldManifest.js';
 import { captureId, customerId, customerName, jobId, visitId } from './worldManifest.js';
 import { addDays, naiveLocal, nextWorkday } from './clock.js';
@@ -226,11 +227,33 @@ export function buildToolCases(): ToolCase[] {
     tenant: 'main',
     badge: 'manager-sam',
     args: (ctx) => ({ customerId: customerId(ctx.tenant, 'edge-rich') }),
-    // A technician note, NOT the intake call: an intake capture is written before
-    // its customer exists, so it carries no customer_id and correctly does not
-    // appear in a customer-scoped list. (It is still reachable as the customer's
-    // source_capture_id, which is how the retract-fold in W03 finds it.)
+    // The technician note reaches the page through its job; since the
+    // retrieval layer (2026-09-15) the customer scope ALSO includes the intake
+    // call, reached through `created_customer` (customers.source_capture_id) —
+    // every attachment kind counts, not just the customer_id stamp.
     check: all(ok, mentions('Replaced the run capacitor')),
+  });
+
+  one({
+    id: 'R16',
+    family: 'reads',
+    title: 'get_capture opens one note in full',
+    tool: 'get_capture',
+    tenant: 'main',
+    badge: 'tech-jane',
+    args: (ctx) => ({ captureId: captureId(ctx.tenant, 'cap-rich-note-1') }),
+    check: all(ok, mentions('Replaced the run capacitor', 'recommend full replacement')),
+  });
+
+  one({
+    id: 'R17',
+    family: 'reads',
+    title: "search_captures finds a note by keyword inside the customer's record",
+    tool: 'search_captures',
+    tenant: 'main',
+    badge: 'tech-jane',
+    args: (ctx) => ({ customerId: customerId(ctx.tenant, 'edge-rich'), query: 'capacitor' }),
+    check: all(ok, mentions('capacitor', 'captureId')),
   });
 
   one({
@@ -247,12 +270,19 @@ export function buildToolCases(): ToolCase[] {
   one({
     id: 'R07',
     family: 'reads',
-    title: 'get_team_schedule returns the whole board for a day',
+    title: 'get_team_schedule lists a day\'s stops when asked',
     tool: 'get_team_schedule',
     tenant: 'main',
     badge: 'manager-sam',
-    args: (ctx) => ({ from: ctx.anchor, to: ctx.anchor }),
-    check: all(ok, mentions('stops')),
+    // Retrieval layer 4: counts by default, the stops only with stops:true.
+    args: (ctx) => ({ from: ctx.anchor, to: ctx.anchor, stops: true }),
+    // The stop LIST itself, not the word: the counts-only page's note says
+    // "stops:true" too, so mentions('stops') would pass a page with no list.
+    check: all(ok, (out) =>
+      Array.isArray((out.json as { stops?: unknown } | null)?.stops)
+        ? null
+        : `expected a stops array, got: ${out.text.slice(0, 200)}`,
+    ),
   });
 
   one({
@@ -373,7 +403,14 @@ export function buildToolCases(): ToolCase[] {
         args: () => ({}),
         check: (out) => {
           const names = (out.json as string[]) ?? [];
-          if (names.length !== 43) return `manager sees ${names.length} tools, expected 43`;
+          // DERIVED, not a literal: two hardcoded counts outlived plan 1's removal
+          // of brief_customer / answer_customer_question and failed this case on a
+          // green main (2026-09-15). surface.expected.ts is the one place a tier's
+          // catalog is written down — the same reason the unit tests stopped
+          // counting in 2026-09-12.
+          if (names.length !== MANAGER_TOOLS_EXPECTED.length) {
+            return `manager sees ${names.length} tools, expected ${MANAGER_TOOLS_EXPECTED.length}`;
+          }
           for (const need of ['book_visit', 'cancel_job', 'query_spine', 'add_technician_seat', 'record_money_event', 'set_firm_profile']) {
             if (!names.includes(need)) return `manager surface is missing ${need}`;
           }
@@ -399,7 +436,9 @@ export function buildToolCases(): ToolCase[] {
         args: () => ({}),
         check: (out) => {
           const names = (out.json as string[]) ?? [];
-          if (names.length !== 17) return `technician sees ${names.length} tools, expected 17`;
+          if (names.length !== TECHNICIAN_TOOLS.length) {
+            return `technician sees ${names.length} tools, expected ${TECHNICIAN_TOOLS.length}`;
+          }
           if (!names.includes('get_schedule')) return 'technician surface is missing get_schedule';
           const leaked = ['book_visit', 'cancel_job', 'add_technician_seat', 'query_spine', 'get_team_schedule'].filter(
             (n) => names.includes(n),
@@ -1270,37 +1309,9 @@ export function buildToolCases(): ToolCase[] {
   });
 
   // ── requires an external service: run only when explicitly enabled ──────────
-  one({
-    id: 'X01',
-    family: 'external',
-    title: 'brief_customer writes a cited briefing',
-    tool: 'brief_customer',
-    tenant: 'main',
-    badge: 'manager-sam',
-    requires: 'model',
-    args: (ctx) => ({ customerId: customerId(ctx.tenant, 'edge-rich'), focus: 'next_visit' }),
-    check: all(ok, mentions('citations')),
-  });
-
-  one({
-    id: 'X02',
-    family: 'external',
-    title: 'answer_customer_question admits when the record does not say',
-    tool: 'answer_customer_question',
-    tenant: 'main',
-    badge: 'manager-sam',
-    requires: 'model',
-    args: (ctx) => ({
-      customerId: customerId(ctx.tenant, 'edge-silent'),
-      question: 'What is the gate code for this property?',
-    }),
-    // The anti-fabrication case: this customer has no gate code on file.
-    check: all(ok, (out) =>
-      /don't|does not|no .*(record|information)|not on file|unknown/i.test(out.text)
-        ? null
-        : `expected an admission that the record is silent, got: ${out.text.slice(0, 200)}`,
-    ),
-  });
+  // (X01/X02 — brief_customer / answer_customer_question — were retired with
+  // those tools, plan 2026-09-15-the-retrieval-layer-1: the seat briefs itself
+  // from the contents page.)
 
   one({
     id: 'X03',

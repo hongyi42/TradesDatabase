@@ -419,8 +419,21 @@ async function handleAddTechnicianSeat(toolCtx: ToolContext): Promise<unknown> {
         } catch {
           /* advisory */
         }
+        // AN ALLOWLIST, not `...created`: this result goes into the model's
+        // context, and the row carries badge_hash, the Composio handles and the
+        // Telegram id (list_team projects those out too). A column added later
+        // stays hidden until someone decides the model should see it.
         return {
-          ...created,
+          id: created.id,
+          ref: created.ref,
+          display_name: created.display_name,
+          tier: created.tier,
+          state: created.state,
+          seat_exempt: created.seat_exempt,
+          skills: created.skills,
+          service_cities: created.service_cities,
+          sandbox_ref: created.sandbox_ref,
+          created_at: created.created_at,
           note:
             `REQUIRED next step: ask the manager for ${created.display_name}'s working days ` +
             `and call set_availability now — or, if their hours are genuinely not known yet, ` +
@@ -851,17 +864,21 @@ async function handleListTeam(toolCtx: ToolContext): Promise<unknown> {
           .filter((p) => p.technician_id)
           .map((p) => [p.technician_id, p.bot_username]),
       );
-      return (await listTeam(tenantId)).map((t) => ({
-        ref: t.ref,
-        displayName: t.display_name,
-        tier: t.tier,
-        state: t.state,
-        seatExempt: t.seat_exempt,
-        skills: t.skills,
-        availabilityConfigured: t.availability !== null,
-        sandboxRef: t.sandbox_ref,
-        botUsername: poolBotByTechnician.get(t.id) ?? null,
-      }));
+      // A named object, never a bare array (retrieval layer 4): arrays get no
+      // `now` rider.
+      return {
+        team: (await listTeam(tenantId)).map((t) => ({
+          ref: t.ref,
+          displayName: t.display_name,
+          tier: t.tier,
+          state: t.state,
+          seatExempt: t.seat_exempt,
+          skills: t.skills,
+          availabilityConfigured: t.availability !== null,
+          sandboxRef: t.sandbox_ref,
+          botUsername: poolBotByTechnician.get(t.id) ?? null,
+        })),
+      };
 }
 
 async function handleSetTechnicianSkills(toolCtx: ToolContext): Promise<unknown> {

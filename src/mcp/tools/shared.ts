@@ -22,17 +22,18 @@ import {
   setNudgeAnsweredBy,
 } from '../../db/index.js';
 import type {
+  CallerTier,
   CaptureChannel,
   FoldImpact,
   Json,
   TechnicianTier,
 } from '../../db/index.js';
 import type {
-  BriefFocus,
-} from '../../synthesis/index.js';
-import type {
   ExtractedFields,
 } from '../../writePath/extract.js';
+import type {
+  ToolContext,
+} from './types.js';
 import type {
   MatchResult,
 } from '../../writePath/identityMatch.js';
@@ -50,8 +51,29 @@ import {
 } from 'node:crypto';
 
 export const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
-export const BRIEF_FOCUSES: BriefFocus[] = ['next_visit', 'full_history'];
 export const TIERS: TechnicianTier[] = ['manager', 'technician'];
+
+// Who is asking, for the retrieval layer's tier gate. From the VERIFIED
+// identity the hub established, never from a tool argument: the planner is the
+// `spine:` namespace, a manager is an ACTIVE manager roster row (the same
+// predicate as the admin-tool gate), and everyone else is a technician.
+export const callerTierOf = (ctx: ToolContext): CallerTier =>
+  ctx.identity.technicianRef.startsWith('spine:')
+    ? 'planner'
+    : ctx.activeManager
+      ? 'manager'
+      : 'technician';
+
+// The technician's roster id, for the limited view (plan 2026-09-15-the-
+// retrieval-layer-2). A badge with no roster row has none — and sees nothing.
+export const viewerIdOf = (ctx: ToolContext): string | null => ctx.caller?.id ?? null;
+
+// What a technician's seat is told about something outside her view. Plain, and
+// honest about the one way in: the request flow (a later task) will carry the ask.
+export const OUTSIDE_VIEW_NOTE =
+  'outside your view — you see the customers whose current work you have a trip on. Only a ' +
+  'manager can open this one; say so, and do not guess what it holds. Notes you wrote ' +
+  'yourself there stay readable: list_recent_captures shows them.';
 
 // GROUNDING_BARE=1 (date-eval bare-clock arm, 2026-08-23): the model's ONLY
 // date help is the firm-local `now` rider. Read at module load — the flag
@@ -552,12 +574,56 @@ export function restoreHintFor(impact: FoldImpact | undefined): string | undefin
 // confirm must not look different from a first-try confirm. The scan is
 // advisory here (see tryFindFoldImpact), and an absent list must not read as
 // "nothing folded": say the scan failed and point back at the staged preview.
+// What survives a retraction but loses the note as its evidence: booked trips
+// (rung 9b) and money entries (2026-09-15). Present only when something is in
+// it, and both arrays ride together so a reader never mistakes a missing key
+// for an empty list.
+export function losingEvidenceOf(
+  impact: FoldImpact,
+  // A TECHNICIAN IS SHOWN NO AMOUNT (operator, 2026-09-15): this list is the one
+  // other place a money figure reached a technician. She keeps the eventId, the
+  // job and the kind — which is exactly what inform_team_lead's note tells her to
+  // name — and the manager reads the number.
+  activeManager = false,
+): {
+  visits: FoldImpact['visitsLosingEvidence'];
+  money: (Omit<FoldImpact['moneyLosingEvidence'][number], 'amountCents'> & { amountCents?: number | null })[];
+} | undefined {
+  if (impact.visitsLosingEvidence.length === 0 && impact.moneyLosingEvidence.length === 0) {
+    return undefined;
+  }
+  const money = activeManager
+    ? impact.moneyLosingEvidence
+    : impact.moneyLosingEvidence.map(({ amountCents, ...rest }) => {
+        void amountCents;
+        return rest;
+      });
+  return { visits: impact.visitsLosingEvidence, money };
+}
+
+// MONEY NEVER FOLDS (operator ruling 2026-09-15): the entries still count, and
+// the only right fix for a wrong amount is a correction in the ledger — which
+// is a manager's verb. Worded per tier so a technician is never told to call a
+// tool they cannot reach.
+export function moneyLosingEvidenceNote(activeManager: boolean): string {
+  return (
+    'The money entries under money STILL COUNT — retracting a note never changes money. ' +
+    (activeManager
+      ? 'If an amount was wrong, correct it with record_money_event (kind correction, ' +
+        'correctsEventId = its eventId).'
+      : 'If an amount was wrong, tell the manager with inform_team_lead, naming the entry, ' +
+        'so they can correct it — you cannot change money yourself.')
+  );
+}
+
 export async function retractedResult(
   tenantId: string,
   captureId: string | null,
   retractionId: string,
+  activeManager = false,
 ): Promise<Record<string, unknown>> {
   const impact = captureId ? await tryFindFoldImpact(tenantId, captureId) : undefined;
+  const losing = impact && losingEvidenceOf(impact, activeManager);
   return {
     status: 'retracted',
     captureId,
@@ -565,15 +631,14 @@ export async function retractedResult(
     // `alsoRemoved` must name ONLY what actually went. Trips that merely lost
     // this note as evidence ride alongside under their own key (rung 9b) —
     // folding them into alsoRemoved would tell the manager a live appointment
-    // had disappeared.
+    // had disappeared. Money rides there too: it never goes.
     alsoRemoved: impact && {
       facts: impact.facts,
       visits: impact.visits,
       correspondence: impact.correspondence,
     },
-    ...(impact && impact.visitsLosingEvidence.length > 0
-      ? { alsoLostEvidence: { visits: impact.visitsLosingEvidence } }
-      : {}),
+    ...(losing ? { alsoLostEvidence: losing } : {}),
+    ...(losing && losing.money.length > 0 ? { moneyNote: moneyLosingEvidenceNote(activeManager) } : {}),
     ...(impact === undefined
       ? {
           alsoRemovedNote:
@@ -742,10 +807,11 @@ export async function recordCallerThroughTheDoor<T>(run: () => Promise<T>): Prom
 }
 
 // GROUNDING_LEAN=1 strips the derived date/schedule crutches added for the
-// GLM-era seat model — get_team_schedule counts/windowCoverByDay/countsNote,
-// get_customer_context upcomingVisits/openWorkNote — while keeping the `now`
-// rider, resolve_date, and every correctness filter (the v_schedule status
-// filter is a bug fix, not a crutch, and is untouched). Date-eval Arm B
+// GLM-era seat model — get_customer_context upcomingVisits/openWorkNote — while
+// keeping the `now` rider, resolve_date, and every correctness filter (the
+// v_schedule status filter is a bug fix, not a crutch, and is untouched).
+// get_team_schedule's counts are NO LONGER stripped: since retrieval layer 4
+// they are the page itself, not a crutch beside a dump. Date-eval Arm B
 // (2026-08-23): measure a frontier model WITHOUT the scaffolding. Read per
 // CALL, not at module load, so the eval window flips it via Render env with
 // no build, and tests toggle it around individual calls. Never set it in

@@ -144,6 +144,17 @@ describe('query_spine — tenant isolation', () => {
     },
   );
 
+  test('the planner finds a customer by NUMBER through v_customers.phone_key, whatever the spelling', async () => {
+    // The code lookups moved onto phone_key (20260916130100); spine_read reads
+    // v_customers, so without the column a planner query on a caller's +1
+    // number missed the same customer the matcher now finds.
+    const spelled = await createCustomer({ tenantId: tenantA, name: 'QS Spelled A', phone: '(206) 555-0170' });
+    const r = await run(tenantA, "select id, phone from v_customers where phone_key = '2065550170'");
+    const rows = r.rows[0].result as Array<{ id: string; phone: string }>;
+    expect(rows.map((c) => c.id)).toContain(spelled.id);
+    expect(rows.find((c) => c.id === spelled.id)?.phone).toBe('(206) 555-0170');
+  });
+
   test('a query that tries to widen the filter still only gets its own tenant', async () => {
     // `or true` is the shape an adversarial or confused query takes. The view's
     // WHERE is applied before this predicate can matter.
@@ -216,7 +227,8 @@ describe('query_spine — what it must refuse', () => {
     // revisit clause was exercised on 2026-08-23 (④ — the planner closes gaps
     // on evidence and must be able to read it). What survives of decision B is
     // the mechanism: the BASE table stays ungranted, and only the columns
-    // v_captures names — labeled trail included — are readable.
+    // v_captures names are readable (live notes only since plan 3 of the
+    // retrieval layer, 2026-09-15 — the labeled trail is gone).
     await expect(run(tenantA, 'select * from raw_captures')).rejects.toThrow(/permission denied/i);
   });
 
@@ -314,7 +326,7 @@ describe('query_spine — bounds', () => {
 });
 
 describe('query_spine — the view surface is closed', () => {
-  test('spine_reader holds SELECT on exactly the eighteen views and nothing else', async () => {
+  test('spine_reader holds SELECT on exactly the sixteen views and nothing else', async () => {
     // A new table must not become readable by default. This is the test that
     // fails when someone adds a grant without thinking.
     // v_money_events added 2026-08-15 (money-ledger plan, manager-only money
@@ -336,14 +348,11 @@ describe('query_spine — the view surface is closed', () => {
     // close a gap, superseding the 5.5 rule that office answers never fill the
     // record. Manager visibility through the shared catalog is the same
     // recorded acceptance as v_observations and v_roster_events.
-    // v_job_captures added 2026-09-07 (rung 10): the other half of the
-    // capture→job bridge. v_visit_notes answers "which note reported this
-    // trip"; this answers "which call or email landed on this job when no trip
-    // was on the calendar" — the shape that used to link nothing at all, so a
-    // customer chasing an open job read as silence.
-    // v_customer_captures added 2026-09-12: the third link level. A message the
-    // door could place on a PERSON but not on a job appears here and nowhere
-    // else — it is how "we know who wrote, not which work" is readable at all.
+    // v_job_captures (2026-09-07), v_visit_notes (2026-09-06) and
+    // v_customer_captures (2026-09-12) were three answers to "which job or
+    // customer is this note on". Plan 3 of the retrieval layer (2026-09-15)
+    // DROPPED all three for v_capture_links: capture_membership — the one
+    // definition every seat tool reads — exposed to SQL, live notes only.
     // v_visit_participants added 2026-09-06 (rung 9c): v_schedule stays ONE ROW
     // PER TRIP with the crew as arrays, so `count(*)` keeps counting trips —
     // this view is where a question about PEOPLE ("how many visits did Ben go
@@ -354,11 +363,10 @@ describe('query_spine — the view surface is closed', () => {
     );
     expect(rows.map((r) => r.table_name)).toEqual([
       'v_cancelled_visits',
+      'v_capture_links',
       'v_captures',
-      'v_customer_captures',
       'v_customers',
       'v_firm_profile',
-      'v_job_captures',
       'v_jobs',
       'v_money_events',
       'v_nudges',
@@ -369,16 +377,17 @@ describe('query_spine — the view surface is closed', () => {
       'v_schedule',
       'v_team',
       'v_time_off',
-      'v_visit_notes',
       'v_visit_participants',
     ]);
   });
 
   // BUILD 7 FINAL REVIEW, and the highest-severity finding of the build.
   //
-  // `to_agent` bodies are the PLANNER'S OWN WORDS — its send text and the desk
-  // answers written in its name. `spine_read` is in CITABLE_TOOLS, so a view
-  // without this filter lets the planner read its own prose back and quote it
+  // The PLANNER'S OWN WORDS are its `to_agent` send text AND the desk answers
+  // written in its name — which are `to_planner`, kind 'desk' (desk.ts), so the
+  // direction filter alone never caught them (fixed 2026-09-15 by
+  // 20260916130000_desk_answers_not_citable). `spine_read` is in CITABLE_TOOLS, so a view
+  // without these filters lets the planner read its own prose back and quote it
   // into an evidence-basis close: exactly the laundering build 6 Phase 4 found
   // by live probe and shut. The same build excludes desk pairs from `readText`
   // and keeps `read_memory` out of CITABLE_TOOLS for that one reason, so a view
@@ -388,6 +397,7 @@ describe('query_spine — the view surface is closed', () => {
       `select pg_get_viewdef('v_office_messages'::regclass, true) as def`,
     );
     expect(def.rows[0].def).toContain("direction = 'to_planner'");
+    expect(def.rows[0].def).toContain("'desk'");
 
     // Asserted against real rows too, not just the definition: a filter can be
     // present and wrong.
@@ -401,7 +411,9 @@ describe('query_spine — the view surface is closed', () => {
     await pg.query(
       `insert into office_messages (tenant_id, direction, kind, from_ref, to_ref, technician_id, body)
        values ($1,'to_planner','inform','qs-office-rail','spine:team-lead',$2,'INBOUND probe body'),
-              ($1,'to_agent','inform','spine:team-lead','qs-office-rail',$2,'OUTBOUND planner prose')`,
+              ($1,'to_agent','inform','spine:team-lead','qs-office-rail',$2,'OUTBOUND planner prose'),
+              -- The desk's answer: to_planner like the inbox, but the planner's own words.
+              ($1,'to_planner','desk','spine:team-lead','qs-office-rail',$2,'DESK answer prose')`,
       [tenantId, tech.rows[0].id],
     );
     try {
@@ -420,6 +432,20 @@ describe('query_spine — the view surface is closed', () => {
       await pg.query(`delete from office_messages where technician_id = $1`, [tech.rows[0].id]);
       await pg.query(`delete from technicians where id = $1`, [tech.rows[0].id]);
     }
+  });
+
+  // THE 5-SECOND LIMIT THAT NEVER WAS (plan 3 of the retrieval layer). The
+  // original body ran `set_config('statement_timeout', '5000', true)` INSIDE the
+  // function; measured 2026-09-15 through /rpc/query_spine, pg_sleep(6) returned
+  // at 6.03 s — a statement's timer is armed when the statement starts, so a GUC
+  // changed mid-statement cannot reach it. The bound that holds is the
+  // authenticator role's statement_timeout=8s (local and hosted). Pinned so the
+  // dead line is not re-added as though it did something.
+  test('query_spine does not pretend to set its own statement timeout', async () => {
+    const { rows } = await pg.query<{ def: string }>(
+      "select pg_get_functiondef('query_spine'::regproc) as def",
+    );
+    expect(rows[0].def).not.toContain("set_config('statement_timeout'");
   });
 
   test('only service_role may execute query_spine — NOT anon or authenticated', async () => {
@@ -459,6 +485,74 @@ describe('query_spine — the view surface is closed', () => {
       'sandbox_ref',
     ]) {
       expect(text).not.toContain(forbidden);
+    }
+  });
+});
+
+describe('query_spine — local_day is the stored wall clock (plan 2026-09-15 retrieval layer 4)', () => {
+  // starts_at is NAIVE-LOCAL: the digits are the firm's wall clock and the +00
+  // lies. The views used to convert it as if it were a real UTC instant, which
+  // put a 06:00 visit for a Pacific firm on the PREVIOUS day (seven hours back)
+  // and a late-evening visit for a UTC+ firm on the NEXT one. Both directions
+  // are pinned: the Pacific case fails on the old view, the Tokyo case on the
+  // mirror-image mistake.
+  let pacific: string;
+  let tokyo: string;
+  const made: string[] = [];
+
+  beforeAll(async () => {
+    for (const [tag, tz] of [
+      ['la', 'America/Los_Angeles'],
+      ['tokyo', 'Asia/Tokyo'],
+    ] as const) {
+      // createTenant takes no timezone; the column defaults to Los Angeles.
+      const tenantId = (await createTenant(`qs-day-${tag}`, { managerSeats: 1 })).id;
+      await pg.query('update tenants set timezone = $1 where id = $2', [tz, tenantId]);
+      made.push(tenantId);
+      const customer = await createCustomer({ tenantId, name: `QS Day ${tag}` });
+      const job = await createJob({ tenantId, customerId: customer.id, title: `QS Day ${tag}` });
+      const at = tag === 'la' ? '06:00' : '22:00';
+      const until = tag === 'la' ? '07:00' : '23:00';
+      await createVisit({
+        tenantId,
+        jobId: job.id,
+        startsAt: `2027-03-09T${at}:00Z`,
+        endsAt: `2027-03-09T${until}:00Z`,
+        status: 'confirmed',
+      });
+      // A cancelled one at the same edge of the day, for v_cancelled_visits.
+      await createVisit({
+        tenantId,
+        jobId: job.id,
+        startsAt: tag === 'la' ? '2027-03-09T05:00:00Z' : '2027-03-09T23:00:00Z',
+        endsAt: tag === 'la' ? '2027-03-09T05:30:00Z' : '2027-03-09T23:30:00Z',
+        status: 'cancelled',
+      });
+      if (tag === 'la') pacific = tenantId;
+      else tokyo = tenantId;
+    }
+  });
+
+  afterAll(async () => {
+    for (const t of made) {
+      await pg.query('delete from query_audit where tenant_id = $1', [t]);
+      await pg.query('delete from visits where tenant_id = $1', [t]);
+      await pg.query('delete from jobs where tenant_id = $1', [t]);
+      await pg.query('delete from customers where tenant_id = $1', [t]);
+      await pg.query('delete from tenants where id = $1', [t]);
+    }
+  });
+
+  test.each([
+    ['a 06:00 visit for a Pacific firm', () => pacific],
+    ['a 22:00 visit for a Tokyo firm', () => tokyo],
+  ])('%s sits on its own day in v_schedule and v_cancelled_visits', async (_label, tenantOf) => {
+    for (const view of ['v_schedule', 'v_cancelled_visits']) {
+      const r = await run(tenantOf(), `select local_day, local_weekday from ${view}`);
+      const rows = r.rows[0].result as { local_day: string; local_weekday: string }[];
+      expect(rows).toHaveLength(1);
+      expect(rows[0].local_day).toBe('2027-03-09');
+      expect(rows[0].local_weekday).toBe('Tuesday');
     }
   });
 });

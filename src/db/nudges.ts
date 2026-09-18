@@ -111,19 +111,32 @@ export async function createNudgeFromObservation(
   throw new Error(`createNudgeFromObservation failed: ${error?.message ?? 'no row returned'}`);
 }
 
+// PAGED on a TOTAL order (retrieval layer plan 3), the listObservationsByStatus
+// twin. Unpaged, PostgREST's silent 1000-row cap handed the planner, the desk and
+// the watcher's alarm pass a truncated list with no error — and the planner now
+// tells the model how many open gaps a firm has in all, which must be a true
+// number. `id` breaks created_at ties so a page boundary never repeats or skips.
 export async function listNudgesByStatus(
   tenantId: string,
   statuses: NudgeStatus[],
 ): Promise<Nudge[]> {
   if (statuses.length === 0) return []; // PostgREST `in.()` with zero values errors
-  const { data, error } = await getClient()
-    .from('nudges')
-    .select()
-    .eq('tenant_id', tenantId)
-    .in('status', statuses)
-    .order('created_at', { ascending: true });
-  if (error) throw new Error(`listNudgesByStatus failed: ${error.message}`);
-  return (data ?? []) as Nudge[];
+  const PAGE = 1000;
+  const out: Nudge[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await getClient()
+      .from('nudges')
+      .select()
+      .eq('tenant_id', tenantId)
+      .in('status', statuses)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`listNudgesByStatus failed: ${error.message}`);
+    out.push(...((data ?? []) as Nudge[]));
+    if (!data || data.length < PAGE) break;
+  }
+  return out;
 }
 
 // The watcher's second fresh-gap pre-filter (the listEverFlaggedSubjectRefs

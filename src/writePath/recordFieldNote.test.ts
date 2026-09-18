@@ -473,6 +473,24 @@ describe('a field note attaches to its trip (rung 9b)', () => {
 });
 
 describe('recordFieldNote', () => {
+  test('a caller-ID in E.164 finds the customer stored as (206) 555-0170 — one number, one match', async () => {
+    // Twilio's From arrives as +1…; the customer row holds whatever a person or
+    // the extractor wrote. An exact string compare made them two strangers.
+    const customer = await createCustomer({ tenantId, name: 'Spelled Sam', phone: '(206) 555-0170' });
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'tech-jane',
+        channel: 'technician_voice',
+        text: 'checked the water heater',
+        fallbackPhone: '+12065550170',
+      },
+      stub({ workPerformed: 'Checked the water heater' }),
+    );
+    expect(r.status).toBe('matched');
+    expect(r.customerId).toBe(customer.id);
+  });
+
   test('matched note writes L1 + reuses customer + creates job/visit with provenance & labor hours; a completed-signal on a new (open) job is skipped, not thrown', async () => {
     const customer = await createCustomer({ tenantId, name: 'Reuse Me', phone: '555-0177' });
 
@@ -1618,7 +1636,9 @@ describe('rung 10 — inbound asks before it creates', () => {
   // Created ASCENDING, so `tap` is the newest — the one the old guess took.
   let twoJobSeq = 0;
   const twoOpenJobs = async (name: string) => {
-    const phone = `555-9${twoJobSeq}`;
+    // A real 10-digit number: phone matching keys on the digits and ignores
+    // anything under 7 of them, so the old `555-9N` fixture matched nobody.
+    const phone = `206-559-${String(twoJobSeq).padStart(4, '0')}`;
     const email = `two-jobs-${twoJobSeq++}@example.com`;
     const customer = await createCustomer({ tenantId, name, phone, email });
     const boiler = await createJob({ tenantId, customerId: customer.id, title: 'Boiler diagnostic' });

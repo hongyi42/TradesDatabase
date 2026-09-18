@@ -1,21 +1,26 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
-// Stub both boundaries BEFORE importing the notifier — this unit must never touch
-// the network or the DB. Only the two symbols notify.ts actually imports.
-vi.mock('../telegram/boardBot.js', () => ({ sendBoardMessage: vi.fn() }));
-vi.mock('../db/index.js', () => ({ listManagersWithTelegram: vi.fn() }));
+// Stub the DB boundary BEFORE importing the notifier — this unit must never
+// touch it. Only the two symbols notify.ts actually imports. The Bot API is no
+// longer one of its boundaries: since one-bot phase 2 the notice is QUEUED and
+// the box delivers it through the manager's own assistant, so there is no
+// network call left here to stub.
+vi.mock('../db/index.js', () => ({
+  listManagersWithTelegram: vi.fn(),
+  queuePersonPush: vi.fn(),
+}));
 
 import { notifyManagers } from './notify.js';
-import { sendBoardMessage } from '../telegram/boardBot.js';
-import { listManagersWithTelegram } from '../db/index.js';
+import { listManagersWithTelegram, queuePersonPush } from '../db/index.js';
 import type { Technician } from '../db/index.js';
 
-const sends = vi.mocked(sendBoardMessage);
+const sends = vi.mocked(queuePersonPush);
 const listManagers = vi.mocked(listManagersWithTelegram);
 
-// Minimal manager shapes — only telegram_user_id is read by notifyManagers.
+// Minimal manager shapes — notifyManagers reads the binding (to skip the
+// unbound) and the id (to address the queue row).
 const managers = (...ids: Array<string | null>): Technician[] =>
-  ids.map((id) => ({ telegram_user_id: id }) as unknown as Technician);
+  ids.map((id) => ({ id: `tech-${id}`, telegram_user_id: id }) as unknown as Technician);
 
 let errSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
@@ -29,17 +34,24 @@ afterEach(() => {
 describe('notifyManagers', () => {
   test('pushes to each bound manager, skips the one with no telegram_user_id', async () => {
     listManagers.mockResolvedValue(managers('910000001', null));
-    sends.mockResolvedValue(undefined);
+    sends.mockResolvedValue(undefined as never);
 
     await notifyManagers('T1', 'a review needs you');
 
     expect(sends).toHaveBeenCalledTimes(1); // the null-binding manager is skipped
-    expect(sends).toHaveBeenCalledWith('910000001', 'a review needs you');
+    expect(sends).toHaveBeenCalledWith({
+      tenantId: 'T1',
+      technicianId: 'tech-910000001',
+      kind: 'call',
+      body: 'a review needs you',
+    });
   });
 
   test('a failing send does NOT reject notifyManagers, and other managers still get theirs', async () => {
     listManagers.mockResolvedValue(managers('910000001', '910000002'));
-    sends.mockRejectedValueOnce(new Error('bot blocked')).mockResolvedValueOnce(undefined);
+    sends
+      .mockRejectedValueOnce(new Error('queue write failed'))
+      .mockResolvedValueOnce(undefined as never);
 
     await expect(notifyManagers('T1', 'hi')).resolves.toBeUndefined();
     expect(sends).toHaveBeenCalledTimes(2); // one failure never suppresses the rest

@@ -196,8 +196,8 @@ door. Undo anytime with `brev deregister` (documented full cleanup).
    (`bootstrap-box.sh boot <AGENT>`); rebuilds are NOT needed for restarts. Verified:
    reboot + console stop/start both recover hands-off (guide §7 note).
 4. **Render `ANTHROPIC_API_KEY` went invalid** (likely rotated in the 2026-07-03 credential
-   sweep and never updated on Render): `record_field_note`, `brief_customer`,
-   `answer_customer_question` fail with "invalid API key" until it's replaced. Reads
+   sweep and never updated on Render): `record_field_note` (and, until they were retired
+   2026-09-15, `brief_customer` / `answer_customer_question`) fail with "invalid API key" until it's replaced. Reads
    unaffected. This is server-side — both boxes see it equally.
 
 ## Standing gotchas carried over (unchanged by the migration)

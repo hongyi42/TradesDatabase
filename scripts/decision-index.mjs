@@ -13,7 +13,7 @@
 // "which decisions govern the file about to be edited?".
 //
 //   node scripts/decision-index.mjs           # regenerate both artifacts
-//   node scripts/decision-index.mjs --check    # exit 1 if they are stale (for CI / hooks)
+//   node scripts/decision-index.mjs --check    # exit 1 if a regenerate would change them (full checkout only; see CHECK)
 
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -27,6 +27,28 @@ const ENG_MEM = join(ROOT, 'docs', 'engineering-memory.md');
 const HOOK_OUT = join(THOUGHTS, 'by-file.json');
 // A session can absorb a few decisions before the reminder becomes noise it learns to skip.
 const MAX_PER_FILE = 4;
+
+// `--check` computes everything and compares instead of writing. Until 2026-09-14 it wrote all three
+// artifacts and printed "OK" whatever it found, so it could never fail.
+// WHAT IT CAN AND CANNOT GATE: the `landed` and `drift` marks are computed from THIS checkout's
+// `origin/main` and history, so a shallow clone (no history) or a `git fetch` that moves main
+// reports STALE with no document changed. It answers "would a regenerate here change the tracked
+// files?" in a full, fetched checkout — a pre-commit check, not a CI gate on a shallow clone.
+const CHECK = process.argv.includes('--check');
+const stale = [];
+const written = [];
+// POSIX in messages whatever the platform, like every other path this script emits.
+const shown = (path) => relative(ROOT, path).split(sep).join('/');
+function emit(path, text) {
+  // CRLF-tolerant, like the readers below: a checkout with core.autocrlf is not "changed".
+  const current = existsSync(path) ? readFileSync(path, 'utf8').replace(/\r\n/g, '\n') : null;
+  if (current === text) return;
+  if (CHECK) stale.push(shown(path));
+  else {
+    writeFileSync(path, text);
+    written.push(shown(path));
+  }
+}
 
 // A doc is "about" a source file if it names it this many times. One passing mention is
 // noise; the hook would drown the session in irrelevant history otherwise.
@@ -228,10 +250,15 @@ function parseMemoryEntries(text) {
     if (!current) return;
     const body = current.body.join(' ');
     current.date = /(20\d{2}-\d{2}-\d{2})/.exec(body)?.[1] ?? '';
-    current.files = [...new Set(
+    // A `###` entry reaches the MAP but claims no by-file slot. Attaching it would let the newly
+    // indexed headings compete for MAX_PER_FILE against findings on busy files, and the rank/
+    // tiebreak there was tuned deliberately (finding 2026-09-14-fix-the-small-board-findings).
+    // Widening the map is this change; re-opening that ranking is a separate, operator-sized call.
+    current.files = current.heading ? [] : [...new Set(
       [...body.matchAll(/\bsrc\/[a-zA-Z0-9_/-]+\.ts\b/g)].map((m) => m[0]),
     )].filter((f) => existsSync(join(ROOT, f)));
     delete current.body;
+    delete current.heading;
     entries.push(current);
     current = null;
   };
@@ -241,6 +268,15 @@ function parseMemoryEntries(text) {
       section = line.replace(/^##\s+/, '').trim();
       return;
     }
+    // A `###` heading is an entry too. Most of §2 is written this way, and until now none of it
+    // reached the map — so grepping the map for a rule that exists found nothing, which is worse
+    // than no map at all (measured 2026-09-17 on "The product is the fit").
+    const h3 = /^###\s+(.+?)\s*$/.exec(line);
+    if (h3) {
+      flush();
+      current = { title: h3[1].replace(/`/g, '').trim(), section, line: i + 1, body: [h3[1]], heading: true };
+      return;
+    }
     const lead = /^[-*]\s+\*\*(.+?)\*\*(.*)$/.exec(line);
     if (lead) {
       flush();
@@ -248,7 +284,9 @@ function parseMemoryEntries(text) {
       return;
     }
     if (current) {
-      if (/^\S/.test(line) && line.trim()) flush();
+      // A bullet entry ends at the first unindented line; a heading entry's prose IS unindented,
+      // so it runs until the next heading or bullet lead, each of which flushes above.
+      if (!current.heading && /^\S/.test(line) && line.trim()) flush();
       else current.body.push(line);
     }
   });
@@ -518,7 +556,7 @@ for (const d of live) {
 }
 md.push('');
 
-writeFileSync(MD_OUT, `${md.join('\n')}`);
+emit(MD_OUT, `${md.join('\n')}`);
 
 // Machine view for the pre-edit hook: source file → the decisions that govern it.
 const byFile = {};
@@ -534,7 +572,10 @@ for (const d of docs) {
       // it loses every tiebreak and MAX_PER_FILE drops it. That is silent and backwards: 52 of
       // this repo's 96 attached files are already at the cap, and they are exactly the busy
       // files a finding is most likely to be about. A dropped one keeps `superseded` and stays
-      // last, because somebody decided against it.
+      // last, because somebody decided against it. It also ranks ABOVE a prose mention from
+      // docs/: those are seeded `mentions: 100` below, so sharing their rank lost every tiebreak
+      // too — src/mcp/server.ts hid its tool-registry finding behind two passing doc references
+      // that way until 2026-09-14.
       statusClass: d.kind === 'finding' && d.statusClass !== 'superseded' ? 'finding' : d.statusClass,
       supersededBy: d.supersededBy,
       drift: d.drift,
@@ -578,8 +619,8 @@ for (const list of Object.values(byFile)) {
 // The hook's view: hardest-won facts first, then the documents that are most about this file.
 // Superseded documents are kept but ranked last and labelled — knowing a decision was reversed
 // is worth more than not knowing the document exists.
-const RANK = { rule: 0, memory: 1, doc: 2, finding: 2, superseded: 4 };
-const rank = (e) => RANK[e.statusClass] ?? 3;
+const RANK = { rule: 0, memory: 1, finding: 2, doc: 3, superseded: 5 };
+const rank = (e) => RANK[e.statusClass] ?? 4; // plan/research: complete, unknown, draft, other
 const hookView = {};
 for (const [file, list] of Object.entries(byFile)) {
   hookView[file] = [...list]
@@ -598,15 +639,20 @@ for (const [file, list] of Object.entries(byFile)) {
       durableFirm: e.durableFirm ?? false,
     }));
 }
-writeFileSync(HOOK_OUT, `${JSON.stringify(hookView)}\n`);
+emit(HOOK_OUT, `${JSON.stringify(hookView)}\n`);
 
 const { text: memoryOut, written: tocWritten } = injectMemoryToc(memoryEntries, memoryClean);
-if (tocWritten && memoryOut !== readFileSync(ENG_MEM, 'utf8')) writeFileSync(ENG_MEM, memoryOut);
+if (tocWritten) emit(ENG_MEM, memoryOut);
 
-if (process.argv.includes('--check')) {
-  console.log(`thoughts index OK — ${docs.length} docs, ${superseded.length} superseded`);
+if (CHECK) {
+  if (stale.length > 0) {
+    console.error(`thoughts index STALE — ${stale.join(', ')}; run npm run decisions:index and commit the result`);
+    process.exitCode = 1;
+  } else {
+    console.log(`thoughts index OK — ${docs.length} docs, ${superseded.length} superseded`);
+  }
 } else {
-  console.log(`Wrote ${relative(ROOT, MD_OUT)} and ${relative(ROOT, HOOK_OUT)}`);
+  console.log(written.length > 0 ? `Wrote ${written.join(', ')}` : 'Index unchanged — nothing written');
   console.log(`  ${docs.length} documents · ${live.length} live · ${superseded.length} superseded`);
   console.log(`  ${Object.keys(byFile).length} source files have decisions attached`);
   const drifted = docs.filter((d) => d.drift >= DRIFT_LOUD).length;

@@ -205,8 +205,9 @@ export async function captureHasLinkedL2(captureId: string): Promise<boolean> {
   return note || jobLink || observed || customerLink;
 }
 
-// Captures directly stamped with a job_id, newest first. (Tech notes resolved via
-// L2.source_capture_id won't appear here — getCustomerContext unions those in.)
+// Captures directly stamped with a job_id, newest first — ONE of the six ways a
+// capture attaches to a job. The full union is the database's capture_membership
+// view (migration 20260916120000), which the seat readers go through.
 export async function listRawCapturesForJob(jobId: string): Promise<RawCapture[]> {
   const { data, error } = await getClient()
     .from('raw_captures')
@@ -215,83 +216,6 @@ export async function listRawCapturesForJob(jobId: string): Promise<RawCapture[]
     .order('captured_at', { ascending: false });
   if (error) throw new Error(`listRawCapturesForJob failed: ${error.message}`);
   return data ?? [];
-}
-
-// The watcher's activity probe — one of TWO homes, always paired with visits'
-// listNoteTimesForJobs: job-stamped capture times since a UTC floor. The
-// floor keeps the read bounded (PostgREST silently caps result sets at 1000
-// rows); the precise naive-local comparison happens in the caller. Reading
-// only one home UNDER-COUNTS activity: a tech note's capture often carries no
-// job_id stamp (identity resolves after L1, which is immutable), but a
-// technician note always LINKS a visit — so listNoteTimesForJobs catches what
-// this one misses, and vice versa for job-stamped email/call captures.
-//
-// CLOSED BY RUNG 10, and this reader gained the THIRD home that closes it.
-// Rung 9b narrowed the hole: any channel may ATTACH to a visit that already
-// exists, so an inbound capture about a BOOKED trip is visible through its
-// visit_notes link. What survived was the LINK-LESS shape — an inbound capture
-// on a job with no live visit at all, unstamped and linked to nothing, so the
-// job read silent. Inbound now writes a `job_captures` row for exactly that
-// case, and this reader unions it: capture times come from raw_captures
-// (`captured_at`, when the customer actually said it), reached through the
-// link. Rung 10 did NOT close it by minting a visit — a call is not a trip, and
-// what to put on the calendar is the manager's to say.
-export async function listJobStampedCaptureTimes(
-  tenantId: string,
-  jobIds: string[],
-  sinceUtcIso: string,
-): Promise<{ job_id: string | null; captured_at: string }[]> {
-  if (jobIds.length === 0) return []; // PostgREST `in.()` with zero values errors
-  // PAGED (final-review finding): the floor bounds RECENCY, not row count, and
-  // PostgREST's silent 1000-row cap on an UNORDERED read would drop arbitrary
-  // rows — possibly the one capture proving a visit was reported, turning a
-  // filled visit into a false gap flag (the listTenantIdsWithTelegramBindings
-  // precedent).
-  const PAGE = 1000;
-  const out: { job_id: string | null; captured_at: string }[] = [];
-  for (let fromRow = 0; ; fromRow += PAGE) {
-    const { data, error } = await getClient()
-      .from('raw_captures')
-      .select('job_id, captured_at')
-      .eq('tenant_id', tenantId)
-      .in('job_id', jobIds)
-      .gte('captured_at', sinceUtcIso)
-      .order('captured_at', { ascending: true })
-      .range(fromRow, fromRow + PAGE - 1);
-    if (error) throw new Error(`listJobStampedCaptureTimes failed: ${error.message}`);
-    out.push(...(data ?? []));
-    if (!data || data.length < PAGE) break;
-  }
-  // The third home (rung 10): captures LINKED to the job. The floor and the
-  // reported time are the CAPTURE's `captured_at` — when the customer said it —
-  // not the link's `created_at`; the paging order is the link's own, which is
-  // all a stable total order has to be.
-  for (let fromRow = 0; ; fromRow += PAGE) {
-    const { data, error } = await getClient()
-      .from('job_captures')
-      // tenant_id on the EMBED as well as the link: `capture_id` is an id-only
-      // foreign key, so the link's own tenant is no proof the words are ours.
-      .select('job_id, raw_captures!inner(tenant_id, captured_at)')
-      .eq('tenant_id', tenantId)
-      .in('job_id', jobIds)
-      .gte('raw_captures.captured_at', sinceUtcIso)
-      // A TOTAL order — see listJobEvidenceSince's job arm for why the whole
-      // primary key is named.
-      .order('created_at', { ascending: true })
-      .order('job_id', { ascending: true })
-      .order('capture_id', { ascending: true })
-      .range(fromRow, fromRow + PAGE - 1);
-    if (error) throw new Error(`listJobStampedCaptureTimes failed: ${error.message}`);
-    for (const row of (data ?? []) as unknown as {
-      job_id: string;
-      raw_captures: { tenant_id: string; captured_at: string } | null;
-    }[]) {
-      if (row.raw_captures && row.raw_captures.tenant_id === tenantId) {
-        out.push({ job_id: row.job_id, captured_at: row.raw_captures.captured_at });
-      }
-    }
-    if (!data || data.length < PAGE) return out;
-  }
 }
 
 // True if a visit links back to this capture — the completeness marker for a
@@ -313,186 +237,39 @@ export async function captureHasLinkedVisit(captureId: string): Promise<boolean>
 // derivable from the fetched list alone: a tech-note capture usually has NULL
 // customer_id/job_id stamps (identity resolves after L1, which is immutable),
 // so its retraction may not appear in the same stamped list.
+//
+// CHUNKED, because callers hand it every capture id a customer's context holds
+// and L1 only grows. One `in.()` builds the whole id list into the URL, and the
+// API gateway in front of PostgREST refuses a request past 8192 bytes with a
+// 414 ("URI too long") that failed the entire read. Measured for THIS query
+// through the LOCAL stack's gateway (2026-09-14): 150 ids = 5,929 bytes passes,
+// 214 = 8,425 bytes is refused (postgrest-js percent-encodes the parens and
+// commas, so the wall sits near 205 ids, lower than the 215 bisected for
+// findCustomersByThread below). The hosted gateway's limit is not verified;
+// 150 keeps ~2.2 KB of headroom against the local one.
+// Deduped first: postgrest-js dedupes within one `.in()` but not across chunks,
+// so a repeated id would otherwise return its retraction twice. One retraction
+// per target (uq_raw_captures_one_retraction) keeps each chunk ≤150 rows, under
+// PostgREST's silent 1000-row cap. Chunks run in parallel: these are seat and
+// planner reads, and the result is a set, so order across chunks is irrelevant.
+const RETRACTION_CHUNK = 150;
 export async function findRetractionsFor(captureIds: string[]): Promise<RawCapture[]> {
-  if (captureIds.length === 0) return [];
-  const { data, error } = await getClient()
-    .from('raw_captures')
-    .select()
-    .in('retracts_capture_id', captureIds);
-  if (error) throw new Error(`findRetractionsFor failed: ${error.message}`);
-  return data ?? [];
-}
-
-// The planner's evidence read (plan 2026-08-19, Phase 3): what actually LANDED
-// on these jobs after a floor — with the words, not just the timestamps.
-//
-// listJobStampedCaptureTimes above answers "did anything arrive"; this answers
-// "what did they SAY", because the planner may only mark a gap answered by
-// quoting the evidence (cite-or-don't-close). Same floor discipline, same paging.
-//
-// It unions the SAME two homes the watcher's activity probe does, and for the
-// same reason: a technician's reply lands in L1 before identity is resolved, so
-// its raw_captures.job_id is often null and the only link is the visit_notes row
-// tying it to the trip it reported. Reading job-stamped captures alone would
-// miss exactly the answers this exists to find. (Same rung-9b gap as
-// listJobStampedCaptureTimes documents: an inbound capture matched to an
-// existing job links nothing until Phase 3's attach rule lands. CLOSED by rung
-// 10's third arm below: `job_captures`.)
-//
-// Two things are dropped, both deliberately:
-//  * manager_only rows — the team lead holds no manager badge, and its citations
-//    end up in technician-facing questions and manager items alike. Same
-//    treatment the MCP dispatch gives a non-manager caller.
-//  * retracted captures and the retraction rows themselves — citing a note
-//    somebody retracted would be worse than citing nothing.
-export interface JobEvidenceRow {
-  jobId: string;
-  capture: RawCapture;
-  // How this capture was found. 'job_stamp' means it names the job directly;
-  // 'visit' means it was reached through a visit it reported; 'job' means it
-  // was linked straight to the job (rung 10 — inbound on a job with no trip).
-  via: 'job_stamp' | 'visit' | 'job';
-}
-
-export async function listJobEvidenceSince(
-  tenantId: string,
-  jobIds: string[],
-  sinceUtcIso: string,
-): Promise<JobEvidenceRow[]> {
-  if (jobIds.length === 0) return []; // PostgREST `in.()` with zero values errors
-  const PAGE = 1000;
-  const CHUNK = 500;
-  const found = new Map<string, JobEvidenceRow>();
-
-  // (1) Captures that name the job themselves.
-  for (let i = 0; i < jobIds.length; i += CHUNK) {
-    const slice = jobIds.slice(i, i + CHUNK);
-    for (let from = 0; ; from += PAGE) {
+  const ids = [...new Set(captureIds)];
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += RETRACTION_CHUNK) {
+    chunks.push(ids.slice(i, i + RETRACTION_CHUNK));
+  }
+  const pages = await Promise.all(
+    chunks.map(async (chunk) => {
       const { data, error } = await getClient()
         .from('raw_captures')
         .select()
-        .eq('tenant_id', tenantId)
-        .in('job_id', slice)
-        .gte('captured_at', sinceUtcIso)
-        .order('captured_at', { ascending: true })
-        .range(from, from + PAGE - 1);
-      if (error) throw new Error(`listJobEvidenceSince failed: ${error.message}`);
-      for (const row of (data ?? []) as RawCapture[]) {
-        if (row.job_id) found.set(row.id, { jobId: row.job_id, capture: row, via: 'job_stamp' });
-      }
-      if (!data || data.length < PAGE) break;
-    }
-  }
-
-  // (2) Notes LINKED to a trip since the floor — the capture carries the words.
-  // Rung 9b re-sourced this from "visit rows minted since the floor": a note now
-  // attaches to a trip that may have been booked weeks earlier, so the row's own
-  // created_at is no longer the moment the evidence landed. The LINK's is.
-  const viaVisit = new Map<string, string>(); // captureId -> jobId
-  for (let i = 0; i < jobIds.length; i += CHUNK) {
-    const slice = jobIds.slice(i, i + CHUNK);
-    for (let from = 0; ; from += PAGE) {
-      const { data, error } = await getClient()
-        .from('visit_notes')
-        .select('capture_id, created_at, visits!inner(job_id)')
-        .eq('tenant_id', tenantId)
-        .in('visits.job_id', slice)
-        .gte('created_at', sinceUtcIso)
-        .order('created_at', { ascending: true })
-        .range(from, from + PAGE - 1);
-      if (error) throw new Error(`listJobEvidenceSince failed: ${error.message}`);
-      for (const row of (data ?? []) as {
-        capture_id: string;
-        visits: { job_id: string } | null;
-      }[]) {
-        // A capture already found by its own job stamp keeps that provenance —
-        // the direct link is the stronger claim.
-        if (row.visits && !found.has(row.capture_id)) {
-          viaVisit.set(row.capture_id, row.visits.job_id);
-        }
-      }
-      if (!data || data.length < PAGE) break;
-    }
-  }
-
-  // (3) Captures LINKED straight to the job (rung 10) — an inbound call or
-  // email on an open job with no live trip. The floor is the CAPTURE's
-  // captured_at, because that is when the customer said it; the link is written
-  // in the same breath, so the two never meaningfully diverge here.
-  for (let i = 0; i < jobIds.length; i += CHUNK) {
-    const slice = jobIds.slice(i, i + CHUNK);
-    for (let from = 0; ; from += PAGE) {
-      const { data, error } = await getClient()
-        .from('job_captures')
-        .select('job_id, raw_captures!inner(*)')
-        .eq('tenant_id', tenantId)
-        .in('job_id', slice)
-        .gte('raw_captures.captured_at', sinceUtcIso)
-        // (created_at, job_id, capture_id) is a TOTAL order — the primary key
-        // is (job_id, capture_id) and `created_at` is the transaction stamp, so
-        // links written together tie. Without the whole key a tie spanning a
-        // page boundary could repeat or drop a row.
-        .order('created_at', { ascending: true })
-        .order('job_id', { ascending: true })
-        .order('capture_id', { ascending: true })
-        .range(from, from + PAGE - 1);
-      if (error) throw new Error(`listJobEvidenceSince failed: ${error.message}`);
-      for (const row of (data ?? []) as unknown as {
-        job_id: string;
-        raw_captures: RawCapture | null;
-      }[]) {
-        // TENANT RE-CHECK ON THE CAPTURE, not just the link: `capture_id` is an
-        // id-only foreign key, so a row whose link is ours while the words are
-        // another firm's would otherwise be handed to the planner as citeable
-        // evidence. The visit arm gets this for free — its captures are
-        // re-fetched under `.eq('tenant_id', …)` below — and this arm reads the
-        // capture through an embed instead, so it has to say so itself.
-        //
-        // PROVENANCE ORDER: job_stamp, then visit, then this. A capture that
-        // named its job directly, or that reported a TRIP, keeps that reading —
-        // both are more specific claims than "it landed on the job". Reachable
-        // through the retraction twin-insert, which follows its target onto
-        // every link it has.
-        const capture = row.raw_captures;
-        if (
-          capture &&
-          capture.tenant_id === tenantId &&
-          !found.has(capture.id) &&
-          !viaVisit.has(capture.id)
-        ) {
-          found.set(capture.id, { jobId: row.job_id, capture, via: 'job' });
-        }
-      }
-      if (!data || data.length < PAGE) break;
-    }
-  }
-
-  const missingIds = [...viaVisit.keys()];
-  for (let i = 0; i < missingIds.length; i += CHUNK) {
-    const slice = missingIds.slice(i, i + CHUNK);
-    const { data, error } = await getClient()
-      .from('raw_captures')
-      .select()
-      .eq('tenant_id', tenantId)
-      .in('id', slice);
-    if (error) throw new Error(`listJobEvidenceSince failed: ${error.message}`);
-    for (const row of (data ?? []) as RawCapture[]) {
-      const jobId = viaVisit.get(row.id);
-      if (jobId) found.set(row.id, { jobId, capture: row, via: 'visit' });
-    }
-  }
-
-  // (4) Drop what must never be cited.
-  const rows = [...found.values()].filter((r) => r.capture.sensitivity !== 'manager_only');
-  const kept = new Set(
-    foldRetractions(
-      rows.map((r) => r.capture),
-      await findRetractionsFor(rows.map((r) => r.capture.id)),
-    ).map((c) => c.id),
+        .in('retracts_capture_id', chunk);
+      if (error) throw new Error(`findRetractionsFor failed: ${error.message}`);
+      return data ?? [];
+    }),
   );
-  return rows
-    .filter((r) => kept.has(r.capture.id))
-    .sort((a, b) => (a.capture.captured_at < b.capture.captured_at ? -1 : 1));
+  return pages.flat();
 }
 
 // Pure fold: drop every capture a retraction points at, and drop retraction
@@ -514,162 +291,6 @@ export async function listRawCapturesForCustomer(customerId: string): Promise<Ra
     .order('captured_at', { ascending: false });
   if (error) throw new Error(`listRawCapturesForCustomer failed: ${error.message}`);
   return data ?? [];
-}
-
-// WHAT WAS CREATED FROM THESE CAPTURES (rung 10, the planner's exact close).
-// A job or a visit whose `source_capture_id` is one of them — proof that the
-// manager's agent acted on that call, and the only close the planner may make
-// on THE RECORD for an inbound observation. Batched over the tick's captures,
-// because the alternative is one round trip per gap inside a sync closure.
-//
-// Fleet-wide by capture id, like every other reader keyed on one: the caller
-// holds the ids, and the rows it gets back name the L2 they belong to.
-// RUNG 10B added two more kinds, because "nothing has been created" is not the
-// hole `inbound_unmatched` names. That one asks WHO CALLED, and it is answered
-// by the caller having been identified:
-//   'customer' — a customer row was created from this capture. `jobId` is null;
-//                `id` is the customer's.
-//   'link'     — the capture was recorded ONTO an existing job (`job_captures`),
-//                which is what LINKING a caller we already knew leaves behind.
-//                The link has no row id of its own — its primary key is
-//                (job_id, capture_id) — so `id` carries the job's, same as
-//                `jobId`.
-//   'note'      — the capture was attached to a live TRIP (`visit_notes`). The
-//                OTHER shape a link takes, and it is not interchangeable: when a
-//                job already has a visit the capture attaches to the visit and no
-//                `job_captures` row is written at all, so without this arm a
-//                reply landing on a booked job would cite nothing and its item
-//                could never become moot. `id` is the visit's, `jobId` the trip's
-//                job.
-// The two new kinds are NOT closers for `inbound_new_job` / `inbound_commitment`:
-// the door writes a `job_captures` link in the SAME call it raises those asks, so
-// counting it would close every one of them the moment it was raised. The
-// planner's moot fact is kind-aware for exactly that reason.
-export interface L2CitingCapture {
-  kind: 'job' | 'visit' | 'customer' | 'link' | 'note';
-  id: string;
-  captureId: string;
-  jobId: string | null;
-}
-
-export async function listL2CitingCapture(captureIds: string[]): Promise<L2CitingCapture[]> {
-  if (captureIds.length === 0) return []; // PostgREST `in.()` with zero values errors
-  const CHUNK = 200;
-  const PAGE = 1000;
-  const out: L2CitingCapture[] = [];
-  for (let i = 0; i < captureIds.length; i += CHUNK) {
-    const slice = captureIds.slice(i, i + CHUNK);
-    // TWO EXPLICIT QUERIES rather than one loop over a computed select: the
-    // PostgREST client types the column list at compile time, and a select
-    // string chosen at runtime resolves to a ParserError instead of a row type.
-    for (let from = 0; ; from += PAGE) {
-      const { data, error } = await getClient()
-        .from('jobs')
-        .select('id, source_capture_id')
-        .in('source_capture_id', slice)
-        // A CANCELLED ROW IS NOT AN ANSWER. bookVisit rolls back a shell it
-        // minted when the DB overlap guard fires, by flipping it to
-        // 'cancelled' — the stamp stays. Without this filter the planner would
-        // read "a job was created from this call", close the ask on the
-        // record, and the customer who was told someone is coming would have
-        // nothing on the calendar and nobody left asking.
-        .neq('status', 'cancelled')
-        .order('id', { ascending: true }) // deterministic paging tiebreak
-        .range(from, from + PAGE - 1);
-      if (error) throw new Error(`listL2CitingCapture failed on jobs: ${error.message}`);
-      for (const row of data ?? []) {
-        if (row.source_capture_id) {
-          out.push({ kind: 'job', id: row.id, captureId: row.source_capture_id, jobId: row.id });
-        }
-      }
-      if (!data || data.length < PAGE) break;
-    }
-    for (let from = 0; ; from += PAGE) {
-      const { data, error } = await getClient()
-        .from('visits')
-        .select('id, job_id, source_capture_id')
-        .in('source_capture_id', slice)
-        .neq('status', 'cancelled') // same rule as the jobs arm above
-        .order('id', { ascending: true })
-        .range(from, from + PAGE - 1);
-      if (error) throw new Error(`listL2CitingCapture failed on visits: ${error.message}`);
-      for (const row of data ?? []) {
-        if (row.source_capture_id) {
-          out.push({
-            kind: 'visit',
-            id: row.id,
-            captureId: row.source_capture_id,
-            jobId: row.job_id,
-          });
-        }
-      }
-      if (!data || data.length < PAGE) break;
-    }
-    for (let from = 0; ; from += PAGE) {
-      const { data, error } = await getClient()
-        .from('customers')
-        .select('id, source_capture_id')
-        .in('source_capture_id', slice)
-        .order('id', { ascending: true })
-        .range(from, from + PAGE - 1);
-      if (error) throw new Error(`listL2CitingCapture failed on customers: ${error.message}`);
-      for (const row of data ?? []) {
-        if (row.source_capture_id) {
-          out.push({ kind: 'customer', id: row.id, captureId: row.source_capture_id, jobId: null });
-        }
-      }
-      if (!data || data.length < PAGE) break;
-    }
-    for (let from = 0; ; from += PAGE) {
-      const { data, error } = await getClient()
-        .from('job_captures')
-        // The job's status comes through the embed: a link onto a CANCELLED job
-        // is no more an answer than a cancelled job itself is, and the two arms
-        // above drop those for the same reason.
-        .select('job_id, capture_id, jobs!inner(id, status)')
-        .in('capture_id', slice)
-        .order('job_id', { ascending: true })
-        .order('capture_id', { ascending: true })
-        .range(from, from + PAGE - 1);
-      if (error) throw new Error(`listL2CitingCapture failed on job_captures: ${error.message}`);
-      for (const row of (data ?? []) as unknown as {
-        job_id: string;
-        capture_id: string;
-        jobs: { id: string; status: string } | null;
-      }[]) {
-        if (row.jobs && row.jobs.status !== 'cancelled') {
-          out.push({ kind: 'link', id: row.job_id, captureId: row.capture_id, jobId: row.job_id });
-        }
-      }
-      if (!data || data.length < PAGE) break;
-    }
-    for (let from = 0; ; from += PAGE) {
-      const { data, error } = await getClient()
-        .from('visit_notes')
-        .select('capture_id, visits!inner(id, job_id, status)')
-        .in('capture_id', slice)
-        .order('capture_id', { ascending: true })
-        .order('visit_id', { ascending: true })
-        .range(from, from + PAGE - 1);
-      if (error) throw new Error(`listL2CitingCapture failed on visit_notes: ${error.message}`);
-      for (const row of (data ?? []) as unknown as {
-        capture_id: string;
-        visits: { id: string; job_id: string; status: string } | null;
-      }[]) {
-        // Same rule as every arm above: a cancelled trip is not an answer.
-        if (row.visits && row.visits.status !== 'cancelled') {
-          out.push({
-            kind: 'note',
-            id: row.visits.id,
-            captureId: row.capture_id,
-            jobId: row.visits.job_id,
-          });
-        }
-      }
-      if (!data || data.length < PAGE) break;
-    }
-  }
-  return out;
 }
 
 // EVERY CUSTOMER (and, when it is unambiguous, the job) AN EMAIL THREAD ALREADY
@@ -697,8 +318,8 @@ export async function listL2CitingCapture(captureIds: string[]): Promise<L2Citin
 //
 // TENANT-CHECKED ON EVERY HOP: `capture_id`, `job_id` and `visit_id` are id-only
 // foreign keys, so a link of ours is no proof the row it points at is ours (the
-// listJobEvidenceSince doctrine). A direct `jobs` read rather than
-// listL2CitingCapture, which is fleet-wide by capture id and hands back no
+// capture_membership doctrine). A direct `jobs` read rather than
+// listL2CitingCapture, which hands back what was CREATED from a capture and no
 // customer — the customer is the whole answer here.
 export interface ThreadIdentity {
   customerId: string;
@@ -956,7 +577,7 @@ export async function listCapturesByThread(
   if (rows.length === 0) return { messages: [], blockedMessageIds: [] };
 
   // WHAT MUST NEVER BE SHOWN, the same two exclusions every other capture reader
-  // applies (listJobEvidenceSince):
+  // applies (capture_is_live / capture_visible, migration 20260916120000):
   //   * a RETRACTED capture — somebody marked it recorded in error, and the
   //     write-path treats it as terminal precisely so it can never be rebuilt
   //     from. Handing its words to the extractor as context would launder them

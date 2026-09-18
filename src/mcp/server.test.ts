@@ -7,9 +7,9 @@ import {
   appendRawCapture,
   findCustomersByThread,
   isAgentWrittenCapture,
-  listL2CitingCapture,
 } from '../db/rawCaptures.js';
-import { createCustomer } from '../db/customers.js';
+import { listL2CitingCapture } from '../db/captureMembership.js';
+import { createCustomer, insertCustomerCapture } from '../db/customers.js';
 import { appendJobCorrespondence, createJob, insertJobCapture } from '../db/jobs.js';
 import { createVisit, insertVisitNote, updateVisitStatus } from '../db/visits.js';
 import { upsertJobTypeDuration } from '../db/jobTypeDurations.js';
@@ -25,6 +25,7 @@ import {
 import { createHost } from '../db/hosts.js';
 import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
 import { createTenant, setTenantSeats } from '../db/tenants.js';
+import { insertAccessGrant, setTechnicianViewRule } from '../db/technicianView.js';
 import { PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
 import { createObservation } from '../db/observations.js';
@@ -104,18 +105,18 @@ beforeAll(async () => {
   const tech = await insertTechnician({ tenantId, ref: 'tech-mcp', displayName: 'Tech MCP' });
   await setTechnicianState(tech.id, 'active');
   techMcpId = tech.id;
+  // THE FIRM'S RULE at its widest (plan 2026-09-15-the-retrieval-layer-2): the
+  // suites below were written before the technician limited view, and what they
+  // test as `tech-mcp` is the CONTENT gate (option A), not scope. Whole-firm keeps
+  // them testing exactly that; 'the technician limited view' block resets the
+  // rule to the default and tests scope itself.
+  await setTechnicianViewRule(tenantId, { jobScope: 'whole_firm' }, 'server.test');
 
   const server = createServer({
     // Identity is injected here (the gateway/env source in prod); the agent never
     // supplies technicianRef. 'tech-mcp' matches the schedule entry below.
     identity: { tenantId, technicianRef: 'tech-mcp' },
     extract: async () => ({ workPerformed: 'did the work' }),
-    // Stub the synthesizers so the MCP tests never call the live model.
-    brief: async (ctx) => ({ briefing: `stub briefing for ${ctx.customer?.name}`, citations: [] }),
-    answer: async (ctx, question) => ({
-      answer: `stub answer to "${question}" for ${ctx.customer?.name}`,
-      citations: [],
-    }),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   client = new Client({ name: 'test-client', version: '0.0.0' });
@@ -137,6 +138,8 @@ afterAll(async () => {
   );
   // Restore the seed capacity (2/5) so post-suite live checks see known values.
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
+  // Tenants are never truncated, so the firm's rule would outlive the suite.
+  await setTechnicianViewRule(tenantId, null, 'server.test');
   await pg.end();
 });
 
@@ -159,8 +162,6 @@ async function clientFor(
   const server = createServer({
     identity,
     extract: async () => ({ workPerformed: 'did the work' }),
-    brief: async (ctx) => ({ briefing: `stub for ${ctx.customer?.name}`, citations: [] }),
-    answer: async (ctx, question) => ({ answer: `stub: ${question}`, citations: [] }),
     ...extra,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -173,6 +174,43 @@ async function clientFor(
     return { isError, text: content[0].text, data: isError ? undefined : JSON.parse(content[0].text) };
   };
   return { client: isolated, callWith };
+}
+
+// get_team_schedule's recall lists are PAGES (retrieval layer 4): the shared seed
+// tenant accumulates parked visits and bare jobs across this file, so a fixture's
+// row can sit on any page. This walks one queue to the end.
+async function recallAll(
+  callWith: Awaited<ReturnType<typeof clientFor>>['callWith'],
+  queue: 'visits' | 'jobs',
+): Promise<Array<Record<string, unknown>>> {
+  const out: Array<Record<string, unknown>> = [];
+  let after: string | null = null;
+  for (let n = 0; n < 500; n++) {
+    const res = await callWith('get_team_schedule', { unassignedOnly: true, queue, ...(after ? { after } : {}) });
+    if (res.isError || res.data.status !== 'ok') throw new Error(`recall page failed: ${res.text}`);
+    out.push(...(res.data[queue] as Array<Record<string, unknown>>));
+    after = res.data[`${queue}Next`] as string | null;
+    if (!after) return out;
+  }
+  throw new Error('recall paging never ended');
+}
+
+// list_pending_reviews is a page too (retrieval layer 4); this walks one kind's
+// queue to the end, so an assertion that an item is ABSENT means something.
+async function reviewsAll(
+  callWith: Awaited<ReturnType<typeof clientFor>>['callWith'],
+  kind: string,
+): Promise<Array<Record<string, unknown>>> {
+  const out: Array<Record<string, unknown>> = [];
+  let after: string | null = null;
+  for (let n = 0; n < 500; n++) {
+    const res = await callWith('list_pending_reviews', { kind, limit: 50, ...(after ? { after } : {}) });
+    if (res.isError) throw new Error(`review page failed: ${res.text}`);
+    out.push(...(res.data.items as Array<Record<string, unknown>>));
+    after = res.data.next as string | null;
+    if (!after) return out;
+  }
+  throw new Error('review paging never ended');
 }
 
 /**
@@ -350,7 +388,7 @@ describe('MCP server', () => {
     expect(lastFriday.data.date < today).toBe(true);
   });
 
-  test('every object tool result carries the temporal grounding rider `now`; arrays keep their shape', async () => {
+  test('every tool result carries the temporal grounding rider `now` — arrays are wrapped, so none is left out', async () => {
     // The rider is the eval's condition-B line, firm-local (seed tenant tz =
     // America/Los_Angeles) — computed here with the same Intl formatting so a
     // wiring or timezone regression fails loudly. Computed via a THUNK and
@@ -381,11 +419,21 @@ describe('MCP server', () => {
     expect(rd.data.today).toBeDefined();
     expect(rd.data.timezone).toBe('America/Los_Angeles');
 
-    // …and array results stay arrays (the rider must not change their shape).
-    const caps = await call('list_recent_captures', {
-      jobId: '00000000-0000-0000-0000-000000000000',
-    });
-    expect(Array.isArray(caps.data)).toBe(true);
+    // …and a lookup that used to be a bare array is a named object now, so it
+    // gets the rider and says "nothing" in words (retrieval layer 4).
+    const before3 = lineNow();
+    const rows = await call('find_customer', { query: 'no-such-customer-zzz' });
+    expect(rows.data.customers).toEqual([]);
+    expect(rows.data.note).toContain('no customer on this firm matches');
+    expect([before3, lineNow()]).toContain(rows.data.now);
+  });
+
+  test('find_customer never shows the phone MATCH key, only the phone as written', async () => {
+    await createCustomer({ tenantId, name: 'Keyless Kim', phone: '(206) 555-0181' });
+    const found = await call('find_customer', { query: 'Keyless Kim' });
+    expect(found.data.customers).toHaveLength(1);
+    expect(found.data.customers[0].phone).toBe('(206) 555-0181');
+    expect(found.data.customers[0]).not.toHaveProperty('phone_key');
   });
 
   test('an ambiguous note asks who, then RECORDS on the answer (no third call)', async () => {
@@ -832,56 +880,47 @@ describe('MCP server', () => {
     expect(confirm.text).toContain('confirmation not found');
   });
 
-  test('get_customer_context returns the aggregated record', async () => {
+  test('get_customer_context returns the contents page, never the history', async () => {
     const customer = await createCustomer({ tenantId, name: 'Ctx Over Mcp', phone: '555-3300' });
-    await createJob({ tenantId, customerId: customer.id, title: 'J' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'J' });
+    await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'x'.repeat(300),
+      jobId: job.id,
+    });
 
     const { isError, data } = await call('get_customer_context', { customerId: customer.id });
     expect(isError).toBe(false);
     expect(data.customer.id).toBe(customer.id);
-    expect(data.jobs.length).toBeGreaterThanOrEqual(1);
-    expect(Array.isArray(data.recentVisits)).toBe(true);
-    expect(Array.isArray(data.recentCaptures)).toBe(true);
+    // The phone as written, never the generated matching key beside it.
+    expect(data.customer.phone).toBe('555-3300');
+    expect(data.customer).not.toHaveProperty('phone_key');
+    const block = data.jobs.find((j: { id: string }) => j.id === job.id);
+    expect(block.title).toBe('J'); // the job row, spread
+    expect(block.noteCount).toBe(1);
+    expect(block.restrictedCount).toBe(0);
+    // The newest note's opening, cut, with the id that opens the full words.
+    expect(block.newest.snippet).toHaveLength(200);
+    expect(block.newest.truncated).toBe(true);
+    expect(typeof block.newest.captureId).toBe('string');
+    expect(data.olderJobs).toBe(0);
+    expect(data.customerLevelNotes).toEqual({ noteCount: 0, restrictedCount: 0, newest: null });
+    expect(data.note).toContain('contents page');
+    // The old bulk fields are gone.
+    expect(data.recentCaptures).toBeUndefined();
+    expect(data.recentVisits).toBeUndefined();
   });
 
-  test('brief_customer returns a briefing + citations (stubbed synthesizer)', async () => {
-    const customer = await createCustomer({ tenantId, name: 'Brief Me', phone: '555-4400' });
-    await createJob({ tenantId, customerId: customer.id, title: 'J' });
-
-    const { isError, data } = await call('brief_customer', { customerId: customer.id });
-    expect(isError).toBe(false);
-    expect(typeof data.briefing).toBe('string');
-    expect(Array.isArray(data.citations)).toBe(true);
-  });
-
-  test('answer_customer_question returns an answer + citations (stubbed synthesizer)', async () => {
-    const customer = await createCustomer({ tenantId, name: 'Ask Me', phone: '555-5500' });
-
-    const { isError, data } = await call('answer_customer_question', {
-      customerId: customer.id,
-      question: 'What is going on with this customer?',
-    });
-    expect(isError).toBe(false);
-    expect(typeof data.answer).toBe('string');
-    expect(Array.isArray(data.citations)).toBe(true);
-  });
-
-  test('a synthesis tool on a bogus customerId is a clean "customer not found" error', async () => {
-    const { isError, text } = await call('brief_customer', {
+  test('get_customer_context on a bogus customerId says so in words', async () => {
+    const { isError, data } = await call('get_customer_context', {
       customerId: '00000000-0000-0000-0000-000000000000',
     });
-    expect(isError).toBe(true);
-    expect(text).toContain('customer not found');
-  });
-
-  test('brief_customer rejects an invalid focus value', async () => {
-    const customer = await createCustomer({ tenantId, name: 'Focus Test', phone: '555-6600' });
-    const { isError, text } = await call('brief_customer', {
-      customerId: customer.id,
-      focus: 'deep_dive',
-    });
-    expect(isError).toBe(true);
-    expect(text).toContain('invalid focus');
+    expect(isError).toBe(false);
+    expect(data.customer).toBeNull();
+    expect(data.jobs).toEqual([]);
+    expect(data.note).toContain('no such customer');
   });
 
   test('an invalid channel is rejected as a tool error', async () => {
@@ -903,10 +942,8 @@ describe('MCP server', () => {
     expect(okJob.data.id).toBe(job.id);
     const okCtx = await call('get_customer_context', { customerId: customer.id });
     expect(okCtx.data.customer.id).toBe(customer.id);
-    const okBrief = await call('brief_customer', { customerId: customer.id });
-    expect(okBrief.isError).toBe(false);
 
-    // Wrong tenant: the SAME ids read as empty / null / error across all five tools.
+    // Wrong tenant: the SAME ids read as empty / null across all the read tools.
     const { client: otherClient, callWith } = await clientFor({
       tenantId: WRONG_TENANT,
       technicianRef: 'tech-x',
@@ -918,14 +955,13 @@ describe('MCP server', () => {
       expect(ctx.data.customer).toBeNull();
       expect(ctx.data.jobs).toEqual([]);
 
-      expect((await callWith('list_recent_captures', { jobId: job.id })).data).toEqual([]);
-      expect((await callWith('list_recent_captures', { customerId: customer.id })).data).toEqual([]);
-
-      expect((await callWith('brief_customer', { customerId: customer.id })).isError).toBe(true);
-      expect(
-        (await callWith('answer_customer_question', { customerId: customer.id, question: 'hi' }))
-          .isError,
-      ).toBe(true);
+      // The page reader: an unknown scope, said in words, never their notes.
+      const byJob = await callWith('list_recent_captures', { jobId: job.id });
+      expect(byJob.data.captures).toEqual([]);
+      expect(byJob.data.note).toContain('no such job');
+      const byCust = await callWith('list_recent_captures', { customerId: customer.id });
+      expect(byCust.data.captures).toEqual([]);
+      expect(byCust.data.note).toContain('no such customer');
     } finally {
       await otherClient.close();
     }
@@ -1000,6 +1036,13 @@ describe('MCP server', () => {
         state: 'invited',
         seat_exempt: false, // no seatExempt arg = a normal seat-occupying add
       });
+      // The confirm result goes into the model's context: never the badge hash,
+      // the Composio handles or the Telegram id (list_team projects them out too).
+      for (const key of Object.keys(added.data)) {
+        expect(key).not.toMatch(
+          /^(badge_hash|composio_|telegram_user_id|connected_email|host_id|tenant_id)/,
+        );
+      }
 
       // Duplicate display name now fails at STAGE time (dup pre-check) —
       // before any yes is spent on it.
@@ -1070,7 +1113,7 @@ describe('MCP server', () => {
 
       // list_team: roster facts only — no Composio ids in the payload.
       const team = await callWith('list_team', {});
-      const bob = team.data.find((t: { ref: string }) => t.ref === 'bob-marley');
+      const bob = team.data.team.find((t: { ref: string }) => t.ref === 'bob-marley');
       expect(bob).toMatchObject({ displayName: 'Bob Marley', state: 'offboarding' });
       expect(Object.keys(bob)).not.toContain('composio_connected_account_id');
 
@@ -1081,8 +1124,10 @@ describe('MCP server', () => {
         subjectRef: 'tehc-bob',
         suggestion: 'bob-marley',
       });
-      const pending = await callWith('list_pending_reviews', {});
-      expect(pending.data.map((i: { id: string }) => i.id)).toContain(item.id);
+      // kind narrows the page, so the item is found however long the shared
+      // tenant's queue has grown (retrieval layer 4: the list is paged).
+      const pending = await reviewsAll(callWith, 'sheet_ref_mismatch');
+      expect(pending.map((i) => i.id)).toContain(item.id);
 
       // ④b fourth rail: a gap item's briefing rides detail to the manager's
       // agent verbatim — and the tool description carries the never-relay rule.
@@ -1106,8 +1151,8 @@ describe('MCP server', () => {
           agentContext: 'Job aa: asked once on the visit day; ledger empty; a figure unblocks the invoice.',
         },
       });
-      const withBriefing = await callWith('list_pending_reviews', {});
-      const briefed = (withBriefing.data as Array<{ id: string; detail?: { agentContext?: string } }>).find(
+      const withBriefing = await reviewsAll(callWith, 'overdue_visit_gap');
+      const briefed = (withBriefing as Array<{ id: string; detail?: { agentContext?: string } }>).find(
         (r) => r.id === gapItem.id,
       );
       expect(briefed?.detail?.agentContext).toBe(
@@ -1298,14 +1343,14 @@ describe('MCP server', () => {
 
       // list_team surfaces the flag on every row.
       const team = await callWith('list_team', {});
-      expect(team.data.find((t: { ref: string }) => t.ref === 'helper-hman')).toMatchObject({
+      expect(team.data.team.find((t: { ref: string }) => t.ref === 'helper-hman')).toMatchObject({
         seatExempt: true,
         state: 'active',
         sandboxRef: null,
         botUsername: null,
       });
       expect(
-        team.data.find((t: { ref: string }) => t.ref === 'mgr-test'),
+        team.data.team.find((t: { ref: string }) => t.ref === 'mgr-test'),
       ).toMatchObject({ seatExempt: false });
 
       // Deactivate ↔ reactivate round-trip AT THE FULL CAP: comes back ACTIVE
@@ -1393,7 +1438,7 @@ describe('spine tool_call cost counter', () => {
     );
     const res = await callWith('find_customer', { query: 'nobody-by-this-name' });
     expect(res.isError).toBe(false);
-    expect(res.data).toEqual([]);
+    expect(res.data.customers).toEqual([]);
   });
 
   test('a REFUSED call still counts — the agent burned a turn on it', async () => {
@@ -1406,6 +1451,232 @@ describe('spine tool_call cost counter', () => {
       `select metadata->>'tool' as tool from cost_events where provider = 'spine'`,
     );
     expect(rows.map((r) => r.tool)).toEqual(['list_team']);
+  });
+});
+
+describe('a retraction never moves money, and says which entries lost their evidence', () => {
+  test('the preview lists the money, the technician is pointed at the manager, and every reader agrees on the balance', { timeout: 30_000 }, async () => {
+    const customer = await createCustomer({ tenantId, name: 'Cash Cust', phone: '555-3388' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Cash job' });
+    // The technician's note, and money a manager recorded FROM it.
+    const note = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'collected $500 cash from the customer',
+      jobId: job.id,
+    });
+    const { client: mgrClient, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const invoice = await mgr('record_money_event', { jobId: job.id, kind: 'invoice_issued', amountCents: 80000 });
+      expect(invoice.isError).toBe(false);
+      const paid = await mgr('record_money_event', {
+        jobId: job.id,
+        kind: 'payment_received',
+        amountCents: 50000,
+        method: 'cash',
+        sourceCaptureId: note.id,
+      });
+      expect(paid.isError).toBe(false);
+      const eventId = paid.data.eventId as number;
+
+      // The technician (the note's author) stages the retraction.
+      const staged = await call('retract_capture', { captureId: note.id, reason: 'wrong customer' });
+      expect(staged.isError).toBe(false);
+      // The entry is named — id, job, kind — but NOT its amount: a technician is
+      // shown no money figure anywhere (operator 2026-09-15). inform_team_lead's
+      // wording asks her to name the entry, which is exactly what she has.
+      expect(staged.data.alsoLosesEvidence.money).toEqual([
+        { eventId, jobId: job.id, kind: 'payment_received', occurredAt: expect.any(String) },
+      ]);
+      expect(staged.data.note).toContain('STILL COUNT');
+      expect(staged.data.note).toContain('inform_team_lead'); // a technician cannot correct money
+      expect(staged.data.note).not.toContain('record_money_event');
+
+      const done = await call('retract_capture', { confirmId: staged.data.confirmId });
+      expect(done.data.status).toBe('retracted');
+      // The CONFIRM shape is pinned too, not just its ids: a technician is shown
+      // no amount on either half of the two-step (review finding).
+      expect(done.data.alsoLostEvidence.money).toEqual([
+        { eventId, jobId: job.id, kind: 'payment_received', occurredAt: expect.any(String) },
+      ]);
+      expect(done.data.moneyNote).toContain('inform_team_lead');
+
+      // EVERY reader sums the same ledger: the payment still counts on both.
+      const ctx = await mgr('get_customer_context', { customerId: customer.id });
+      const job1 = await mgr('get_job', { jobId: job.id });
+      expect(ctx.data.moneyByJob[job.id].balanceDueCents).toBe(30000);
+      expect(job1.data.money.balanceDueCents).toBe(30000);
+
+      // A manager sees that the job carries a retraction; a technician's page has no such key.
+      const mgrJob = ctx.data.jobs.find((j: { id: string }) => j.id === job.id);
+      expect(mgrJob.retractedCount).toBe(1);
+      const techCtx = await call('get_customer_context', { customerId: customer.id });
+      const techJob = techCtx.data.jobs.find((j: { id: string }) => j.id === job.id);
+      expect(techJob.retractedCount).toBeUndefined();
+      // …and the manager can open the trail with the reason.
+      const trail = await mgr('list_recent_captures', { jobId: job.id, includeRetracted: true });
+      const row = trail.data.captures.find((c: { captureId: string }) => c.captureId === note.id);
+      expect(row.retracted.reason).toBe('wrong customer');
+
+      // A manager retracting a money-citing note is pointed at the correction instead.
+      const note2 = await appendRawCapture({
+        tenantId,
+        channel: 'technician_note',
+        technicianRef: 'tech-mcp',
+        rawText: 'second cash note',
+        jobId: job.id,
+      });
+      await mgr('record_money_event', {
+        jobId: job.id,
+        kind: 'payment_received',
+        amountCents: 10000,
+        sourceCaptureId: note2.id,
+      });
+      const mgrStaged = await mgr('retract_capture', { captureId: note2.id, reason: 'duplicate' });
+      expect(mgrStaged.data.note).toContain('record_money_event');
+      expect(mgrStaged.data.note).toContain('correctsEventId');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+});
+
+describe('the size cap at the door', () => {
+  test('a result over SPINE_RESULT_CAP_CHARS is cut and says so, and the cut is still valid JSON', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Cap Cust', phone: '555-3377' });
+    await createJob({ tenantId, customerId: customer.id, title: 'Cap job one' });
+    await createJob({ tenantId, customerId: customer.id, title: 'Cap job two' });
+    const before = process.env.SPINE_RESULT_CAP_CHARS;
+    process.env.SPINE_RESULT_CAP_CHARS = '600';
+    try {
+      const res = await call('get_customer_context', { customerId: customer.id });
+      expect(res.isError).toBe(false);
+      // `call` already JSON.parsed the text — so the cut object parses, and it
+      // fits its own limit (escaping the embedded text must not push it over).
+      expect(res.text.length).toBeLessThanOrEqual(600);
+      expect(res.data.truncated).toBe(true);
+      expect(res.data.limit).toBe(600);
+      expect(res.data.chars).toBeGreaterThan(600);
+      expect(res.data.partial.length).toBeGreaterThan(0);
+      expect(res.data.partial.startsWith('{"customer":')).toBe(true);
+      expect(res.data.note).toContain('get_capture');
+      // The `now` rider rides on the cut object, not lost off the tail.
+      expect(typeof res.data.now).toBe('string');
+    } finally {
+      if (before === undefined) delete process.env.SPINE_RESULT_CAP_CHARS;
+      else process.env.SPINE_RESULT_CAP_CHARS = before;
+    }
+    // Back at the default, the same read comes through whole.
+    const whole = await call('get_customer_context', { customerId: customer.id });
+    expect(whole.data.truncated).toBeUndefined();
+    expect(whole.data.jobs).toHaveLength(2);
+  });
+});
+
+describe('the drill-down reads: a page, a note, a search', () => {
+  test('list_recent_captures pages with a cursor the model copies back, newest first, text cut', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Pager Cust', phone: '555-3344' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Long job' });
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const row = await appendRawCapture({
+        tenantId,
+        channel: 'technician_note',
+        technicianRef: 'tech-mcp',
+        rawText: `note ${i} ${'x'.repeat(50)}`,
+        jobId: job.id,
+      });
+      ids.push(row.id);
+    }
+    const first = await call('list_recent_captures', { jobId: job.id, limit: 2, textChars: 10 });
+    expect(first.isError).toBe(false);
+    expect(first.data.captures.map((c: { captureId: string }) => c.captureId)).toEqual([ids[4], ids[3]]);
+    expect(first.data.captures[0].text).toHaveLength(10);
+    expect(first.data.captures[0].textTruncated).toBe(true);
+    expect(first.data.hasMore).toBe(true);
+    expect(first.data.totalVisible).toBe(5);
+    expect(first.data.note).toContain('more older notes');
+    expect(first.data.note).toContain('5 you may read in all');
+    expect(typeof first.data.next).toBe('string');
+
+    const second = await call('list_recent_captures', { jobId: job.id, limit: 2, before: first.data.next });
+    expect(second.data.captures.map((c: { captureId: string }) => c.captureId)).toEqual([ids[2], ids[1]]);
+    // The note never claims a remaining count it does not have (page 2 has one left, not three).
+    expect(second.data.note).toContain('more older notes');
+    expect(second.data.note).not.toMatch(/\d+ older/);
+    const third = await call('list_recent_captures', { jobId: job.id, limit: 2, before: second.data.next });
+    expect(third.data.captures.map((c: { captureId: string }) => c.captureId)).toEqual([ids[0]]);
+    expect(third.data.hasMore).toBe(false);
+    expect(third.data.next).toBeNull();
+    expect(third.data.note).toContain('every note');
+
+    // A cursor that is not a `next` value is refused in words, not passed to the database.
+    const bad = await call('list_recent_captures', { jobId: job.id, before: 'yesterday' });
+    expect(bad.isError).toBe(true);
+    expect(bad.text).toContain('copied exactly');
+    // A job with nothing on it says so.
+    const empty = await createJob({ tenantId, customerId: customer.id, title: 'Quiet job' });
+    expect((await call('list_recent_captures', { jobId: empty.id })).data.note).toContain('no notes on file');
+  });
+
+  test('get_capture opens one note in full; a cross-tenant or malformed id is "not found", never an error', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Full Cust', phone: '555-3355' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Full job' });
+    const note = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'the whole story, every word of it',
+      jobId: job.id,
+    });
+    const got = await call('get_capture', { captureId: note.id });
+    expect(got.data.found).toBe(true);
+    expect(got.data.rawText).toBe('the whole story, every word of it');
+    expect(got.data.memberships).toEqual([{ customerId: customer.id, jobId: job.id, visitId: null, via: 'job_stamp' }]);
+    expect(got.data.metadata).toBeUndefined(); // headers are not a seat's business
+
+    expect((await call('get_capture', { captureId: 'not-a-uuid' })).data.found).toBe(false);
+    const { client: otherClient, callWith } = await clientFor({
+      tenantId: '00000000-0000-0000-0000-000000000000',
+      technicianRef: 'tech-x',
+    });
+    try {
+      expect((await callWith('get_capture', { captureId: note.id })).data.found).toBe(false);
+    } finally {
+      await otherClient.close();
+    }
+  });
+
+  test('search_captures finds by word form and by bare code, inside the scope, with snippets', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Search Cust', phone: '555-3366' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Search job' });
+    const other = await createJob({ tenantId, customerId: customer.id, title: 'Other job' });
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'Capacitors failing again, recommend replacement; lockbox 4321 by the gate',
+      jobId: job.id,
+    });
+    await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'capacitor on the other job',
+      jobId: other.id,
+    });
+    const word = await call('search_captures', { jobId: job.id, query: 'capacitor' });
+    expect(word.data.matches.map((m: { captureId: string }) => m.captureId)).toEqual([cap.id]);
+    expect(word.data.matches[0].snippet).toContain('Capacitors failing');
+    expect(word.data.note).toContain('get_capture');
+    const code = await call('search_captures', { customerId: customer.id, query: '4321' });
+    expect(code.data.matches.map((m: { captureId: string }) => m.captureId)).toEqual([cap.id]);
+    const whole = await call('search_captures', { customerId: customer.id, query: 'capacitor' });
+    expect(whole.data.count).toBe(2);
+    const none = await call('search_captures', { jobId: job.id, query: 'thermostat' });
+    expect(none.data.count).toBe(0);
+    expect(none.data.note).toContain('nothing you may read here mentions');
   });
 });
 
@@ -1445,14 +1716,14 @@ describe('retract_capture + retraction folding', () => {
     expect(r2.data.captureId).toBe(done.data.captureId);
     expect(await retractionRows()).toBe(1);
 
-    // Folded context: neither the capture nor its visit surfaces.
+    // Folded contents: the note no longer counts, and the trip it minted is
+    // gone with it (lastVisitAt reads over live-sourced visits only).
     const ctx = await call('get_customer_context', { customerId: customer.id });
-    expect(ctx.data.recentCaptures.map((c: { id: string }) => c.id)).not.toContain(
-      done.data.captureId,
-    );
-    expect(ctx.data.recentVisits.map((v: { id: string }) => v.id)).not.toContain(
-      done.data.visitId,
-    );
+    const job = ctx.data.jobs.find((j: { id: string }) => j.id === done.data.jobId);
+    expect(job.noteCount).toBe(0);
+    expect(job.newest).toBeNull();
+    expect(job.lastVisitAt).toBeNull();
+    expect(ctx.data.customerLevelNotes.noteCount).toBe(0);
   });
 
   test('permissions: a non-author technician cannot retract; a manager can', async () => {
@@ -1669,7 +1940,9 @@ describe('retract_capture + retraction folding', () => {
     expect(ctx.data.customer.attributes.prefers).toBeUndefined();
     const foldedJob = ctx.data.jobs.find((j: { id: string }) => j.id === job.id);
     expect(foldedJob.attributes.symptom).toBeUndefined();
-    expect(ctx.data.recentVisits.map((v: { id: string }) => v.id)).not.toContain(visit.id);
+    // The trip the note MINTED (source_capture_id = cap) goes with the note.
+    expect(foldedJob.lastVisitAt).toBeNull();
+    expect(foldedJob.noteCount).toBe(0);
   });
 
   // RUNG 9b: a note LINKS a trip it did not create, so "linked to the capture"
@@ -1716,9 +1989,12 @@ describe('retract_capture + retraction folding', () => {
     expect(done.data.alsoRemoved.visits).toEqual([]);
     expect(done.data.alsoLostEvidence.visits).toEqual(staged.data.alsoLosesEvidence.visits);
 
-    // The half that would actually hurt: the trip is still on the record.
+    // The half that would actually hurt: the trip is still on the record
+    // (it was booked, not minted by the note — its source_capture_id is null).
     const ctx = await call('get_customer_context', { customerId: customer.id });
-    expect(ctx.data.recentVisits.map((v: { id: string }) => v.id)).toContain(booked.id);
+    const foldedJob = ctx.data.jobs.find((j: { id: string }) => j.id === job.id);
+    expect(foldedJob.lastVisitAt).toContain('2026-08-16');
+    expect(foldedJob.noteCount).toBe(0); // the note itself is gone
   });
 
   test('fold impact: a capture nothing cites previews and commits empty, with no restoreHint', async () => {
@@ -1792,10 +2068,13 @@ describe('retract_capture + retraction folding', () => {
 
     // Folded (default): target gone, retraction row gone, good row kept.
     const folded = await call('list_recent_captures', { customerId: customer.id });
-    const foldedIds = folded.data.map((r: { id: string }) => r.id);
+    const foldedIds = folded.data.captures.map((r: { captureId: string }) => r.captureId);
     expect(foldedIds).toContain(kept.id);
     expect(foldedIds).not.toContain(bad.id);
     expect(foldedIds).not.toContain(c.data.retractionId);
+    expect(folded.data.totalVisible).toBe(1);
+    expect(folded.data.hasMore).toBe(false);
+    expect(folded.data.next).toBeNull();
 
     // Technician toggle rejected.
     const deniedToggle = await call('list_recent_captures', {
@@ -1815,12 +2094,19 @@ describe('retract_capture + retraction folding', () => {
         customerId: customer.id,
         includeRetracted: true,
       });
-      const badRow = trail.data.find((r: { id: string }) => r.id === bad.id);
-      expect(badRow.retracted).toBe(true);
-      expect(badRow.retraction.reason).toBe('belongs to Tom');
-      expect(badRow.retraction.by).toBe('tech-mcp');
-      // The retraction row itself appears in the trail, as-is.
-      expect(trail.data.map((r: { id: string }) => r.id)).toContain(c.data.retractionId);
+      const badRow = trail.data.captures.find((r: { captureId: string }) => r.captureId === bad.id);
+      expect(badRow.retracted).toMatchObject({
+        id: c.data.retractionId,
+        reason: 'belongs to Tom',
+        by: 'tech-mcp',
+      });
+      // The retraction row itself appears in the trail, as an ordinary row that
+      // says what it retracts.
+      const retractionRow = trail.data.captures.find(
+        (r: { captureId: string }) => r.captureId === c.data.retractionId,
+      );
+      expect(retractionRow.retractsCaptureId).toBe(bad.id);
+      expect(retractionRow.retracted).toBeNull();
     } finally {
       await mgrClient.close();
     }
@@ -2095,9 +2381,9 @@ describe('bind_telegram (manager tool + cold-pool auto-allocation)', () => {
 
       // list_team surfaces the handle too, so the manager can re-ask later.
       const team = await callWith('list_team', {});
-      const coldRow = team.data.find((t: { ref: string }) => t.ref === 'tg-cold');
+      const coldRow = team.data.team.find((t: { ref: string }) => t.ref === 'tg-cold');
       expect(coldRow).toMatchObject({ sandboxRef: 'pool-x', botUsername: '@poolx_bot' });
-      const aRow = team.data.find((t: { ref: string }) => t.ref === 'tg-a');
+      const aRow = team.data.team.find((t: { ref: string }) => t.ref === 'tg-a');
       expect(aRow).toMatchObject({ sandboxRef: 's-existing', botUsername: null });
       const row2 = await pg.query<{ sandbox_ref: string; host_id: string; telegram_user_id: string }>(
         "select sandbox_ref, host_id, telegram_user_id from technicians where tenant_id=$1 and ref='tg-cold'",
@@ -2856,8 +3142,8 @@ describe('send_email tool (outbound seam stubbed)', () => {
   });
 });
 
-describe('sensitivity filtering (manager_only L1 rows)', () => {
-  test('technician reads omit manager_only captures; manager reads include them; synthesizer ctx is filtered', { timeout: 30_000 }, async () => {
+describe('the tier gate on captures (option A: by channel, plus the manager_only stamp)', () => {
+  test('a technician sees technician-channel notes and a restricted COUNT; a manager sees everything', { timeout: 30_000 }, async () => {
     const customer = await createCustomer({ tenantId, name: 'Sensitive Cust', phone: '555-9900' });
     const job = await createJob({ tenantId, customerId: customer.id, title: 'Paid Job' });
     await appendRawCapture({
@@ -2882,32 +3168,32 @@ describe('sensitivity filtering (manager_only L1 rows)', () => {
     // Technician badge (the main client): the marked row is invisible on every
     // capture-bearing read.
     const byCust = await call('list_recent_captures', { customerId: customer.id });
-    expect(byCust.data.map((c: { raw_text: string }) => c.raw_text)).toEqual(['ordinary visit note']);
+    expect(byCust.data.captures.map((c: { text: string }) => c.text)).toEqual(['ordinary visit note']);
+    expect(byCust.data.restrictedCount).toBe(1);
     const byJob = await call('list_recent_captures', { jobId: job.id });
-    expect(byJob.data).toHaveLength(1);
+    expect(byJob.data.captures).toHaveLength(1);
+    // …and the full-words read refuses it the same way, with no distinct error.
+    const hidden = byJob.data.captures[0].captureId;
+    expect((await call('get_capture', { captureId: hidden })).data.found).toBe(true);
+    const restrictedId = (
+      await pg.query<{ id: string }>(
+        "select id from raw_captures where job_id = $1 and channel = 'agent_action'",
+        [job.id],
+      )
+    ).rows[0].id;
+    expect((await call('get_capture', { captureId: restrictedId })).data.found).toBe(false);
+    // The technician's keyword search sees only what the technician sees.
+    const searched = await call('search_captures', { jobId: job.id, query: 'STRIPE' });
+    expect(searched.data.count).toBe(0);
+    const searchedOk = await call('search_captures', { jobId: job.id, query: 'ordinary' });
+    expect(searchedOk.data.matches.map((m: { captureId: string }) => m.captureId)).toEqual([hidden]);
+    // The contents page counts the note and says ONE more is outside the view
+    // — never its text, and never silently.
     const ctx = await call('get_customer_context', { customerId: customer.id });
-    expect(
-      ctx.data.recentCaptures.some((c: { sensitivity: string | null }) => c.sensitivity === 'manager_only'),
-    ).toBe(false);
-
-    // The synthesizers receive the FILTERED ctx (a technician cannot leak the
-    // row through a briefing).
-    let brieferSaw: string[] = [];
-    const { client: briefClient, callWith: briefCall } = await clientFor(
-      { tenantId, technicianRef: 'tech-mcp' },
-      {
-        brief: async (bctx) => {
-          brieferSaw = bctx.recentCaptures.map((c) => c.raw_text ?? '');
-          return { briefing: 'stub', citations: [] };
-        },
-      },
-    );
-    try {
-      await briefCall('brief_customer', { customerId: customer.id });
-      expect(brieferSaw).toEqual(['ordinary visit note']);
-    } finally {
-      await briefClient.close();
-    }
+    const techJob = ctx.data.jobs.find((j: { id: string }) => j.id === job.id);
+    expect(techJob.noteCount).toBe(1);
+    expect(techJob.restrictedCount).toBe(1);
+    expect(techJob.newest.snippet).toBe('ordinary visit note');
 
     // Manager badge sees both rows.
     const { client: mgrClient, callWith: mgrCall } = await clientFor({
@@ -2916,13 +3202,16 @@ describe('sensitivity filtering (manager_only L1 rows)', () => {
     });
     try {
       const mgrList = await mgrCall('list_recent_captures', { customerId: customer.id });
-      expect(mgrList.data).toHaveLength(2);
+      expect(mgrList.data.captures).toHaveLength(2);
+      expect(mgrList.data.restrictedCount).toBe(0);
+      // …but search is the technician's tool: a manager is pointed at query_spine.
+      const refused = await mgrCall('search_captures', { jobId: job.id, query: 'ordinary' });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('query_spine');
       const mgrCtx = await mgrCall('get_customer_context', { customerId: customer.id });
-      expect(
-        mgrCtx.data.recentCaptures.some(
-          (c: { sensitivity: string | null }) => c.sensitivity === 'manager_only',
-        ),
-      ).toBe(true);
+      const mgrJob = mgrCtx.data.jobs.find((j: { id: string }) => j.id === job.id);
+      expect(mgrJob.noteCount).toBe(2);
+      expect(mgrJob.restrictedCount).toBe(0);
     } finally {
       await mgrClient.close();
     }
@@ -4029,7 +4318,7 @@ describe('record_standing_fact (staged two-step)', () => {
 
     // find_customer folds the same way.
     const found = await call('find_customer', { query: 'Fact Fold Cust' });
-    const row = found.data.find((c: { id: string }) => c.id === customer.id);
+    const row = found.data.customers.find((c: { id: string }) => c.id === customer.id);
     expect(row.attributes.prefers_contact).toBeUndefined();
 
     // Retract the JOB fact's evidence → get_job folds too.
@@ -4048,9 +4337,10 @@ describe('record_standing_fact (staged two-step)', () => {
         customerId: customer.id,
         includeRetracted: true,
       });
-      const evidence = audit.data.find((c: { id: string }) => c.id === cDone.data.captureId);
-      expect(evidence.retracted).toBe(true);
-      expect(evidence.retraction.reason).toBe('wrong customer preference');
+      const evidence = audit.data.captures.find(
+        (c: { captureId: string }) => c.captureId === cDone.data.captureId,
+      );
+      expect(evidence.retracted.reason).toBe('wrong customer preference');
     } finally {
       await mgrClient.close();
     }
@@ -4145,16 +4435,13 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       // it rides the `untimed` list rather than a day group. The straddling-
       // range clamp it used to need is gone with the range itself: there is no
       // date to clamp, and therefore no way to mis-date it.
-      const recall = await callWith('get_team_schedule', { unassignedOnly: true });
-      const untimed = recall.data.untimed as Array<Record<string, unknown>>;
-      const mine = untimed.find((st) => st.visitId === visitId);
+      const recallVisits = await recallAll(callWith, 'visits');
+      const mine = recallVisits.find((st) => st.visitId === visitId);
       expect(mine).toBeDefined();
       expect(mine?.unassigned).toBe(true);
-      // …and it appears on no day group at all.
-      const dayStops = (
-        recall.data.days as Array<{ date: string; stops: Array<Record<string, unknown>> }>
-      ).flatMap((d) => d.stops);
-      expect(dayStops.some((st) => st.visitId === visitId)).toBe(false);
+      // …and it sits on no day at all (retrieval layer 4: the recall list carries
+      // untimed visits with date null, never on a date).
+      expect(mine?.date).toBeNull();
 
       // find_slots on the untimed visit: duration from the JOB's recorded
       // length. The search window no longer defaults to the visit's own days
@@ -4229,13 +4516,15 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       // no range, so it lands on NO day — and rides the top-level `untimed`
       // list instead, which is what keeps it reachable.
       const full = await callWith('get_team_schedule', {
-        from: '2026-12-20', to: '2026-12-24',
+        from: '2026-12-20', to: '2026-12-24', stops: true,
       });
-      const fullStops = (
-        full.data.days as Array<{ date: string; stops: Array<Record<string, unknown>> }>
-      ).flatMap((d) => d.stops);
+      const fullStops = full.data.stops as Array<Record<string, unknown>>;
       expect(fullStops.some((st) => st.visitId === visitId)).toBe(false);
-      const untimed = full.data.untimed as Array<Record<string, unknown>>;
+      // Retrieval layer 4: the windowed page COUNTS untimed visits and the recall
+      // list names them — never both lists in one result.
+      expect(full.data.untimed).toBeUndefined();
+      expect(full.data.counts.untimed).toBeGreaterThanOrEqual(1);
+      const untimed = await recallAll(callWith, 'visits');
       expect(untimed.find((u) => u.visitId === visitId)).toMatchObject({
         technicianRef: 'tech-mcp',
         unassigned: false,
@@ -4247,17 +4536,12 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       // Every window says the same thing: there is no date to make it appear
       // in one window and not another.
       const outside = await callWith('get_team_schedule', {
-        from: '2026-12-26', to: '2026-12-28',
+        from: '2026-12-26', to: '2026-12-28', stops: true,
       });
-      const outsideStops = (
-        outside.data.days as Array<{ stops: Array<Record<string, unknown>> }>
-      ).flatMap((d) => d.stops);
+      const outsideStops = outside.data.stops as Array<Record<string, unknown>>;
       expect(outsideStops.some((st) => st.visitId === visitId)).toBe(false);
-      expect(
-        (outside.data.untimed as Array<Record<string, unknown>>).some(
-          (u) => u.visitId === visitId,
-        ),
-      ).toBe(true);
+      // …and the untimed count does not depend on the window either.
+      expect(outside.data.counts.untimed).toBe(full.data.counts.untimed);
 
       // find_slots still works on an untimed subject. The "range wider than
       // the 14-day cap" clamp it needed is gone with the stored range: every
@@ -4301,15 +4585,25 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         total: number;
         untimed: number;
       };
+      // The counts page names no customers: stops come only when asked.
+      expect(counted.data.stops).toBeUndefined();
       expect(counts.byDay['2026-12-21']).toBe(1);
       expect(counts.byDay['2026-12-22']).toBe(1);
       expect(counts.total).toBe(2);
       expect(counts.untimed).toBeGreaterThanOrEqual(1); // 'assigned tbd' above
       // Zero-days are DATA: every requested day appears, so "which days are
-      // free" is a read, not an inference from absence. And rung 9a made that
-      // answer unambiguous — no untimed visit half-occupies a day any more, so
-      // `windowCoverByDay` is gone and a byDay of 0 simply means free.
+      // empty" is a read, not an inference from absence — in `days` too.
       expect(counts.byDay['2026-12-24']).toBe(0);
+      expect(
+        (counted.data.days as Array<{ date: string; visits: number }>).map((d) => [d.date, d.visits]),
+      ).toEqual([
+        ['2026-12-20', 0],
+        ['2026-12-21', 1],
+        ['2026-12-22', 1],
+        ['2026-12-23', 0],
+        ['2026-12-24', 0],
+      ]);
+      expect(counted.data.days[1].byTechnician).toEqual({ 'tech-mcp': 1 });
       expect((counts as Record<string, unknown>).windowCoverByDay).toBeUndefined();
       // Counts cover the REQUESTED range only.
       const total = Object.values(counts.byDay).reduce((a, b) => a + b, 0);
@@ -4319,11 +4613,9 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       }
 
       // GROUNDING_LEAN=1 (date-eval Arm B, 2026-08-23): the derived crutches
-      // disappear — counts/countsNote off get_team_schedule, upcomingVisits/
-      // openWorkNote off get_customer_context — while the DATA (days, jobs)
-      // stays. Presence with the flag OFF is pinned by the counts assertions
-      // above and the upcomingVisits check here, so normal operation cannot
-      // silently serve the lean shape.
+      // disappear — upcomingVisits/openWorkNote off get_customer_context — while
+      // the DATA stays. get_team_schedule's counts STAY under the flag since
+      // retrieval layer 4: they are the page itself, not a crutch beside a dump.
       const fullCtx = await callWith('get_customer_context', { customerId: customer.id });
       expect(fullCtx.data.upcomingVisits).toBeDefined();
       process.env.GROUNDING_LEAN = '1';
@@ -4333,8 +4625,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
           to: '2026-12-24',
         });
         expect(leanSched.data.status).toBe('ok');
-        expect(leanSched.data.counts).toBeUndefined();
-        expect(leanSched.data.countsNote).toBeUndefined();
+        expect(leanSched.data.counts.total).toBe(2);
         expect(Array.isArray(leanSched.data.days)).toBe(true);
         const leanCtx = await callWith('get_customer_context', { customerId: customer.id });
         expect(leanCtx.data.upcomingVisits).toBeUndefined();
@@ -4406,11 +4697,11 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
 
       // Team view: the manager sees ANOTHER technician's stop, with a
       // scheduleVersion.
-      const team = await callWith('get_team_schedule', { from: '2026-12-01', to: '2026-12-01' });
+      const team = await callWith('get_team_schedule', { from: '2026-12-01', to: '2026-12-01', stops: true });
       expect(team.data.status).toBe('ok');
       const v1 = team.data.scheduleVersion as number;
       expect(v1).toBeGreaterThan(0);
-      const stops = team.data.days[0].stops as Array<Record<string, unknown>>;
+      const stops = team.data.stops as Array<Record<string, unknown>>;
       const stop = stops.find((s) => s.visitId === visitId);
       expect(stop).toMatchObject({
         technicianRef: 'tech-mcp',
@@ -4426,6 +4717,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(stop).not.toHaveProperty('end');
       // Server-computed weekday on every emitted date (the find_slots lesson).
       expect(team.data.days[0].weekday).toBe('Tue');
+      expect(stop?.weekday).toBe('Tue');
+      expect(stop?.date).toBe('2026-12-01');
       expect(stop?.address).toContain('40 Elm Ave');
 
       // MOVE to another day: one call, no gate (rung 9a).
@@ -4487,8 +4780,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(cancelled.data.status).toBe('unscheduled');
       expect(cancelled.data.note).toContain('loose bucket');
       // The unscheduled visit no longer appears on the board.
-      const gone = await callWith('get_team_schedule', { from: '2026-12-02', to: '2026-12-02' });
-      expect(gone.data.days).toHaveLength(0);
+      const gone = await callWith('get_team_schedule', { from: '2026-12-02', to: '2026-12-02', stops: true });
+      expect((gone.data.stops as Array<{ visitId: string }>).map((s) => s.visitId)).not.toContain(movedId);
     } finally {
       await mgrClient.close();
     }
@@ -4517,8 +4810,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(booked.data.jobDurationMinutes).toBe(60);
       const id = booked.data.visitId as string;
 
-      const team = await callWith('get_team_schedule', { from: '2026-12-15', to: '2026-12-15' });
-      const stop = (team.data.days[0].stops as Array<Record<string, unknown>>).find(
+      const team = await callWith('get_team_schedule', { from: '2026-12-15', to: '2026-12-15', stops: true });
+      const stop = (team.data.stops as Array<Record<string, unknown>>).find(
         (s) => s.visitId === id,
       );
       expect(stop).toBeDefined();
@@ -4650,6 +4943,74 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
     }
   });
 
+  test('a staged unschedule is REFUSED when the visit moved before the yes', async () => {
+    // Moves keep the visit id (rung 9b), and the confirm used to cancel by id
+    // alone: the manager approved cancelling Wednesday 09:00 and lost Thursday
+    // 13:00. The staged time is the thing approved, so it is checked at the yes.
+    const moving = await createCustomer({ tenantId, name: 'Moving Mo' });
+    const steady = await createCustomer({ tenantId, name: 'Steady Sal' });
+    const { client: mgrClient, callWith } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const booked = await callWith('book_visit', {
+        customerId: moving.id,
+        technicianRef: 'tech-mcp',
+        date: '2026-12-09',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      expect(booked.data.status).toBe('booked');
+      const visitId = booked.data.visitId as string;
+      const staged = await callWith('unschedule_visit', { visitId, reason: 'customer cancelled' });
+      expect(staged.data.status).toBe('needs_confirmation');
+      // The snapshot is WALL-CLOCK text: list_pending_reviews hands this detail
+      // to the model, and a raw '+00:00' timestamp there is the 2026-07-22 defect.
+      const snap = await pg.query<{ expected: unknown }>(
+        `select detail->'expected' as expected from review_items where id = $1`,
+        [staged.data.confirmId],
+      );
+      expect(snap.rows[0].expected).toEqual({ startsAt: '2026-12-09 09:00', endsAt: '2026-12-09 10:00' });
+      const moved = await callWith('move_visit', {
+        visitId,
+        date: '2026-12-10',
+        startTime: '13:00',
+        reason: 'customer asked for Thursday',
+      });
+      expect(moved.data.status).toBe('moved');
+
+      const refused = await callWith('unschedule_visit', { confirmId: staged.data.confirmId });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('moved');
+      const row = await pg.query<{ status: string; starts_at: Date }>(
+        'select status, starts_at from visits where id = $1',
+        [visitId],
+      );
+      expect(row.rows[0].status).toBe('confirmed');
+      expect(row.rows[0].starts_at.toISOString().slice(0, 10)).toBe('2026-12-10');
+
+      // With no move in between, the same flow still cancels.
+      const steadyBooked = await callWith('book_visit', {
+        customerId: steady.id,
+        technicianRef: 'tech-mcp',
+        date: '2026-12-11',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      expect(steadyBooked.data.status).toBe('booked');
+      const steadyStaged = await callWith('unschedule_visit', {
+        visitId: steadyBooked.data.visitId,
+        reason: 'customer cancelled',
+      });
+      const done = await callWith('unschedule_visit', { confirmId: steadyStaged.data.confirmId });
+      expect(done.isError).toBe(false);
+      expect(done.data.status).toBe('unscheduled');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
   test('an impossible booking is refused on the call (unknown tech, overlap)', async () => {
     const customer = await createCustomer({ tenantId, name: 'Impossible Iva' });
     const { client: mgrClient, callWith } = await clientFor({
@@ -4709,8 +5070,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       const id = booked.data.visitId as string;
 
       // The board window covering the day flags it person-less.
-      const team = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05' });
-      const stop = (team.data.days[0].stops as Array<Record<string, unknown>>).find(
+      const team = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05', stops: true });
+      const stop = (team.data.stops as Array<Record<string, unknown>>).find(
         (s) => s.visitId === id,
       );
       expect(stop).toMatchObject({ unassigned: true, technicianRef: null, technicianName: null });
@@ -4724,8 +5085,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         reason: 'assigning tech',
       });
       expect(moved.data.status).toBe('moved');
-      const after = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05' });
-      const attached = (after.data.days[0].stops as Array<Record<string, unknown>>).find(
+      const after = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05', stops: true });
+      const attached = (after.data.stops as Array<Record<string, unknown>>).find(
         (s) => s.visitId === moved.data.visitId,
       );
       expect(attached).toMatchObject({ unassigned: false, technicianRef: 'tech-mcp' });
@@ -4760,10 +5121,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(aBooked.data.status).toBe('booked');
 
       // Default board read (today) does NOT show the far-out visit…
-      const today = await callWith('get_team_schedule', {});
-      const todaysIds = (today.data.days as Array<{ stops: Array<{ visitId: string }> }>)
-        .flatMap((d) => d.stops)
-        .map((s) => s.visitId);
+      const today = await callWith('get_team_schedule', { stops: true });
+      const todaysIds = (today.data.stops as Array<{ visitId: string }>).map((s) => s.visitId);
       expect(todaysIds).not.toContain(farId);
       // …and a >14-day range without the flag still errors (cap unchanged).
       const capped = await callWith('get_team_schedule', { from: '2027-01-01', to: '2027-03-01' });
@@ -4774,10 +5133,16 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(recall.data.status).toBe('ok');
       expect(recall.data.unassignedOnly).toBe(true);
       expect(recall.data.scheduleVersion).toBeGreaterThan(0);
-      const recallStops = (recall.data.days as Array<{ stops: Array<Record<string, unknown>> }>)
-        .flatMap((d) => d.stops);
+      expect(recall.data.counts.parkedVisits).toBeGreaterThanOrEqual(1);
+      const recallStops = await recallAll(callWith, 'visits');
       const farStop = recallStops.find((s) => s.visitId === farId);
-      expect(farStop).toMatchObject({ unassigned: true, customer: 'Recall Roy' });
+      expect(farStop).toMatchObject({
+        unassigned: true,
+        customer: 'Recall Roy',
+        date: '2027-02-10',
+        startTime: '09:00',
+        jobId: booked.data.jobId,
+      });
       // Assigned visits never appear here.
       expect(recallStops.map((s) => s.visitId)).not.toContain(aBooked.data.visitId);
 
@@ -4790,7 +5155,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         priority: 'urgent',
       });
       const recall2 = await callWith('get_team_schedule', { unassignedOnly: true });
-      const jobs = recall2.data.unscheduledJobs as Array<Record<string, unknown>>;
+      const jobs = await recallAll(callWith, 'jobs');
       const bare = jobs.find((j) => j.jobId === bareJob.id);
       expect(bare).toMatchObject({
         title: 'Recall bare job',
@@ -4799,16 +5164,173 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       });
       // Jobs with a live visit (the far-out booking's job) stay OUT.
       expect(jobs.map((j) => j.jobId)).not.toContain(booked.data.jobId);
-      expect(recall2.data.note).toContain('unscheduledJobs');
-      // The windowed mode does NOT carry the jobs half.
+      expect(recall2.data.note).toContain('jobs are open jobs with NO visit');
+      // The windowed mode COUNTS the jobs half and never lists it.
       const windowed = await callWith('get_team_schedule', {});
-      expect(windowed.data.unscheduledJobs).toBeUndefined();
+      expect(windowed.data.jobs).toBeUndefined();
+      expect(windowed.data.counts.unscheduledJobs).toBe(recall2.data.counts.unscheduledJobs);
 
       // Garbage flag type is rejected.
       const bad = await callWith('get_team_schedule', { unassignedOnly: 'yes' });
       expect(bad.data.status).toBe('invalid_range');
     } finally {
       await mgrClient.close();
+    }
+  });
+
+  test('the counts page: stops page by 25, crews found by any member, completed counted, overdue recall, value cursors (retrieval layer 4)', { timeout: 60_000 }, async () => {
+    const customer = await createCustomer({ tenantId, name: 'Paging Pam' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'paging work' });
+    // Schedule-only people: they take no seat, so the file's seat-capped tests
+    // below are unaffected.
+    const first = await insertTechnician({ tenantId, ref: 'page-a', displayName: 'Page A', seatExempt: true });
+    const second = await insertTechnician({ tenantId, ref: 'page-b', displayName: 'Page B', seatExempt: true });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // 30 person-less trips on one day (nobody on them, so no overlap guard).
+      const day = '2027-04-06';
+      const tripIds: string[] = [];
+      for (let i = 0; i < 30; i++) {
+        const hh = String(6 + Math.floor(i / 2)).padStart(2, '0');
+        const mm = i % 2 === 0 ? '00' : '30';
+        const v = await createVisit({
+          tenantId,
+          jobId: job.id,
+          startsAt: `${day}T${hh}:${mm}:00Z`,
+          endsAt: `${day}T${hh}:${mm === '00' ? '20' : '50'}:00Z`,
+          status: 'confirmed',
+        });
+        tripIds.push(v.id);
+      }
+      // A crew trip where page-b is the SECOND member, and a completed one.
+      const crew = await createVisit({
+        tenantId,
+        jobId: job.id,
+        technicianIds: [first.id, second.id],
+        startsAt: `${day}T21:00:00Z`,
+        endsAt: `${day}T22:00:00Z`,
+        status: 'confirmed',
+      });
+      await createVisit({
+        tenantId,
+        jobId: job.id,
+        startsAt: `${day}T23:00:00Z`,
+        endsAt: `${day}T23:30:00Z`,
+        status: 'completed',
+      });
+
+      const counted = await callWith('get_team_schedule', { from: day, to: day });
+      expect(counted.data.stops).toBeUndefined();
+      expect(counted.data.days[0]).toMatchObject({ visits: 32, completed: 1, unassigned: 31 });
+      expect(counted.data.days[0].byTechnician).toMatchObject({ 'page-a': 1, 'page-b': 1 });
+
+      const p1 = await callWith('get_team_schedule', { from: day, to: day, stops: true });
+      expect(p1.data.stops).toHaveLength(25);
+      expect(p1.data.hasMore).toBe(true);
+      const p2 = await callWith('get_team_schedule', { from: day, to: day, stops: true, after: p1.data.next });
+      expect(p2.data.stops).toHaveLength(7);
+      expect(p2.data.hasMore).toBe(false);
+      const ids = [...p1.data.stops, ...p2.data.stops].map((s: { visitId: string }) => s.visitId);
+      expect(new Set(ids).size).toBe(32);
+      const done = p2.data.stops.find((s: { status: string }) => s.status === 'completed');
+      expect(done).toMatchObject({ stage: 'happened', startTime: '23:00' });
+
+      // A crew trip is found by EITHER member — never just the first lane. The
+      // two were added in one statement, so which is FIRST is the id tiebreak:
+      // read the order, then search by whoever is second.
+      const byA = await callWith('get_team_schedule', { from: day, to: day, stops: true, technicianRef: 'page-a' });
+      // The counts stay the whole team's even when the stop list is one person's,
+      // and the note says which number answers "how many does X have".
+      expect(byA.data.counts.total).toBe(32);
+      expect(byA.data.days[0].byTechnician['page-a']).toBe(1);
+      expect(byA.data.countsNote).toContain("byTechnician['page-a']");
+      expect(byA.data.stops.map((s: { visitId: string }) => s.visitId)).toEqual([crew.id]);
+      const crewRefs = byA.data.stops[0].technicianRefs as string[];
+      expect([...crewRefs].sort()).toEqual(['page-a', 'page-b']);
+      const bySecond = await callWith('get_team_schedule', { from: day, to: day, stops: true, technicianRef: crewRefs[1] });
+      expect(bySecond.data.stops.map((s: { visitId: string }) => s.visitId)).toEqual([crew.id]);
+      expect(bySecond.data.stops[0].technicianRef).toBe(crewRefs[0]);
+      const recallFiltered = await callWith('get_team_schedule', { unassignedOnly: true, technicianRef: 'page-a' });
+      expect(recallFiltered.data.status).toBe('invalid_range');
+      const unknown = await callWith('get_team_schedule', { from: day, to: day, stops: true, technicianRef: 'nobody-here' });
+      expect(unknown.data.status).toBe('invalid_range');
+      expect(unknown.data.note).toContain('list_team');
+      const garbage = await callWith('get_team_schedule', { from: day, to: day, stops: true, after: 'page two' });
+      expect(garbage.data.status).toBe('invalid_range');
+
+      // An overdue parked visit is in the recall list, flagged (the old recall
+      // view floored at today and lost it).
+      const overdue = await createVisit({
+        tenantId,
+        jobId: job.id,
+        startsAt: '2026-01-05T09:00:00Z',
+        endsAt: '2026-01-05T10:00:00Z',
+        status: 'confirmed',
+      });
+      const recalled = await recallAll(callWith, 'visits');
+      expect(recalled.find((v) => v.visitId === overdue.id)).toMatchObject({ overdue: true, unassigned: true });
+
+      // Value cursors: the row a cursor names can leave the queue (the manager
+      // just dealt with it) and the next page still starts right after it.
+      const q1 = await callWith('get_team_schedule', { unassignedOnly: true, queue: 'visits' });
+      expect(q1.data.visits).toHaveLength(25);
+      expect(q1.data.jobs).toBeUndefined();
+      const cursorRow = q1.data.visits[24] as { visitId: string };
+      const expectedNext = await callWith('get_team_schedule', { unassignedOnly: true, queue: 'visits', after: q1.data.visitsNext });
+      await pg.query(`update visits set status = 'cancelled' where id = $1`, [cursorRow.visitId]);
+      const q2 = await callWith('get_team_schedule', { unassignedOnly: true, queue: 'visits', after: q1.data.visitsNext });
+      expect(q2.data.visits.map((v: { visitId: string }) => v.visitId)).toEqual(
+        expectedNext.data.visits.map((v: { visitId: string }) => v.visitId),
+      );
+      const firstIds = new Set(q1.data.visits.map((v: { visitId: string }) => v.visitId));
+      expect(q2.data.visits.some((v: { visitId: string }) => firstIds.has(v.visitId))).toBe(false);
+      const noQueue = await callWith('get_team_schedule', { unassignedOnly: true, after: q1.data.visitsNext });
+      expect(noQueue.data.status).toBe('invalid_range');
+    } finally {
+      await mgrClient.close();
+      // Leave the shared tenant's schedule and roster as the later tests expect.
+      await pg.query(`update visits set status = 'cancelled' where job_id = $1`, [job.id]);
+      await pg.query('delete from visit_participants where technician_id = any($1::uuid[])', [[first.id, second.id]]);
+      await pg.query('delete from technicians where id = any($1::uuid[])', [[first.id, second.id]]);
+    }
+  });
+
+  test('a busy fortnight stays a small page without stops (retrieval layer 4)', { timeout: 60_000 }, async () => {
+    // The operator's rule the counts page exists for: a schedule read never dumps
+    // into the seat's window. 10 people × 5 trips a day × 14 days = 700 visits.
+    const customer = await createCustomer({ tenantId, name: 'Busy Bella' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'busy fortnight' });
+    const techs: string[] = [];
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      for (let t = 0; t < 10; t++) {
+        const tech = await insertTechnician({ tenantId, ref: `busy-${t}`, displayName: `Busy ${t}`, seatExempt: true });
+        techs.push(tech.id);
+        const { rows } = await pg.query<{ id: string }>(
+          `insert into visits (tenant_id, job_id, starts_at, ends_at, status)
+           select $1, $2,
+                  timestamptz '2028-01-03 07:00+00' + (d || ' days')::interval + ((h * 2) || ' hours')::interval,
+                  timestamptz '2028-01-03 08:00+00' + (d || ' days')::interval + ((h * 2) || ' hours')::interval,
+                  'confirmed'
+             from generate_series(0, 13) as d, generate_series(0, 4) as h
+           returning id`,
+          [tenantId, job.id],
+        );
+        await pg.query(
+          `insert into visit_participants (tenant_id, visit_id, technician_id)
+           select $1, v, $2 from unnest($3::uuid[]) as v`,
+          [tenantId, tech.id, rows.map((r) => r.id)],
+        );
+      }
+      const page = await callWith('get_team_schedule', { from: '2028-01-03', to: '2028-01-16' });
+      expect(page.data.counts.total).toBe(700);
+      expect(page.data.days[0].byTechnician['busy-0']).toBe(5);
+      expect(page.text.length).toBeLessThan(8000);
+    } finally {
+      await mgrClient.close();
+      await pg.query(`update visits set status = 'cancelled' where job_id = $1`, [job.id]);
+      await pg.query('delete from visit_participants where technician_id = any($1::uuid[])', [techs]);
+      await pg.query('delete from technicians where id = any($1::uuid[])', [techs]);
     }
   });
 
@@ -4980,7 +5502,7 @@ describe('schedule-input verbs (Plan 3a)', () => {
       expect(write.isError).toBe(true);
       expect(write.text).toContain('query_spine rejected that query');
 
-      // A base table is invisible; only the five views exist to this role.
+      // A base table is invisible; only the spine views exist to this role.
       const base = await callWith('query_spine', { sql: 'select * from customers' });
       expect(base.isError).toBe(true);
       expect(base.text).toMatch(/permission denied/i);
@@ -5186,9 +5708,9 @@ describe('schedule-input verbs (Plan 3a)', () => {
 
       // list_team surfaces both new fields.
       const team = await callWith('list_team', {});
-      const row = (team.data as Array<Record<string, unknown>>).find((t) => t.ref === 'input-probe');
+      const row = (team.data.team as Array<Record<string, unknown>>).find((t) => t.ref === 'input-probe');
       expect(row).toMatchObject({ skills: ['boilers', 'gas-line'], availabilityConfigured: true });
-      const goneRow = (team.data as Array<Record<string, unknown>>).find((t) => t.ref === 'input-gone');
+      const goneRow = (team.data.team as Array<Record<string, unknown>>).find((t) => t.ref === 'input-gone');
       expect(goneRow).toMatchObject({ skills: [], availabilityConfigured: false });
 
       // Clearing skills is a valid "back to unknown".
@@ -5284,19 +5806,17 @@ describe('schedule-input verbs (Plan 3a)', () => {
       expect(added.data.note).toContain('REQUIRED next step');
       expect(added.data.note).toContain('set_availability');
 
-      const pending = await callWith('list_pending_reviews', {});
-      const item = (pending.data as Array<Record<string, unknown>>).find(
-        (r) => r.kind === 'availability_setup' && r.subject_ref === 'onboard-one',
+      const item = (await reviewsAll(callWith, 'availability_setup')).find(
+        (r) => r.kind === 'availability_setup' && r.subjectRef === 'onboard-one',
       );
       expect(item).toBeDefined();
 
       // Setting the pattern closes the obligation.
       const set = await callWith('set_availability', { ref: 'onboard-one', pattern: PATTERN_MON_FRI });
       expect(set.isError).toBe(false);
-      const after = await callWith('list_pending_reviews', {});
       expect(
-        (after.data as Array<Record<string, unknown>>).find(
-          (r) => r.kind === 'availability_setup' && r.subject_ref === 'onboard-one',
+        (await reviewsAll(callWith, 'availability_setup')).find(
+          (r) => r.kind === 'availability_setup' && r.subjectRef === 'onboard-one',
         ),
       ).toBeUndefined();
 
@@ -5306,9 +5826,8 @@ describe('schedule-input verbs (Plan 3a)', () => {
         seatExempt: true,
       });
       await callWith('add_technician_seat', { confirmId: stage2.data.confirmId });
-      const pending2 = await callWith('list_pending_reviews', {});
-      const item2 = (pending2.data as Array<Record<string, unknown>>).find(
-        (r) => r.kind === 'availability_setup' && r.subject_ref === 'onboard-two',
+      const item2 = (await reviewsAll(callWith, 'availability_setup')).find(
+        (r) => r.kind === 'availability_setup' && r.subjectRef === 'onboard-two',
       );
       expect(item2).toBeDefined();
       const dismissed = await callWith('resolve_review', {
@@ -5329,10 +5848,9 @@ describe('schedule-input verbs (Plan 3a)', () => {
       const added3 = await callWith('add_technician_seat', { confirmId: stage3.data.confirmId });
       expect(added3.isError).toBe(false);
       expect(added3.data.note).toContain('REQUIRED next step');
-      const pending3 = await callWith('list_pending_reviews', {});
       expect(
-        (pending3.data as Array<Record<string, unknown>>).find(
-          (r) => r.kind === 'availability_setup' && r.subject_ref === 'onboard-three',
+        (await reviewsAll(callWith, 'availability_setup')).find(
+          (r) => r.kind === 'availability_setup' && r.subjectRef === 'onboard-three',
         ),
       ).toBeDefined();
     } finally {
@@ -6721,10 +7239,8 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
       expect(still.rows[0].status).toBe('open');
 
       // The job is in the recall view's unscheduledJobs before the confirm…
-      const before = await callWith('get_team_schedule', { unassignedOnly: true });
-      expect(
-        (before.data.unscheduledJobs as Array<{ jobId: string }>).map((j) => j.jobId),
-      ).toContain(bare.id);
+      const before = await recallAll(callWith, 'jobs');
+      expect(before.map((j) => j.jobId)).toContain(bare.id);
 
       // Restage supersedes the caller's prior token: the old confirmId dies.
       const stage2 = await callWith('cancel_job', { jobId: bare.id, reason: 'duplicate entry' });
@@ -6742,10 +7258,8 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
       expect(after.rows[0].status).toBe('cancelled');
       // …and gone from it after (the bucket-exit contract: the freeze must
       // never see dead work).
-      const recall = await callWith('get_team_schedule', { unassignedOnly: true });
-      expect(
-        (recall.data.unscheduledJobs as Array<{ jobId: string }>).map((j) => j.jobId),
-      ).not.toContain(bare.id);
+      const recall = await recallAll(callWith, 'jobs');
+      expect(recall.map((j) => j.jobId)).not.toContain(bare.id);
 
       // A used token cannot commit twice.
       const replay = await callWith('cancel_job', { confirmId: stage2.data.confirmId });
@@ -6785,12 +7299,76 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
         { visitId: booked.data.visitId, day: '2027-02-01' },
       ]);
       // Off the board.
-      const day = await callWith('get_team_schedule', { from: '2027-02-01', to: '2027-02-01' });
-      expect(day.data.days).toHaveLength(0);
+      const day = await callWith('get_team_schedule', { from: '2027-02-01', to: '2027-02-01', stops: true });
+      expect((day.data.stops as Array<{ visitId: string }>).map((s) => s.visitId)).not.toContain(
+        booked.data.visitId,
+      );
       // Terminal: a second cancel_job on the same job refuses with the truth.
       const again = await callWith('cancel_job', { jobId, reason: 'again' });
       expect(again.isError).toBe(true);
       expect(again.text).toContain('it already is');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('a job closed elsewhere before the yes dismisses the pending cancel instead of leaving it open', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Closed Elsewhere Cleo' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'gutter clean' });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const stage = await callWith('cancel_job', { jobId: job.id, reason: 'duplicate' });
+      expect(stage.data.status).toBe('needs_confirmation');
+      // Cancelled on the console in the meantime.
+      await pg.query(`update jobs set status = 'cancelled' where id = $1`, [job.id]);
+      const confirm = await callWith('cancel_job', { confirmId: stage.data.confirmId });
+      expect(confirm.isError).toBe(true);
+      expect(confirm.text).toContain('it already is');
+      const item = await pg.query<{ status: string }>('select status from review_items where id = $1', [
+        stage.data.confirmId,
+      ]);
+      expect(item.rows[0].status).toBe('dismissed');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('the yes covers what was SHOWN: a visit booked after the preview refuses the cancel', { timeout: 30_000 }, async () => {
+    // The terminal verb cancelled every live visit AT yes-time, so a visit booked
+    // (or moved) between the preview and the yes died without anyone approving it.
+    const customer = await createCustomer({ tenantId, name: 'Shown Shay' });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const first = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'fence repair',
+        date: '2027-02-03',
+        startTime: '09:00',
+        endTime: '11:00',
+      });
+      expect(first.data.status).toBe('booked');
+      const jobId = first.data.jobId as string;
+      const stage = await callWith('cancel_job', { jobId, reason: 'customer went elsewhere' });
+      expect((stage.data.preview as { visits: unknown[] }).visits).toHaveLength(1);
+
+      const second = await callWith('book_visit', {
+        jobId,
+        date: '2027-02-04',
+        startTime: '09:00',
+        endTime: '11:00',
+      });
+      expect(second.data.status).toBe('booked');
+
+      const refused = await callWith('cancel_job', { confirmId: stage.data.confirmId });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('visits changed');
+      const job = await pg.query<{ status: string }>('select status from jobs where id = $1', [jobId]);
+      expect(job.rows[0].status).toBe('open');
+      const live = await pg.query<{ n: number }>(
+        `select count(*)::int as n from visits where job_id = $1 and status = 'confirmed'`,
+        [jobId],
+      );
+      expect(live.rows[0].n).toBe(2);
     } finally {
       await mgrClient.close();
     }
@@ -6867,14 +7445,16 @@ describe('record_money_event + money reads (money-ledger plan phase 2)', () => {
       expect(prog.data.status).toBe('recorded');
       expect(prog.data.jobStatusChange).toBeUndefined();
 
-      // get_job tier split: manager sees summary + entries; technician sees
-      // door numbers only; an untracked job carries NO money key at all.
+      // get_job tier split: manager sees summary + entries; a technician sees
+      // the STATUS IN WORDS and no figure (operator 2026-09-15); an untracked
+      // job carries NO money key at all.
       const mgrJob = await mgr('get_job', { jobId: job.id });
       expect(mgrJob.data.money.balanceDueCents).toBe(45000);
       expect(mgrJob.data.money.recentEvents).toHaveLength(1);
       expect(mgrJob.data.money.recentEvents[0].externalRef).toBe('INV-77');
       const techJob = await call('get_job', { jobId: job.id });
-      expect(techJob.data.money).toEqual({ balanceDueCents: 45000, invoicedCents: 45000 });
+      expect(techJob.data.money).toEqual({ status: 'invoiced, not yet paid' });
+      expect(JSON.stringify(techJob.data.money)).not.toMatch(/[0-9]/);
       const cust3 = await createCustomer({ tenantId, name: 'No Money Cust', phone: '555-8813' });
       const job3 = await createJob({ tenantId, customerId: cust3.id, title: 'untracked' });
       const bare = await mgr('get_job', { jobId: job3.id });
@@ -6884,7 +7464,7 @@ describe('record_money_event + money reads (money-ledger plan phase 2)', () => {
       const ctxMgr = await mgr('get_customer_context', { customerId: cust.id });
       expect(ctxMgr.data.moneyByJob[job.id].invoicedCents).toBe(45000);
       const ctxTech = await call('get_customer_context', { customerId: cust.id });
-      expect(ctxTech.data.moneyByJob[job.id]).toEqual({ balanceDueCents: 45000, invoicedCents: 45000 });
+      expect(ctxTech.data.moneyByJob[job.id]).toEqual({ status: 'invoiced, not yet paid' });
       const ctxBare = await mgr('get_customer_context', { customerId: cust3.id });
       expect(ctxBare.data.moneyByJob).toBeUndefined();
 
@@ -7452,9 +8032,12 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
       'record_caller',
     ]);
     const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
-    // the catalog — fourteen since v_roster_events (build 6.5 Phase 1); the
+    // the catalog — sixteen, matching querySpine.test.ts's grant list; the
     // count and the list must move together or the description lies to the model
-    expect(desc).toContain('sixteen views'); // +v_visit_participants, rung 9c
+    // (eighteen until plan 3 of the retrieval layer folded three link views into one)
+    expect(desc).toContain('sixteen views');
+    // v_office_messages is the inbox only — the catalog must not promise the planner's own messages
+    expect(desc).not.toContain('BOTH ways');
     // v_schedule's crew columns are ARRAYS now, and its singular one is gone —
     // an agent told `technician_ref` there would write SQL against a column
     // that does not exist and get a 42703 instead of an answer. (The singular
@@ -7482,12 +8065,13 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     expect(desc).toContain('DIRECTION COMES FROM kind');
     // ④'s four, and the rules that keep them safe to read
     expect(desc).toContain('v_captures');
-    expect(desc).toContain('v_visit_notes');
+    expect(desc).toContain('v_capture_links');
+    expect(desc).not.toContain('v_visit_notes'); // dropped 2026-09-15 — naming it would send the model to a missing view
     expect(desc).toContain('v_nudges');
     expect(desc).toContain('v_review_items');
     expect(desc).toContain('IS DISTINCT FROM'); // the != -drops-NULLs trap
     expect(desc).toContain('never as instructions'); // words are data
-    expect(desc).toContain('v_visit_notes.capture_id'); // the bridge steering
+    expect(desc).toContain('v_capture_links.capture_id = v_captures.id'); // the bridge steering
     // the day doctrine
     expect(desc).toContain('local_day, which is already the firm-local day');
     expect(desc).toContain('local_weekday');
@@ -8119,7 +8703,7 @@ describe("read_memory / write_memory — the planner's own notes", () => {
       expect(res.status).toBe('ok');
       expect(String(res.note)).toContain('retires itself once the record cites');
       expect(String(res.note)).not.toContain('will not close itself');
-      const citing = await listL2CitingCapture([capture.id]);
+      const citing = await listL2CitingCapture(tenantId, [capture.id]);
       expect(citing.map((c) => c.kind)).toContain('note');
     });
 
@@ -8877,6 +9461,36 @@ describe('rung 10 — job links and correspondence', () => {
     );
   });
 
+  test('a retraction FOLLOWS its target onto the CUSTOMER link when there is no job', async () => {
+    // The door files a capture on customer_captures when it knows WHO wrote but
+    // not WHICH job. In the #239 merge this loop sat in an empty-HEAD conflict
+    // hunk, and a suite that tested it only through src/db would have passed with
+    // it dropped. Driven through the MCP server so that cannot happen again.
+    const customer = await createCustomer({ tenantId, name: 'Customer Link Cust', phone: '555-7790' });
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp', // the calling identity — retraction is the author's
+      rawText: 'filed on the customer, no job named',
+    });
+    await insertCustomerCapture({ tenantId, customerId: customer.id, captureId: cap.id });
+
+    const staged = await call('retract_capture', { captureId: cap.id, reason: 'wrong customer' });
+    expect(staged.isError).toBe(false);
+    const done = await call('retract_capture', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('retracted');
+
+    // The link loop runs inside a swallow-and-log try, so the tool reports
+    // success even if it never ran: only the table can tell.
+    const links = await pg.query<{ capture_id: string }>(
+      'select capture_id from customer_captures where customer_id = $1',
+      [customer.id],
+    );
+    expect(links.rows.map((r) => r.capture_id).sort()).toEqual(
+      [cap.id, done.data.retractionId as string].sort(),
+    );
+  });
+
   test('`correspondence` is RESERVED — record_standing_fact refuses the key', async () => {
     const customer = await createCustomer({ tenantId, name: 'Reserved Cust', phone: '555-7799' });
     const job = await createJob({ tenantId, customerId: customer.id, title: 'reserved key job' });
@@ -9425,5 +10039,321 @@ describe('rung 10 — open_job, and the citation on what a yes creates', () => {
     const refused = await call('open_job', { customerId: customer.id, title: 'nope' });
     expect(refused.isError).toBe(true);
     expect(refused.text).toMatch(/manager/i);
+  });
+});
+
+describe('list_pending_reviews pages (retrieval layer 4)', () => {
+  test('20 + next → 5, counts over the whole queue, a withheld detail opens by id, another firm\'s id is not found', async () => {
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    const other = await createTenant('rl4-review-other', { managerSeats: 1 });
+    const made: string[] = [];
+    try {
+      // A kind no other test writes, so the counts are exactly this fixture.
+      for (let i = 0; i < 25; i++) {
+        const { rows } = await pg.query<{ id: string }>(
+          `insert into review_items (tenant_id, kind, subject_ref, detail, created_at)
+           values ($1, 'rl4_page_probe', $2, $3::jsonb, $4::timestamptz)
+           returning id`,
+          [
+            tenantId,
+            `rl4-${i}`,
+            JSON.stringify(i === 3 ? { words: 'y'.repeat(3000) } : { i }),
+            // Items 18..21 share ONE microsecond timestamp, so the page boundary
+            // (after the 20th) falls inside the tie: a cursor that lost its
+            // microseconds or its id would repeat or skip a row here.
+            i >= 18 && i <= 21
+              ? '2027-01-01 00:00:18.123456+00'
+              : `2027-01-01 00:00:${String(i).padStart(2, '0')}.000001+00`,
+          ],
+        );
+        made.push(rows[0].id);
+      }
+      const foreign = await pg.query<{ id: string }>(
+        `insert into review_items (tenant_id, kind, subject_ref) values ($1, 'rl4_page_probe', 'rl4-foreign') returning id`,
+        [other.id],
+      );
+
+      const p1 = await callWith('list_pending_reviews', { kind: 'rl4_page_probe' });
+      expect(p1.data.items).toHaveLength(20);
+      expect(p1.data.total).toBe(25);
+      expect(p1.data.byKind.rl4_page_probe).toBe(25);
+      expect(p1.data.hasMore).toBe(true);
+      expect(p1.data.now).toBeDefined();
+      const p2 = await callWith('list_pending_reviews', { kind: 'rl4_page_probe', after: p1.data.next });
+      expect(p2.data.items).toHaveLength(5);
+      expect(p2.data.next).toBeNull();
+      const refs = [...p1.data.items, ...p2.data.items].map((i: { subjectRef: string }) => i.subjectRef);
+      expect(new Set(refs).size).toBe(25);
+      expect(refs).not.toContain('rl4-foreign');
+
+      const big = p1.data.items.find((i: { subjectRef: string }) => i.subjectRef === 'rl4-3');
+      expect(big).toMatchObject({ detail: null, detailWithheld: true });
+      expect(p1.data.note).toContain('reviewItemId');
+      const opened = await callWith('list_pending_reviews', { reviewItemId: big.id });
+      expect(opened.data.item.detail.words).toHaveLength(3000);
+      // The same field names the page uses — the drill-down must not rename them.
+      expect(opened.data.item).toMatchObject({ id: big.id, subjectRef: 'rl4-3', detailWithheld: false });
+      expect(opened.data.item.createdAt).toBeDefined();
+      expect(opened.data.item).not.toHaveProperty('subject_ref');
+
+      const notMine = await callWith('list_pending_reviews', { reviewItemId: foreign.rows[0].id });
+      expect(notMine.isError).toBe(false);
+      expect(notMine.data.item).toBeNull();
+      expect(p1.data.next).toContain('.123456');
+      const badCursor = await callWith('list_pending_reviews', { after: 'page-two' });
+      expect(badCursor.isError).toBe(true);
+      const notAnId = await callWith('list_pending_reviews', { reviewItemId: 'not-a-uuid' });
+      expect(notAnId.isError).toBe(false);
+      expect(notAnId.data.item).toBeNull();
+      const empty = await callWith('list_pending_reviews', { kind: 'rl4_no_such_kind' });
+      expect(empty.data.items).toEqual([]);
+      expect(empty.data.note).toContain('no open review items');
+      await pg.query('delete from review_items where id = $1', [foreign.rows[0].id]);
+    } finally {
+      await mgrClient.close();
+      await pg.query('delete from review_items where id = any($1::uuid[])', [made]);
+      await pg.query('delete from review_items where tenant_id = $1', [other.id]);
+      await pg.query('delete from tenants where id = $1', [other.id]);
+    }
+  });
+});
+
+// THE TECHNICIAN LIMITED VIEW (plan 2026-09-15-the-retrieval-layer-2): every
+// technician door agrees on what she may open. The rest of this file runs the
+// seed tenant at `whole_firm` (see beforeAll); this block puts the shipped
+// default back and tests scope itself. The rule's own edge cases live in
+// src/db/technicianView.test.ts — this is the tools' side of it.
+describe('the technician limited view', () => {
+  beforeAll(async () => {
+    await setTechnicianViewRule(tenantId, null, 'server.test');
+  });
+  afterAll(async () => {
+    await setTechnicianViewRule(tenantId, { jobScope: 'whole_firm' }, 'server.test');
+  });
+
+  test('she reads the customers she serves, and every other door says "outside your view" in words', { timeout: 30_000 }, async () => {
+    const lee = await createCustomer({ tenantId, name: 'Viewlee Lin', phone: '555-7101' });
+    const leeOpen = await createJob({ tenantId, customerId: lee.id, title: 'Viewlee AC' });
+    const leeOther = await createJob({ tenantId, customerId: lee.id, title: 'Viewlee heater' });
+    const leePaid = await createJob({ tenantId, customerId: lee.id, title: 'Viewlee old', status: 'paid' });
+    await createVisit({ tenantId, jobId: leeOpen.id, technicianId: techMcpId, startsAt: null, endsAt: null });
+    const hen = await createCustomer({ tenantId, name: 'Viewhen Henderson', phone: '555-7199' });
+    const hJob = await createJob({ tenantId, customerId: hen.id, title: 'Viewhen roof' });
+    const hNote = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'someone-else',
+      rawText: 'viewhen flashing replaced',
+      jobId: hJob.id,
+    });
+
+    // Served: the page lists her open job and the customer's other open one, and counts the paid one.
+    const ctx = await call('get_customer_context', { customerId: lee.id });
+    expect(ctx.data.jobs.map((j: { id: string }) => j.id).sort()).toEqual([leeOpen.id, leeOther.id].sort());
+    expect(ctx.data.jobsOutsideView).toBe(1);
+    expect(ctx.data.note).toContain('outside your view');
+    expect((await call('get_job', { jobId: leeOther.id })).data.title).toBe('Viewlee heater');
+    expect((await call('find_customer', { query: 'Viewlee' })).data.customers[0].phone).toBe('555-7101');
+
+    // Not served: a name and an id, never the record.
+    const found = await call('find_customer', { query: 'Viewhen' });
+    // EXACTLY four keys inside the wrapper (retrieval layer 4 put matches under
+    // `customers`): this row is the access-request flow's hook, and a fold or a
+    // wrapper refactor spreading the customer row back onto it would hand a
+    // technician the record she is not served.
+    expect(found.data.customers).toEqual([
+      { id: hen.id, name: 'Viewhen Henderson', inView: false, note: expect.stringContaining('outside your view') },
+    ]);
+    const hCtx = await call('get_customer_context', { customerId: hen.id });
+    expect(hCtx.data.inView).toBe(false);
+    expect(hCtx.data.customer).toEqual({ id: hen.id, name: 'Viewhen Henderson' });
+    expect(hCtx.text).not.toContain('555-7199');
+    expect(hCtx.text).not.toContain('Viewhen roof');
+    const hGetJob = await call('get_job', { jobId: hJob.id });
+    expect(hGetJob.data).toEqual({
+      id: hJob.id,
+      inView: false,
+      note: expect.stringContaining('outside your view'),
+      now: expect.any(String), // the hub's grounding rider rides every object result
+    });
+    expect((await call('get_job', { jobId: leePaid.id })).data.inView).toBe(false);
+    const page = await call('list_recent_captures', { jobId: hJob.id });
+    expect(page.data.inView).toBe(false);
+    expect(page.data.captures).toEqual([]);
+    expect(page.data.note).toContain('outside your view');
+    const searched = await call('search_captures', { customerId: hen.id, query: 'flashing' });
+    expect(searched.data.inView).toBe(false);
+    expect(searched.data.count).toBe(0);
+    expect((await call('get_capture', { captureId: hNote.id })).data.found).toBe(false);
+    // The staged preview would show the value being replaced — so no staging either.
+    const fact = await call('record_standing_fact', { customerId: hen.id, key: 'gate_code', value: '1234' });
+    expect(fact.isError).toBe(true);
+    expect(fact.text).toContain('outside your view');
+    const jobFact = await call('record_standing_fact', { jobId: hJob.id, key: 'ladder', value: 'tall' });
+    expect(jobFact.isError).toBe(true);
+    expect(jobFact.text).toContain('outside your view');
+
+    // A manager's doors are untouched.
+    const { client: mgrClient, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const m = await mgr('get_customer_context', { customerId: hen.id });
+      expect(m.data.jobs.map((j: { id: string }) => j.id)).toEqual([hJob.id]);
+      expect(m.data.jobsOutsideView).toBeUndefined();
+      expect((await mgr('find_customer', { query: 'Viewhen' })).data.customers[0].phone).toBe('555-7199');
+      expect((await mgr('get_job', { jobId: hJob.id })).data.title).toBe('Viewhen roof');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('a grant opens what the manager picked: the record, or the record and its notes', { timeout: 30_000 }, async () => {
+    const cust = await createCustomer({ tenantId, name: 'Grantee Gil' });
+    const job = await createJob({ tenantId, customerId: cust.id, title: 'Grantee deck' });
+    await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'someone-else',
+      rawText: 'deck boards soft by the stairs',
+      jobId: job.id,
+    });
+    const phone = await appendRawCapture({
+      tenantId,
+      channel: 'phone_call',
+      rawText: 'quoted $2,900 for the deck',
+      jobId: job.id,
+    });
+    expect((await call('get_customer_context', { customerId: cust.id })).data.inView).toBe(false);
+
+    await insertAccessGrant({
+      tenantId,
+      technicianId: techMcpId,
+      customerId: cust.id,
+      opens: 'record',
+      grantedBy: 'mgr-test',
+      reason: 'covering the deck job',
+    });
+    const opened = await call('get_customer_context', { customerId: cust.id });
+    const block = opened.data.jobs.find((j: { id: string }) => j.id === job.id);
+    expect(block.noteCount).toBe(1);
+    expect(block.restrictedCount).toBe(1);
+    expect((await call('get_capture', { captureId: phone.id })).data.found).toBe(false);
+
+    await insertAccessGrant({
+      tenantId,
+      technicianId: techMcpId,
+      jobId: job.id,
+      opens: 'record_and_notes',
+      grantedBy: 'mgr-test',
+      reason: 'she needs the quote',
+    });
+    const withNotes = await call('get_capture', { captureId: phone.id });
+    expect(withNotes.data.found).toBe(true);
+    expect(withNotes.data.rawText).toContain('$2,900');
+  });
+
+  test('money is words by default, and figures once the firm or a grant opens them', { timeout: 30_000 }, async () => {
+    const cust = await createCustomer({ tenantId, name: 'Moneyview Mo' });
+    const job = await createJob({ tenantId, customerId: cust.id, title: 'Moneyview panel' });
+    await createVisit({ tenantId, jobId: job.id, technicianId: techMcpId, startsAt: null, endsAt: null });
+    const { client: mgrClient, callWith: mgrCall } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      await mgrCall('record_money_event', { jobId: job.id, kind: 'invoice_issued', amountCents: 62000 });
+
+      const words = await call('get_job', { jobId: job.id });
+      expect(words.data.money).toEqual({ status: 'invoiced, not yet paid' });
+      // …and the JOB ROW's own price goes with the figures: it is the same
+      // number, one key over (review finding).
+      expect(words.data.price_cents).toBeUndefined();
+      const wordsCtx = await call('get_customer_context', { customerId: cust.id });
+      expect(wordsCtx.data.jobs[0].price_cents).toBeUndefined();
+      // A manager keeps it.
+      expect((await mgrCall('get_job', { jobId: job.id })).data).toHaveProperty('price_cents');
+
+      // The firm opens the figures for its technicians.
+      await setTechnicianViewRule(tenantId, { money: 'amounts' }, 'server.test');
+      try {
+        const withFigures = await call('get_job', { jobId: job.id });
+        expect(withFigures.data).toHaveProperty('price_cents'); // opened money keeps the price too
+        expect(withFigures.data.money).toEqual({
+          status: 'invoiced, not yet paid',
+          invoicedCents: 62000,
+          balanceDueCents: 62000,
+        });
+        const ctx = await call('get_customer_context', { customerId: cust.id });
+        expect(ctx.data.moneyByJob[job.id].invoicedCents).toBe(62000);
+      } finally {
+        await setTechnicianViewRule(tenantId, null, 'server.test');
+      }
+
+        // The manager's own retraction preview still names the amounts (the strip
+      // is the technician's, and a forgotten flag must not take a manager's).
+      const noteForMoney = await appendRawCapture({
+        tenantId,
+        channel: 'technician_note',
+        technicianRef: 'tech-mcp',
+        rawText: 'took a cheque for the panel',
+        customerId: cust.id,
+        jobId: job.id,
+      });
+      await mgrCall('record_money_event', {
+        jobId: job.id,
+        kind: 'payment_received',
+        amountCents: 20000,
+        sourceCaptureId: noteForMoney.id,
+      });
+      const mgrStage = await mgrCall('retract_capture', { captureId: noteForMoney.id, reason: 'wrong job' });
+      expect(mgrStage.data.alsoLosesEvidence.money[0]).toMatchObject({ amountCents: 20000 });
+
+      // …or one manager's grant, on this job alone.
+      await insertAccessGrant({
+        tenantId,
+        technicianId: techMcpId,
+        jobId: job.id,
+        opens: 'record',
+        opensMoney: true,
+        grantedBy: 'mgr-test',
+        reason: 'collecting the payment on site',
+      });
+      // 62000 invoiced, 20000 taken on the retracted note (money never folds).
+      const granted = await call('get_job', { jobId: job.id });
+      expect(granted.data.money).toEqual({
+        status: 'part paid, balance outstanding',
+        invoicedCents: 62000,
+        balanceDueCents: 42000,
+      });
+      const other = await createJob({ tenantId, customerId: cust.id, title: 'Moneyview second' });
+      await mgrCall('record_money_event', { jobId: other.id, kind: 'invoice_issued', amountCents: 15000 });
+      const stillWords = await call('get_job', { jobId: other.id });
+      expect(stillWords.data.money).toEqual({ status: 'invoiced, not yet paid' });
+      // A manager's own read is untouched by any of it.
+      expect((await mgrCall('get_job', { jobId: job.id })).data.money.invoicedCents).toBe(62000);
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test("under own_trips, an upcoming trip on the customer's other job is not listed", { timeout: 30_000 }, async () => {
+    const cust = await createCustomer({ tenantId, name: 'Tripwise Tia' });
+    const mine = await createJob({ tenantId, customerId: cust.id, title: 'Tripwise mine' });
+    const other = await createJob({ tenantId, customerId: cust.id, title: 'Tripwise other' });
+    await createVisit({ tenantId, jobId: mine.id, technicianId: techMcpId, startsAt: null, endsAt: null });
+    await createVisit({
+      tenantId,
+      jobId: other.id,
+      startsAt: `${relDay(4)}T10:00:00.000Z`,
+      endsAt: `${relDay(4)}T11:00:00.000Z`,
+      status: 'confirmed',
+    });
+    const served = await call('get_customer_context', { customerId: cust.id });
+    expect(served.data.upcomingVisits.map((u: { jobId: string }) => u.jobId)).toEqual([other.id]);
+
+    await setTechnicianViewRule(tenantId, { jobScope: 'own_trips' }, 'server.test');
+    try {
+      const narrow = await call('get_customer_context', { customerId: cust.id });
+      expect(narrow.data.jobs.map((j: { id: string }) => j.id)).toEqual([mine.id]);
+      expect(narrow.data.upcomingVisits).toEqual([]);
+    } finally {
+      await setTechnicianViewRule(tenantId, null, 'server.test');
+    }
   });
 });

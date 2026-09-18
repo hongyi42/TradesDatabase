@@ -217,6 +217,17 @@ describe('reads', () => {
     expect((await calendar(`?from=${DAY_A}&to=${DAY_A}`)).status).toBe(401);
   });
 
+  // The HMAC fallback was dropped 2026-09-17 (#255), leaving Ed25519 the only
+  // stamp. `signSlip` builds a slip the OLD scheme would have accepted, so this
+  // is what proves the fallback is really gone: without it nothing fails when
+  // HMAC quietly comes back, and the auth guard stops failing closed.
+  test('an HMAC-signed slip — the removed fallback — is refused', async () => {
+    const res = await calendar(`?from=${DAY_A}&to=${DAY_A}`, {
+      Authorization: `tma ${signSlip(MGR)}`,
+    });
+    expect(res.status).toBe(401);
+  });
+
   test('a manager gets the day, the roster and the tray in one payload', async () => {
     const res = await calendar(`?from=${DAY_A}&to=${DAY_A}`, tma(MGR));
     expect(res.status).toBe(200);

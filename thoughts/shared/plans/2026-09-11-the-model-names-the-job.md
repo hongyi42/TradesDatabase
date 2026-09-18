@@ -132,18 +132,84 @@ without Phase 4 the rulings hold for the message the model read and fail on the 
   p50 1,060ms, p95 26,927ms. Per fixture, every miss is one of three:
   `commitment-outbound` committed 2/3 — THE SPECIMEN's own dated promise, missed once in three;
   `firm-confirms` committed 0/3 and `thursday-works-thread` committed 0/3 — see the next bullet;
-  `thank-you` status 2/3. This is the bar Phase 2 must not fall below, and it is a bar on the FIELDS
-  THE DOOR GATES ON, not on the model's prose.
-- **OPEN — a commitment completed across two messages** (found by the baseline; needs the user).
-  The two 0/3 fixtures are mirror images, and the model is CONSISTENT on both, which makes this a
-  definition question rather than flakiness. `firm-confirms` is the firm writing "Thursday morning
-  works on our side — we will see you then" with no thread: I labelled it committed, the model says
-  no 3/3. `thursday-works-thread` is the customer writing "Thursday works." after the firm offered
-  Thursday earlier: I labelled it NOT committed (`EXTRACTION_SYSTEM`: a visit agreed earlier "is
-  already handled"), the model says yes 3/3. The model's implicit rule is "is a visit now agreed",
-  mine was "is THIS message the firm agreeing". Both readings are defensible and the whole rung
-  hangs on it, because `visitCommitted === true` is what raises the ask. Until it is settled these
-  two fixtures' labels are provisional and the 74% is not a verdict on the model.
+  `thank-you` status 2/3. SUPERSEDED AS THE BAR by the v3 baseline below — kept as the record of
+  what v2 measured, and of the two fixtures that exposed the definition question. The bar is on the
+  FIELDS THE DOOR GATES ON, never on the model's prose.
+- **THE v3 BASELINE, measured 2026-09-17** (corpus v3, `z-ai/glm-5.3` via OpenRouter, 12 fixtures x
+  10 = 120 calls; no truncation, no errors; p50 1,179ms, p95 3,420ms — so v2's 26,927ms p95 was a
+  single cold call, not a tail): `committed 102/120 (85%)` · `skips 106/120 (88%)` ·
+  `status 114/120 (95%)`. THIS is the bar Phase 2 must not fall below. Realism moved four fixtures,
+  and the movement IS the finding:
+  * `firm-confirms` 0/3 → **10/10 committed**. Given a `Subject: Re: Thursday?` line the model reads
+    "Yes … we will see you then" as agreement every time. v2's number was an artifact of bare text
+    and three samples.
+  * `thursday-works-thread` **0/10 committed, and `touchesOperations: false` in 9 of 10**. At v2 —
+    bare, with thread context — the model called it committed 3/3. Add the quoted tail the reply
+    really carries and it flips to not-committed every run: the already-handled clause firing on
+    history quoted INSIDE the message being judged, which is the mechanism this corpus was rebuilt
+    to reach.
+  * `long-thread-accept` **4/10 committed** — the same acceptance shape across six messages.
+  * `work-finished` skips 3/3 → **5/10**, status → 7/10: `Subject: All sorted` plus "just to let you
+    know" reads as the prompt's own example of an "acknowledgement".
+  THE PATTERN, and Phase 5's target: the model is reliable on a commitment the firm DECLARES
+  (`commitment-outbound` 8/10, its quoted twin 10/10, `firm-confirms` 10/10) and unreliable on one
+  completed by an ACCEPTANCE (0/10 and 4/10) — precisely the half ruling B newly requires.
+- **`touchesOperations` IS PHASE 5's SECOND TARGET** (found by the v3 run). `skips` was 100% at v2
+  and is 88% at v3, and both failures are operational replies read as acknowledgements. The
+  suppression is not absolute — `touchesOperations === false` silences only when
+  `visitCommitted !== true`, a commitment outranking the filter (`recordFieldNote.ts:363`, `:685`) —
+  but on the acceptance fixture the two failures COMPOUND: no ask is raised, and the capture goes to
+  `fileWithoutAsking(priorJobs[priorJobs.length - 1])`, the newest-job guess this arc removed from
+  the ambiguous branch. So Phase 5 edits both clauses or neither.
+- **COMMITMENT IS "A VISIT IS NOW AGREED"** (operator ruling 2026-09-17, option B). `visitCommitted`
+  answers: is a visit agreed as of this message, whoever said so. REJECTED: "is THIS message the
+  firm agreeing" (v2's labels). Its hole is the commonest booking flow there is — the firm offers a
+  slot ("we could come Thursday if that suits", not agreement) and the customer accepts ("Thursday
+  works.", not the firm speaking), so an agreed visit exists and NEITHER message ever raises an ask:
+  a silent loss identical in shape to the live specimen. Also rejected: C, B minus messages that
+  merely restate a complete agreement — cleanest in principle, hardest for a model to execute, and
+  nothing in the corpus tests it yet, so it is kept as a Phase 5 refinement to try; and E, counting
+  offers too, which turns the field from a commitment signal into scheduling traffic. B's cost is
+  duplicates, and the system HAS rails for over-telling — a capture landing on a job with a live
+  visit asks nothing, and the once-ever send rail stops a second nudge — where it has none for a
+  promise nobody raised. An offer alone is not agreement; a request alone is not; the firm stating it
+  will attend IS agreement without waiting for a reply.
+- **What that ruling does to the v2 numbers.** It relabels `thursday-works-thread` to `true`, which
+  the model already answered `true` 3/3, so that fixture closes. `firm-confirms` KEEPS its `true`
+  label — "Yes, Thursday morning works on our side, we will see you then" is an agreement completing
+  — and the model answered `false` 3/3. B would have scored v2 at 23/27 (85%), not the 96% I first
+  said in chat. (I then called that `firm-confirms` result a real model defect. The v3 run below
+  FALSIFIES that: on realistic text, at ten runs, it is 10/10. The defect was in the fixture.)
+- **`status` does not gate Phase 2** (operator 2026-09-17). It scored 26/27, and the planner is a
+  second gate: prompted to read a job's history before declaring a flip, it does not pass a stray
+  extractor signal through. So a `status` dip is not counted against Phase 2's no-regression
+  comparison. `committed` and `skips` are.
+- **THE CORPUS IS REBUILT AT v3, because v2 tested text production never sends** (2026-09-17). Every
+  email path builds `formatEmailRawText` (`src/email/format.ts:13`) — `Subject:`/`From:` then the
+  body — and NOTHING in the path strips a quoted reply tail, a signature block or a mobile footer:
+  the body is Composio's `message_text` verbatim (`src/inbound/gmail.ts:39`, `gmailSent.ts:82`,
+  `comms.ts:383`). v2's fixtures were bare one-liners, so the mechanism that most plausibly
+  suppresses a live promise was unreachable — the already-handled clause (`extract.ts:123-125`)
+  assumes earlier messages arrive AS earlier messages, and in real mail the earlier offer sits
+  INSIDE the body being judged. v3 is 12 fixtures: real headers, signatures and footers throughout;
+  quoted-tail TWINS of both commitment cases, the controlled comparison for that mechanism; a
+  6-message thread with one body over `THREAD_MESSAGE_CHARS` so the 600-char cut in
+  `renderThreadContext` runs for the first time; and the wrong-number case as a bare phone
+  transcript, the door's other text shape (`src/calls/worker.ts:130`), since every other fixture is
+  email. Runs raised to 10 — "0/3" is three samples of one fixture, and an answer given 20% of the
+  time shows up as 0/3 easily.
+- **NOT graded: a thank-you whose quoted tail carries the firm's promise.** `EXTRACTION_SYSTEM` ends
+  "when in any doubt, leave it true", so `touchesOperations: true` there is the prompt being obeyed
+  and scoring it against `skips: true` would manufacture a failure out of correct behaviour.
+  Recorded in the corpus as a known untested shape.
+- **PHASE 5 RAISES `committed`; phases 2-4 do not touch it** (operator 2026-09-17). The eval found a
+  failure mode this plan had no phase for: the extractor sometimes does not notice a commitment at
+  all. A missed commitment never wakes the planner, so better filing on a promise nobody saw buys
+  nothing — and the user's point is that the gain runs the other way too, since a `committed` the
+  model reads correctly means the planner is called more often and the manager is told in time.
+  Phases 2-4 are a FILING change: Phase 2 must only not make `committed` worse, and
+  `EXTRACTION_SYSTEM` stays byte-identical there so a moved number has one suspect. Phase 5 comes
+  AFTER Phase 2 lands, for that clean before/after.
 - **Both 2026-09-14 parks have LANDED** (rebase): the job-order tiebreak is on main (`jobs.ts:151`,
   `bf9d5ea`) and the retracted-link exposure was resolved by the views fold. Neither is on the board.
   **Accepted:** `matchIdentity` runs twice on the automatic path — a few indexed reads.
@@ -228,7 +294,9 @@ Adds a scored eval script for the extractor's outputs and records today's number
       finish reasons and token counts, written into Decisions as the baseline.
 
 ### Manual verification
-- [ ] Check the labels. A baseline scored against wrong labels makes every later comparison worthless.
+- [x] Check the labels. A baseline scored against wrong labels makes every later comparison worthless.
+      DONE, and it found two wrong ones plus a corpus that did not resemble production: ruling B, the
+      v3 rebuild and the v3 baseline above are the result.
 
 ---
 *Pause after this phase — its manual list is non-empty.*
@@ -405,6 +473,43 @@ fields into `MatchResult`, only when present.
 
 ---
 *Automated checks suffice; continue.*
+
+## Phase 5: The extractor notices the commitment
+
+### What this phase does
+Raises `committed` against corpus v3 by editing the one prompt that governs it, with the eval as the
+loop: edit, `npm run extract-eval -- --runs 10`, compare. It runs AFTER Phase 2 has landed and been
+measured, so the candidate block's effect on the same field is already known and a change here has
+one suspect. Nothing outside the prompt changes.
+
+### Changes required
+
+**`src/writePath/extract.ts`** — `EXTRACTION_SYSTEM` only, two clauses:
+- `:111-112`, what sets `visitCommitted`: state the ruling in the prompt's own words — a visit is
+  agreed as of this message, whoever said so; an offer alone and a request alone are not; the firm
+  stating it will attend needs no reply.
+- `:123-125`, the already-handled clause: it must bind a visit agreed in an EARLIER MESSAGE and not
+  the same history quoted inside the body being judged. Whether that is what the model is actually
+  doing is what the quoted-tail twins measure — read them before writing the fix.
+
+**`src/writePath/extract.test.ts`** — the pin on that sentence moves with it.
+
+### Automated verification
+- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass
+- [ ] the `EXTRACTION_SYSTEM` pin asserts the new sentence
+
+### Live verification (agent-executable)
+- Prerequisites: `.env`; the pinned model.
+- [ ] `npm run extract-eval -- --runs 10`, both variants. Evidence: `committed` above the v3
+      baseline, `skips` no lower, and each commitment fixture's quoted twin within one run of its
+      bare twin. A dip is re-run once before it counts.
+
+### Manual verification
+- [ ] Read the prompt against the ruling. A prompt that scores well by naming the fixtures is the
+      failure the eval cannot detect.
+
+---
+*Pause after this phase — its manual list is non-empty.*
 
 ## Deploy note
 

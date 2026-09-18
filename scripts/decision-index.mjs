@@ -250,10 +250,15 @@ function parseMemoryEntries(text) {
     if (!current) return;
     const body = current.body.join(' ');
     current.date = /(20\d{2}-\d{2}-\d{2})/.exec(body)?.[1] ?? '';
-    current.files = [...new Set(
+    // A `###` entry reaches the MAP but claims no by-file slot. Attaching it would let the newly
+    // indexed headings compete for MAX_PER_FILE against findings on busy files, and the rank/
+    // tiebreak there was tuned deliberately (finding 2026-09-14-fix-the-small-board-findings).
+    // Widening the map is this change; re-opening that ranking is a separate, operator-sized call.
+    current.files = current.heading ? [] : [...new Set(
       [...body.matchAll(/\bsrc\/[a-zA-Z0-9_/-]+\.ts\b/g)].map((m) => m[0]),
     )].filter((f) => existsSync(join(ROOT, f)));
     delete current.body;
+    delete current.heading;
     entries.push(current);
     current = null;
   };
@@ -263,6 +268,15 @@ function parseMemoryEntries(text) {
       section = line.replace(/^##\s+/, '').trim();
       return;
     }
+    // A `###` heading is an entry too. Most of §2 is written this way, and until now none of it
+    // reached the map — so grepping the map for a rule that exists found nothing, which is worse
+    // than no map at all (measured 2026-09-17 on "The product is the fit").
+    const h3 = /^###\s+(.+?)\s*$/.exec(line);
+    if (h3) {
+      flush();
+      current = { title: h3[1].replace(/`/g, '').trim(), section, line: i + 1, body: [h3[1]], heading: true };
+      return;
+    }
     const lead = /^[-*]\s+\*\*(.+?)\*\*(.*)$/.exec(line);
     if (lead) {
       flush();
@@ -270,7 +284,9 @@ function parseMemoryEntries(text) {
       return;
     }
     if (current) {
-      if (/^\S/.test(line) && line.trim()) flush();
+      // A bullet entry ends at the first unindented line; a heading entry's prose IS unindented,
+      // so it runs until the next heading or bullet lead, each of which flushes above.
+      if (!current.heading && /^\S/.test(line) && line.trim()) flush();
       else current.body.push(line);
     }
   });

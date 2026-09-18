@@ -17,6 +17,31 @@ export default tseslint.config(
     languageOptions: { parserOptions: { tsconfigRootDir: import.meta.dirname } },
   },
   {
+    // The extract-eval driver, under the same bargain as spine-eval below: it
+    // imports the compiled dist/, so it is plain Node ESM and typecheck never
+    // sees it (tsconfig includes only src). Lint is its ONLY gate, and without
+    // this block `eslint .` matched zero rules against it — a script whose job
+    // is to grade the extractor, itself ungraded.
+    files: ['scripts/extract-eval/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        JSON: 'readonly',
+        Date: 'readonly',
+        Math: 'readonly',
+        Number: 'readonly',
+        String: 'readonly',
+      },
+    },
+    rules: {
+      'no-undef': 'error',
+      'no-unused-vars': 'error',
+    },
+  },
+  {
     // The spine-eval drivers are plain Node ESM (they import the compiled
     // dist/, so they cannot be TypeScript without a second build step). Same
     // reasoning as the web/ block below: without this they would pass `eslint .`

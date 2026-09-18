@@ -127,6 +127,23 @@ without Phase 4 the rulings hold for the message the model read and fail on the 
   `capture_membership` took over in SQL. Its own comment claimed it "stays for the retraction walk",
   which was untrue — that walk keys on the capture (`listCustomerCapturesForCapture`), not the
   customer. Its two test reads now go straight to SQL, so both assertions survive the deletion.
+- **THE BASELINE, measured 2026-09-17** (corpus v2, `z-ai/glm-5.3` via OpenRouter, 9 fixtures x 3):
+  `committed 20/27 (74%)` · `skips 27/27 (100%)` · `status 26/27 (96%)`; no truncation, no errors;
+  p50 1,060ms, p95 26,927ms. Per fixture, every miss is one of three:
+  `commitment-outbound` committed 2/3 — THE SPECIMEN's own dated promise, missed once in three;
+  `firm-confirms` committed 0/3 and `thursday-works-thread` committed 0/3 — see the next bullet;
+  `thank-you` status 2/3. This is the bar Phase 2 must not fall below, and it is a bar on the FIELDS
+  THE DOOR GATES ON, not on the model's prose.
+- **OPEN — a commitment completed across two messages** (found by the baseline; needs the user).
+  The two 0/3 fixtures are mirror images, and the model is CONSISTENT on both, which makes this a
+  definition question rather than flakiness. `firm-confirms` is the firm writing "Thursday morning
+  works on our side — we will see you then" with no thread: I labelled it committed, the model says
+  no 3/3. `thursday-works-thread` is the customer writing "Thursday works." after the firm offered
+  Thursday earlier: I labelled it NOT committed (`EXTRACTION_SYSTEM`: a visit agreed earlier "is
+  already handled"), the model says yes 3/3. The model's implicit rule is "is a visit now agreed",
+  mine was "is THIS message the firm agreeing". Both readings are defensible and the whole rung
+  hangs on it, because `visitCommitted === true` is what raises the ask. Until it is settled these
+  two fixtures' labels are provisional and the 74% is not a verdict on the model.
 - **Both 2026-09-14 parks have LANDED** (rebase): the job-order tiebreak is on main (`jobs.ts:151`,
   `bf9d5ea`) and the retracted-link exposure was resolved by the views fold. Neither is on the board.
   **Accepted:** `matchIdentity` runs twice on the automatic path — a few indexed reads.
@@ -203,11 +220,11 @@ Adds a scored eval script for the extractor's outputs and records today's number
   agreement, `finish_reason`, and output tokens.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass — and `npm test` makes no model call
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass — and `npm test` makes no model call
 
 ### Live verification (agent-executable)
 - Prerequisites: `.env` key; the production model name.
-- [ ] `npm run extract-eval` on today's code (no candidates exist yet). Evidence: per-field agreement,
+- [x] `npm run extract-eval` on today's code (no candidates exist yet). Evidence: per-field agreement,
       finish reasons and token counts, written into Decisions as the baseline.
 
 ### Manual verification

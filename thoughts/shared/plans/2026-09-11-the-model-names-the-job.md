@@ -185,6 +185,29 @@ without Phase 4 the rulings hold for the message the model read and fail on the 
   eval; step 2 edits the `visitCommitted` clauses and re-runs it again. One edit for all three would
   make any regression un-attributable, and a re-run is ~120 calls of a cheap model. Phase 2's
   no-regression comparison is then against the baseline STEP 2 records, not the v3 one.
+- **PHASE 5 IS DONE, and here is every number it moved** (2026-09-17; corpus v3, 12 fixtures x 10):
+  ```
+                          committed        skips          status
+  v3 baseline             102/120  85%    106/120  88%   114/120  95%
+  + step 1 skip/status    108/120  90%    120/120 100%   120/120 100%
+  + step 2 commitment     119/120  99%    120/120 100%   117/120  98%
+    step 2, re-run        120/120 100%    120/120 100%   110/120  92%
+  ```
+  ACCEPTED at step 2 (operator: "we don't have to get perfect numbers", "+ step 2 is fine"). **Phase
+  2 compares against step 2**: `committed` 119-120/120, `skips` 120/120, `status` 110-117/120. The
+  one soft spot left is `long-thread-accept`'s status wobbling 3/10-10/10 on a thread about sourcing
+  parts — one fixture, in the direction the transition table and the planner both see again.
+- **A CLAUSE ABOUT ONE FIELD IS NOT LOCAL TO THAT FIELD** (measured, and the most useful thing this
+  phase learned). Chasing that status wobble, a sentence was added under `statusSignal`: "read the
+  signal from the LATEST message alone — work discussed as upcoming earlier in a conversation is not
+  work underway now". True of `statusSignal`, and it fixed the parts thread outright. It also
+  collapsed every fixture carrying quoted or earlier context — the firm's own promise with the
+  customer's request quoted beneath went 10/10 to 2/10, and `committed` overall 120/120 to 93/120,
+  BELOW the pre-Phase-5 baseline — because the commitment rule depends on reading an earlier offer
+  and accepting it now. Both that sentence and the companion "preparing is not starting" were
+  reverted, the second unmeasured rather than keep a clause added only to chase one fixture. The
+  reasoning is recorded in `extract.ts` beside the clause, and `scripts/extract-eval` is the loop for
+  whoever tries again.
 - **COMMITMENT IS "A VISIT IS NOW AGREED"** (operator ruling 2026-09-17, option B). `visitCommitted`
   answers: is a visit agreed as of this message, whoever said so. REJECTED: "is THIS message the
   firm agreeing" (v2's labels). Its hole is the commonest booking flow there is — the firm offers a
@@ -533,16 +556,15 @@ no schema, no door logic.
 **`src/writePath/extract.test.ts`** — the pins on the changed sentences move with them.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass
-- [ ] the `EXTRACTION_SYSTEM` pins assert the new sentences
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass — 127 files, 3,283 tests
+- [x] the `EXTRACTION_SYSTEM` pins assert the new sentences
 
 ### Live verification (agent-executable)
 - Prerequisites: `.env`; the pinned model.
-- [ ] STEP 1: `npm run extract-eval -- --runs 10`. Evidence: `skips` and `status` above the v3
-      baseline (106/120 and 114/120), `committed` no more than one run per fixture below it.
-- [ ] STEP 2: the same run again. Evidence: `committed` above what step 1 recorded, `skips` and
-      `status` no lower, and each commitment fixture's quoted twin within one run of its bare twin.
-- [ ] Both baselines written into Decisions. Phase 2 compares against STEP 2's.
+- [x] STEP 1: skips 120/120, status 120/120, committed 108/120 — all three ABOVE the v3 baseline.
+- [x] STEP 2: committed 119/120 then 120/120, skips 120/120, status 117/120 then 110/120. Each
+      commitment fixture's quoted twin equalled or beat its bare twin.
+- [x] Both baselines written into Decisions. Phase 2 compares against STEP 2's.
 
 ### Manual verification
 - [ ] Read the prompt against the rulings. A prompt that scores well by naming the fixtures is the

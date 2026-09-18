@@ -114,10 +114,32 @@ export const EXTRACTION_SYSTEM =
   // a casual "your engineer finished the repair" produced no signal in 3 runs of 10.
   'ARRANGING A VISIT IS NOT WORK UNDERWAY: a date agreed, a slot accepted or a technician ' +
   'promised sets NO statusSignal at all — `in_progress` means somebody has actually started ' +
-  'the work. And a customer reporting the work done IS `completed`, however casually they ' +
-  'say it. ' +
-  'Set `visitCommitted` true ONLY when the BUSINESS agreed to send someone out — ' +
-  'never because the caller asked, requested a quote, or it is undecided. ' +
+  'the work. ' +
+  // NOT FIXED HERE, deliberately (operator, 2026-09-17: "we don't have to get perfect
+  // numbers"). Step 2 below made the model see an agreed visit, and "work underway" came
+  // partly back with it: on a thread about sourcing parts it answered `in_progress` in 3 then
+  // 7 runs of 10, against an aggregate `status` of 110-117/120. Two sentences were tried and
+  // BOTH reverted:
+  //   "read the signal from the LATEST message alone — work discussed as upcoming earlier in
+  //   a conversation is not work underway now" — true of statusSignal, fixed the parts thread
+  //   outright, and BLED into visitCommitted: every fixture carrying quoted or earlier context
+  //   collapsed (the firm's own promise with the customer's request quoted beneath went 10/10
+  //   to 2/10; `committed` overall 120/120 to 93/120, below the pre-Phase-5 baseline). The
+  //   commitment rule DEPENDS on reading an earlier offer and accepting it now, so a clause
+  //   about one field is not local to that field — the prompt is read whole.
+  //   "neither is preparing to do it: quoting, planning, ordering or waiting on parts" —
+  //   reverted unmeasured with the first, rather than keep a sentence added only to chase a
+  //   one-fixture wobble. Try it alone if this is revisited; scripts/extract-eval is the loop.
+  'And a customer reporting the work done IS `completed`, however casually they say it. ' +
+  // OPERATOR RULING 2026-09-17 (option B): the question is whether a visit is AGREED, not
+  // whether this message is the firm agreeing. The old reading had a hole in the commonest
+  // booking flow there is — the firm offers a slot (not agreement) and the customer accepts
+  // it (not the firm speaking), so a visit exists on the customer's calendar and neither
+  // message ever raised an ask. That is the live specimen's failure by another route.
+  'Set `visitCommitted` true when A VISIT IS NOW AGREED as of this message: the firm saying ' +
+  'it will attend, or the customer accepting a time the firm offered. An offer alone is not ' +
+  'agreement and a request alone is not — never set it because the caller asked, requested ' +
+  'a quote, or it is undecided. ' +
   'Set `touchesOperations` false ONLY when the message carries nothing about the firm\'s ' +
   'operating record — no job, visit, schedule change, parts or money — such as a bare ' +
   'thank-you, an auto-reply, or a wrong number. ' +
@@ -139,7 +161,17 @@ export const EXTRACTION_SYSTEM =
   'MESSAGE alone: jobTitle, statusSignal, visitCommitted, touchesOperations, followUp and ' +
   'attributes. The earlier messages say what was true then, and they include your own firm\'s ' +
   'replies: a visit the firm agreed to in an earlier message is already handled, so it must NOT ' +
-  'set visitCommitted, and work reported done earlier must NOT set statusSignal. A follow-up or ' +
+  'set visitCommitted, and work reported done earlier must NOT set statusSignal. ' +
+  // The half that was missing, and it is the one that cost an appointment: an OFFER is not an
+  // agreement, so a message accepting one agrees the visit NOW. Measured 2026-09-17 —
+  // "Thursday works." answered committed 3/3 as a bare line and 0/10 once the firm's quoted
+  // offer was appended beneath it, the way a real reply carries it. The model was reading its
+  // own quoted history as "already handled".
+  'BUT AN OFFER MADE EARLIER IS NOT AN AGREEMENT: if the latest message accepts one, the ' +
+  'visit is agreed NOW and visitCommitted IS true. Text from an earlier message quoted ' +
+  'inside the latest one (under "On <date>, <person> wrote:") is earlier context in the same ' +
+  'way — read it for what was offered, never as this message already being handled. ' +
+  'A follow-up or ' +
   'a fact that was stated earlier and is not restated now is not a follow-up or a fact of this ' +
   'message. ' +
   // Rung 10b.3: the firm's own SENT mail now reaches this extractor. The rule

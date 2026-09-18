@@ -142,6 +142,20 @@ describe('the extraction system prompt (rung 10b)', () => {
     // The word that was doing the damage is gone from the exemption list.
     expect(EXTRACTION_SYSTEM).not.toContain('an acknowledgement, an auto-reply');
   });
+
+  // PHASE 5, STEP 2 — operator ruling 2026-09-17 (option B). `visitCommitted`
+  // asks whether a visit is AGREED, not whether this message is the firm
+  // agreeing: the rejected reading raised nothing for either half of "firm
+  // offers a slot" + "customer accepts it", which is how most bookings happen.
+  // The second pin is the quoted-tail half, measured: "Thursday works."
+  // answered committed 3/3 bare and 0/10 with the firm's offer quoted beneath.
+  test('an acceptance agrees the visit, and quoted history is not "already handled"', () => {
+    expect(EXTRACTION_SYSTEM).toContain('A VISIT IS NOW AGREED as of this message');
+    expect(EXTRACTION_SYSTEM).toContain('AN OFFER MADE EARLIER IS NOT AN AGREEMENT');
+    expect(EXTRACTION_SYSTEM).toContain('quoted');
+    // The rejected wording must not creep back.
+    expect(EXTRACTION_SYSTEM).not.toContain('ONLY when the BUSINESS agreed');
+  });
 });
 
 describe('renderExtractionUser (rung 10b.3)', () => {

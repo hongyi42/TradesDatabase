@@ -125,8 +125,9 @@ without Phase 4 the rulings hold for the message the model read and fail on the 
   on in #235 has no production caller any more: the retrieval layer moved the customer read into the
   `customer_contents` RPC (`src/db/context.ts:501`), and the `customer_link` arm of
   `capture_membership` does that work in SQL. The BEHAVIOUR survived — the test was renamed to
-  `getCustomerContents` and still passes — but the TypeScript accessor is dead code
-  (`20260918-listlinkedcapturesforcustomer-has-no-cal`).
+  `getCustomerContents` and still passes — but the TypeScript accessor is dead code. NOT parked and
+  NOT fixed here: it is a public export, so deleting it is the operator's call, and it is raised in
+  the report for this rebase rather than put on the board.
 - **Both 2026-09-14 parks have LANDED** (rebase): the job-order tiebreak is on main (`jobs.ts:151`,
   `bf9d5ea`) and the retracted-link exposure was resolved by the views fold. Neither is on the board.
   **Accepted:** `matchIdentity` runs twice on the automatic path — a few indexed reads.

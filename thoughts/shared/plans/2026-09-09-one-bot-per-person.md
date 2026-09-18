@@ -212,7 +212,40 @@ gone from Render. What it took, in the order it had to happen:
 Both were beliefs carried forward without re-checking whether they were still true, and both made
 this work look far larger than it was.
 
-## Phase 4 — what one-bot-per-person still owes (open)
+## Phase 4 — what one-bot-per-person still owes (CLOSED 2026-09-18)
+
+Everything below was written before anyone looked. Looking changed two of the three findings from
+defects into expected states, and changed the fix for the third into its opposite. Kept verbatim
+underneath, because the wrong reading is the useful part.
+
+**Settled:**
+
+- **Judy Chen is real**, and was unreachable for two months while the box knew exactly who she was.
+  Her bot's dispatch ledger holds 16 messages from Telegram id `8991633730` (newest 2026-07-11);
+  her roster row held `NULL`. Receiving a message and RECORDING who sent it are separate steps here,
+  and only the first is automatic — so a bot can answer someone all summer and still be unable to
+  start a conversation with them. Bound; she stays in her own tenant by the owner's decision (which
+  has 0 jobs, so she is reachable without yet having anything to receive).
+- **s6 is the spine-eval tier-3 rig**, not an eval fixture squatting on real capacity.
+  `run-gateway.mjs` defaults to `sandbox=s6`, driving it as `manager-sam @ spine-eval-main`. The
+  roster row was correct; the POOL row said "free" about a seat in daily use, so `bind_telegram`
+  would have given s6 and `@ragisan2_bot` to the next hire. Claimed for the rig, not cleared — the
+  fix named below would have broken the harness.
+- **The shared Telegram id is a teammate's phone** driving the bots they stood up for feature work.
+  Expected, and now reported as such. The one real cost stands:
+  `findRosterByTelegramUserIdGlobal` refuses an ambiguous id, so ops alerts cannot reach it.
+
+**Two operator gaps this exposed, both closed** (`scripts/assign-host.mjs`): no operator-side way to
+write `telegram_user_id` existed at all, and `add-sandbox`'s `tech=` backfill fires only when a pool
+row is CREATED — re-running it on an existing row reports "nothing to do" and leaves the seat
+claimable. `bind-telegram` and `claim-sandbox` fill both. `roster-health` now compares the roster
+against `sandbox_pool.technician_id` instead of matching tenant NAMES against /eval|test/, a
+heuristic whose only two hits were both wrong.
+
+`scripts/roster-health.mjs`: **No problems found**, exit 0.
+
+### The original (wrong) reading, kept on purpose
+
 
 The merge is structurally complete; what remains is roster DATA, not code.
 

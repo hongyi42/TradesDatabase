@@ -34,6 +34,20 @@
 //         prints the numeric id — which is public (it is the half of the
 //         signature scheme the verifier needs) and therefore safe in argv.
 //         This records it. No token, so no menu button is set here.
+//   scripts/assign-host.mjs claim-sandbox host=<h> sandbox=<s> tech=<ref> [tenant=<uuid>]
+//       → RECORDS A SEAT SOMEBODY ALREADY SITS IN. add-sandbox's tech= backfill
+//         only fires when the pool row is CREATED; re-running it on an existing
+//         row prints "nothing to do" and leaves the row cold. A cold row is
+//         offered to the next hire, so a seat that is plainly in use can still
+//         be handed to somebody else -- which is exactly how s6 ended up both
+//         "free" in the pool and occupied by the spine-eval rig.
+//         Safety: refuses unless the ROSTER already says this person is on this
+//         sandbox. It records a fact rather than deciding one, so it can never
+//         invent an assignment; use `assign` for that.
+//         tenant= is the TECHNICIAN's tenant. The pool row is found by host +
+//         sandbox_ref across all tenants, because a rig's pool row and its
+//         operator's roster row can legitimately live in different ones -- the
+//         mismatch is reported, not silently rewritten.
 //   scripts/assign-host.mjs bind-telegram ref=<ref> telegramUserId=<numeric> [tenant=<uuid>]
 //       → records WHICH TELEGRAM ACCOUNT is this person, which is the one thing
 //         that decides whether they ever hear about a schedule change: the push
@@ -68,6 +82,7 @@ import {
   getTechnician,
   isInactiveState,
   listPoolRows,
+  listPoolRowsForHost,
   registerSandbox,
   setSandboxBotId,
   updateTechnician,
@@ -93,6 +108,7 @@ const KNOWN_KEYS = {
   'wire-bot': ['host', 'sandbox', 'tenant', 'url'],
   'set-bot-id': ['host', 'sandbox', 'id', 'handle', 'tenant'],
   'bind-telegram': ['ref', 'telegramUserId', 'tenant'],
+  'claim-sandbox': ['host', 'sandbox', 'tech', 'tenant'],
   'set-badge': ['ref', 'hash', 'tenant'],
   'rotate-badge': ['ref', 'tenant'],
 };
@@ -102,6 +118,7 @@ if (!command || !(command in KNOWN_KEYS)) {
       `| add-sandbox host=<h> sandbox=<s> | wire-bot host=<h> sandbox=<s> ` +
       `| set-bot-id host=<h> sandbox=<s> id=<numeric> ` +
       `| bind-telegram ref=<r> telegramUserId=<numeric> ` +
+      `| claim-sandbox host=<h> sandbox=<s> tech=<r> ` +
       `| set-badge ref=<r> hash=<sha256> ` +
       `| rotate-badge ref=<r>   (each: [tenant=<uuid>])`,
   );
@@ -325,6 +342,74 @@ if (command === 'create-host') {
     `Still manual, once per bot: BotFather → /mybots → ${handle} → Bot Settings → ` +
       `Configure Mini App → ${url}, which is what puts "Open App" at the top of the chat.`,
   );
+} else if (command === 'claim-sandbox') {
+  const tenantId = args.tenant || '82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18'; // Default Tenant (test)
+  if (!args.host || !args.sandbox || !args.tech) {
+    console.error('claim-sandbox requires host=<host-name> sandbox=<sandbox_ref> tech=<ref>.');
+    process.exit(1);
+  }
+  const host = await getHostByName(args.host);
+  if (!host) {
+    console.error(`Host '${args.host}' not found.`);
+    process.exit(1);
+  }
+  const tech = await getTechnician(tenantId, args.tech);
+  if (!tech) {
+    console.error(`Technician '${args.tech}' not found for tenant ${tenantId}.`);
+    process.exit(1);
+  }
+  // THE GUARD: only record what the roster already asserts. Without this the
+  // command could invent an assignment nobody made, which is `assign`'s job and
+  // carries `assign`'s consequences (badges mint off sandbox_ref).
+  if (tech.sandbox_ref !== args.sandbox) {
+    console.error(
+      `Roster says '${args.tech}' is on ${tech.sandbox_ref ? `sandbox '${tech.sandbox_ref}'` : 'no sandbox'}, ` +
+        `not '${args.sandbox}'. Refusing — this command records an existing seat, it does not create one. ` +
+        `Use assign if you mean to move them.`,
+    );
+    process.exit(1);
+  }
+  // Host-scoped, not tenant-scoped, on purpose: see the usage note.
+  const row = (await listPoolRowsForHost(host.id)).find((r) => r.sandbox_ref === args.sandbox);
+  if (!row) {
+    console.error(
+      `No pool row for sandbox '${args.sandbox}' on host ${host.name}. Register it first with add-sandbox.`,
+    );
+    process.exit(1);
+  }
+  if (row.retired_at) {
+    console.error(
+      `Pool row for '${args.sandbox}' is retired (${row.retired_at}) and stays unclaimable. ` +
+        `Re-register it if the sandbox is back in service.`,
+    );
+    process.exit(1);
+  }
+  if (row.technician_id) {
+    const same = row.technician_id === tech.id;
+    console.error(
+      same
+        ? `'${args.sandbox}' is already claimed by ${args.tech}. Nothing to do.`
+        : `'${args.sandbox}' is already claimed by technician ${row.technician_id}, not ${args.tech}. ` +
+          `Refusing — check which seat is which.`,
+    );
+    process.exit(same ? 0 : 1);
+  }
+  const claimed = await claimSandbox(row.id, tech.id);
+  if (!claimed) {
+    console.error(`'${args.sandbox}' was claimed by someone else just now. Re-run to see by whom.`);
+    process.exit(1);
+  }
+  console.log(
+    `Claimed ${claimed.sandbox_ref} (bot ${claimed.bot_username ?? 'none recorded'}) for ${tech.ref}. ` +
+      `The pool will no longer offer it to a new hire.`,
+  );
+  if (row.tenant_id !== tech.tenant_id) {
+    console.log(
+      `NOTE: the pool row is filed under tenant ${row.tenant_id} while ${tech.ref} is in ` +
+        `${tech.tenant_id}. Left as-is deliberately — the claim is what stops the row being ` +
+        `offered, and moving it would change which tenant's list_team shows this bot.`,
+    );
+  }
 } else if (command === 'set-bot-id') {
   const tenantId = args.tenant || '82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18'; // Default Tenant (test)
   if (!args.host || !args.sandbox || !args.id) {

@@ -41,6 +41,14 @@ const tname = Object.fromEntries((tenants ?? []).map((t) => [t.id, t.name]));
 // so an ops alert can never be addressed to one of these.
 const EXPECTED_SHARED_TG = new Set(['5801703167']);
 
+// Seats with no person behind them BY DESIGN. s6 is the spine-eval tier-3 rig:
+// scripts/spine-eval/run-gateway.mjs drives it over ssh as manager-sam @
+// spine-eval-main, and its badge is minted for that one (tenant, ref) pair.
+// Nobody is ever going to open Telegram as that identity, so "no binding" is
+// the correct state and reporting it forever would leave this script exiting
+// non-zero on a healthy fleet -- which is how a check stops being read.
+const EXPECTED_UNBOUND = new Map([['s6', 'spine-eval tier-3 rig, driven over ssh']]);
+
 const live = (techs ?? []).filter(isLive);
 const problems = [];
 const say = (s) => console.log(s);
@@ -49,8 +57,12 @@ say('=== seats whose occupant has NO Telegram binding');
 say('    (they have a bot and a button; they will never be notified, silently)');
 const unbound = live.filter((t) => t.sandbox_ref && !t.telegram_user_id);
 for (const t of unbound) {
-  say(`  ${t.sandbox_ref.padEnd(4)} ${t.ref} (${t.display_name}) — tenant ${tname[t.tenant_id]}`);
-  problems.push(`${t.sandbox_ref}: occupant ${t.ref} has no telegram_user_id`);
+  const why = EXPECTED_UNBOUND.get(t.sandbox_ref);
+  say(
+    `  ${t.sandbox_ref.padEnd(4)} ${t.ref} (${t.display_name}) — tenant ${tname[t.tenant_id]}` +
+      (why ? `   [expected: ${why}]` : ''),
+  );
+  if (!why) problems.push(`${t.sandbox_ref}: occupant ${t.ref} has no telegram_user_id`);
 }
 if (!unbound.length) say('  none');
 

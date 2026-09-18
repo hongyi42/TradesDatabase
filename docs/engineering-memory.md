@@ -3173,6 +3173,41 @@ above), and the demo schedule window it describes has expired.
   decision — Nemotron quality rules out flash-tier models). Original mechanics, revert recipe and
   citations:
   [thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md](../thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md).
+- **2026-09-18 — two of the three "roster defects" were correct states, and the third's fix was the
+  opposite of the obvious one.** `roster-health` reported five findings; the fleet is now clean
+  (`No problems found`), and only one finding was ever a real defect.
+  **A tenant NAMED "Testing" proves nothing.** "Judy Testing" is a real person's own tenant. Her
+  bot's dispatch ledger on the box
+  (`/sandbox/.openclaw/agents/main/sessions/sessions.json.telegram-message-dispatch-default.json`,
+  inside the s3 container) holds 16 messages from Telegram id `8991633730` — `getChat` confirms
+  "Judy Chen" — newest 2026-07-11. The check that flagged her matched tenant names against
+  /eval|test/; both of its hits were wrong. It now compares the roster against
+  `sandbox_pool.technician_id`, which is a fact rather than a name.
+  **Receiving a message and RECORDING who sent it are separate steps, and only the first is
+  automatic.** Her bot answered her all July — answering just means replying to whatever id arrives
+  in the update — while `technicians.telegram_user_id` stayed NULL, so nothing could ever START a
+  conversation with her. A bot that is plainly working is not evidence that its owner is reachable.
+  **s6 is the spine-eval tier-3 rig, and the POOL row was the liar.** `sandbox_pool` said s6 was
+  free while a `technicians` row in spine-eval-main held `sandbox_ref='s6'`. First reading: leftover
+  test record squatting on capacity, fix = clear its `sandbox_ref`. Wrong, and that fix would have
+  broken the eval harness — `scripts/spine-eval/run-gateway.mjs` defaults to `sandbox=s6` and drives
+  it as `manager-sam @ spine-eval-main`, whose badge is minted for that one (tenant, ref) pair. The
+  roster row was right; the pool row said "free" about a seat in daily use, so `bind_telegram` would
+  have handed s6 and `@ragisan2_bot` to the next hire. **When two records disagree, decide which one
+  a RUNNING PROCESS depends on before deciding which one is stale.**
+  **The gap that let it persist:** `add-sandbox`'s `tech=` backfill only fires when the pool row is
+  CREATED. Re-running it on an existing row prints "Nothing to do here" and leaves the seat cold —
+  so the documented recovery for a half-finished wiring silently skips the half that matters.
+  `claim-sandbox` now does that half, and refuses unless the roster already asserts the seat.
+  **And there was no operator-side way to write `telegram_user_id` at all** — only the manager-facing
+  `bind_telegram` MCP tool, which assumes someone will ask their manager. Nobody was ever going to
+  ask on Judy's behalf. `assign-host.mjs bind-telegram` is that path, with the manager tool's guards
+  minus the auto-claim.
+  **Expected states must be reported as expected, not as problems.** One Telegram id on three rows
+  is a teammate's phone behind their test bots; s6 has no Telegram binding because no human will
+  ever be it. Both still print, with the reason, because both still cost something —
+  `findRosterByTelegramUserIdGlobal` refuses an ambiguous id, so ops alerts can never reach that
+  phone. A check that reports a healthy fleet as broken stops being read.
 - **2026-09-17 — @DashboardMan_bot is RETIRED, and two stale beliefs are what made it look hard.**
   The board bot now sends nothing, backs no door, and its token is gone from both Render services.
   Order it had to happen in: ops alerts left it (queued as `person_pushes` `kind='ops'`, delivered

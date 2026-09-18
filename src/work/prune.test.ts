@@ -147,6 +147,17 @@ beforeAll(() => {
   execFileSync('node', [CLI, 'claim', id], { cwd: wt['merged-active'], encoding: 'utf8', env: env() });
   // A session that wrote in the worktree's OWN project folder an hour ago...
   transcript(add('merged-live'), ['{}'], 60 * 60 * 1000);
+  // ...one that FINISHED two days ago, whose file was stamped minutes ago anyway: Claude Code
+  // appends a summary record (no timestamp of its own) when a session ends, so mtime runs ahead
+  // of the conversation. Read by mtime this is "2m ago" and the worktree is kept forever.
+  transcript(
+    add('merged-ended'),
+    [
+      JSON.stringify({ cwd: wt['merged-ended'], timestamp: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString() }),
+      JSON.stringify({ type: 'summary', totalCostUSD: 1.5 }),
+    ],
+    2 * 60 * 1000,
+  );
   // ...and one launched in the MAIN checkout that then worked inside this worktree: its
   // transcript lives under the main checkout's folder, and only its `cwd` says where it was.
   transcript(mainCheckout, [JSON.stringify({ cwd: mainCheckout }), JSON.stringify({ cwd: add('merged-visited') })], 30 * 60 * 1000);
@@ -236,6 +247,9 @@ describe('work.mjs prune', () => {
     expect(row(stdout, 'config-staged')).toMatch(/KEEP.*uncommitted: 1 file/);
     expect(row(stdout, 'merged-active')).toMatch(/KEEP.*active task/);
     expect(row(stdout, 'merged-live')).toMatch(/KEEP.*a session worked here 1h ago/);
+    // The entries' clock decides, not the file's: a session that ended two days ago does not
+    // keep a finished worktree alive just because something restamped its transcript.
+    expect(row(stdout, 'merged-ended')).toMatch(/REMOVE.*on origin\/main/);
     expect(row(stdout, 'merged-visited')).toMatch(/KEEP.*a session worked here/);
     expect(row(stdout, 'merged-subagent')).toMatch(/KEEP.*a session worked here/);
     expect(row(stdout, 'merged-locked')).toMatch(/KEEP.*locked/);

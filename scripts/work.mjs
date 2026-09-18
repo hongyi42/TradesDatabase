@@ -1232,9 +1232,14 @@ function sessionActivityIn(main, path) {
     for (const file of files) {
       let stat;
       try { stat = statSync(file); } catch { continue; }
+      // mtime is the cheap upper bound, never the answer: an entry can only be older than the
+      // file, so a file whose mtime already loses is skippable without reading it.
       if (Date.now() - stat.mtimeMs > LIVE_SESSION_MS || stat.mtimeMs <= newest) continue;
       // Only the tail: where a session is NOW is in its latest entries, and transcripts run long.
-      if (needles.some((n) => readTail(file, 256 * 1024).includes(n))) newest = stat.mtimeMs;
+      const tail = readTail(file, 256 * 1024);
+      if (!needles.some((n) => tail.includes(n))) continue;
+      const when = newestEntryTime(tail) || stat.mtimeMs;
+      if (when > newest) newest = when;
     }
   }
   return newest || null;
@@ -1253,6 +1258,33 @@ function readTail(file, bytes) {
   } finally {
     if (fd !== undefined) try { closeSync(fd); } catch { /* already closed */ }
   }
+}
+
+/**
+ * When a transcript slice says its session last DID something — read from the entries, never from
+ * the file's mtime.
+ *
+ * A transcript's mtime is not its session's clock. Claude Code appends a summary record when a
+ * session ends, and other tooling rewrites transcripts long after the last turn, so mtime runs
+ * ahead of the conversation by hours or days. Measured 2026-09-17: three finished worktrees were
+ * all held with "a session worked here 4m ago" — a label that reads as "someone is typing in there
+ * right now" — when the newest real entry in each transcript was 2026-09-16T20:35Z, 27.3 hours
+ * before the run. The window is 24h, so this was not a cosmetic slip in the label: the KEEP itself
+ * was wrong, and every later run would have repeated it, because mtime only ever moves forward.
+ * That is the failure mode to hold on to — a guard that never releases stops being a guard and
+ * becomes a leak, and the operator who eventually overrides it has been taught to distrust it.
+ *
+ * Returns 0 when nothing parses, so callers fall back to mtime — fixtures and any transcript
+ * format without per-entry timestamps keep working, and the fallback can only ever over-estimate
+ * activity, which keeps a worktree rather than removing one.
+ */
+function newestEntryTime(text) {
+  let newest = 0;
+  for (const m of text.matchAll(/"timestamp":"([^"]{4,40})"/g)) {
+    const t = Date.parse(m[1]);
+    if (t > newest) newest = t;
+  }
+  return newest;
 }
 
 /**
@@ -1591,7 +1623,7 @@ function parseWorktrees(main) {
   return out;
 }
 
-/** Newest transcript mtime for a working directory, via Claude Code's per-directory project dir. */
+/** Newest session activity for a working directory, via Claude Code's per-directory project dir. */
 function lastSessionActivity(path) {
   // Claude Code encodes the absolute path by replacing every non-alphanumeric character, so
   // `/a/b/.claude/x` becomes `-a-b--claude-x` (note the double dash the dot produces).
@@ -1602,8 +1634,11 @@ function lastSessionActivity(path) {
   try {
     for (const name of readdirSync(dir)) {
       if (!name.endsWith('.jsonl')) continue;
-      const m = statSync(join(dir, name)).mtimeMs;
-      if (m > newest) newest = m;
+      const file = join(dir, name);
+      // The entries' own clock, not the file's — see newestEntryTime. mtime is the fallback.
+      let when = 0;
+      try { when = newestEntryTime(readTail(file, 256 * 1024)) || statSync(file).mtimeMs; } catch { continue; }
+      if (when > newest) newest = when;
     }
   } catch { return null; }
   return newest || null;

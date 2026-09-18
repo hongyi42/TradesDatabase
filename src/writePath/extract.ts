@@ -49,20 +49,6 @@ export interface ExtractedFields {
   // L3 long-tail facts that don't deserve a column: gate codes, pets, access
   // notes, spotted replacement opportunities, etc.
   attributes?: Json;
-  // THE MODEL NAMES THE JOB (plan 2026-09-11). Present only when the door SHOWED
-  // a numbered candidate list, and then only if the message concerns one of them.
-  //
-  // A NUMBER, NEVER AN ID. The number indexes the list the door actually
-  // rendered, and the door keeps that list to resolve it — models copy UUIDs
-  // wrong often enough that three other call sites in this repo validate them.
-  // Absent, null, 0 and out-of-range all mean "none of these", which is the
-  // safe direction: the capture stays linked at customer level and a manager is
-  // asked, exactly as before this field existed.
-  jobChoice?: number | null;
-  // WHY, in one sentence, recorded on whichever link the door writes (user:
-  // "I would record why the model picked the job"). Useless without jobChoice
-  // and never read on its own.
-  jobChoiceReason?: string | null;
 }
 
 // Injected into the write-path so tests can supply a deterministic stub instead
@@ -76,18 +62,10 @@ export interface ExtractedFields {
 // not the customer's. It changes nothing structural — the same fields come back
 // — but the identity rule below reverses on it, and the model cannot know it
 // from the text.
-// The door passes `candidates` only on the one branch that cannot decide alone:
-// a KNOWN customer with several open jobs and nothing in the message naming one.
-// Titles and statuses only — no dates, which is this repo's most repeated
-// extraction hazard.
 export type Extractor = (
   rawText: string,
   ctx?: CostContext,
-  context?: {
-    earlier: ThreadMessage[];
-    fromTheFirm?: boolean;
-    candidates?: { title: string | null; status: string }[];
-  },
+  context?: { earlier: ThreadMessage[]; fromTheFirm?: boolean },
 ) => Promise<ExtractedFields>;
 
 // HOW MUCH OF THE CONVERSATION THE MODEL SEES. Bounded twice: the last 8
@@ -96,16 +74,6 @@ export type Extractor = (
 // exchange, and its price, inside a webhook request.
 const THREAD_SHOWN = 8;
 const THREAD_MESSAGE_CHARS = 600;
-
-// HOW MANY JOBS ARE WORTH SHOWING, and how much of each. Below two there is
-// nothing to choose between — one job is the deterministic path and none is a
-// different question entirely. Above eight the list is longer than the message,
-// costs tokens on a `maxTokens: 1024` budget, and a number picked out of nine
-// near-identical titles is not evidence of anything. EXPORTED so the door and
-// this renderer cannot disagree about the bounds.
-export const CANDIDATES_MIN = 2;
-export const CANDIDATES_MAX = 8;
-export const CANDIDATE_TITLE_CHARS = 80;
 
 // Oldest first, because that is the order a person reads a thread in and the
 // order the facts arrive in: the name and the address are usually at the top and
@@ -199,22 +167,6 @@ export const EXTRACTION_SYSTEM =
   // "Thursday works." answered committed 3/3 as a bare line and 0/10 once the firm's quoted
   // offer was appended beneath it, the way a real reply carries it. The model was reading its
   // own quoted history as "already handled".
-  // A KNOWN TENSION, accepted rather than resolved (review finding, 2026-09-17).
-  // The sentence above says a visit the firm agreed to EARLIER is already
-  // handled; the one below says quoted history is never read as this message
-  // already being handled. They answer one input oppositely: a customer writing
-  // "thanks, see you Thursday" with the firm's own prior PROMISE quoted beneath.
-  // The arm below covers a quoted OFFER, so on a quoted promise the model falls
-  // back on the headline rule ("a visit is now agreed"), which is true — and the
-  // result is a DUPLICATE ask. That is the direction ruling B chose on purpose:
-  // over-telling has rails (a capture landing on a job with a live visit asks
-  // nothing; the once-ever send rail stops a second nudge) and under-telling has
-  // none. Narrowing it to "not something the latest message is COMMITTING to"
-  // would leave the sentence above intact, but the broad wording is what
-  // measured (`thursday-works-thread` 0/10 → 10/10, committed 120/120), so it
-  // stays. UNMEASURED EITHER WAY: both quoted twins in scripts/extract-eval
-  // quote the CUSTOMER's request, never the firm's prior agreement — the same
-  // shape the corpus already records as deliberately ungraded.
   'BUT AN OFFER MADE EARLIER IS NOT AN AGREEMENT: if the latest message accepts one, the ' +
   'visit is agreed NOW and visitCommitted IS true. Text from an earlier message quoted ' +
   'inside the latest one (under "On <date>, <person> wrote:") is earlier context in the same ' +
@@ -262,6 +214,12 @@ export const EXTRACTION_TOOL: ForcedToolSpec = {
       followUp: { type: 'string', description: 'Any follow-up needed (return visit, quote, part).' },
       visitCommitted: {
         type: 'boolean',
+        // THE SCHEMA IS PART OF THE PROMPT. runForcedTool sends every property
+        // description in the same request as EXTRACTION_SYSTEM
+        // (`forcedTool.ts:330`, `:395`), so a description contradicting the
+        // system prompt argues with it in front of the model. This one asserted
+        // the reading operator ruling B replaced — "ONLY if the business agreed"
+        // — for a whole phase, and two suite pins enforced it.
         description:
           'True when a visit is NOW AGREED as of this message: the firm saying it will attend, ' +
           'or the customer accepting a time the firm offered. Never true because someone asked ' +
@@ -273,6 +231,10 @@ export const EXTRACTION_TOOL: ForcedToolSpec = {
           "Does this message carry or concern the firm's operating record — a job, a visit, a " +
           'schedule change, parts, or money owed or paid? False ONLY for a message that carries ' +
           'none of it and closes itself: a bare thank-you, an auto-reply, a wrong number. ' +
+          // "an acknowledgement of something already agreed" stood here and was
+          // the exact form-based cue Phase 5 step 1 deleted from the system
+          // prompt: "Thursday works." is an acknowledgement in shape and a
+          // schedule in content, and it was skipped in 9 runs of 10.
           'Length and tone are not the test: a short or polite message that names a day, ' +
           'accepts or declines a time, or reports work started or finished is TRUE. If there ' +
           'is ANY doubt, true.',
@@ -281,16 +243,6 @@ export const EXTRACTION_TOOL: ForcedToolSpec = {
         type: 'object',
         description: 'Long-tail L3 facts as key/value pairs (gate code, pets, lead opportunity).',
         additionalProperties: true,
-      },
-      jobChoice: {
-        type: 'number',
-        description:
-          'ONLY when a CANDIDATE JOBS list is shown: the NUMBER of the one job this message ' +
-          'concerns. Omit it if the message concerns none of them or you cannot tell.',
-      },
-      jobChoiceReason: {
-        type: 'string',
-        description: 'One short sentence saying what in the message named that job.',
       },
     },
     additionalProperties: false,
@@ -308,33 +260,6 @@ export const EXTRACTION_TOOL: ForcedToolSpec = {
 //
 // `ctx` only carries the tenant for cost attribution; runForcedTool bills the
 // call against whichever provider is actually active.
-// THE JOBS, NUMBERED. Rendered into the USER message and never into
-// EXTRACTION_SYSTEM: the system prompt is shared by every capture on every
-// channel, and a candidate list belongs to ONE message. Keeping it here is also
-// what leaves the system prompt byte-identical, so the eval can attribute a
-// moved number to this block and nothing else.
-//
-// STATUS IS SHOWN because it is the difference between "the boiler job we have
-// not started" and "the tap we are halfway through", and a message often names
-// the second by its progress. Dates are NOT shown, at any status.
-export function renderCandidateJobs(
-  candidates: { title: string | null; status: string }[],
-): string {
-  const lines = candidates.map((candidate, i) => {
-    const title = (candidate.title ?? 'Untitled job').slice(0, CANDIDATE_TITLE_CHARS);
-    return `${i + 1}. ${title} (${candidate.status.replace(/_/g, ' ')})`;
-  });
-  return (
-    `CANDIDATE JOBS — this customer's open work, numbered:\n${lines.join('\n')}\n` +
-    'If the LATEST MESSAGE is about ONE of these, set `jobChoice` to its NUMBER and ' +
-    '`jobChoiceReason` to one short sentence saying what named it. If it is about none of ' +
-    'them, or you cannot tell, OMIT BOTH — "none" is a real answer here and a guessed ' +
-    'number files the message against the wrong work. The list says nothing about whether a ' +
-    'visit is agreed: judge every other field from the message itself, exactly as you would ' +
-    'without it.'
-  );
-}
-
 // WHAT THE MODEL IS ACTUALLY SHOWN. The conversation FIRST and the message
 // LAST, with the latest one labelled: its judgments must come from the bottom of
 // what it is shown, and ending on the message being judged is what makes that
@@ -351,22 +276,12 @@ export function renderCandidateJobs(
 // customer's identity with every test still green.
 export function renderExtractionUser(
   rawText: string,
-  context?: {
-    earlier?: ThreadMessage[];
-    fromTheFirm?: boolean;
-    candidates?: { title: string | null; status: string }[];
-  },
+  context?: { earlier?: ThreadMessage[]; fromTheFirm?: boolean },
 ): string {
   const thread = context?.earlier?.length ? renderThreadContext(context.earlier) : '';
-  const jobs = context?.candidates?.length ? renderCandidateJobs(context.candidates) : '';
   const label = context?.fromTheFirm
-    ? "LATEST MESSAGE — YOUR OWN FIRM'S REPLY, extract from this:"
-    : 'LATEST MESSAGE — extract from this:';
-  // WITH A LIST, THE MESSAGE IS ALWAYS LABELLED. The bare path below deliberately
-  // sends the raw text alone, but "the LATEST MESSAGE" in the block above has to
-  // point at something: unlabelled, the model would be told to judge a message
-  // the prompt never marks, with a numbered list sitting between it and the top.
-  if (jobs) return [thread, jobs, `${label}\n${rawText}`].filter(Boolean).join('\n\n');
+    ? "LATEST MESSAGE \u2014 YOUR OWN FIRM'S REPLY, extract from this:"
+    : 'LATEST MESSAGE \u2014 extract from this:';
   if (thread) return `${thread}\n\n${label}\n${rawText}`;
   return context?.fromTheFirm ? `${label}\n${rawText}` : rawText;
 }

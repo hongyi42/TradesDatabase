@@ -32,10 +32,11 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 263 documents · 252 live · 11 superseded.
+Regenerate with `npm run decisions:index`. 263 documents · 251 live · 12 superseded.
 
 ## Superseded — do not build on these
 
+- `2026-09-17` ~~[2026-09-11-the-model-names-the-job](shared/plans/2026-09-11-the-model-names-the-job.md)~~ → _replacement not recorded_
 - `2026-09-06` ~~[2026-09-06-rung-10-inbound-commits-a-visit-ask-first](shared/plans/2026-09-06-rung-10-inbound-commits-a-visit-ask-first.md)~~ → **[2026-09-08-rung-10b-the-new-caller](shared/plans/2026-09-08-rung-10b-the-new-caller.md)**
 - `2026-09-03` ~~[2026-09-03-a-visit-is-not-a-person](shared/plans/2026-09-03-a-visit-is-not-a-person.md)~~ → _replacement not recorded_
 - `2026-09-02` ~~[2026-09-02-a-visit-is-not-a-person](shared/research/2026-09-02-a-visit-is-not-a-person.md)~~ → **[2026-09-06-a-visit-carries-a-crew](shared/research/2026-09-06-a-visit-carries-a-crew.md)**
@@ -50,7 +51,6 @@ Regenerate with `npm run decisions:index`. 263 documents · 252 live · 11 super
 
 ## Live
 
-- `2026-09-17` `plan` [2026-09-11-the-model-names-the-job](shared/plans/2026-09-11-the-model-names-the-job.md) · _draft_ — The extractor names which of a customer's jobs a message concerns, or none — and the door files on that answe…
 - `2026-09-15` `finding` [2026-09-15-customer-context-becomes-a-table-of-cont](shared/findings/2026-09-15-customer-context-becomes-a-table-of-cont.md) `describes 1 deleted file` `drift 26` — the retrieval-and-delivery layer for technicians, managers and the planner: every tool meets the retrieval go…
 - `2026-09-15` `finding` [2026-09-15-retrieval-layer-2-the-technician-limited](shared/findings/2026-09-15-retrieval-layer-2-the-technician-limited.md) `drift 23` — retrieval layer 2: the technician limited view — scope gate (their visits, their customers' current jobs), gr…
 - `2026-09-15` `finding` [2026-09-15-retrieval-layer-3-the-planner-and-the-sq](shared/findings/2026-09-15-retrieval-layer-3-the-planner-and-the-sq.md) — retrieval layer 3: the planner and the SQL views — v_captures folds retractions + labels, evidence lines carr…

@@ -1,8 +1,12 @@
 // EXTRACT EVAL — what the extractor actually returns, scored against labels.
 //
-//   npm run extract-eval                  # the 9 plain fixtures (the baseline)
-//   npm run extract-eval -- --with-candidates   # …and the candidate twins (Phase 2+)
+//   npm run extract-eval                  # the 12 fixtures (the baseline)
 //   npm run extract-eval -- --runs 5      # default 3
+//
+// `--with-candidates` existed until corpus v4 and is GONE with the twins it ran:
+// the job-naming question left the extractor for the planner (see corpus.mjs).
+// Left as a hard refusal rather than an ignored flag — a flag that silently
+// measures nothing while printing a score is worse than no flag.
 //
 // WHY THIS IS A SCRIPT AND NOT A TEST. `vitest.config.ts:6` runs every
 // `src/**/*.test.ts` and `src/test.setup.ts:8` loads `.env`, so a test file here
@@ -27,7 +31,7 @@
 import { config as dotenvConfig } from 'dotenv';
 import { defaultExtractor } from '../../dist/writePath/extract.js';
 import { activeProvider, hasModelCredentials, resolveOpenAiEndpoint } from '../../dist/model/forcedTool.js';
-import { FIXTURES, CANDIDATE_TWINS, CHOICE_EXPECT, CORPUS_VERSION } from './corpus.mjs';
+import { FIXTURES, CORPUS_VERSION } from './corpus.mjs';
 
 dotenvConfig({ quiet: true });
 
@@ -49,7 +53,13 @@ if (!Number.isInteger(RUNS) || RUNS < 1) {
   console.error(`extract-eval: --runs must be a positive integer, got ${argOf('runs', '3')}`);
   process.exit(1);
 }
-const WITH_CANDIDATES = hasFlag('with-candidates');
+if (hasFlag('with-candidates')) {
+  console.error(
+    'extract-eval: --with-candidates was removed with corpus v4. The extractor is no longer ' +
+      'shown candidate jobs \u2014 that question moved to the planner (rung 10d). Re-run without it.',
+  );
+  process.exit(1);
+}
 
 // THE APP'S OWN CHECK, not a hand-rolled one. `hasModelCredentials` follows the
 // provider switch — its whole point is that a MODEL_PROVIDER flip does not leave
@@ -59,7 +69,7 @@ if (!hasModelCredentials()) {
   process.exit(1);
 }
 
-const cases = WITH_CANDIDATES ? [...FIXTURES, ...CANDIDATE_TWINS] : FIXTURES;
+const cases = FIXTURES;
 
 // THE HEADER MUST NOT BE ABLE TO LIE. `activeProvider()` keys on MODEL_PROVIDER,
 // which this script does not pin — and `.env` here carries an ANTHROPIC_API_KEY,
@@ -72,7 +82,7 @@ const resolved = provider === 'openai' ? resolveOpenAiEndpoint() : null;
 console.log(`\n=== EXTRACT EVAL — ${cases.length} fixtures x ${RUNS} runs ===`);
 console.log(`corpus v${CORPUS_VERSION}   provider: ${provider}`);
 if (resolved) console.log(`model: ${resolved.model}   baseUrl: ${resolved.baseUrl}`);
-console.log(`candidates: ${WITH_CANDIDATES ? 'shown' : 'not shown'}\n`);
+console.log('');
 if (provider !== 'openai') {
   console.error(
     `extract-eval: MODEL_PROVIDER=${provider} — this eval pins INFERENCE_MODEL only, so the ` +
@@ -88,11 +98,10 @@ const asDoorReads = (x) => ({
   status: x.statusSignal ?? null,
 });
 
-const tally = { committed: [0, 0], skips: [0, 0], status: [0, 0], choice: [0, 0] };
-// Per fixture too: with --with-candidates the twins land in the same totals, so
-// a headline percentage triple-counts three messages. Phase 2's gate is "no
-// gated field more than 1 run below its WITHOUT twin", which is only mechanical
-// if each fixture reports its own score.
+const tally = { committed: [0, 0], skips: [0, 0], status: [0, 0] };
+// Per fixture too, and it is the half that reads: an aggregate cannot say WHICH
+// message moved, and every finding this eval has produced came from one fixture
+// behaving differently from the rest.
 const perFixture = new Map();
 const truncations = [];
 const errors = [];
@@ -101,12 +110,8 @@ const rows = [];
 for (const f of cases) {
   for (let run = 1; run <= RUNS; run++) {
     const context =
-      f.earlier || f.fromTheFirm || f.candidates
-        ? {
-            earlier: f.earlier ?? [],
-            ...(f.fromTheFirm ? { fromTheFirm: true } : {}),
-            ...(f.candidates ? { candidates: f.candidates } : {}),
-          }
+      f.earlier || f.fromTheFirm
+        ? { earlier: f.earlier ?? [], ...(f.fromTheFirm ? { fromTheFirm: true } : {}) }
         : undefined;
     let got;
     let error = null;
@@ -133,20 +138,12 @@ for (const f of cases) {
       tally[field][ok ? 0 : 1] += 1;
       if (ok) mine[field] += 1;
     }
-    // The job choice is graded only where a list was shown AND the corpus states
-    // an answer; before Phase 2 renders the block the model cannot answer it.
-    if (f.candidates && f.id in CHOICE_EXPECT) {
-      const want = CHOICE_EXPECT[f.id];
-      const gotChoice = Number.isInteger(got.jobChoice) ? got.jobChoice : null;
-      tally.choice[gotChoice === want ? 0 : 1] += 1;
-    }
     rows.push({
       id: f.id,
       run,
       ms,
       ...read,
       bytes: JSON.stringify(got).length,
-      ...(f.candidates ? { jobChoice: got.jobChoice ?? null, why: got.jobChoiceReason ?? null } : {}),
     });
   }
 }
@@ -156,11 +153,10 @@ for (const r of rows) {
     console.log(`${r.id.padEnd(34)} run ${r.run}  ${String(r.ms).padStart(6)}ms  ERROR ${r.error.slice(0, 80)}`);
     continue;
   }
-  const choice = 'jobChoice' in r ? `  choice=${r.jobChoice ?? 'none'}` : '';
   console.log(
     `${r.id.padEnd(34)} run ${r.run}  ${String(r.ms).padStart(6)}ms  ` +
       `committed=${String(r.committed).padEnd(5)} skips=${String(r.skips).padEnd(5)} ` +
-      `status=${String(r.status).padEnd(11)} ${String(r.bytes).padStart(4)}B${choice}`,
+      `status=${String(r.status).padEnd(11)} ${String(r.bytes).padStart(4)}B`,
   );
 }
 
@@ -177,7 +173,6 @@ for (const [id, m] of perFixture) {
 
 console.log('\n--- agreement with the labels, by the door\'s reading ---');
 for (const f of ['committed', 'skips', 'status']) console.log(line(f, tally[f]));
-if (tally.choice[0] + tally.choice[1] > 0) console.log(line('jobChoice', tally.choice));
 
 const times = rows.filter((r) => !r.error).map((r) => r.ms).sort((a, b) => a - b);
 const pct = (q) => (times.length ? times[Math.min(times.length - 1, Math.floor(times.length * q))] : 0);

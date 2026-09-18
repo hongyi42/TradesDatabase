@@ -68,15 +68,39 @@
 // attend IS agreement without waiting for a reply.
 
 /** @typedef {{ messageId: string, from: string, to: string, subject: string, body: string, at: string }} ThreadMessage */
-/** @typedef {{ id: string, text: string, fromTheFirm?: boolean, earlier?: ThreadMessage[], candidates?: {title: string|null, status: string}[], expect: { committed: boolean, skips: boolean, status: 'completed'|'in_progress'|null } }} Fixture */
+/** @typedef {{ id: string, text: string, fromTheFirm?: boolean, earlier?: ThreadMessage[], expect: { committed: boolean, skips: boolean, status: 'completed'|'in_progress'|null } }} Fixture */
 
 // Bump when any text, label or fixture changes: a baseline is only comparable
 // to a later run of the SAME corpus, and "92%" with no version beside it is a
 // number nobody can check.
-export const CORPUS_VERSION = 3;
-
-const TAP = { title: 'Kitchen tap dripping', status: 'in_progress' };
-const BOILER = { title: 'Boiler diagnostic', status: 'open' };
+//
+// v4 REMOVED THE CANDIDATE TWINS — the job-naming question left the extractor.
+// The 12 graded fixtures below are UNCHANGED, so every v3 baseline recorded in
+// thoughts/shared/plans/2026-09-11-the-model-names-the-job.md stays comparable
+// to a v4 run; only the four twins and their jobChoice expectations went.
+//
+// WHY, and the measurement is the reason to keep reading. Showing the extractor
+// the customer's open jobs worked exactly where the words named one — "the
+// kitchen tap you looked at" answered candidate 2 in 10 runs of 10, and the live
+// specimen's bathroom faucet correctly answered NONE in 10 of 10. It failed
+// where the answer was not in the words: "your engineer finished the repair this
+// morning" picked the BOILER job in 7 runs of 10, reasoning "matching the open
+// boiler diagnostic" — from `open` to `finished`, backwards, because open was
+// one of the only two facts it had. The extractor is shown titles and statuses
+// and deliberately NO dates, so on that shape it was being asked a question its
+// inputs cannot answer. One twin also set a number while its own reason read
+// "cannot tell … so omitting jobChoice", which is why a recorded reason is not
+// an audit of the pick.
+//
+// The planner has what resolves it — the visits, the correspondence, the
+// history — and can ask. It also, since the retrieval layer landed, can SEE a
+// capture attached to no job (`capture_scope_members(…, 'customer_level', …)`,
+// surfaced as `customerLevelNotes` on get_customer_context), which is the
+// visibility whose absence put this question in the door in the first place. So
+// the question moved to rung 10d as a PLACE (the backlog in the tick) and a VERB
+// (attach a customer-level capture to a job). Revive these twins there if the
+// extractor is ever given a hint role again.
+export const CORPUS_VERSION = 4;
 
 // The firm and three customers, so a signature block is always attributable to
 // somebody and the "never take identity from OUR signature" rule is exercised.
@@ -348,63 +372,3 @@ export const FIXTURES = [
     expect: { committed: false, skips: true, status: null },
   },
 ];
-
-// THE TWINS. The same judgement with a candidate list in front of it — the only
-// prompts this change actually alters. Without them the eval re-scores messages
-// whose prompt did not move and calls that a no-regression result.
-//
-// The risk they exist to catch is named in EXTRACTION_SYSTEM: a visit the firm
-// agreed to EARLIER "is already handled, so it must NOT set visitCommitted". A
-// list of the customer's open jobs sitting beside the message could read that
-// way and suppress a live promise — the exact failure this whole arc started on.
-const byId = (id) => {
-  const f = FIXTURES.find((x) => x.id === id);
-  if (!f) throw new Error(`extract-eval corpus: no fixture '${id}'`);
-  return f;
-};
-
-/** @type {Fixture[]} */
-export const CANDIDATE_TWINS = [
-  {
-    id: 'commitment-outbound+candidates',
-    fromTheFirm: true,
-    text: byId('commitment-outbound').text,
-    candidates: [BOILER, TAP],
-    expect: { committed: true, skips: false, status: null },
-  },
-  {
-    id: 'thank-you+candidates',
-    text: byId('thank-you').text,
-    candidates: [BOILER, TAP],
-    expect: { committed: false, skips: true, status: null },
-  },
-  {
-    // THE ONE WITH AN ANSWER. Without it every expectation is "none", and a
-    // regression where the candidate block never renders at all still scores
-    // 100% — the metric would have no failure mode.
-    id: 'names-the-tap+candidates',
-    text: mail(
-      'Tap again',
-      'Iris Bell <iris@example.test>',
-      'The kitchen tap you looked at is dripping again — same as before, worse in the mornings.\n\nIris',
-    ),
-    candidates: [BOILER, TAP],
-    expect: { committed: false, skips: false, status: null },
-  },
-  {
-    id: 'work-finished+candidates',
-    text: byId('work-finished').text,
-    candidates: [BOILER, TAP],
-    expect: { committed: false, skips: false, status: 'completed' },
-  },
-];
-
-// Which candidate the message is about, for the twins that have an answer. Null
-// means "none of them" — the specimen's own case, and the one a count can never
-// express. Graded only once Phase 2 renders the list.
-export const CHOICE_EXPECT = {
-  'commitment-outbound+candidates': null, // a bathroom faucet is neither of these
-  'names-the-tap+candidates': 2, // "the kitchen tap" IS candidate 2
-  'thank-you+candidates': null, // thanks for a quick reply names no work at all
-  'work-finished+candidates': null, // "the repair" names neither job
-};

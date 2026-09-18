@@ -3171,6 +3171,52 @@ above), and the demo schedule window it describes has expired.
   decision — Nemotron quality rules out flash-tier models). Original mechanics, revert recipe and
   citations:
   [thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md](../thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md).
+- **2026-09-17 — @DashboardMan_bot is RETIRED, and two stale beliefs are what made it look hard.**
+  The board bot now sends nothing, backs no door, and its token is gone from both Render services.
+  Order it had to happen in: ops alerts left it (queued as `person_pushes` `kind='ops'`, delivered
+  through the operator's own assistant) → every seat got its `bot_id` → the HMAC fallback left
+  `verifySlip` → the worker stopped setting its menu button → `BOARD_BOT_TOKEN` removed → BotFather
+  `/deletebot`. `boardBot.ts` is deleted: with the menu calls gone it had no production caller left.
+  **THE REAL BLOCKER WAS THREE LINES, and it was not the surface.** `setBoardMenuButton()` was
+  `startBoardWorker`'s FIRST statement, unguarded; `callTelegram` throws on a failed Bot API call and
+  the entry point is `.catch(… process.exit(1))`. Deleting the bot would have answered 401, crashed
+  the worker at startup and stopped schedule pushes entirely — the bot that no longer sent anything
+  would have taken the notifier down on its way out. Anything that deletes a bot must first grep for
+  **startup side-effects that use its token**, not just for senders.
+  **STALE BELIEF 1 — "technicians need a console view before the board can go".** Already built,
+  and for weeks: `consoleApi` serves a technician their own stops, clamped at the visibility
+  horizon, no roster, no tray. It sat open in the plan's Open questions, was repeated as the big
+  remaining gate, and was never re-checked.
+  **STALE BELIEF 2 — "five seat tokens are only recoverable from BotFather" (recorded 2026-09-12).**
+  Wrong, and it blocked phase 3 for five days. The openshell gateway MUST hold every seat's token to
+  poll Telegram for that bot, and keeps them in its own object store:
+  `~/.local/state/nemoclaw/openshell-docker-gateway/openshell.db`, table `objects`, `provider` rows
+  named `<seat>-telegram-bridge`, token inside a protobuf payload. What made them look unrecoverable
+  is that the sandbox's `openclaw.json` and its process env hold only a
+  `openshell:resolve:env:v…_TELEGRAM_BOT_TOKEN` placeholder — reading `/proc` was looking in the one
+  place the secret is deliberately absent. All six seats were seeded from that store, racked into
+  `sandbox_pool` with `add-sandbox … tech=<ref> tenant=<uuid>` (refs repeat across tenants, so
+  `tech=` alone is ambiguous), ids recorded, menu buttons set. **A lost seat token is recoverable on
+  the box; no BotFather trip is needed to wire a seat that already runs.**
+  **Both beliefs were carried forward without re-checking whether they were still true.** That is
+  the transferable lesson, not the bot.
+  **`ops_secrets.bot_tokens` now holds all six** (seeded by piping the gateway store straight into
+  `psql`-side inserts, so no token touched a file, argv, or the SQL editor's query history).
+  Boundary re-verified with real tokens behind it: service-role key → `PGRST106 Invalid schema`.
+  **One real behaviour change, recorded because it is not an oversight:** with `BOARD_BOT_TOKEN`
+  gone, `botIds.allowed()` is pool-only, so a COLD START during a DB outage now allows NOTHING until
+  the first successful refresh. Previously the board bot was always an admissible door. Safer
+  direction, new failure mode.
+  **Verification that actually mattered:** the worker kept beating after the token was pulled
+  (`cycles: 3`, `ok`), and a signed Mini App launch opened the console against a pool-only allowlist.
+- **2026-09-17 — the local Supabase stack can be "healthy" and still refuse every connection.**
+  All containers reported `Up (healthy)` while `127.0.0.1:54322` terminated connections and
+  PostgREST returned nothing, which made ~28 DB-backed suites fail in a way that looks like broken
+  code. `docker restart supabase_db_…` fixed the DB; PostgREST and Kong then had to be restarted too
+  (stale connections and schema cache) before `fetch failed` stopped. Cost: two ops tests shipped
+  broken in PR #254 because the suite covering them could not run and was assumed environmental.
+  **If a whole class of suites fails with `fetch failed` / `Connection terminated`, restart the
+  stack's db+rest+kong before believing anything about the code.**
 - **2026-09-16 — s7, the one seat held back on 2026-07-31, is repaired. One-bot phase 2 now
   delivers end to end.** Symptom: schedule pushes never arrived on `@yu_nemoclaw_bot` after phase 2
   moved them off `BOARD_BOT_TOKEN`. Cause was not phase 2 — **s7's gateway device held only

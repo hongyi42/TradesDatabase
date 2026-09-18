@@ -1,5 +1,5 @@
 ---
-date: 2026-09-14
+date: 2026-09-17
 task: The extractor names which of a customer's jobs a message concerns, or none — and the door files on that answer without letting it flip status or silence a promise
 research: thoughts/shared/research/2026-09-11-re-inventing-the-write-path-door.md
 status: draft
@@ -13,6 +13,12 @@ which created the branch this fills: `!mayGuess && candidates.length > 1` — a 
 open jobs, nothing naming one. There the door gives up. A count is a weak test: the Delphine promise
 concerned a bathroom faucet and the candidates were a boiler and a kitchen tap — "none of these",
 which no count can say.
+
+**REBASED 2026-09-17** onto main, which moved 39 commits in three days. What changed for this plan:
+the retrieval layer (#242, #247, #248, #251) folded the link views away, two of its own parked
+findings landed, and `src/mcp/server.ts` was split (#239). Every citation below was re-found in the
+code, not adjusted by arithmetic. The design survives: `extract.ts`, `identityMatch.ts` and
+`attachNote.ts` are untouched, and `recordFieldNote.ts` changed by one word of comment.
 
 **REWRITTEN 2026-09-14** (user: "We are going to fold it"); the separate-chooser design, last at
 commit `6e45a08`, is rejected below. Phase 4 was briefly a second plan and was folded back on the
@@ -35,8 +41,10 @@ without Phase 4 the rulings hold for the message the model read and fail on the 
 - **A NUMBER, pinned to the list SHOWN** (review fix). The model answers `1..N`. The door keeps the
   exact array it showed (`shownCandidates`), maps the number to a job **id**, and accepts it only if
   that id is still in its own fresh `candidates`. A second `listJobsForCustomer` seconds later can
-  differ in membership, and in order — it sorts on `created_at` with no tiebreak (`jobs.ts:149`) — so
-  indexing the fresh list could file on the wrong job under a `basis='model'` that looks grounded. No
+  still differ in MEMBERSHIP — a job can close or open while the model is answering, and one dropping
+  out shifts every number after it. (The ORDER half of this hazard is gone: `jobs.ts:151` now breaks
+  ties on `id`, which landed on main as `bf9d5ea` from this plan's own parked finding.) Indexing the
+  fresh list could still file on the wrong job under a `basis='model'` that looks grounded. No
   list shown → any `jobChoice` is ignored. Models copy UUIDs wrong (`UUID_RE` at `src/mcp/tools/shared.ts:723`,
   `webhook.ts:39`, `nudgeDecisions.ts:78`), so no id is ever asked for.
 - **Bounded, and truncation falls back** (review fix). The extractor runs at `maxTokens: 1024` on
@@ -54,8 +62,22 @@ without Phase 4 the rulings hold for the message the model read and fail on the 
   `/implement`).
 - **The basis is recorded on the link written** (user: "record why the model picked the job"):
   `job_captures` with no live trip, `visit_notes` with one — both gain `basis` / `basis_reason` at
-  insert. CHECK `basis in ('model','inherited')`; `inherited` is written by the reply plan and defined
-  here so it needs no second hand-applied migration.
+  insert. CHECK `basis in ('model','inherited')`; `inherited` is Phase 4's value, defined here so it
+  needs no second hand-applied migration.
+- **It surfaces through `capture_membership`, not the old link views** (rebase 2026-09-17). The
+  retrieval layer's fold DROPPED `v_job_captures`, `v_visit_notes` and `v_customer_captures` — the
+  last of which this arc added — and replaced all three with one `v_capture_links`
+  (`20260917130000_the_sql_views_fold.sql:19-21`, `:45`) over the `capture_membership` view
+  (`20260916120000_retrieval_layer_core.sql:53`). That view already unions nine arms with a `via`
+  discriminator, three of which are the link tables (`customer_link`, `job_link`, `visit_note`), so
+  the basis belongs on those arms and rides out through `v_capture_links`. The three TABLES are
+  untouched, so the columns themselves go exactly where planned.
+- **A retracted capture no longer leaks its `basis_reason`** (rebase). That was parked on 2026-09-14;
+  the fold resolved it before it was built — `v_capture_links` excludes both retractions and retracted
+  captures (`20260917130000:54-55`), under the operator ruling that a retracted note is removed from
+  every default read. The one labelled exception is the manager's audit path
+  (`captures_page` / `capture_full` with `includeRetracted`), so Phase 3 must check that the basis
+  does not ride along there by accident.
 - **The eval is a script, not a test** (review fix). `vitest.config.ts:6` runs `src/**/*.test.ts` and
   `src/test.setup.ts:8` loads `.env`, so a test file would bill ~30 live calls on every `npm test` in
   a keyed checkout. `describe.skipIf(!hasModelCredentials())` suits 1–3 clear-cut assertions
@@ -85,7 +107,7 @@ without Phase 4 the rulings hold for the message the model read and fail on the 
   from a thread capture (arm d, `jobs.source_capture_id`). An agent-written stamp is ignored either
   way — it neither grounds a pick nor creates doubt on its own.
 - **New `ThreadIdentity` fields are OPTIONAL, present only when the basis is `'model'`** — the way
-  `withThreadJob` spreads `jobId` (`identityMatch.ts:152`). `src/mcp/server.test.ts:2835` asserts
+  `withThreadJob` spreads `jobId` (`identityMatch.ts:152`). `src/mcp/server.test.ts:3121` asserts
   `toContainEqual({ customerId, jobId })`, which ignores `undefined` keys but fails on `null` ones.
 - **Traceable, not nested.** `jobBasisCaptureId` / `jobBasisReason` come from the EARLIEST model link
   by `captured_at`; an inherited reason copies the ORIGINAL — `inherited from capture <id>: <reason>` —
@@ -93,11 +115,21 @@ without Phase 4 the rulings hold for the message the model read and fail on the 
 - **The caps are unchanged.** Same rows, same `.limit(THREAD_ROW_CAP + 1)`. The refuse-when-full rule
   is what makes "every link reaching it" computable; a refused thread returns `[]`, and the message
   simply becomes a candidates case.
-- **Parked, not fixed:** the link views carry no `retracted` flag while `basis_reason` is model text
-  about a customer's message (`20260914-the-link-views-expose-basis-reason-but-c`); `listJobsForCustomer`
-  has no tiebreak, which also makes PR #235's "newest open job" rule order-dependent on equal
-  timestamps (`20260914-listjobsforcustomer-orders-on-created-at`). **Accepted:** `matchIdentity` runs
-  twice on the automatic path — a few indexed reads.
+- **This plan's provenance shape is now a template** (rebase). Task
+  `20260915-the-extractor-tags-each-inbound-capture` sequences itself behind this one — "waits for
+  (1) that chooser task to land — it is active in recordFieldNote.ts, the same door" — and names
+  "the chooser task's `basis` + `reason` migration" as the template for its own per-capture tag
+  provenance. It adds fields to the same `EXTRACTION_TOOL` on every capture, where this adds them on
+  one branch. Getting the shape right here is load-bearing for it.
+- **`listLinkedCapturesForCustomer` is now orphaned** (rebase, parked). The reader this arc insisted
+  on in #235 has no production caller any more: the retrieval layer moved the customer read into the
+  `customer_contents` RPC (`src/db/context.ts:501`), and the `customer_link` arm of
+  `capture_membership` does that work in SQL. The BEHAVIOUR survived — the test was renamed to
+  `getCustomerContents` and still passes — but the TypeScript accessor is dead code
+  (`20260918-listlinkedcapturesforcustomer-has-no-cal`).
+- **Both 2026-09-14 parks have LANDED** (rebase): the job-order tiebreak is on main (`jobs.ts:151`,
+  `bf9d5ea`) and the retracted-link exposure was resolved by the views fold. Neither is on the board.
+  **Accepted:** `matchIdentity` runs twice on the automatic path — a few indexed reads.
 
 ## Plain-language walkthrough
 
@@ -192,8 +224,9 @@ The answer comes back; nothing acts on it.
 
 ### Changes required
 
-**`src/model/forcedTool.ts`** — export `isOutputTruncated(err)`, true for the errors thrown at `:342`
-and `:435` (a typed marker, not message matching); existing messages unchanged.
+**`src/model/forcedTool.ts`** — export `isOutputTruncated(err)`, true for the errors thrown at
+`:340` (anthropic, `stop_reason=max_tokens`) and `:433` (openai, `finish_reason=length`) — a typed
+marker, not message matching; existing messages unchanged.
 
 **`src/writePath/extract.ts`**
 - `ExtractedFields` + `EXTRACTION_TOOL`: optional `jobChoice` (number — "ONLY when a CANDIDATE JOBS
@@ -253,10 +286,17 @@ Accepts a checked answer as the job, records that a model picked it, and keeps b
 
 **`supabase/migrations/<timestamp>_link_basis.sql`** (new) — on `job_captures` and `visit_notes`:
 `basis text`, `basis_reason text`, `check (basis is null or basis in ('model','inherited'))`,
-`check (basis_reason is null or basis is not null)`. Append both to `v_job_captures` / `v_visit_notes`
-via `CREATE OR REPLACE`, tenant re-checks copied verbatim. `npm run gen:types:local`.
+`check (basis_reason is null or basis is not null)`. Then surface them through the fold's own
+definitions, since the old link views are gone: `CREATE OR REPLACE VIEW capture_membership`
+(`20260916120000_retrieval_layer_core.sql:53`) APPENDING `basis` / `basis_reason` as the last two
+columns — `null::text` on the seven non-link arms, the link row's own values on `job_link` and
+`visit_note` — then the same append on `v_capture_links`
+(`20260917130000_the_sql_views_fold.sql:45`), keeping its retraction filter and tenant check
+verbatim. Appending at the END is what `CREATE OR REPLACE VIEW` allows; a reorder would need a drop,
+and `v_capture_links` depends on `capture_membership`, so the order is membership first.
+`npm run gen:types:local`.
 
-**`src/db/jobs.ts:468`, `src/db/visits.ts:1368`** — optional `basis` / `basisReason`, sent only when
+**`src/db/jobs.ts:481`, `src/db/visits.ts:1424`** — optional `basis` / `basisReason`, sent only when
 set, so no write names a column the pilot lacks before the migration.
 
 **`src/writePath/recordFieldNote.ts`**
@@ -275,8 +315,9 @@ set, so no write names a column the pilot lacks before the migration.
   `:901-906` is skipped.
 
 **`src/teamLead/planner.ts:1590`** — ` — chosen by a model from N open jobs: <reason>`, plus
-` (already on a booked trip)` with `attachedVisitId`. **`src/mcp/server.ts:212-214`** — the two view
-catalog lists name `basis, basis_reason`. **`docs/onboarding.md:129`, `docs/engineering-memory.md`** —
+` (already on a booked trip)` with `attachedVisitId`. **`src/mcp/server.ts:198-199` and `:213`** — the `v_capture_links(capture_id, customer_id, job_id,
+visit_id, via)` catalog lists gain `basis, basis_reason`, and `src/mcp/server.test.ts:8068` pins that
+description, so it is extended with them. **`docs/onboarding.md:129`, `docs/engineering-memory.md`** —
 "never a model guess" holds for the customer; the job may be a model's answer from a numbered list.
 
 ### Automated verification
@@ -311,17 +352,17 @@ treat such a reply exactly as Phase 3 treats the pick.
 
 ### Changes required
 
-**`src/db/rawCaptures.ts:703`** — `ThreadIdentity` gains optional `jobBasis?: 'model'`,
+**`src/db/rawCaptures.ts:324`** — `ThreadIdentity` gains optional `jobBasis?: 'model'`,
 `jobBasisReason?: string`, `jobBasisCaptureId?: string`.
 
-**`src/db/rawCaptures.ts:737`** — restructure: the single `jobIds` set (`:774`) becomes a map from job
+**`src/db/rawCaptures.ts:358`** — restructure: the single `jobIds` set (`:395`) becomes a map from job
 id to `{ grounded: boolean; modelLinks: { captureId; reason; capturedAt }[] }`.
-- arm (a) `:776` also selects `metadata`; a stamp grounds only when `!isAgentWrittenCapture(metadata)`.
-- arms (b) `:787` and (c) `:801` also select `capture_id, basis, basis_reason` — on (c) from
+- arm (a) `:397` also selects `metadata`; a stamp grounds only when `!isAgentWrittenCapture(metadata)`.
+- arms (b) `:408` and (c) `:422` also select `capture_id, basis, basis_reason` — on (c) from
   `visit_notes` itself, not the `visits!inner` embed; a null basis grounds, a non-null one is recorded.
-- arm (d) `:819` grounds.
-- The final loop (`:870-886`) and dedupe (`:889-894`) read the map; a job gets the optional fields only
-  when it is not grounded and has a model link, taken from the earliest by `captured_at` (select it).
+- arm (d) `:440` grounds.
+- The job-resolution loop (`:491`) and the dedupe (`:510`) read the map; a job gets the optional fields
+  only when it is not grounded and has a model link, taken from the earliest by `captured_at`.
 
 **`src/writePath/identityMatch.ts:137-153`** — `withThreadJob` copies the adopted job's optional basis
 fields into `MatchResult`, only when present.
@@ -329,7 +370,7 @@ fields into `MatchResult`, only when present.
 **`src/writePath/recordFieldNote.ts`** — `match.jobBasis === 'model'` sets `jobFromModel` exactly as Phase 3 does; that capture's link writes `basis: 'inherited'` and the copied original reason.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass; `server.test.ts:2835` unchanged and green
+- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass; `server.test.ts:3121` unchanged and green
 - [ ] msg 1 model-picks the tap job (trip attached); msg 2 on the thread with `statusSignal: 'completed'`
       and `visitCommitted: true` → not flipped, asked, `basis='inherited'` naming msg 1
 - [ ] msg 3 inherits again, reason copied from msg 1, not nested

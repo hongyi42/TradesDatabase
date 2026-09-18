@@ -173,10 +173,62 @@ What the person sees changes in one way worth naming: their day changing and the
 now arrive in the same chat. That was the point of the merge, and it is also the first time the two
 voices share a window — watch whether they read as one thing or two.
 
-## Phase 3 — cutover (not started)
-Wire every seat, configure each Main Mini App, watch for a week, then retire `@DashboardMan_bot` and
-drop the HMAC fallback from `verifySlip`. `CONSOLE_MENU_CHAT_IDS` and `setConsoleMenuButtonFor` in
-`boardBot.ts` become dead code at that point.
+## Phase 3 — cutover (DONE 2026-09-17)
+
+`@DashboardMan_bot` is retired: it sends nothing, backs nothing, holds no door, and its token is
+gone from Render. What it took, in the order it had to happen:
+
+1. **Ops alerts left it** (2026-09-16/17). They were the last Render-side send. First attempt gave
+   them a bot of their own, which answered the wrong question — the goal is one bot per PERSON, not
+   a bot per purpose — so that was reverted and they became `person_pushes` rows with `kind='ops'`,
+   delivered by the box through the operator's own assistant. The blind spot this creates (an alert
+   about a dead box cannot travel through that box) is covered by the healthchecks.io dead-man
+   switch already pinging every 5 minutes from `ubuntu`'s crontab, which fires on the ABSENCE of
+   pings. No transport a box controls can report its own death.
+2. **Every seat got its bot id** (2026-09-17), which is what the HMAC fallback was waiting on.
+3. **The HMAC fallback went** from `verifySlip`. It had stopped being a fallback and become a
+   liability: it swallowed EVERY signature-path refusal, staleness included, so a slip carrying a
+   valid board-bot hash could reach a 24h replay window the signature path had already rejected.
+4. **The worker stopped touching the menu button.** This was the real blocker and it was never the
+   surface: `setBoardMenuButton()` was `startBoardWorker`'s first statement, unguarded, and the
+   entry point exits 1 on a rejection — so deleting the bot would have crashed the notifier at
+   startup and stopped schedule pushes entirely. Three lines.
+5. `BOARD_BOT_TOKEN` removed from both services; worker verified still beating afterwards
+   (`cycles: 3`, `ok`), a signed launch verified opening the console with a pool-only allowlist.
+
+**`boardBot.ts` is deleted** — with the menu calls gone it had no production caller at all, and
+`sendBoardMessage` had lost its last one to the ops-alert move. `CONSOLE_MENU_CHAT_IDS` and
+`setConsoleMenuButtonFor` went with it, as this section predicted they would.
+
+**Two corrections this phase owes the record, because both cost real time:**
+
+- **"Technicians keep the board until the console has a technician view"** (see Open questions) was
+  stale for weeks. `consoleApi` already serves a technician their own stops, clamped at the
+  visibility horizon, no roster, no tray — *"a correct small thing rather than a broken big one"*.
+  Phase 3 was described as blocked on building that. It was not.
+- **The five seat tokens were never only in BotFather.** See the correction under "Where a seat's
+  token lives" — the gateway holds them because it must poll Telegram with them.
+
+Both were beliefs carried forward without re-checking whether they were still true, and both made
+this work look far larger than it was.
+
+## Phase 4 — what one-bot-per-person still owes (open)
+
+The merge is structurally complete; what remains is roster DATA, not code.
+
+- **Coverage is 4 of 31 roster rows.** The push leg serves a row only when the addressee is active
+  AND has `sandbox_ref` AND has `telegram_user_id` (`nudgeQueue`, push leg). Misses are skipped
+  silently — "frozen, not failed" — so a person with a seat and no binding simply never hears
+  anything, with nothing logged.
+- **s3 (`judy-testing`) has a seat and no Telegram binding**; **s6 is claimed by nobody**.
+- **Sam and Ben share Telegram id `5801703167`** on two live rows. A schedule change touching both
+  sends that phone two messages from two different bots. `findRosterByTelegramUserIdGlobal` already
+  refuses this ambiguity — which is why ops alerts cannot be addressed to that id — but the push
+  path addresses by `technician_id` and so does not notice.
+- **Duplicate roster refs across tenants** (`manager-sam`, `judy-testing`, `tech-jane` each appear
+  twice) make `tech=<ref>` ambiguous for `add-sandbox` without an explicit `tenant=`.
+
+### Findings recorded while phase 3 was open
 
 **Found on first contact (2026-09-09): the seats people actually use have no pool rows.**
 `sandbox_pool` on the pilot holds four rows, all cold spares (s1/s4 retired, s5/s6 live) — while the
@@ -273,8 +325,10 @@ so the two schemes' replay windows must move together — noted at the call site
 - **The 24-hour slip window.** A verified slip is a bearer credential until it ages out. Generous.
   The console can always ask Telegram for a fresh one, so shortening it is cheap and worth doing
   with this work rather than after it.
-- **Technicians.** They keep the board for now; the same button on their own bot can point at
-  `/board` until the console has a technician view.
+- ~~**Technicians.** They keep the board for now; the same button on their own bot can point at
+  `/board` until the console has a technician view.~~ **CLOSED — it was already built.** `consoleApi`
+  serves a technician their own stops, clamped at the horizon, no roster, no tray. This line stayed
+  open long after the thing it asked for existed, and phase 3 was described as blocked on it.
 
 ## Verification (2026-09-09)
 `npx tsc --noEmit` clean, `npx eslint .` clean, `npx vitest run src/telegram/ src/console/

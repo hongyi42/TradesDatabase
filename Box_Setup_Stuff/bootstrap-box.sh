@@ -458,6 +458,17 @@ phase_badgepull() {
   install_unless_same 700 "$SCRIPT_DIR/badge-pull.sh" /usr/local/sbin/badge-pull.sh
   ok "/usr/local/sbin/badge-pull.sh"
 
+  # seat-sync rides the SAME tick and the SAME env file, so it belongs to this
+  # phase rather than one of its own. It reached trades-box-1 by hand; nothing
+  # put it on a NEW box, which would have been found the hard way at the worst
+  # moment -- both of its call sites (badge-pull's tail, and provision's "wire
+  # the console door" step) guard on `[ -x /usr/local/sbin/seat-sync.sh ]`, so
+  # a missing install is SILENT. Every hook fires, finds nothing, carries on,
+  # and the operator learns about it when a new hire opens a bot with no
+  # console button. Installed here so that cannot happen.
+  install_unless_same 700 "$SCRIPT_DIR/seat-sync.sh" /usr/local/sbin/seat-sync.sh
+  ok "/usr/local/sbin/seat-sync.sh"
+
   if [ -f /etc/doorman/badge-pull.env ]; then
     skip "badge-pull.env exists — NOT overwriting"
   else

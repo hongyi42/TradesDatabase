@@ -6,7 +6,6 @@ import {
   insertCustomerCapture,
   captureHasCustomerCapture,
   listCustomerCapturesForCapture,
-  listLinkedCapturesForCustomer,
 } from './customers.js';
 import { createTenant } from './tenants.js';
 import { appendRawCapture, captureHasLinkedL2 } from './rawCaptures.js';
@@ -64,9 +63,14 @@ describe('customer_captures — the link for "we know WHO, not WHICH"', () => {
     await insertCustomerCapture({ tenantId, customerId: customer.id, captureId });
 
     expect(await captureHasCustomerCapture(captureId)).toBe(true);
-    expect(await listLinkedCapturesForCustomer(customer.id)).toEqual([
-      { capture_id: captureId, tenant_id: tenantId },
-    ]);
+    // Straight to SQL: the by-customer read the door once used is gone (the
+    // customer read goes through capture_membership now), but the row it asserted
+    // is still the thing under test.
+    const { rows: byCustomer } = await pg.query(
+      'select capture_id, tenant_id from customer_captures where customer_id = $1',
+      [customer.id],
+    );
+    expect(byCustomer).toEqual([{ capture_id: captureId, tenant_id: tenantId }]);
     expect(await listCustomerCapturesForCapture(captureId)).toEqual([
       { customer_id: customer.id, tenant_id: tenantId },
     ]);
@@ -121,9 +125,11 @@ describe('customer_captures — the link for "we know WHO, not WHICH"', () => {
     );
 
     // The link exists and is readable...
-    expect(await listLinkedCapturesForCustomer(customer.id)).toEqual([
-      { capture_id: captureId, tenant_id: other.id },
-    ]);
+    const { rows: foreign } = await pg.query(
+      'select capture_id, tenant_id from customer_captures where customer_id = $1',
+      [customer.id],
+    );
+    expect(foreign).toEqual([{ capture_id: captureId, tenant_id: other.id }]);
     // ...but the read must refuse it: the membership view re-checks the link's
     // tenant, so another firm's verbatim text is never counted here.
     const contents = (await getCustomerContents(tenantId, customer.id, 'manager')) as CustomerContents;

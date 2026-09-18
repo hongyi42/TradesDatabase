@@ -21,6 +21,7 @@
     "gen:types": "mkdir -p src/db && npx supabase gen types typescript --linked > src/db/database.types.ts",
     "gen:types:local": "mkdir -p src/db && npx supabase gen types typescript --local > src/db/database.types.ts",
     "job:lifecycle": "node dist/jobs/lifecycle.js",
+    "extract-eval": "npm run build && node scripts/extract-eval/run.mjs",
     "spine-eval:world": "npm run build && node scripts/spine-eval/world.mjs",
     "date-eval:plan": "node -r dotenv/config scripts/date-eval/plan.mjs",
     "date-eval:run": "node scripts/date-eval/run.mjs",

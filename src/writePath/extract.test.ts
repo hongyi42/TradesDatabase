@@ -24,10 +24,22 @@ describe('the extraction tool schema (rung 10)', () => {
 
   test('its description draws the line the whole rung rests on', () => {
     const desc = props.visitCommitted.description ?? '';
-    // "we said yes" — never "they asked". A caller REQUESTING a visit must not
-    // set it, or every enquiry would text a manager as a commitment.
-    expect(desc).toMatch(/business agreed/i);
-    expect(desc).toMatch(/never true because the customer asked/i);
+    // AMENDED 2026-09-17 (operator ruling, option B). The line is "a visit is
+    // NOW AGREED", not "the firm said yes". The old wording — "ONLY if the
+    // business agreed to send someone out" — raised nothing for the commonest
+    // booking flow there is: the firm offers a slot (not agreement) and the
+    // customer accepts it (not the firm speaking), so a visit exists on the
+    // customer's calendar and neither message ever asked anybody.
+    //
+    // THE SCHEMA IS PART OF THE PROMPT, which is why this pin matters: these
+    // two assertions passed while the description contradicted the system
+    // prompt, so the next person to fix it would have gone red and reverted.
+    expect(desc).toMatch(/now agreed/i);
+    expect(desc).toMatch(/customer accepting a time the firm offered/i);
+    expect(desc).not.toMatch(/only if the business agreed/i);
+    // UNCHANGED, and the half that keeps the rung honest: a caller REQUESTING a
+    // visit must not set it, or every enquiry would text a manager.
+    expect(desc).toMatch(/never true because someone asked/i);
   });
 
   // The MIRROR of visitCommitted, and it fails the OTHER way: absent reads as
@@ -44,6 +56,11 @@ describe('the extraction tool schema (rung 10)', () => {
     // The model must be told that false is the exception, not the default.
     expect(desc).toMatch(/false only/i);
     expect(desc).toMatch(/doubt, true/i);
+    // The schema said "an acknowledgement of something already agreed" until
+    // 2026-09-17, when the eval measured that reading skipping real operational
+    // replies: "Thursday works." came back false in 9 runs of 10.
+    expect(desc).toMatch(/length and tone are not the test/i);
+    expect(desc).not.toMatch(/acknowledgement/i);
     // THE RE-FRAME, pinned. The first version asked "does anyone need to act on
     // this?" — a judgment about people, which this call cannot make: it has no
     // customer, no history, no schedule. It now names the operations-layer
@@ -127,6 +144,34 @@ describe('the extraction system prompt (rung 10b)', () => {
     // Identity is refused; what the firm SAYS still counts in full.
     expect(EXTRACTION_SYSTEM).toContain('signature block');
     expect(EXTRACTION_SYSTEM).toContain('IS a commitment');
+  });
+
+  // PHASE 5, STEP 1. Both sentences were written against a measurement, not a
+  // hunch (scripts/extract-eval, corpus v3, 2026-09-17): "an acknowledgement"
+  // in the touchesOperations exemption was matching short operational replies
+  // by FORM — "Thursday works." skipped in 9 runs of 10 — and the firm
+  // agreeing a date was coming back `in_progress`, which `open` accepts as a
+  // transition and so flips a job to work-underway before anybody has been out.
+  // Pinned because a later tidy-up of this prompt would silently restore both.
+  test('a short operational reply is not chit-chat, and arranging a visit is not work underway', () => {
+    expect(EXTRACTION_SYSTEM).toContain('LENGTH AND TONE ARE NOT THE TEST');
+    expect(EXTRACTION_SYSTEM).toContain('ARRANGING A VISIT IS NOT WORK UNDERWAY');
+    // The word that was doing the damage is gone from the exemption list.
+    expect(EXTRACTION_SYSTEM).not.toContain('an acknowledgement, an auto-reply');
+  });
+
+  // PHASE 5, STEP 2 — operator ruling 2026-09-17 (option B). `visitCommitted`
+  // asks whether a visit is AGREED, not whether this message is the firm
+  // agreeing: the rejected reading raised nothing for either half of "firm
+  // offers a slot" + "customer accepts it", which is how most bookings happen.
+  // The second pin is the quoted-tail half, measured: "Thursday works."
+  // answered committed 3/3 bare and 0/10 with the firm's offer quoted beneath.
+  test('an acceptance agrees the visit, and quoted history is not "already handled"', () => {
+    expect(EXTRACTION_SYSTEM).toContain('A VISIT IS NOW AGREED as of this message');
+    expect(EXTRACTION_SYSTEM).toContain('AN OFFER MADE EARLIER IS NOT AN AGREEMENT');
+    expect(EXTRACTION_SYSTEM).toContain('quoted');
+    // The rejected wording must not creep back.
+    expect(EXTRACTION_SYSTEM).not.toContain('ONLY when the BUSINESS agreed');
   });
 });
 

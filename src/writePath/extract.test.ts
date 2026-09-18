@@ -3,6 +3,8 @@ import {
   EXTRACTION_SYSTEM,
   EXTRACTION_TOOL,
   renderExtractionUser,
+  renderCandidateJobs,
+  CANDIDATE_TITLE_CHARS,
   renderThreadContext,
 } from './extract.js';
 import type { ThreadMessage } from '../email/format.js';
@@ -24,10 +26,31 @@ describe('the extraction tool schema (rung 10)', () => {
 
   test('its description draws the line the whole rung rests on', () => {
     const desc = props.visitCommitted.description ?? '';
-    // "we said yes" — never "they asked". A caller REQUESTING a visit must not
-    // set it, or every enquiry would text a manager as a commitment.
-    expect(desc).toMatch(/business agreed/i);
-    expect(desc).toMatch(/never true because the customer asked/i);
+    // AMENDED 2026-09-17 (operator ruling, option B). The line is "a visit is
+    // NOW AGREED", not "the firm said yes". The old wording — "ONLY if the
+    // business agreed to send someone out" — raised nothing for the commonest
+    // booking flow there is: the firm offers a slot (not agreement) and the
+    // customer accepts it (not the firm speaking), so a visit exists on the
+    // customer's calendar and neither message ever asked anybody.
+    expect(desc).toMatch(/now agreed/i);
+    expect(desc).toMatch(/customer accepting a time the firm offered/i);
+    expect(desc).not.toMatch(/only if the business agreed/i);
+    // UNCHANGED, and the half that keeps the rung honest: a caller REQUESTING a
+    // visit must not set it, or every enquiry would text a manager.
+    expect(desc).toMatch(/never true because someone asked/i);
+  });
+
+  // THE MODEL NAMES THE JOB. Both fields are optional and mean nothing without a
+  // rendered list, so the pin is on the SHAPE and on one word of the
+  // description: `jobChoice` must stay a NUMBER. Were it ever widened to a
+  // string the door would start receiving ids it cannot verify against the list
+  // it showed, which is the failure the number exists to prevent.
+  test('jobChoice is a number keyed to the list shown, with a reason beside it', () => {
+    expect(props.jobChoice).toBeDefined();
+    expect(props.jobChoice.type).toBe('number');
+    expect(props.jobChoice.description ?? '').toMatch(/number/i);
+    expect(props.jobChoiceReason).toBeDefined();
+    expect(props.jobChoiceReason.type).toBe('string');
   });
 
   // The MIRROR of visitCommitted, and it fails the OTHER way: absent reads as
@@ -44,6 +67,11 @@ describe('the extraction tool schema (rung 10)', () => {
     // The model must be told that false is the exception, not the default.
     expect(desc).toMatch(/false only/i);
     expect(desc).toMatch(/doubt, true/i);
+    // The schema said "an acknowledgement of something already agreed" until
+    // 2026-09-17, when the eval measured that reading skipping real operational
+    // replies: "Thursday works." came back false in 9 runs of 10.
+    expect(desc).toMatch(/length and tone are not the test/i);
+    expect(desc).not.toMatch(/acknowledgement/i);
     // THE RE-FRAME, pinned. The first version asked "does anyone need to act on
     // this?" — a judgment about people, which this call cannot make: it has no
     // customer, no history, no schedule. It now names the operations-layer
@@ -196,5 +224,69 @@ describe('renderExtractionUser (rung 10b.3)', () => {
     const ours = renderExtractionUser('the latest words', { earlier, fromTheFirm: true });
     expect(ours).toContain("YOUR OWN FIRM'S REPLY");
     expect(ours.indexOf('still cold upstairs')).toBeLessThan(ours.indexOf('the latest words'));
+  });
+
+  // PHASE 2 — THE CANDIDATE LIST. It goes in the USER message, which is what
+  // leaves EXTRACTION_SYSTEM byte-identical and lets the eval attribute a moved
+  // score to this block alone. Order matters for the same reason the thread's
+  // does: the model's judgments must come from the bottom of what it is shown.
+  const candidates = [
+    { title: 'Boiler diagnostic', status: 'open' },
+    { title: 'Kitchen tap dripping', status: 'in_progress' },
+  ];
+
+  test('an empty list changes nothing — all three existing shapes are untouched', () => {
+    expect(renderExtractionUser('unit still noisy', { earlier: [], candidates: [] })).toBe(
+      'unit still noisy',
+    );
+    expect(renderExtractionUser('unit still noisy', { earlier: [] })).toBe('unit still noisy');
+    expect(renderExtractionUser('the latest words', { earlier, candidates: [] })).toBe(
+      renderExtractionUser('the latest words', { earlier }),
+    );
+    expect(
+      renderExtractionUser('ours', { earlier: [], fromTheFirm: true, candidates: [] }),
+    ).toBe(renderExtractionUser('ours', { earlier: [], fromTheFirm: true }));
+  });
+
+  test('with a list: thread, then the numbered jobs, then the label, then the message', () => {
+    const user = renderExtractionUser('the tap again', { earlier, candidates });
+    const at = (needle: string) => user.indexOf(needle);
+    expect(at('EARLIER IN THIS CONVERSATION')).toBeGreaterThanOrEqual(0);
+    expect(at('EARLIER IN THIS CONVERSATION')).toBeLessThan(at('CANDIDATE JOBS'));
+    expect(at('CANDIDATE JOBS')).toBeLessThan(at('LATEST MESSAGE'));
+    expect(at('LATEST MESSAGE')).toBeLessThan(at('the tap again'));
+    expect(user).toContain('1. Boiler diagnostic (open)');
+    expect(user).toContain('2. Kitchen tap dripping (in progress)');
+  });
+
+  test('a list with no thread still labels the message — "the LATEST MESSAGE" must point somewhere', () => {
+    // The bare path deliberately sends raw text alone. With a numbered list
+    // above it, unlabelled text would leave the block referring to nothing.
+    const user = renderExtractionUser('the tap again', { earlier: [], candidates });
+    expect(user).toContain('LATEST MESSAGE');
+    expect(user.indexOf('CANDIDATE JOBS')).toBeLessThan(user.indexOf('LATEST MESSAGE'));
+    expect(user).not.toContain('EARLIER IN THIS CONVERSATION');
+  });
+
+  test('the block says "none" is an answer, and that the list decides nothing else', () => {
+    const user = renderCandidateJobs(candidates);
+    // Without this, a list of open jobs reads as "one of these is the answer" —
+    // and the specimen's own message (a bathroom faucet) is about NEITHER.
+    expect(user).toMatch(/none of them/i);
+    expect(user).toMatch(/OMIT BOTH/);
+    // And the guard against the failure this whole arc started on: a nearby
+    // list of agreed work must not read as "the visit is already handled".
+    expect(user).toMatch(/says nothing about whether a visit is agreed/i);
+  });
+
+  test('a null title never renders as "null", and a long one is cut', () => {
+    const user = renderCandidateJobs([
+      { title: null, status: 'open' },
+      { title: 'x'.repeat(200), status: 'open' },
+    ]);
+    expect(user).toContain('1. Untitled job (open)');
+    expect(user).not.toContain('null');
+    expect(user).toContain(`2. ${'x'.repeat(CANDIDATE_TITLE_CHARS)} (open)`);
+    expect(user).not.toContain('x'.repeat(CANDIDATE_TITLE_CHARS + 1));
   });
 });

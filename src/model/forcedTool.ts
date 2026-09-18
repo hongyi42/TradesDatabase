@@ -35,6 +35,17 @@ export interface JsonSchemaObject {
 
 export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
+// A REPLY CUT AT THE BUDGET, told apart from every other failure. Both
+// transports already refuse a truncated reply (the tool arguments are
+// incomplete, so the result is not usable) — this gives the refusal a TYPE, so a
+// caller that added optional context to its prompt can drop that context and
+// retry once, instead of failing the whole capture. A message match would work
+// today and drift tomorrow: those strings are operator-facing diagnostics that
+// name a budget, not a contract. The messages themselves are unchanged.
+export class OutputTruncatedError extends Error {}
+export const isOutputTruncated = (err: unknown): err is OutputTruncatedError =>
+  err instanceof OutputTruncatedError;
+
 // User ruling 2026-08-28. Applied whenever a caller names nothing.
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'medium';
 
@@ -338,7 +349,7 @@ async function callAnthropic(
   // not the other would reappear the moment MODEL_PROVIDER flips. Anthropic
   // spells it stop_reason='max_tokens'.
   if (message.stop_reason === 'max_tokens') {
-    throw new Error(
+    throw new OutputTruncatedError(
       `${req.label}: model output was truncated at maxTokens=${req.maxTokens} ` +
         `(stop_reason=max_tokens) — the tool arguments are incomplete, so the result is not usable. ` +
         `Raise maxTokens for this caller.`,
@@ -431,7 +442,7 @@ async function callOpenAiCompatible(
   // A truncated reply is a caller-fixable fault, so the message names the budget.
   const finish = body.choices?.[0]?.finish_reason;
   if (finish === 'length') {
-    throw new Error(
+    throw new OutputTruncatedError(
       `${req.label}: model output was truncated at maxTokens=${req.maxTokens} ` +
         `(finish_reason=length) — the tool arguments are incomplete, so the result is not usable. ` +
         `Raise maxTokens for this caller.`,

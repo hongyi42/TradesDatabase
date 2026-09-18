@@ -31,7 +31,14 @@ import {
   type Json,
   type Visit,
 } from '../db/index.js';
-import { defaultExtractor, type Extractor, type ExtractedFields } from './extract.js';
+import {
+  defaultExtractor,
+  CANDIDATES_MAX,
+  CANDIDATES_MIN,
+  type Extractor,
+  type ExtractedFields,
+} from './extract.js';
+import { isOutputTruncated } from '../model/forcedTool.js';
 import { matchIdentity, type MatchResult, type ScheduledCustomerDraft } from './identityMatch.js';
 import { resolveVisitForNote } from './attachNote.js';
 // The ONE booking writer. No cycle: booking.ts imports only ../db and
@@ -285,6 +292,55 @@ export async function recordFieldNote(
   // path lands here — the call log is kept, the human review carries the action.
   if (input.structure === false) return { status: 'captured', captureId };
 
+  // WHO IS SPEAKING — hoisted above the job resolution by rung 10, because it
+  // now gates that too: only a technician's own note may create work silently.
+  // Hoisted again above EXTRACTION by the model-names-the-job plan: the
+  // pre-match below is for inbound strangers' mail, never a technician's note.
+  const isTechnicianChannel =
+    channel === 'technician_voice' || channel === 'technician_photo' || channel === 'technician_note';
+
+  // (2a) WHO IS THIS, FROM THE ENVELOPE ALONE — run BEFORE extraction so the
+  // extractor can be shown this customer's open jobs and asked which one the
+  // message is about. Extraction normally precedes identity because identity
+  // reads `extracted.phone` and `extracted.address`; but an email address, a
+  // thread id and a caller id are ENVELOPE facts the door already holds, so a
+  // match on those alone needs nothing from the model. The real match still runs
+  // below, unchanged, on the full extraction — this one only decides what to
+  // SHOW. Same `matchIdentity`, so there is still one identity implementation.
+  //
+  // ONLY ON THE AUTOMATIC PATH. `resolved` is a staged confirm (preview ==
+  // commit, no re-match), `decided` is a manager's relayed answer and
+  // `captureId` is a re-entry whose first ask is still open: all three already
+  // know their job, or are forbidden from asking a second question. A technician
+  // note is excluded because its own path may create work silently.
+  //
+  // AND IT CANNOT COST THE CAPTURE. Every failure here — a refused match, a
+  // thrown read, a customer with one job or nine — lands on exactly the
+  // behaviour that shipped in PR #235: extract with no candidates.
+  let shownCandidates: Job[] = [];
+  if (!isTechnicianChannel && !input.resolved && !input.decided && !input.captureId) {
+    try {
+      const pre = await matchIdentity({
+        tenantId,
+        technicianRef,
+        capturedAt,
+        extracted: { phone: input.fallbackPhone ?? null },
+        email: input.fallbackEmail ?? null,
+        threadId: input.threadId ?? null,
+      });
+      // A thread that already names the JOB (rung 10b.3) needs no list: the
+      // conversation answered the question the list would ask.
+      if (pre.status === 'matched' && pre.customerId && !pre.jobId) {
+        const open = (await listJobsForCustomer(pre.customerId)).filter(
+          (candidate) => !TERMINAL_STATUSES.has(candidate.status),
+        );
+        if (open.length >= CANDIDATES_MIN && open.length <= CANDIDATES_MAX) shownCandidates = open;
+      }
+    } catch {
+      /* pre-match is advisory: the extraction below simply shows no candidates */
+    }
+  }
+
   // (2-3) AI extraction of candidate fields.
   // Pass the cost context: this is the extractor's PRODUCTION billing path.
   // The inbound-email webhook and the call worker both call recordFieldNote with
@@ -295,13 +351,36 @@ export async function recordFieldNote(
   // customer identity. Passed even with no thread, which is why this is not
   // folded into the threadContext ternary.
   const fromTheFirm = channel === 'outbound_email';
-  const extracted = await extract(
-    rawText,
-    { tenantId, technicianRef },
-    input.threadContext?.length || fromTheFirm
-      ? { earlier: input.threadContext ?? [], ...(fromTheFirm ? { fromTheFirm } : {}) }
-      : undefined,
-  );
+  // `undefined` when there is nothing to say, byte for byte as before: an
+  // ordinary message with no thread, no firm flag and no candidates reaches the
+  // model exactly as it did (pinned, recordFieldNote.test.ts).
+  const extractionContext = (withCandidates: boolean) => {
+    const candidates = withCandidates ? shownCandidates : [];
+    if (!input.threadContext?.length && !fromTheFirm && candidates.length === 0) return undefined;
+    return {
+      earlier: input.threadContext ?? [],
+      ...(fromTheFirm ? { fromTheFirm } : {}),
+      ...(candidates.length
+        ? { candidates: candidates.map((job) => ({ title: job.title, status: job.status })) }
+        : {}),
+    };
+  };
+  let extracted: ExtractedFields;
+  try {
+    extracted = await extract(rawText, { tenantId, technicianRef }, extractionContext(true));
+  } catch (err) {
+    // A CANDIDATE LIST THAT DOES NOT FIT IS NOT AN OUTAGE. The extractor runs at
+    // maxTokens 1024 and a truncated reply throws, so without this the whole
+    // capture fails after L1, the webhook answers transient_error, and every
+    // redelivery truncates identically — a promise buried by a regression PR
+    // #235 does not have. Retried ONCE, without the block we added, which is the
+    // prompt that was already known to fit. A typed predicate, so any other
+    // failure (an outage, a bad key) propagates on the first attempt and is
+    // never retried into a second bill.
+    if (!shownCandidates.length || !isOutputTruncated(err)) throw err;
+    shownCandidates = [];
+    extracted = await extract(rawText, { tenantId, technicianRef }, extractionContext(false));
+  }
 
   // Caller-ID fallback: the inbound call's `From` is a strong identity key the
   // transcript often lacks. Apply it only when extraction found no phone, and
@@ -441,11 +520,6 @@ export async function recordFieldNote(
     });
     customerId = created.id;
   }
-
-  // WHO IS SPEAKING — hoisted above the job resolution by rung 10, because it
-  // now gates that too: only a technician's own note may create work silently.
-  const isTechnicianChannel =
-    channel === 'technician_voice' || channel === 'technician_photo' || channel === 'technician_note';
 
   // RUNG 10 — THE ASK. An inbound capture that code cannot resolve alone becomes
   // an observation in the planner's own record and NOTHING else: no job, no

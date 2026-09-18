@@ -208,6 +208,22 @@ without Phase 4 the rulings hold for the message the model read and fail on the 
   reverted, the second unmeasured rather than keep a clause added only to chase one fixture. The
   reasoning is recorded in `extract.ts` beside the clause, and `scripts/extract-eval` is the loop for
   whoever tries again.
+- **TWO PHASE-5 GAPS THE REVIEW FOUND, both closed in Phase 2's commit.** (a) `EXTRACTION_TOOL`'s
+  field descriptions are sent in the SAME request as the system prompt (`forcedTool.ts:330`, `:395`),
+  and Phase 5 left them asserting the REJECTED reading — `visitCommitted` "True ONLY if the business
+  agreed to send someone out", and `touchesOperations` restoring the very word "an acknowledgement"
+  step 1 deleted. Two suite pins actively enforced the old wording, so the next person to fix the
+  description would have gone red and reverted. Both descriptions and both pins are now aligned; the
+  Phase 5 numbers were measured WITH the contradiction present, so they are honest for what shipped
+  and the residue may be partly this. (b) A CONTRADICTION INSIDE the already-handled region, accepted
+  rather than resolved: "a visit the firm agreed to in an earlier message is already handled" versus
+  "quoted history is never read as this message already being handled". On a customer's "thanks, see
+  you Thursday" with the firm's own PROMISE quoted beneath, the second removes the first's
+  suppression and supplies no positive rule for a quoted promise, so the headline rule applies and
+  the ask DUPLICATES. That is ruling B's chosen direction and its rails cover it; the narrower
+  wording the plan originally specified would have left the first sentence intact, but the broad one
+  is what measured. Unmeasured either way — both quoted twins quote the customer's REQUEST, never
+  the firm's prior agreement. Recorded beside the clause in `extract.ts`.
 - **COMMITMENT IS "A VISIT IS NOW AGREED"** (operator ruling 2026-09-17, option B). `visitCommitted`
   answers: is a visit agreed as of this message, whoever said so. REJECTED: "is THIS message the
   firm agreeing" (v2's labels). Its hole is the commonest booking flow there is — the firm offers a
@@ -385,23 +401,28 @@ marker, not message matching; existing messages unchanged.
   without them and clear `shownCandidates`. Every other error propagates as today.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass
-- [ ] `extract.test.ts` pins hold; no candidates → all three render paths unchanged; with candidates →
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass — 127 files, 3,303 tests (20 new)
+- [x] `extract.test.ts` pins hold; no candidates → all three render paths unchanged; with candidates →
       thread, block, label, message, in that order; both new fields declared
-- [ ] a spy extractor gets candidates for a two-job customer matched on email, and NOT for: a
+- [x] a spy extractor gets candidates for a two-job customer matched on email, and NOT for: a
       technician channel, `resolved`, `decided`, a re-entry, a thread-named job, one job, nine jobs, an
-      address-only identity
-- [ ] a pre-match that throws still extracts, without candidates
-- [ ] a stub throwing a truncation error once → a second call with no candidates, and the capture is
+      address-only identity — plus a repeat CALLER (shown) and exactly eight (shown, cap inclusive)
+- [~] a pre-match that throws still extracts, without candidates — NOT TESTED. Both reads in that
+      block are plain selects with no injection point, and manufacturing a throw needs a module mock
+      in a file that has none. The refused-match and stranger cases cover the same OUTCOME; the
+      throw arm rests on its try/catch and its comment.
+- [x] a stub throwing a truncation error once → a second call with no candidates, and the capture is
       filed; a stub throwing anything else → it propagates, one call only
 
 ### Live verification (agent-executable)
 - Prerequisites: `.env`; the pinned model.
-- [ ] `npm run extract-eval`, both variants. Evidence: WITHOUT — no field more than 1 run below
-      baseline; WITH — no gated field more than 1 run below its WITHOUT twin (a dip is re-run once
-      before it counts); no `finish_reason=length`.
-- [ ] Specimen vs "Boiler diagnostic" / "Kitchen tap dripping" → no `jobChoice`; a kitchen-tap message
-      → `2`; 3× each. Evidence: all six results and reasons.
+- [x] WITHOUT: committed 120/120, skips 120/120, status 110/120 — at or above every step-2 figure.
+      WITH (16 cases x 10): committed 159/160, skips 160/160, status 151/160, jobChoice 31/40.
+      The only twin below its WITHOUT pair is `commitment-outbound+candidates` committed 9/10 vs
+      10/10 — one run, inside the gate. No truncation, no errors, in either variant.
+- [x] THE SPECIMEN REFUSES, 10/10: a bathroom faucet beside "Boiler diagnostic" / "Kitchen tap
+      dripping" returns no `jobChoice`. A kitchen-tap message answers `2`, 10/10, reason "The message
+      says the kitchen tap the firm looked at is dripping again."
 
 ### Manual verification
 - [ ] Read the six reasons: refusing for the right reason, naming confidently rather than luckily.

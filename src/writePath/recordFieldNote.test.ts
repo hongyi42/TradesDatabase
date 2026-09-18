@@ -12,6 +12,9 @@ import { localDateISO } from '../schedule/availability.js';
 import { NOTE_SIGNAL_TRANSITIONS, recordFieldNote } from './recordFieldNote.js';
 import { ALLOWED_TRANSITIONS, type JobStatus } from '../db/jobs.js';
 import type { Extractor, ExtractedFields } from './extract.js';
+import { CANDIDATES_MAX } from './extract.js';
+import { OutputTruncatedError } from '../model/forcedTool.js';
+import { TEAM_LEAD_REF } from '../teamLead/identity.js';
 
 // Integration test against the TEST project with a STUBBED extractor (no live
 // model), exercising the full L1 → extract → match → L2/L3 write-path.
@@ -2426,5 +2429,240 @@ describe('rung 10b — re-entry by capture id, and what a manager decided', () =
         stub({}),
       ),
     ).rejects.toThrow(/not this firm/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 2 of "the model names the job": THE EXTRACTOR IS SHOWN THE JOBS.
+//
+// The door pre-matches on ENVELOPE keys alone — an email address, a thread id, a
+// caller id — before extraction, so that when the answer is "a known customer
+// with several open jobs and nothing here naming one" it can show that list to
+// the extractor and ask. Nothing acts on the answer yet; these tests are about
+// WHAT IS SHOWN, which is the half that can go wrong silently.
+//
+// Every exclusion below is a case where showing a list would be wrong rather
+// than merely useless, so each gets its own test: a technician standing at the
+// work, a manager's relayed decision, a re-entry whose first ask is still open,
+// a conversation that already names the job, and the two ends of the 2-8 range.
+describe('the candidate list the extractor is shown (phase 2)', () => {
+  let seq = 0;
+
+  /** An extractor that records the third argument of every call it receives. */
+  const spy = () => {
+    const seen: Parameters<Extractor>[2][] = [];
+    const deps = {
+      extract: (async (_text, _ctx, context) => {
+        seen.push(context);
+        return {} as ExtractedFields;
+      }) as Extractor,
+    };
+    return { seen, deps };
+  };
+
+  const customerWithJobs = async (name: string, titles: string[]) => {
+    const email = `phase2-${seq}@example.com`;
+    const phone = `206-771-${String(seq++).padStart(4, '0')}`;
+    const customer = await createCustomer({ tenantId, name, phone, email });
+    const jobs = [];
+    for (const title of titles) {
+      jobs.push(await createJob({ tenantId, customerId: customer.id, title }));
+    }
+    return { customer, email, phone, jobs };
+  };
+
+  const inbound = (over: Record<string, unknown> = {}) => ({
+    tenantId,
+    technicianRef: 'connector:gmail',
+    channel: 'email' as const,
+    text: 'it is playing up again',
+    externalId: `phase2-msg-${seq++}`,
+    ...over,
+  });
+
+  test('two open jobs, matched on the envelope email: the list is shown, titles and statuses only', async () => {
+    const { email, jobs } = await customerWithJobs('Candid Carla', [
+      'Boiler diagnostic',
+      'Kitchen tap dripping',
+    ]);
+    const { seen, deps } = spy();
+    await recordFieldNote(inbound({ fallbackEmail: email }), deps);
+
+    expect(seen).toHaveLength(1);
+    // Created ascending, and listJobsForCustomer orders on created_at then id,
+    // so the numbering the model is given is stable across two reads of the
+    // same set — which is what Phase 3 relies on to resolve a number to an id.
+    expect(seen[0]?.candidates).toEqual([
+      { title: 'Boiler diagnostic', status: jobs[0].status },
+      { title: 'Kitchen tap dripping', status: jobs[1].status },
+    ]);
+    // NO DATES, at any status: the repeated extraction hazard in this repo.
+    for (const candidate of seen[0]?.candidates ?? []) {
+      expect(Object.keys(candidate).sort()).toEqual(['status', 'title']);
+    }
+  });
+
+  test('the caller ID is an envelope key too — a repeat caller with two jobs is shown them', async () => {
+    const { phone } = await customerWithJobs('Ringing Rita', ['Furnace check', 'Leaky valve']);
+    const { seen, deps } = spy();
+    await recordFieldNote(
+      inbound({ channel: 'phone_call', technicianRef: 'phone-line', fallbackPhone: phone }),
+      deps,
+    );
+    expect(seen[0]?.candidates).toHaveLength(2);
+  });
+
+  test('a TECHNICIAN note is shown nothing — its own path may still create work silently', async () => {
+    const { phone } = await customerWithJobs('Techie Tess', ['Boiler diagnostic', 'Tap dripping']);
+    const { seen, deps } = spy();
+    await recordFieldNote(
+      inbound({ channel: 'technician_note', technicianRef: 'tech:1', fallbackPhone: phone }),
+      deps,
+    );
+    expect(seen[0]?.candidates).toBeUndefined();
+  });
+
+  test('a RE-ENTRY is shown nothing — its first ask is still open and must not gain a second answer', async () => {
+    const { email, customer } = await customerWithJobs('Reentrant Ray', ['One job', 'Two job']);
+    const first = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      rawText: 'the first delivery',
+      externalId: `phase2-reentry-${seq++}`,
+    });
+    const { seen, deps } = spy();
+    await recordFieldNote(
+      inbound({ fallbackEmail: email, captureId: first.id, text: 'the same words again' }),
+      deps,
+    );
+    expect(seen[0]?.candidates).toBeUndefined();
+    expect(customer.id).toBeTruthy();
+  });
+
+  test("a manager's DECIDED answer is shown nothing — the question it would ask is already answered", async () => {
+    const { email, jobs } = await customerWithJobs('Decided Dee', ['Job A', 'Job B']);
+    const { seen, deps } = spy();
+    await recordFieldNote(
+      inbound({ fallbackEmail: email, decided: { jobId: jobs[0].id, actorRef: TEAM_LEAD_REF } }),
+      deps,
+    );
+    expect(seen[0]?.candidates).toBeUndefined();
+  });
+
+  test('a pre-RESOLVED identity is shown nothing — preview equals commit, there is no re-match', async () => {
+    const { email, customer, jobs } = await customerWithJobs('Resolved Rosa', ['Job A', 'Job B']);
+    const { seen, deps } = spy();
+    await recordFieldNote(
+      inbound({ fallbackEmail: email, resolved: { customerId: customer.id, jobId: jobs[1].id } }),
+      deps,
+    );
+    expect(seen[0]?.candidates).toBeUndefined();
+  });
+
+  test('a thread that already names the JOB is shown nothing — the conversation answered it', async () => {
+    const { email, jobs } = await customerWithJobs('Threaded Thea', ['water heater', 'a later job']);
+    const threadId = `phase2-thread-${seq++}`;
+    const starter = await appendRawCapture({
+      tenantId,
+      channel: 'email',
+      rawText: 'Friday morning for the water heater',
+      externalId: threadId,
+    });
+    await pg.query('insert into job_captures (tenant_id, job_id, capture_id) values ($1,$2,$3)', [
+      tenantId,
+      jobs[0].id,
+      starter.id,
+    ]);
+    const { seen, deps } = spy();
+    await recordFieldNote(inbound({ fallbackEmail: email, threadId }), deps);
+    expect(seen[0]?.candidates).toBeUndefined();
+  });
+
+  test('ONE open job is shown nothing — that is the deterministic path, not a choice', async () => {
+    const { email } = await customerWithJobs('Single Sid', ['The only job']);
+    const { seen, deps } = spy();
+    await recordFieldNote(inbound({ fallbackEmail: email }), deps);
+    expect(seen[0]?.candidates).toBeUndefined();
+  });
+
+  test('NINE open jobs is shown nothing — past the cap a number is not evidence', async () => {
+    const { email } = await customerWithJobs(
+      'Busy Bea',
+      Array.from({ length: CANDIDATES_MAX + 1 }, (_, i) => `job ${i + 1}`),
+    );
+    const { seen, deps } = spy();
+    await recordFieldNote(inbound({ fallbackEmail: email }), deps);
+    expect(seen[0]?.candidates).toBeUndefined();
+  });
+
+  test('exactly EIGHT is shown — the cap is inclusive', async () => {
+    const { email } = await customerWithJobs(
+      'Eighth Eddie',
+      Array.from({ length: CANDIDATES_MAX }, (_, i) => `job ${i + 1}`),
+    );
+    const { seen, deps } = spy();
+    await recordFieldNote(inbound({ fallbackEmail: email }), deps);
+    expect(seen[0]?.candidates).toHaveLength(CANDIDATES_MAX);
+  });
+
+  test('a customer the ENVELOPE cannot name is shown nothing, even with two open jobs', async () => {
+    // Address-only identity: the pre-match carries no address, because the
+    // address is something the EXTRACTOR reads out of the words. This customer
+    // is findable — just not before extraction, which is PR #235's behaviour.
+    const customer = await createCustomer({
+      tenantId,
+      name: 'Addressed Alma',
+      addressLine1: `${seq++} Envelope Way`,
+    });
+    await createJob({ tenantId, customerId: customer.id, title: 'Job A' });
+    await createJob({ tenantId, customerId: customer.id, title: 'Job B' });
+    const { seen, deps } = spy();
+    await recordFieldNote(inbound({ text: 'the boiler at Envelope Way is out' }), deps);
+    expect(seen[0]?.candidates).toBeUndefined();
+  });
+
+  test('a stranger is shown nothing — there is no customer to have open jobs', async () => {
+    const { seen, deps } = spy();
+    await recordFieldNote(inbound({ fallbackEmail: `nobody-${seq++}@example.com` }), deps);
+    expect(seen[0]?.candidates).toBeUndefined();
+  });
+
+  // A LIST THAT DOES NOT FIT IS NOT AN OUTAGE. Without the retry the capture
+  // fails after L1, the webhook answers transient_error, and every redelivery
+  // truncates identically — a promise buried by a regression PR #235 does not
+  // have.
+  test('a TRUNCATED reply retries once without the list, and the capture is filed', async () => {
+    const { email, customer } = await customerWithJobs('Truncated Tina', ['Job A', 'Job B']);
+    const seen: Parameters<Extractor>[2][] = [];
+    const deps = {
+      extract: (async (_text, _ctx, context) => {
+        seen.push(context);
+        if (seen.length === 1) {
+          throw new OutputTruncatedError('defaultExtractor: model output was truncated at maxTokens=1024');
+        }
+        return {} as ExtractedFields;
+      }) as Extractor,
+    };
+    const r = await recordFieldNote(inbound({ fallbackEmail: email }), deps);
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]?.candidates).toHaveLength(2);
+    expect(seen[1]?.candidates).toBeUndefined(); // the prompt already known to fit
+    expect(r).toMatchObject({ status: 'matched', customerId: customer.id });
+  });
+
+  test('ANY OTHER failure propagates on the first attempt — an outage is never retried into a second bill', async () => {
+    const { email } = await customerWithJobs('Outage Otto', ['Job A', 'Job B']);
+    let calls = 0;
+    const deps = {
+      extract: (async () => {
+        calls += 1;
+        throw new Error('502 Bad Gateway from the inference provider');
+      }) as Extractor,
+    };
+    await expect(recordFieldNote(inbound({ fallbackEmail: email }), deps)).rejects.toThrow(
+      /502 Bad Gateway/,
+    );
+    expect(calls).toBe(1);
   });
 });

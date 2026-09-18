@@ -623,8 +623,16 @@ no schema, no door logic.
 - [x] Both baselines written into Decisions. Phase 2 compares against STEP 2's.
 
 ### Manual verification
-- [ ] Read the prompt against the rulings. A prompt that scores well by naming the fixtures is the
+- [x] Read the prompt against the rulings. A prompt that scores well by naming the fixtures is the
       failure the eval cannot detect — the wording must generalise, not recite.
+      DONE, and it is the check that earned its place: read end to end (by me and by a fresh-context
+      reviewer) it found TWO things the eval could not. (1) `EXTRACTION_TOOL`'s field descriptions
+      ride in the same request and still asserted the rejected reading, with two suite pins enforcing
+      it — fixed, pins moved. (2) The already-handled clause now contradicts itself on a quoted
+      PROMISE, accepted as a duplicate ask and recorded beside the clause. The wording generalises
+      rather than recites: no fixture's words appear in it, and the one sentence that DID name a
+      shape ("preparing to do it: quoting, planning, ordering or waiting on parts") was reverted for
+      exactly that reason.
 
 ---
 *Pause after this phase — its manual list is non-empty.*

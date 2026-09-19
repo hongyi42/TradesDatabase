@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 265 documents · 253 live · 12 superseded.
+Regenerate with `npm run decisions:index`. 266 documents · 254 live · 12 superseded.
 
 ## Superseded — do not build on these
 
@@ -51,6 +51,7 @@ Regenerate with `npm run decisions:index`. 265 documents · 253 live · 12 super
 
 ## Live
 
+- `2026-09-19` `research` [2026-09-19-the-technician-access-request-flow](shared/research/2026-09-19-the-technician-access-request-flow.md) `landed` — The technician access request flow — what exists today for each hop (the out-of-view answer a technician's se…
 - `2026-09-15` `finding` [2026-09-15-customer-context-becomes-a-table-of-cont](shared/findings/2026-09-15-customer-context-becomes-a-table-of-cont.md) `describes 1 deleted file` `drift 28` — the retrieval-and-delivery layer for technicians, managers and the planner: every tool meets the retrieval go…
 - `2026-09-15` `finding` [2026-09-15-retrieval-layer-2-the-technician-limited](shared/findings/2026-09-15-retrieval-layer-2-the-technician-limited.md) `drift 23` — retrieval layer 2: the technician limited view — scope gate (their visits, their customers' current jobs), gr…
 - `2026-09-15` `finding` [2026-09-15-retrieval-layer-3-the-planner-and-the-sq](shared/findings/2026-09-15-retrieval-layer-3-the-planner-and-the-sq.md) — retrieval layer 3: the planner and the SQL views — v_captures folds retractions + labels, evidence lines carr…

@@ -50,8 +50,9 @@ builds the request flow on top: the desk as the filter, the text to the manager,
   so the handler reads, overlays, writes. An empty `technicianChannels` is refused (`{}` means "no
   channels" in the database, not "default").
 - **Plan A tells the manager to let the technician know**; plan B makes it automatic.
-- **Contradiction detector: split out** (operator, 2026-09-19), with the off-crew note that can
-  complete a colleague's trip (`src/writePath/attachNote.ts:112`, `recordFieldNote.ts:854-865`).
+- **No contradiction detector** (operator doctrine, 2026-09-19): a filing that does not match the
+  record is the seat's to notice, and code never refuses it; plan B phase 4 makes the note tool
+  say what it assumed.
 
 ## Plain-language walkthrough
 

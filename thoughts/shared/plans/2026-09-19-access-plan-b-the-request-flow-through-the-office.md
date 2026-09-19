@@ -14,7 +14,8 @@ nothing happens. This plan makes the desk (`ask_team_lead`, the office's quick v
 the operator described: a narrow ask — the customer's details and one job — is opened by the desk
 on the spot for a day; anything with money, every note, or wider is texted to the managers, whose
 seats answer with `grant_access` / `decline_access`; the technician is texted the answer; the
-planner sees every step of the history and chases what goes unanswered.
+planner sees every step of the history and chases what goes unanswered. Phase 4 rides the same
+rollout: a note that lands where the record did not expect it now says so to the seat.
 
 ## Decisions
 
@@ -53,12 +54,16 @@ planner sees every step of the history and chases what goes unanswered.
   own assistant's bot), every active manager with Telegram. No ids in the text; the manager's seat
   finds the request with `list_access`. When exactly one request is open, a plain "yes" answers it;
   with more than one, the seat asks which (plan review).
-- **The first answer wins, safely.** `grant_access { requestId }` closes the request first under
-  its status guard, then inserts the grant, and reopens the request if the insert fails — the
-  ledger cannot delete a losing grant, so the close must come first (plan review).
+- **The first answer wins**: close the request under its status guard, then insert the grant (the
+  ledger cannot delete a losing grant), reopening the request if the insert fails (plan review).
 - **The technician is texted every manager answer, yes and no** (operator accepted). A desk-opened
   ask is answered inside the same call, so no text.
 - **`decline_access` is a manager-only tool.**
+- **A filing that does not match the record is the seat's to notice; code never refuses it**
+  (operator doctrine 2026-09-19, `docs/engineering-memory.md` "Contradictions are raised at points
+  of inference"; the research's hard-coded detector, Decision Point 11, is withdrawn). An off-crew
+  note still attaches and completes ("entirely possible"); `record_field_note` now says what it
+  assumed, the seat asks and informs the office, the planner notes it (phase 4, operator's call).
 
 ## Plain-language walkthrough
 
@@ -77,17 +82,17 @@ Manager: "yes for a week" ─▶ their assistant: list_access → grant_access{r
 Planner, next run: sees each step; chases requests still waiting.
 ```
 
-**Phase 1 — asking.** The out-of-view notes tell the seat it can ask the office. The desk opens a
-narrow ask on the spot or files it and texts the managers. **Phase 2 — answering.** The manager's
-seat finds the request and answers yes or no; the technician is texted, the planner's inbox gets a
-line. **Phase 3 — the planner and the seats' standing instructions** learn the flow. **Phase 4 —
-rollout and a live run** with a real technician and manager seat.
+**1 — asking:** the desk opens a narrow ask on the spot, or files it and texts the managers.
+**2 — answering:** the manager's seat says yes or no; the technician is texted; the planner's inbox
+gets a line. **3 — the planner and the seats** learn the flow. **4 — the note says what it
+assumed** ("you are not on this trip's crew"): the seat asks and tells the office; nothing is
+refused. **5 — rollout and a live run** with a real technician and manager seat.
 
 ## Secrets & env preflight
 
-- **Phase 1–3:** none for the tests (the model is stubbed). `OPENROUTER_API_KEY` (already required
+- **Phase 1–4:** none for the tests (the model is stubbed). `OPENROUTER_API_KEY` (already required
   on the services; copy the main checkout's `.env`) only for an optional live-model spot check.
-- **Phase 4:** `GATEWAY_IDENTITY_SECRET` (already required); `supabase-test` and `render` MCPs;
+- **Phase 5:** `GATEWAY_IDENTITY_SECRET` (already required); `supabase-test` and `render` MCPs;
   `ssh tradesbox`.
 
 ## Phase 1: the ask
@@ -232,7 +237,41 @@ and the manager count.
 - [ ] `bash -n Box_Setup_Stuff/bootstrap-box.sh`; md5 of every deployed copy matches the repo after
       the re-wire (the seven-copies trap, `docs/engineering-memory.md`)
 
-## Phase 4: rollout and live run
+## Phase 4: the note says what it assumed
+
+### Changes required
+
+**`src/writePath/attachNote.ts`** — `ResolvedVisitForNote` gains `offCrew: boolean`: true when the
+visit came from step 2 (the job's one live visit, :112) and has a crew the filer is not on
+(`participantIdsOf`, `src/db/visits.ts:81`); false for step 1 (it already requires her or an empty
+crew) and step 3 (`created`, she is the crew). No behaviour change: nothing is refused or re-routed.
+**`src/writePath/recordFieldNote.ts`** — `RecordFieldNoteResult` (:125-140) gains
+`assumed?: string[]`, plain sentences for the SEAT, no ids, technician channels only:
+`created` → "No trip was booked for you on this job, so your note was recorded on a new finished
+trip. A trip your own note made does not open the rest of this customer's record to you.";
+`offCrew` → "Your note went on <crew names>'s trip; you are not on that trip's crew." (names from
+`listTeam`, `src/db/technicians.ts:146`), plus " It also marked that trip done." when the happened
+flip (:854-865) ran.
+**`src/mcp/tools/shared.ts`** `commitNote` (:422-510) — pass `assumed` through on `recorded`, only
+when present (all three commit sites share it).
+**`record_field_note` description** (`src/mcp/tools/captures.ts`) and **`bootstrap-box.sh`** (the
+technician's field-note duty, beside the phase 3 edit): when `assumed` is present, ask your person
+once, in your own words, what happened; then `inform_team_lead` with their answer; offer the access
+ask if they need the record; never refuse or re-file the note.
+**`src/teamLead/plannerPrompt.ts`** (office messages, :112-126) — one line: a seat may report a note
+that landed where the record did not expect it; find out what happened (ask the manager if you
+need to) and write it on the job's notes (`write_job_note`).
+
+### Automated verification
+- [ ] Gates pass
+- [ ] `src/writePath/attachNote.test.ts` / `recordFieldNote.test.ts`: `offCrew` true for a step-2
+      visit crewed by someone else, false for step 1 and for a created trip; `assumed` carries the
+      created sentence, the off-crew sentence, and "marked that trip done" when the flip ran; no
+      `assumed` for an on-crew filing; in every case the note is recorded (never refused)
+- [ ] `server.test.ts`: a `tech-mcp` note on a job whose one trip is crewed by `mgr-test` returns
+      `recorded` with `assumed` on the confirm; an ordinary filing has no `assumed` key
+
+## Phase 5: rollout and live run
 
 ### Changes required
 After plan A is live: the **operator** applies `20260919130000` to the pilot (`supabase-test`),
@@ -257,4 +296,4 @@ re-run the bootstrap wire on trades-box-1 and `nemoclaw <s> gateway restart` on 
       "yes for a week" — judge each message for readability, and that no id or figure leaks.
 
 ---
-*Pause after Phase 4's manual check.*
+*Pause after Phase 5's manual check.*

@@ -722,9 +722,18 @@ async function handleBindTelegram(toolCtx: ToolContext): Promise<unknown> {
       const telegramUserId = str('telegramUserId');
       // Text, digit-only, ≤20 (Telegram ids are ints; stored as text for JS
       // number-precision safety — see the migration). Only ever compared.
-      if (!telegramUserId || !/^[0-9]{1,20}$/.test(telegramUserId)) {
+      //
+      // POSITIVE and at least five digits, not merely "digits". The old rule was
+      // /^[0-9]{1,20}$/, which accepts '0' — and '0' reached a live row on
+      // 2026-09-19. That is WORSE than leaving the row unbound: the push leg's
+      // liveness gate only asks whether the field is set, so the row is SERVED,
+      // the send fails at Telegram, and the row burns its attempts until it
+      // freezes. An unbound row is skipped and costs nothing. A validator for an
+      // identifier must reject the impossible values, not just the wrong type.
+      if (!telegramUserId || !/^[1-9][0-9]{4,19}$/.test(telegramUserId)) {
         throw new Error(
-          'telegramUserId must be the numeric Telegram user id — digits only, from @userinfobot',
+          'telegramUserId must be the numeric Telegram user id — a positive number of at ' +
+            "least 5 digits, from @userinfobot ('0' and leading zeros are not accounts)",
         );
       }
       const target = await getTechnician(tenantId, ref);

@@ -73,6 +73,23 @@ for (const t of unbound) {
 }
 if (!unbound.length) say('  none');
 
+say('\n=== a Telegram id that cannot be a real account');
+say('    (stored, so the liveness gate passes -- and every send then fails)');
+// Worse than unbound, which is why it gets its own section: an unbound row is
+// SKIPPED by the push leg and costs nothing, while a bound-but-impossible id is
+// SERVED, fails at Telegram, and burns the row's attempts until it freezes.
+// '0' reached ben-shelton's row on 2026-09-19 because both bind paths validated
+// /^[0-9]{1,20}$/, which '0' satisfies. Real ids are positive and long.
+const IMPLAUSIBLE = /^(?![1-9][0-9]{4,19}$)/;
+let impossible = 0;
+for (const t of live.filter((x) => x.telegram_user_id)) {
+  if (!IMPLAUSIBLE.test(String(t.telegram_user_id))) continue;
+  impossible++;
+  say(`  ${(t.sandbox_ref ?? '-').padEnd(4)} ${t.ref} has telegram_user_id '${t.telegram_user_id}'`);
+  problems.push(`${t.ref}: telegram_user_id '${t.telegram_user_id}' is not a usable Telegram id`);
+}
+if (!impossible) say('  none');
+
 say('\n=== one Telegram id on several live rows');
 say('    (a change touching both sends that ONE phone two messages, from two bots)');
 const byTg = new Map();

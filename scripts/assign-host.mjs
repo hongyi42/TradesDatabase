@@ -511,11 +511,15 @@ if (command === 'create-host') {
         `Badge will mint on the host's next pull.`,
     );
   } else if (command === 'bind-telegram') {
-    // Text, digits only, <=20 -- Telegram ids are ints, stored as text for
-    // JS number-precision safety, and only ever compared.
-    if (!/^[0-9]{1,20}$/.test(args.telegramUserId ?? '')) {
+    // Positive and at least five digits, matching bind_telegram. Not merely
+    // "digits": /^[0-9]{1,20}$/ accepts '0', and '0' reached a live row on
+    // 2026-09-19 -- which is worse than no binding at all, because the push
+    // leg's liveness gate only asks whether the field is SET, so the row gets
+    // served, fails at Telegram, and burns its attempts until it freezes.
+    if (!/^[1-9][0-9]{4,19}$/.test(args.telegramUserId ?? '')) {
       console.error(
-        'bind-telegram requires telegramUserId=<numeric telegram user id> -- digits only.',
+        'bind-telegram requires telegramUserId=<numeric telegram user id> -- a positive ' +
+          "number of at least 5 digits ('0' and leading zeros are not accounts).",
       );
       process.exit(1);
     }

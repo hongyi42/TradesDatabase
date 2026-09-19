@@ -375,21 +375,22 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://172.17.0.1:3001/ \
   `inform_team_lead`, `ask_team_lead`, `inform_teammate` (`brief_customer` and
   `answer_customer_question` were retired 2026-09-15; `src/mcp/tools/surface.expected.ts` is the
   authority by name). (A badge whose roster row is
-  an ACTIVE `tier='manager'` lists **46** as of 2026-09-19 (42 until access plan A added
-  grant_access, list_access, revoke_access and set_technician_view; the review-queue retirement
-  takes it to 43 when it lands) — `surface.expected.ts`'s
+  an ACTIVE `tier='manager'` lists **43** as of 2026-09-19 (42, then −3 when the review queue and
+  the mailbox link went, then +4 for access plan A's grant_access, list_access, revoke_access and
+  set_technician_view) — `surface.expected.ts`'s
   `MANAGER_TOOLS_EXPECTED` pins the list by name and is the authority when this line drifts —
   `get_schedule` and `search_captures` are REMOVED (2026-07-19: it is the technician route view; a
   manager's only schedule read is get_team_schedule, which includes visits they hold, and
   schedule viewing lives on the dispatch board) while the 8 seat/lifecycle-management tools are
-  added: add/deactivate/reactivate technician seat, bind_telegram, list_team,
-  list_pending_reviews, resolve_review, get_connect_link; plus the 4 scheduling tools since
+  added: add/deactivate/reactivate technician seat, bind_telegram, list_team (and
+  list_pending_reviews, resolve_review, get_connect_link until 2026-09-19, when the review queue was
+  retired and email connections moved to the not-yet-built settings page); plus the 4 scheduling tools since
   2026-07-14: get_team_schedule, book_visit, move_visit, cancel_visit; plus the 5
   schedule-input tools since 2026-07-20: set_availability, add_time_off, remove_time_off,
   set_job_duration, set_technician_skills (one-shot, no confirm); plus `find_slots` since
   2026-07-20 — the read-only ranked slot finder (books nothing; carries the board link like every schedule answer — originally excluded, which made the agent FABRICATE one, live 2026-07-21); plus `update_job` since 2026-07-21 — one-shot job-identity editor (title/jobType/priority, old→new echo); plus `set_technician_horizon` since 2026-07-22 — one-shot visibility dial (weeks 1-12, per-tenant; technician reads beyond it answer "not published yet"); see
   nemoclaw-tech-agent.md §4. Since 2026-07-19 `add_technician_seat` also takes `seatExempt:true`
-  — a schedule-only person occupying NO seat, whom bind_telegram/get_connect_link refuse.
+  — a schedule-only person occupying NO seat, whom bind_telegram refuses.
   2026-07-25 vocabulary change: `cancel_visit` RENAMED `unschedule_visit` (same behavior — off
   the calendar, job returns to the loose bucket; "cancel" now always means the terminal thing)
   and NEW `cancel_job` — terminal work cancellation, always two-step confirm, cascades its

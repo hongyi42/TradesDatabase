@@ -19,7 +19,6 @@ import {
 } from './technicians.js';
 import { createTenant } from './tenants.js';
 import {
-  flagUnknownRefCapture,
   listOpenReviewItems,
   resolveReviewItem,
   upsertOpenReviewItem,
@@ -340,43 +339,10 @@ describe('review items', () => {
     expect(reFlagged.id).not.toBe(item.id);
     expect(reFlagged.status).toBe('open');
   });
-
-  test('flagUnknownRefCapture is once-per-message: same externalId never re-opens after resolve; a new message does', async () => {
-    const first = await flagUnknownRefCapture({
-      tenantId,
-      subjectRef: 'mystery-ref',
-      externalId: 'msg-001',
-    });
-    expect(first?.status).toBe('open');
-
-    // Redelivery of the SAME message while open → suppressed (already flagged);
-    // the original item stays the sole open row.
-    expect(
-      await flagUnknownRefCapture({ tenantId, subjectRef: 'mystery-ref', externalId: 'msg-001' }),
-    ).toBeNull();
-    expect(
-      (await listOpenReviewItems(tenantId)).filter((i) => i.subject_ref === 'mystery-ref'),
-    ).toHaveLength(1);
-
-    await resolveReviewItem(first!.id, tenantId, 'resolved', 'roster row added');
-
-    // Redelivery of the SAME message after resolve → suppressed (null, no new row).
-    expect(
-      await flagUnknownRefCapture({ tenantId, subjectRef: 'mystery-ref', externalId: 'msg-001' }),
-    ).toBeNull();
-    expect(
-      (await listOpenReviewItems(tenantId)).filter((i) => i.subject_ref === 'mystery-ref'),
-    ).toHaveLength(0);
-
-    // A NEW message from the still-unknown ref → legitimately re-flags.
-    const fresh = await flagUnknownRefCapture({
-      tenantId,
-      subjectRef: 'mystery-ref',
-      externalId: 'msg-002',
-    });
-    expect(fresh?.status).toBe('open');
-    expect(fresh?.id).not.toBe(first?.id);
-  });
+  // (A test of the unknown-ref review flag's once-per-message rule stood here. The
+  // flag was deleted when the review queue was retired, 2026-09-19: an unknown
+  // ref is an `unknown_ref_capture` observation now, once per ref — pinned in
+  // observations.test.ts.)
 });
 
 describe('technician skills (Plan 3a)', () => {

@@ -847,23 +847,17 @@ silently and never ask permission for a reversible internal change.
    party is reached ONLY through your tools. Do not search the web for a way in, do not look for
    another integration, do not try to authenticate anybody yourself, and do not go hunting
    through your tool list first:
-   - GMAIL is get_connect_link, every time somebody asks to connect, re-connect, or fix one:
-     give the person the URL it returns. Never connect Gmail any other way — only
-     get_connect_link starts the mailbox check below. If it answers that the account is
-     already connected and active, tell them exactly that.
+   - GMAIL is not connected in chat any more: connecting, re-connecting or fixing a mailbox
+     moves to the settings page, which is not built yet. Say so plainly. Never connect Gmail
+     any other way, COMPOSIO_MANAGE_CONNECTIONS included.
    - Any OTHER account (Google Sheets, Excel, Drive): a manager's seat connects it with
      Composio's own connection tool (COMPOSIO_MANAGE_CONNECTIONS), which returns a link to
      hand over.
-   - A technician's seat connects no account, Gmail included: say so plainly, and that a
-     manager can.
-   For Gmail the rest is automatic once they approve in the browser — the office finishes the wiring
-   (the mail watcher included) and asks a manager to confirm the mailbox is the right one.
-   You do not create that watcher and you cannot; do not tell anyone the connection is
-   finished at the moment they approve, only that it is being verified.
-   If get_connect_link is not in your tool list, SAY SO plainly and stop. An improvised route
-   is worse than no route here: it can leave an account half-connected — signed in, but with
-   nothing watching it — which looks connected to everybody and delivers nothing. That has
-   happened (live finding, 2026-09-07).
+   - A technician's seat connects no account: say so plainly — and, for anything but Gmail,
+     that a manager can.
+   Gmail by an improvised route is worse than no route here: it leaves an account
+   half-connected — signed in, but with nothing watching it — which looks connected to
+   everybody and delivers nothing. That has happened (live finding, 2026-09-07).
 EOF
     ok "confirmation-doctrine block refreshed in ${agent}'s AGENTS.md"
     # Board-link relay — REFRESHED on every run since 2026-07-19 (delete-then-
@@ -1124,7 +1118,7 @@ EOF
   # footer used to carry MUST live here — a seat wired without this block
   # would see office questions in its channel history with no standing rule
   # to record the answers.
-  log "office-questions block (§0k — record answers to office questions; follow up on what is still open on that job; agentContext briefings are agent-only; refreshed per run)"
+  log "office-questions block (§0k — record answers to office questions; follow up on what is still open on that job; refreshed per run)"
   if [ -n "$cid" ]; then
     if docker exec "$cid" grep -q "Questions and items from the office" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
       docker exec -u sandbox "$cid" sh -c 'awk '\''/^## Questions and items from the office/{skip=1; next} skip && /^## /{skip=0} !skip'\'' /sandbox/.openclaw/workspace/AGENTS.md > /tmp/agents-md.tmp && cat /tmp/agents-md.tmp > /sandbox/.openclaw/workspace/AGENTS.md && rm -f /tmp/agents-md.tmp'
@@ -1175,11 +1169,7 @@ names the job.
    Pass `confirmed: {customerId: <the customerId that call returned>}` with NO confirmId. A
    short reply like "about two hundred" names no customer on its own, so without that you will
    be sent back to ask them which customer it was — seconds after recording one for them.
-2. Open items in the office's review queue (list_pending_reviews, where you have it) may
-   carry `agentContext` — a briefing from the office's planner written FOR YOU, not for the
-   person: ids, what was already tried, what an answer would unblock. Use it to help them
-   decide; NEVER read it aloud, quote it, or mention that it exists.
-3. If you cannot tell which open question or item a person's reply answers, ask them —
+2. If you cannot tell which open question or item a person's reply answers, ask them —
    never guess which record to close.
 EOF
     ok "office-questions block refreshed in ${agent}'s AGENTS.md"

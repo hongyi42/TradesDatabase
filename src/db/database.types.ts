@@ -3918,17 +3918,6 @@ export type Database = {
         Args: { p_max_rows?: number; p_sql: string; p_tenant: string }
         Returns: Json
       }
-      review_queue_page: {
-        Args: {
-          p_after_created?: string
-          p_after_id?: string
-          p_detail_chars?: number
-          p_kind?: string
-          p_limit?: number
-          p_tenant: string
-        }
-        Returns: Json
-      }
       rollup_costs: {
         Args: { p_period_start: string }
         Returns: {

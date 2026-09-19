@@ -169,17 +169,19 @@ message first.
 **Exit gate for this phase:** the manager sends "hello" to their bot and gets an answer that proves a
 spine call worked (ask them to type *"who is on my team?"* — it should return their own row).
 
-## 6. Phase 4 — Gmail pairing (manager in chat, ~15 min + their consent)
+## 6. Phase 4 — Gmail pairing — PAUSED until the settings page ships
 
-Now the manager's own tools do the work:
+**Since 2026-09-19 there is no way to connect a new mailbox.** The operator moved email connections
+out of the manager's chat and onto a settings page in the schedule UI that is not built yet (parked
+as `20260919-manager-settings-page-in-the-schedule-bo`); `get_connect_link` and `resolve_review`
+left the manager's bot, and there is deliberately no interim path ("no new connections for now").
+Skip this phase and come back to it when the settings page exists.
 
-1. Manager: *"get me a connect link for myself"* → `get_connect_link`.
-2. Manager forwards the link to the person and they approve Google OAuth. **Links expire in about 25
-   minutes** — forward immediately, re-issue if it goes stale (5-minute per-person cooldown).
-3. The 15-minute cron pairing sweep detects the consent and opens a verification review item.
-4. Manager: *"what's pending?"* → `list_pending_reviews` → confirms the mailbox address →
-   `resolve_review` with `resolved`. Wrong mailbox → `dismissed`, which tears the pairing down for a
-   fresh link.
+What still runs, for links handed out before the change: the 15-minute cron pairing sweep detects a
+completed consent, moves the person to `pending_verification` and opens a `pairing_verification`
+item — which now waits for the settings page to confirm or reject the mailbox. (Before 2026-09-19:
+the manager asked for a link in chat, forwarded it — links expire in about 25 minutes, 5-minute
+per-person cooldown — then confirmed the mailbox via `list_pending_reviews` → `resolve_review`.)
 
 Mail arriving while the pairing is still `pending_verification` **is ingested**, stamped
 `pendingVerification: true` — a deliberate exception so real work mail is not silently dropped in the

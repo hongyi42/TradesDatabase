@@ -1,14 +1,23 @@
 import type { Database, Json } from './database.types.js';
 import { getClient } from './client.js';
+import { POSTGREST_MAX_ROWS } from './rowCap.js';
 import { isUniqueViolation } from './rawCaptures.js';
 
 export type ReviewItem = Database['public']['Tables']['review_items']['Row'];
 export type ReviewStatus = Database['public']['Enums']['review_status'];
 
 // The review kinds this cycle writes. A plain string column in the DB (new kinds
-// must not need a migration); this union is the compile-time vocabulary.
+// must not need a migration); this union is the compile-time vocabulary — and
+// it is SHARED with `nudges.kind` and `observations.kind` (one gap, one name).
+//
+// THE REVIEW QUEUE IS RETIRED (2026-09-19). Nothing lists `review_items` to a
+// manager any more; the table holds the two-step confirmation tokens, the
+// pairing check waiting for the settings page, and the availability reminder.
+// Several kinds below live on only as OBSERVATION kinds (say so where they do).
 export type ReviewKind =
   | 'sheet_ref_mismatch'
+  // An observation kind since 2026-09-19 (raiseUnknownRefObservation): mail
+  // through a connection filed under a ref the roster does not have.
   | 'unknown_ref_capture'
   | 'pairing_verification'
   | 'pending_deactivation'
@@ -16,6 +25,8 @@ export type ReviewKind =
   | 'pending_field_note'
   | 'pending_retraction'
   | 'pending_standing_fact'
+  // An observation kind since 2026-09-19 (raiseOffboardingObservation): a
+  // removal about to become permanent, once per episode.
   | 'offboarding_reminder'
   // 'pending_booking' and 'pending_visit_move' were deleted in rung 9a: book
   // and move are one-shot, so nothing mints them. 'pending_visit_cancel' is
@@ -24,8 +35,9 @@ export type ReviewKind =
   | 'pending_job_cancel'
   | 'pending_seat_add'
   // Onboarding task-reminder (NOT a staged token): opened when a seat is
-  // confirmed, auto-resolved by set_availability, dismissable as the explicit
-  // "no availability yet" acknowledgment (user decision 2026-07-20).
+  // confirmed, auto-resolved by set_availability (user decision 2026-07-20).
+  // Its "dismiss it for 'not known yet'" door went with resolve_review,
+  // 2026-09-19; an unset pattern simply leaves it open.
   | 'availability_setup'
   // A customer phone call whose caller-ID matched no customer (plan 2026-08-04).
   // The agentless phone path can't ask "which customer?", so the unmatched call is
@@ -35,15 +47,15 @@ export type ReviewKind =
   | 'unlinked_call'
   // A classified inbound call that needs a HUMAN to act (reschedule/cancel/
   // question/complaint) or one the router couldn't classify at all (plan
-  // 2026-08-06). The agentless worker NEVER auto-executes these — it opens ONE
-  // review per call (subject_ref = the L1 captureId → deduped by the partial
-  // unique index, retry-safe) with the intent list carried in `detail`, and
-  // pushes the tenant's managers. Free-text kind → no migration.
+  // 2026-08-06). The agentless worker NEVER auto-executes these. An OBSERVATION
+  // kind since 2026-09-19 (raiseCallActionObservation, subject_ref = the L1
+  // captureId); the worker still pushes the managers. Older rows here are
+  // review items from before that.
   | 'call_action'
   // Stage-0 watcher (plan 2026-08-15 feature A): a confirmed visit whose
-  // scheduled end passed with no field report or status change. NON-token —
-  // the manager resolves/dismisses freely via resolve_review; detail stays
-  // small, no summarizer needed. subject_ref = `<visit id>@<starts_at>`
+  // scheduled end passed with no field report or status change. NON-token.
+  // No longer minted as a review item (the gap is a nudge/observation), and
+  // resolve_review is gone; old rows are history. subject_ref = `<visit id>@<starts_at>`
   // (rung 9b — parse it with visitIdOfSubject).
   | 'overdue_visit_gap'
   // Detector #2 (plan 2026-08-19): a job whose work is done but whose parts
@@ -125,41 +137,10 @@ export async function upsertOpenReviewItem(input: UpsertOpenReviewItemInput): Pr
   return existing;
 }
 
-// Flag an unknown-ref capture, at most once per source MESSAGE: a redelivery of
-// the same message (matched on detail.externalId, any item status) never re-opens
-// an item the manager already resolved, while a NEW message from a still-unknown
-// ref after resolution legitimately re-flags. The caller's duplicate-status gate
-// alone can't suppress redeliveries here: an unmatched capture has no linked L2,
-// so recordFieldNote's redelivery takes the orphan-heal path and reports
-// 'ingested', not 'duplicate' (observed live 2026-07-02).
-export async function flagUnknownRefCapture(input: {
-  tenantId: string;
-  subjectRef: string;
-  externalId?: string | null;
-}): Promise<ReviewItem | null> {
-  // Normalize falsy ids ('' as well as undefined) to null so the dedup check
-  // and the stored detail always agree — an empty-string id must not bypass
-  // the once-per-message suppression while storing '' in detail.
-  const externalId = input.externalId || null;
-  if (externalId) {
-    const { data, error } = await getClient()
-      .from('review_items')
-      .select('id')
-      .eq('tenant_id', input.tenantId)
-      .eq('kind', 'unknown_ref_capture')
-      .eq('subject_ref', input.subjectRef)
-      .eq('detail->>externalId', externalId)
-      .limit(1);
-    if (error) throw new Error(`flagUnknownRefCapture failed: ${error.message}`);
-    if (data && data.length > 0) return null; // this message was already flagged once
-  }
-  return upsertOpenReviewItem({
-    tenantId: input.tenantId,
-    kind: 'unknown_ref_capture',
-    subjectRef: input.subjectRef,
-    detail: { externalId },
-  });
-}
+// (The unknown-ref review flag stood here until the review queue was retired,
+// 2026-09-19. Mail through a connection filed under a ref the roster does not
+// have is now an `unknown_ref_capture` OBSERVATION — raiseUnknownRefObservation
+// in observations.ts — so the planner sees it instead of a queue nobody opened.)
 
 // (`flagNudgeGap` stood here until build 6 Phase 1. It opened a gap's manager
 // item at most ONCE PER SUBJECT — EVER (any-status dedup: a gap's subject never
@@ -167,9 +148,10 @@ export async function flagUnknownRefCapture(input: {
 // handoff sentence plus `detail.escalatedFromNudge` and `detail.agentContext`.
 // Its only caller was `escalate`, which is deleted, so nothing files a gap item
 // any more. EVERY ITEM EVER FILED STAYS — the rows, the two any-status unique
-// indexes, `escalated_from_nudge`, list_pending_reviews and the board all read
-// unchanged; only the writer is gone. `upsertOpenReviewItem` remains the way
-// every other kind is opened.)
+// indexes, `escalated_from_nudge` and the board all read unchanged; only the
+// writer is gone (list_pending_reviews read them too until the queue was
+// retired, 2026-09-19). `upsertOpenReviewItem` remains the way every other
+// kind is opened.)
 
 // The watcher's batched cap pre-filter (final-review finding): which of these
 // subjects were EVER flagged, any status? Without it, stale flagged-but-
@@ -201,45 +183,20 @@ export async function listEverFlaggedSubjectRefs(
 // call to anybody. The unmatched caller now becomes an `inbound_unmatched`
 // observation instead (src/writePath/recordFieldNote.ts), which the planner sees
 // on the ping loop and can actually settle. EVERY ITEM EVER FILED STAYS — the
-// `unlinked_call` kind, its rows, the partial unique index, list_pending_reviews
-// and the board all read unchanged; only the writer is gone, the same way
-// `flagNudgeGap` was retired above. The six open rows on the pilot are left for
-// hand resolution.)
+// `unlinked_call` kind, its rows, the partial unique index and the board all
+// read unchanged; only the writer is gone, the same way `flagNudgeGap` was
+// retired above. The six open rows on the pilot are closed by
+// scripts/retire-review-queue.mjs, which retired the queue itself, 2026-09-19.)
 
-// Open a review for a classified call that needs a human to ACT — a reschedule,
-// cancel, question, or complaint the agentless worker must never auto-execute,
-// or an `['unclassified']` fail-safe when the router gave up. subject_ref = the
-// L1 captureId, so a worker retry on the same capture returns the existing open
-// item (partial unique index) instead of stacking duplicates — the intent list
-// travels in `detail` rather than the kind, so ONE `call_action` row covers a
-// mixed call and re-classification never forks a second review. suggestion
-// carries the caller number so the pull queue shows who to call back.
-export async function openCallActionReview(input: {
-  tenantId: string;
-  captureId: string;
-  intents: string[];
-  priority?: 'normal' | 'high';
-  callerPhone?: string | null;
-  snippet?: string | null;
-}): Promise<ReviewItem> {
-  return upsertOpenReviewItem({
-    tenantId: input.tenantId,
-    kind: 'call_action',
-    subjectRef: input.captureId,
-    suggestion: input.callerPhone ?? null,
-    detail: {
-      intents: input.intents,
-      priority: input.priority ?? 'normal',
-      callerPhone: input.callerPhone ?? null,
-      snippet: input.snippet ?? null,
-    },
-  });
-}
+// (The call-action review opener stood here until the review queue was retired,
+// 2026-09-19. A call that needs a person — reschedule, cancel, question,
+// complaint, or one the router could not read — is now a `call_action`
+// OBSERVATION: raiseCallActionObservation in observations.ts.)
 
 // The open item for a (kind, subject), if any — WITHOUT creating one (the
-// upsert would). Used to close a stale item on deactivation and to resolve
-// the reminder when an offboarding completes. At most one row can match
-// (partial unique index on open items).
+// upsert would). The upsert's conflict path uses it to return the open row, and
+// record_standing_fact to find the fact it supersedes. At most one row can
+// match (partial unique index on open items).
 export async function findOpenReviewItem(
   tenantId: string,
   kind: ReviewKind,
@@ -261,8 +218,8 @@ export async function findOpenReviewItem(
 // because the partial unique index guarantees at most one open row. Returns
 // the closed row, or null if nothing was open. Replaces the find-then-resolve
 // two-round-trip pattern at every lifecycle transition (deactivate closes the
-// pairing item, reactivate/expiry close the reminder), which also closes the
-// read-to-write race window those pairs had.
+// pairing item, set_availability closes the availability reminder), which also
+// closes the read-to-write race window those pairs had.
 export async function resolveOpenReviewItemFor(
   tenantId: string,
   kind: ReviewKind,
@@ -283,44 +240,10 @@ export async function resolveOpenReviewItemFor(
   return data;
 }
 
-// Remind the manager an offboarding is about to become permanent — ONCE per
-// offboarding episode: any-status dedup on detail.startedAt (the same pattern
-// as flagUnknownRefCapture), so a dismissed reminder stays dismissed even
-// though the 15-min cron keeps observing "remaining ≤ 2 days" until expiry.
-export async function flagOffboardingReminder(input: {
-  tenantId: string;
-  subjectRef: string;
-  startedAt: string; // the episode key: the row's offboarding_started_at
-  graceEndsAt: string;
-}): Promise<ReviewItem | null> {
-  const { data, error } = await getClient()
-    .from('review_items')
-    .select('id')
-    .eq('tenant_id', input.tenantId)
-    .eq('kind', 'offboarding_reminder')
-    .eq('subject_ref', input.subjectRef)
-    .eq('detail->>startedAt', input.startedAt)
-    .limit(1);
-  if (error) throw new Error(`flagOffboardingReminder failed: ${error.message}`);
-  if (data && data.length > 0) return null; // this episode was already reminded
-  // Supersede a stale open reminder from a PREVIOUS episode (e.g. reactivate's
-  // advisory close failed): without this, the insert below hits the one-open-
-  // item index and returns the old row — the manager would keep seeing the old
-  // episode's already-past deadline while the new episode never surfaces.
-  await resolveOpenReviewItemFor(
-    input.tenantId,
-    'offboarding_reminder',
-    input.subjectRef,
-    'resolved',
-    'superseded by a new offboarding episode',
-  );
-  return upsertOpenReviewItem({
-    tenantId: input.tenantId,
-    kind: 'offboarding_reminder',
-    subjectRef: input.subjectRef,
-    detail: { startedAt: input.startedAt, graceEndsAt: input.graceEndsAt },
-  });
-}
+// (The offboarding-reminder review flag stood here until the review queue was retired,
+// 2026-09-19. The "removal becomes permanent soon" heads-up is now an
+// `offboarding_reminder` OBSERVATION, once per episode:
+// raiseOffboardingObservation in observations.ts.)
 
 // Replace an OPEN item's detail payload (all guards in the WHERE clause: id +
 // tenant + open). Returns null if the item is no longer open — the caller
@@ -387,6 +310,34 @@ export async function findOpenReviewItemsByKind(
   return data ?? [];
 }
 
+// Every OPEN item of these kinds — FLEET-WIDE unless tenants are named. One
+// caller: the review queue's one-time retirement sweep
+// (src/jobs/retireReviewQueue.ts). Paged past PostgREST's silent 1000-row cap
+// and ordered by id, so a big backlog is read whole and in a stable order.
+export async function listOpenReviewItemsOfKinds(
+  kinds: readonly string[],
+  tenantIds?: readonly string[],
+): Promise<ReviewItem[]> {
+  if (kinds.length === 0 || tenantIds?.length === 0) return []; // `in.()` with zero values errors
+  // The database's own per-read limit, not a literal: a lowered max_rows would
+  // make a hardcoded 1000 end the sweep on the first short page.
+  const PAGE = POSTGREST_MAX_ROWS;
+  const out: ReviewItem[] = [];
+  for (let from = 0; ; from += PAGE) {
+    let query = getClient()
+      .from('review_items')
+      .select()
+      .eq('status', 'open')
+      .in('kind', [...kinds]);
+    if (tenantIds) query = query.in('tenant_id', [...tenantIds]);
+    const { data, error } = await query.order('id', { ascending: true }).range(from, from + PAGE - 1);
+    if (error) throw new Error(`listOpenReviewItemsOfKinds failed: ${error.message}`);
+    out.push(...(data ?? []));
+    if (!data || data.length < PAGE) break;
+  }
+  return out;
+}
+
 export async function listOpenReviewItems(tenantId: string): Promise<ReviewItem[]> {
   const { data, error } = await getClient()
     .from('review_items')
@@ -398,80 +349,10 @@ export async function listOpenReviewItems(tenantId: string): Promise<ReviewItem[
   return data ?? [];
 }
 
-// ONE PAGE of the open review queue (retrieval layer 4) — list_pending_reviews'
-// read. The queue used to come back whole, every item's `detail` included; the
-// page, the counts and the withheld-detail rule live in review_queue_page
-// (migration 20260917140000). The cursor timestamp stays the exact STRING the
-// function returned: a JS Date would drop its microseconds and repeat a row.
-export interface ReviewQueueItem {
-  id: string;
-  kind: string;
-  subjectRef: string;
-  suggestion: string | null;
-  createdAt: string;
-  // null when withheld: the item's detail is over the page's size limit.
-  detail: Json | null;
-  detailChars: number;
-  detailWithheld: boolean;
-}
-
-export interface ReviewQueuePage {
-  total: number;
-  byKind: Record<string, number>;
-  items: ReviewQueueItem[];
-  hasMore: boolean;
-  nextAfterCreated: string | null;
-  nextAfterId: string | null;
-}
-
-export async function getReviewQueuePage(
-  tenantId: string,
-  opts: { kind?: string; afterCreated?: string; afterId?: string; limit?: number } = {},
-): Promise<ReviewQueuePage> {
-  const { data, error } = await getClient().rpc('review_queue_page', {
-    p_tenant: tenantId,
-    ...(opts.kind ? { p_kind: opts.kind } : {}),
-    ...(opts.afterCreated ? { p_after_created: opts.afterCreated } : {}),
-    ...(opts.afterId ? { p_after_id: opts.afterId } : {}),
-    ...(opts.limit !== undefined ? { p_limit: opts.limit } : {}),
-  });
-  if (error) throw new Error(`review_queue_page failed: ${error.message}`);
-  // Narrowed by hand: the function returns jsonb (the readTenantCostDetail idiom).
-  const raw = (data ?? {}) as {
-    total?: number;
-    by_kind?: Record<string, number>;
-    items?: Array<{
-      id: string;
-      kind: string;
-      subject_ref: string;
-      suggestion: string | null;
-      created_at: string;
-      detail: Json | null;
-      detail_chars: number;
-      detail_withheld: boolean;
-    }>;
-    has_more?: boolean;
-    next_after_created?: string | null;
-    next_after_id?: string | null;
-  };
-  return {
-    total: raw.total ?? 0,
-    byKind: raw.by_kind ?? {},
-    items: (raw.items ?? []).map((i) => ({
-      id: i.id,
-      kind: i.kind,
-      subjectRef: i.subject_ref,
-      suggestion: i.suggestion,
-      createdAt: i.created_at,
-      detail: i.detail,
-      detailChars: i.detail_chars,
-      detailWithheld: i.detail_withheld,
-    })),
-    hasMore: raw.has_more === true,
-    nextAfterCreated: raw.next_after_created ?? null,
-    nextAfterId: raw.next_after_id ?? null,
-  };
-}
+// (The review queue's page reader stood here — list_pending_reviews' read over
+// the review_queue_page function, retrieval layer 4. Both went when the queue
+// was retired, 2026-09-19; the function is dropped by migration
+// 20260919160000.)
 
 // Re-annotate an already-CLOSED item's resolution text. The one caller is the
 // send_email confirm path: the token is consumed ('send confirmed by …')

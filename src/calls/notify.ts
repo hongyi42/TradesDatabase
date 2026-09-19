@@ -3,7 +3,7 @@ import { listManagersWithTelegram, queuePersonPush } from '../db/index.js';
 // Best-effort manager push for the inbound-call router. Fans a single one-line
 // notice out to every ACTIVE manager with a Telegram binding (the same audience
 // and liveness filter the schedule summaries use — see boardNotify.ts). NEVER
-// throws: the durable record is the review item in the pull queue, so a Telegram
+// throws: the durable record is the `call_action` observation, so a Telegram
 // blip (a blocked bot, an API 5xx) or even a roster-lookup fault must not fail
 // the call it is notifying about. Each send is isolated so one bad recipient
 // never suppresses the rest.

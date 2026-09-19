@@ -308,17 +308,6 @@ export function buildToolCases(): ToolCase[] {
   });
 
   one({
-    id: 'R10',
-    family: 'reads',
-    title: 'list_pending_reviews answers even when empty',
-    tool: 'list_pending_reviews',
-    tenant: 'main',
-    badge: 'manager-sam',
-    args: () => ({}),
-    check: ok,
-  });
-
-  one({
     id: 'R11',
     family: 'reads',
     title: 'get_availability reports a working pattern',
@@ -1147,7 +1136,7 @@ export function buildToolCases(): ToolCase[] {
           // because a future change to 'active' would silently hand someone a
           // live badge they never re-paired for.
           (out) =>
-            /get_connect_link|bind_telegram|pair/i.test(out.text)
+            /pair|bind_telegram/i.test(out.text)
               ? null
               : `reactivation did not tell the manager how to finish re-pairing: ${out.text.slice(0, 200)}`,
           dbCheck(
@@ -1351,17 +1340,6 @@ export function buildToolCases(): ToolCase[] {
 
   // ── graceful failure ────────────────────────────────────────────────────────
   one({
-    id: 'F02',
-    family: 'failure',
-    title: 'resolve_review on an unknown id refuses cleanly',
-    tool: 'resolve_review',
-    tenant: 'main',
-    badge: 'manager-sam',
-    args: () => ({ reviewItemId: '00000000-0000-4000-8000-000000000000', resolution: 'dismissed' }),
-    check: (out) => (out.timedOut ? 'timed out' : out.isError || /not found|unknown|no review/i.test(out.text) ? null : 'an unknown review id was accepted'),
-  });
-
-  one({
     id: 'F03',
     family: 'failure',
     title: 'a malformed date is refused rather than guessed',
@@ -1429,18 +1407,6 @@ export function buildToolCases(): ToolCase[] {
       body: 'Confirming your visit.',
     }),
     check: staged,
-  });
-
-  one({
-    id: 'X06',
-    family: 'external',
-    title: 'get_connect_link mints a pairing link',
-    tool: 'get_connect_link',
-    tenant: 'main',
-    badge: 'manager-sam',
-    requires: 'composio',
-    args: () => ({ ref: 'cfg-tech-07' }),
-    check: ok,
   });
 
   one({

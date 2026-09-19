@@ -7,17 +7,18 @@ and grace-period offboarding. Companion docs: [nemoclaw-tech-agent.md](nemoclaw-
 ## The lifecycle at a glance
 
 ```
-add_technician_seat            get_connect_link              resolve_review
-(manager chat; two-step        (manager forwards URL,        (manager confirms the
- confirm since 2026-07-17 —     person approves OAuth)        mailbox address)
- NOTHING exists until the            │                             │
+add_technician_seat            connect link                  mailbox confirmation
+(manager chat; two-step        (SETTINGS PAGE — not built;   (SETTINGS PAGE — not built;
+ confirm since 2026-07-17 —     get_connect_link left the     resolve_review left the
+ NOTHING exists until the       manager's bot 2026-09-19)     manager's bot 2026-09-19)
  confirming call)                    │                             │
       ▼                              │                             │
    INVITED ────────────────────▶ PENDING_VERIFICATION ────────▶ ACTIVE
       ▲                          (cron's checkPairing sweep      │ deactivate_technician_seat
-      │  resolve_review           writes ca_*/ti_*/email,        │ (two-step confirm; stamps the
-      │  DISMISSED = wrong        opens the review item)         │  clock, DISABLES the pairing,
-      │  mailbox → unpair                                        ▼  badge revokes on next pull)
+      │  wrong mailbox →          writes ca_*/ti_*/email,        │ (two-step confirm, expires
+      │  unpair (settings page)   opens the pairing item)        │  after 15 min; stamps the
+      │                                                          │  clock, DISABLES the pairing,
+      │                                                          ▼  badge revokes on next pull)
       │                                                     OFFBOARDING ──── reactivate_
       │                                                          │            technician_seat
       │                              grace period (GRACE_DAYS,   │            (the undo)
@@ -41,7 +42,8 @@ the watcher rollout — until that flip the cron still fires `*/15` and every ti
 The code carries a stateless cadence gate: the heavy sweeps below run only on quarter-hour ticks
 (`getUTCMinutes() % 15 < 5` — off-cadence ticks report `{skipped:'off-cadence tick'}` per step),
 while the Stage-0 **watcher** (summary field `watchers`, gated on `WATCHERS_MODE`: unset =
-skipped, `shadow` = count only, `live` = review items + one batched manager push; any other
+skipped, `shadow` = count only, `live` = a batched manager push (it wrote review items too, until
+the detectors stopped minting them; it now only auto-resolves legacy ones); any other
 value fails LOUD) runs on every tick. **The list below numbers itself independently of the
 code** — the watcher runs last and is not in it — so the cron's JSON **field names**
 (`watchers`, `costRollup`, …), never list positions, are the stable reference.
@@ -51,9 +53,14 @@ runbook citing a step number does not silently come to mean a different step.
 Full watcher semantics + rollout state: engineering-memory §3.
 
 1. **Pairing sweep** — every `invited`/`pending_verification` row with a link issued gets
-   `checkPairing` (detects completed OAuth consents; advances the row; opens the manager's
-   verification item exactly once per episode).
-2. **Grace-period expiry** — NULL-clock self-heal; "2 days left" reminder (once per episode);
+   `checkPairing` (detects completed OAuth consents; advances the row; opens the
+   `pairing_verification` item exactly once per episode). Since 2026-09-19 no chat tool mints a
+   link or confirms a mailbox — both move to the settings page (parked,
+   `20260919-manager-settings-page-in-the-schedule-bo`); a person who connects waits in
+   `pending_verification` until it exists.
+2. **Grace-period expiry** — NULL-clock self-heal; "removal becomes permanent soon" heads-up once
+   per episode, raised for the PLANNER as an `offboarding_reminder` observation (a review item
+   until 2026-09-19);
    past-grace teardown (trigger, account, then the person's Composio session — per-row failure
    isolation, retried next tick).
    *(The former step 3, the schedule-sheet mirror sync, retired 2026-07-15 with the
@@ -99,7 +106,8 @@ Full watcher semantics + rollout state: engineering-memory §3.
 ## Render setup (dashboard, one-time)
 
 1. **Web service** (existing): add `COMPOSIO_API_KEY` and `COMPOSIO_GMAIL_AUTH_CONFIG_ID`
-   to its environment (get_connect_link + verification verdicts run there). Optional
+   to its environment (the pairing sweep's Composio calls; the connect link and the verdicts ran
+   there too, until they left the manager's bot on 2026-09-19). Optional
    `COMPOSIO_RELAY_API_KEY` (a scoped project key) — the composio-doorman relay
    (`src/composio/relayHandler.ts`, since 2026-07-06) uses it for the Render→Composio leg,
    falling back to `COMPOSIO_API_KEY` when unset; with NEITHER set the relay answers a clean

@@ -7,10 +7,14 @@ import {
   claimObservationPing,
   clearObservationAsked,
   createObservation,
+  dismissOpenObservationsForRef,
   listObservationsByStatus,
   listObservedSubjectRefs,
   listUnpingedObservations,
   markObservationAsked,
+  raiseCallActionObservation,
+  raiseOffboardingObservation,
+  raiseUnknownRefObservation,
   setObservationStatus,
   stampObservationsPinged,
 } from './observations.js';
@@ -539,5 +543,178 @@ describe('the ping markers (rung 10)', () => {
   test('an empty id list is a no-op, and an empty kind list reads nothing', async () => {
     await expect(stampObservationsPinged([])).resolves.toBeUndefined();
     expect(await listUnpingedObservations([], 10)).toEqual([]);
+  });
+});
+
+// ---- The review queue's retirement (2026-09-19) ----------------------------
+//
+// Three kinds that used to wait in a manager queue nobody opened are
+// observations now. What is pinned: each raise's once-ever key (so a sweep that
+// re-observes every tick, or a redelivered message, converges to null), the
+// context the planner reads, a note with no raw date or digit-and-unit phrase
+// in it, and the closer that settles them by person.
+describe('things only a manager can settle', () => {
+  // Refs carry the run id: this file never truncates, and the unknown-ref key
+  // is the bare ref, so a fixed one would already exist on a second run.
+  const ref = (): string => subject();
+  const noDates = (note: unknown) => {
+    expect(typeof note).toBe('string');
+    expect(note as string).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    expect(note as string).not.toMatch(/\b\d+\s*(?:minute|hour|day|week|month)s?\b/i);
+    expect(note as string).not.toContain('null');
+  };
+
+  test('offboarding: once per EPISODE — the same episode converges, a new one is a new row', async () => {
+    const who = ref();
+    const started = '2026-09-10T08:00:00.000Z';
+    const first = await raiseOffboardingObservation({
+      tenantId,
+      ref: who,
+      displayName: 'Gone Guy',
+      startedAt: started,
+    });
+    if (!first) throw new Error('first raise returned null');
+    createdIds.push(first.id);
+    expect(first).toMatchObject({
+      kind: 'offboarding_reminder',
+      subject_ref: `${who}@${started}`,
+      technician_id: null,
+      author: 'detector',
+      status: 'open',
+    });
+    const ctx = first.context as Record<string, unknown>;
+    expect(ctx).toMatchObject({ ref: who, startedAt: started });
+    expect(ctx.note).toContain("Gone Guy's removal");
+    noDates(ctx.note);
+    // Every later sweep tick re-observes the same episode: null, no second row.
+    expect(
+      await raiseOffboardingObservation({ tenantId, ref: who, displayName: 'Gone Guy', startedAt: started }),
+    ).toBeNull();
+    // A later deactivation is a new episode.
+    const second = await raiseOffboardingObservation({
+      tenantId,
+      ref: who,
+      startedAt: '2026-10-01T08:00:00.000Z',
+    });
+    if (!second) throw new Error('second episode returned null');
+    createdIds.push(second.id);
+    expect(second.id).not.toBe(first.id);
+    // No display name: the ref stands in for it.
+    expect((second.context as Record<string, unknown>).note).toContain(`${who}'s removal`);
+  });
+
+  test('unknown ref: once per REF, with or without a capture — and the note says which', async () => {
+    const who = ref();
+    const kept = await raiseUnknownRefObservation({
+      tenantId,
+      ref: who,
+      captureId: '00000000-0000-4000-8000-00000000c0de',
+    });
+    if (!kept) throw new Error('raise returned null');
+    createdIds.push(kept.id);
+    expect(kept).toMatchObject({ kind: 'unknown_ref_capture', subject_ref: who, technician_id: null });
+    const ctx = kept.context as Record<string, unknown>;
+    expect(ctx).toMatchObject({ ref: who, captureId: '00000000-0000-4000-8000-00000000c0de' });
+    expect(ctx.note).toContain('kept on the record as capture 00000000-0000-4000-8000-00000000c0de');
+    noDates(ctx.note);
+    // The next message from the same unknown ref converges.
+    expect(await raiseUnknownRefObservation({ tenantId, ref: who, captureId: null })).toBeNull();
+
+    // Personal mail first: no capture, and the note says only that ONE was not kept.
+    const other = ref();
+    const personal = await raiseUnknownRefObservation({ tenantId, ref: other, captureId: null });
+    if (!personal) throw new Error('personal raise returned null');
+    createdIds.push(personal.id);
+    const pctx = personal.context as Record<string, unknown>;
+    expect(pctx.captureId).toBeNull();
+    expect(pctx.note).toContain('Its first message was personal mail, so that one was not kept.');
+  });
+
+  test('call: once per capture, urgency and a missing number both read as words', async () => {
+    const captureId = `${RUN}-call-1`;
+    const high = await raiseCallActionObservation({
+      tenantId,
+      captureId,
+      intents: ['complaint'],
+      priority: 'high',
+      callerPhone: null,
+    });
+    if (!high) throw new Error('raise returned null');
+    createdIds.push(high.id);
+    expect(high).toMatchObject({ kind: 'call_action', subject_ref: captureId, technician_id: null });
+    const ctx = high.context as Record<string, unknown>;
+    expect(ctx).toMatchObject({ captureId, intents: ['complaint'], priority: 'high', callerPhone: null });
+    expect(ctx.note).toMatch(/^Urgent: A phone call asked to: complaint/);
+    expect(ctx.note).toContain(`Capture ${captureId}`);
+    noDates(ctx.note);
+    // A worker retry on the same capture converges.
+    expect(
+      await raiseCallActionObservation({
+        tenantId,
+        captureId,
+        intents: ['complaint', 'cancel'],
+        priority: 'high',
+        callerPhone: null,
+      }),
+    ).toBeNull();
+
+    const normal = await raiseCallActionObservation({
+      tenantId,
+      captureId: `${RUN}-call-2`,
+      intents: ['reschedule'],
+      priority: 'normal',
+      callerPhone: '+15551230001',
+    });
+    if (!normal) throw new Error('raise returned null');
+    createdIds.push(normal.id);
+    expect((normal.context as Record<string, unknown>).note).toMatch(
+      /^A phone call from \+15551230001 asked to: reschedule/,
+    );
+  });
+
+  test('dismissOpenObservationsForRef closes only OPEN detector rows of that kind and ref, on that tenant', async () => {
+    const who = ref();
+    const target = await raiseOffboardingObservation({ tenantId, ref: who, startedAt: `${RUN}-a` });
+    const otherEpisode = await raiseOffboardingObservation({ tenantId, ref: who, startedAt: `${RUN}-b` });
+    const otherRef = await raiseOffboardingObservation({ tenantId, ref: ref(), startedAt: `${RUN}-a` });
+    const otherKind = await raiseUnknownRefObservation({ tenantId, ref: who, captureId: null });
+    const planner = await createObservation({
+      tenantId,
+      kind: 'offboarding_reminder',
+      subjectRef: `${RUN}-planner-label`,
+      technicianId: null,
+      author: 'planner',
+      context: { ref: who },
+    });
+    for (const r of [target, otherEpisode, otherRef, otherKind, planner]) {
+      if (!r) throw new Error('fixture returned null');
+      createdIds.push(r.id);
+    }
+    // One of this person's rows is already dismissed — it must not be touched.
+    await setObservationStatus(
+      otherEpisode!.id,
+      tenantId,
+      { status: 'dismissed', dismissReason: 'earlier', dismissedAt: new Date().toISOString() },
+      ['open'],
+    );
+
+    // Another tenant closes nothing.
+    expect(
+      await dismissOpenObservationsForRef('00000000-0000-0000-0000-000000000000', 'offboarding_reminder', who, 'x'),
+    ).toBe(0);
+
+    const n = await dismissOpenObservationsForRef(tenantId, 'offboarding_reminder', who, 'reactivated');
+    expect(n).toBe(1);
+
+    const { rows } = await pg.query<{ id: string; status: string; dismiss_reason: string | null }>(
+      'select id, status, dismiss_reason from observations where id = any($1::uuid[])',
+      [[target!.id, otherEpisode!.id, otherRef!.id, otherKind!.id, planner!.id]],
+    );
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    expect(byId.get(target!.id)).toMatchObject({ status: 'dismissed', dismiss_reason: 'reactivated' });
+    expect(byId.get(otherEpisode!.id)).toMatchObject({ status: 'dismissed', dismiss_reason: 'earlier' });
+    expect(byId.get(otherRef!.id)?.status).toBe('open');
+    expect(byId.get(otherKind!.id)?.status).toBe('open');
+    expect(byId.get(planner!.id)?.status).toBe('open'); // a planner row is the planner's
   });
 });

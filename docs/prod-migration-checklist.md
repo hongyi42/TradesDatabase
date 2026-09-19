@@ -232,7 +232,8 @@ if (isProd && process.env.INBOUND_DEBUG)       throw new Error('FATAL: INBOUND_D
       exit 0
 - [ ] Per-step failure isolation; systemic failure exits 1 (Render red)
 - [ ] Skip gates are **logged/visible**, not invisible
-- [ ] Pairing sweep opens the manager review item exactly once per episode
+- [ ] Pairing sweep opens the `pairing_verification` item exactly once per episode (since
+      2026-09-19 no chat tool confirms it — that moves to the settings page)
 - [ ] Grace-period offboarding: reminder at 2 days left (once), teardown past grace, per-row isolation
 - [ ] Cost rollup: prev + current month, idempotent, no double-count (netting) — on real invoice data
 - [ ] Render schedule `*/15 * * * *` UTC, at-most-one concurrent

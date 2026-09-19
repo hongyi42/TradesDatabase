@@ -14,10 +14,6 @@ import {
   enablePairing as liveEnablePairing,
 } from '../../composio/offboarding.js';
 import {
-  checkPairing as liveCheckPairing,
-  createConnectLink as liveCreateConnectLink,
-} from '../../composio/pairing.js';
-import {
   teardownPersonSession as liveTeardownSession,
 } from '../../composio/sessions.js';
 import {
@@ -26,6 +22,7 @@ import {
   cancelSandboxRetirement as liveCancelRetirement,
   casTechnician,
   claimSandbox,
+  dismissOpenObservationsForRef,
   findTechnicianByTelegramUserId,
   getOpenReviewItem,
   getPoolRowByTechnician,
@@ -128,20 +125,11 @@ const ADMIN_TOOLS = [
       required: ['ref'],
     },
   },
-  {
-    name: 'get_connect_link',
-    description:
-      "Get a Gmail connect link for a team member (manager only). Forward it to that person — " +
-      "they sign in to Google and approve; the link is SENSITIVE, share it only with them. " +
-      "Once they approve, a verification item appears in list_pending_reviews asking you to " +
-      "confirm the connected mailbox address. Schedule-only people (added with seatExempt) are " +
-      "refused — they have no email pairing.",
-    inputSchema: {
-      type: 'object',
-      properties: { ref: { type: 'string', description: 'The roster ref to pair.' } },
-      required: ['ref'],
-    },
-  },
+  // (`get_connect_link` stood here until 2026-09-19, when the operator moved
+  // email connections out of the manager's bot and onto a settings page that
+  // is not built yet: "For now, let's get rid of email connections from the
+  // manager's bot." The pairing machinery it drove — createConnectLink,
+  // checkPairing, unpair — stays in src/composio/pairing.ts for that page.)
   {
     name: 'bind_telegram',
     description:
@@ -436,10 +424,8 @@ async function handleAddTechnicianSeat(toolCtx: ToolContext): Promise<unknown> {
           created_at: created.created_at,
           note:
             `REQUIRED next step: ask the manager for ${created.display_name}'s working days ` +
-            `and call set_availability now — or, if their hours are genuinely not known yet, ` +
-            `dismiss the availability_setup review item with that note. Until a pattern is ` +
-            `set, the scheduler will never book ${created.display_name} (manual booking ` +
-            `still works, with a warning).`,
+            `and call set_availability now. Until a pattern is set, the scheduler will ` +
+            `never book ${created.display_name} (manual booking still works, with a warning).`,
         };
       } catch (err) {
         // Cap first: at capacity the BEFORE-trigger fires before the unique
@@ -464,6 +450,15 @@ async function handleAddTechnicianSeat(toolCtx: ToolContext): Promise<unknown> {
       }
 }
 
+// A staged deactivation is live for 15 minutes — the life every staged token
+// has (add_technician_seat's confirm, above). A row with no stagedAt predates
+// the expiry and is never "expired".
+const DEACTIVATION_TOKEN_MS = 15 * 60_000;
+function isExpiredToken(item: { detail: unknown }): boolean {
+  const stagedAt = (item.detail as { stagedAt?: unknown } | null)?.stagedAt;
+  return typeof stagedAt === 'string' && Date.now() - Date.parse(stagedAt) > DEACTIVATION_TOKEN_MS;
+}
+
 async function handleDeactivateTechnicianSeat(toolCtx: ToolContext): Promise<unknown> {
   const { deps, identity, tenantId, str } = toolCtx;
       const ref = str('ref');
@@ -478,7 +473,7 @@ async function handleDeactivateTechnicianSeat(toolCtx: ToolContext): Promise<unk
           tenantId,
           kind: 'pending_deactivation',
           subjectRef: ref,
-          detail: { requestedBy: identity.technicianRef },
+          detail: { requestedBy: identity.technicianRef, stagedAt: new Date().toISOString() },
         });
         await resolveReviewItem(stale.id, tenantId, 'resolved', 'already deactivated');
         return { status: 'already_deactivated', ref };
@@ -487,13 +482,27 @@ async function handleDeactivateTechnicianSeat(toolCtx: ToolContext): Promise<unk
       if (!confirmId) {
         // Two-step confirm, persisted in review_items so any replica can serve
         // the confirming call (stateless server). Repeat calls return the same
-        // confirmId via the one-open-item dedup.
-        const item = await upsertOpenReviewItem({
-          tenantId,
-          kind: 'pending_deactivation',
-          subjectRef: ref,
-          detail: { requestedBy: identity.technicianRef },
-        });
+        // confirmId via the one-open-item dedup — while it is still LIVE.
+        //
+        // EXPIRY (2026-09-19). A staged deactivation lapses after 15 minutes like
+        // every other token; until the review queue was retired,
+        // `resolve_review dismissed` was its only cancel, and without one a
+        // forgotten confirmId stayed valid forever. The dedup would hand an
+        // expired row straight back, and the manager's "yes" would then be
+        // refused — so an expired open row is dismissed here and a fresh one
+        // staged. A live row is returned untouched.
+        const stage = () =>
+          upsertOpenReviewItem({
+            tenantId,
+            kind: 'pending_deactivation',
+            subjectRef: ref,
+            detail: { requestedBy: identity.technicianRef, stagedAt: new Date().toISOString() },
+          });
+        let item = await stage();
+        if (isExpiredToken(item)) {
+          await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
+          item = await stage();
+        }
         // Destruction is part of what the manager is confirming — say it in
         // THE one confirmation (no second prompt), and only when confirming
         // will actually destroy something: retirement stamps POOL rows, so a
@@ -523,6 +532,12 @@ async function handleDeactivateTechnicianSeat(toolCtx: ToolContext): Promise<unk
       });
       if (!item) {
         throw new Error('confirmation not found — call again without confirmId to restart');
+      }
+      // The same 15-minute life every other token has (the staging comment
+      // above). A legacy row with no stagedAt passes, as it always did.
+      if (isExpiredToken(item)) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
+        throw new Error('confirmation expired — call again without confirmId to restart');
       }
       // State change FIRST, token cleanup second: if the state write fails the
       // token stays open and the confirm is retryable; the reverse order would
@@ -616,11 +631,11 @@ async function handleReactivateTechnicianSeat(toolCtx: ToolContext): Promise<unk
       // accepted edge: a pending_verification deactivation returns as active
       // without a mailbox confirmation, the manager drove both actions).
       // NO pairing (deactivated while still invited) → back to 'invited':
-      // 'active' would be a dead-end — get_connect_link refuses active rows
-      // and checkPairing only acts on invited, so their mailbox could never
-      // be paired (review finding). Seat-exempt rows are the exception: they
-      // NEVER pair (get_connect_link refuses them), so 'invited' would be a
-      // permanent stuck-looking state — they live in 'active'.
+      // 'active' would be a dead-end — the pairing path (checkPairing; the
+      // connect link lives on the settings page from 2026-09-19) only acts on
+      // invited, so their mailbox could never be paired (review finding).
+      // Seat-exempt rows are the exception: they NEVER pair, so 'invited'
+      // would be a permanent stuck-looking state — they live in 'active'.
       const restoredState =
         target.seat_exempt || target.composio_connected_account_id ? 'active' : 'invited';
       // ONE CAS write restores state + clears the clock atomically: no window
@@ -640,11 +655,12 @@ async function handleReactivateTechnicianSeat(toolCtx: ToolContext): Promise<unk
       if (!restored) {
         throw new Error(`'${ref}' changed state while reactivating — check list_team and retry`);
       }
-      // An open grace-period reminder is now moot — and if it stayed open, a
-      // SECOND deactivation episode's reminder would collide with it and show
-      // the stale deadline (review finding). Advisory close.
+      // The grace-period heads-up is moot now. It is an observation since the
+      // review queue's retirement (2026-09-19), keyed per episode, so a second
+      // deactivation raises its own — this only stops the planner telling a
+      // manager about a removal that has just been undone. Advisory close.
       try {
-        await resolveOpenReviewItemFor(tenantId, 'offboarding_reminder', ref, 'resolved', 'reactivated during grace period');
+        await dismissOpenObservationsForRef(tenantId, 'offboarding_reminder', ref, 'reactivated during the grace period');
       } catch {
         /* advisory */
       }
@@ -677,7 +693,10 @@ async function handleReactivateTechnicianSeat(toolCtx: ToolContext): Promise<unk
       }
       const notes: string[] = [];
       if (restoredState === 'invited') {
-        notes.push('no mailbox was ever connected — use get_connect_link to pair them');
+        notes.push(
+          'no mailbox was ever paired — pairing a mailbox moves to the settings page, which is ' +
+            'not built yet',
+        );
       }
       // Seat-exempt rows NEVER have a sandbox and bind_telegram refuses them —
       // pushing this note would instruct the manager into a dead end.
@@ -693,62 +712,6 @@ async function handleReactivateTechnicianSeat(toolCtx: ToolContext): Promise<unk
         state: restoredState,
         pairingRestored,
         ...(notes.length > 0 && { note: notes.join('; ') }),
-      };
-}
-
-async function handleGetConnectLink(toolCtx: ToolContext): Promise<unknown> {
-  const { deps, tenantId, str } = toolCtx;
-      const ref = str('ref');
-      if (!ref) throw new Error('ref is required');
-      const target = await getTechnician(tenantId, ref);
-      if (!target) throw new Error(`technician '${ref}' not found`);
-      // Schedule-only fence BEFORE every state check: a seat-exempt row is
-      // 'active', so "already connected" below would be a lie — and a
-      // deactivated one must not be told "reactivate first" when reactivating
-      // only leads back to this same permanent refusal (no input path, user
-      // decision 2026-07-19).
-      if (target.seat_exempt) {
-        throw new Error(`'${ref}' is schedule-only (no seat) — they have no email pairing`);
-      }
-      if (isInactiveState(target.state)) {
-        throw new Error(`'${ref}' is deactivated — reactivate the seat first`);
-      }
-      if (target.state === 'active') {
-        throw new Error(`'${ref}' is already connected and active`);
-      }
-      // One definition for both "already connected" exits below — the literal
-      // was duplicated and would drift (review finding).
-      const awaiting = (email: string | null) => ({
-        status: 'awaiting_verification',
-        ref,
-        email,
-        note: 'already connected — confirm or dismiss the pairing in list_pending_reviews',
-      });
-      if (target.state === 'pending_verification') {
-        return awaiting(target.connected_email);
-      }
-      // state === 'invited'. Cooldown BEFORE any Composio call — the one rate
-      // limit on the link-minting surface (structural, replica-safe: the clock
-      // lives on the roster row).
-      if (
-        target.link_issued_at &&
-        Date.now() - Date.parse(target.link_issued_at) < 5 * 60_000
-      ) {
-        throw new Error('a link was just issued for this person — wait a few minutes, then try again');
-      }
-      // Consent may already have completed before any sweep ran: checkPairing
-      // advances the row and opens the verification item itself.
-      const check = await (deps.checkPairing ?? liveCheckPairing)(target);
-      if (check.status === 'paired') {
-        return awaiting(check.email);
-      }
-      const { url } = await (deps.connectLink ?? liveCreateConnectLink)(target);
-      return {
-        status: 'link_created',
-        ref,
-        url,
-        note: 'Forward this link ONLY to this person. They sign in to Google and approve; ' +
-          'you will then get a verification item to confirm the mailbox.',
       };
 }
 
@@ -961,7 +924,6 @@ export const rosterTools = {
     add_technician_seat: handleAddTechnicianSeat,
     deactivate_technician_seat: handleDeactivateTechnicianSeat,
     reactivate_technician_seat: handleReactivateTechnicianSeat,
-    get_connect_link: handleGetConnectLink,
     bind_telegram: handleBindTelegram,
     list_team: handleListTeam,
     set_technician_skills: handleSetTechnicianSkills,

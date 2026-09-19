@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import type { Technician, TechnicianPatch } from '../db/technicians.js';
-import type { ReviewItem } from '../db/index.js';
+import type { Observation } from '../db/index.js';
 import { disablePairing, enablePairing, expireOffboarding } from './offboarding.js';
 import { unpair, type PairingClient } from './pairing.js';
 
@@ -83,8 +83,8 @@ function clientStub(opts: { deleteThrows?: Error; activeTriggers?: Array<{ id: s
 function sweepStubs(rows: Technician[], opts: { casMissIds?: string[] } = {}) {
   const patches: Array<{ id: string; patch: TechnicianPatch }> = [];
   const casCalls: Array<{ id: string; from: string; patch: TechnicianPatch }> = [];
-  const reminders: Array<{ subjectRef: string; startedAt: string }> = [];
-  const closed: Array<{ kind: string; subjectRef: string; resolution?: string | null }> = [];
+  const reminders: Array<{ ref: string; displayName?: string | null; startedAt: string }> = [];
+  const closed: Array<{ kind: string; ref: string; reason: string }> = [];
   return {
     patches,
     casCalls,
@@ -101,19 +101,18 @@ function sweepStubs(rows: Technician[], opts: { casMissIds?: string[] } = {}) {
         if (opts.casMissIds?.includes(id)) return null; // a reactivation won the race
         return row({ id, ...patch } as Partial<Technician>);
       },
-      flagReminder: async (input: { subjectRef: string; startedAt: string }) => {
-        reminders.push(input);
-        return { id: 'reminder-1' } as ReviewItem;
+      raiseReminder: async (input: {
+        tenantId: string;
+        ref: string;
+        displayName?: string | null;
+        startedAt: string;
+      }) => {
+        reminders.push({ ref: input.ref, displayName: input.displayName, startedAt: input.startedAt });
+        return { id: 'reminder-1' } as Observation;
       },
-      resolveItemFor: async (
-        _tenantId: string,
-        kind: string,
-        subjectRef: string,
-        _status: string,
-        resolution?: string | null,
-      ) => {
-        closed.push({ kind, subjectRef, resolution });
-        return { id: 'closed-1' } as ReviewItem;
+      dismissFor: async (_tenantId: string, kind: string, ref: string, reason: string) => {
+        closed.push({ kind, ref, reason });
+        return 1;
       },
     },
   };
@@ -188,10 +187,38 @@ describe('expireOffboarding', () => {
     const soon = sweepStubs([row({ offboarding_started_at: daysAgo(6) })]); // 1 day left
     const r2 = await expireOffboarding(NOW, { ...soon.deps, client: clientStub().client });
     expect(r2).toMatchObject({ reminded: 1, expired: 0 });
-    expect(soon.reminders[0]).toMatchObject({ subjectRef: 'gone-guy', startedAt: daysAgo(6) });
+    expect(soon.reminders[0]).toEqual({
+      ref: 'gone-guy',
+      displayName: 'Gone Guy',
+      startedAt: daysAgo(6),
+    });
   });
 
-  test('expired: CLAIM first (CAS offboardingâ†’offboarded), then teardown trigger-first; ids KEPT; reminder closed', async () => {
+  test('the reminder is raised once per EPISODE: a later tick re-observes the same row and counts nothing', async () => {
+    // The sweep runs every 15 minutes and sees "under two days left" on every
+    // one of them; the observation's once-ever key (ref@startedAt) is what turns
+    // every re-observation after the first into a null.
+    const started = daysAgo(6);
+    const s = sweepStubs([row({ offboarding_started_at: started })]);
+    let raised = 0;
+    const onceEver = {
+      ...s.deps,
+      raiseReminder: async (input: Parameters<typeof s.deps.raiseReminder>[0]) => {
+        const r = await s.deps.raiseReminder(input);
+        return raised++ === 0 ? r : null;
+      },
+    };
+    const first = await expireOffboarding(NOW, { ...onceEver, client: clientStub().client });
+    const later = await expireOffboarding(NOW, { ...onceEver, client: clientStub().client });
+    expect(first).toMatchObject({ reminded: 1 });
+    expect(later).toMatchObject({ reminded: 0 });
+    // Both ticks named the SAME episode — that sameness is the dedup key.
+    expect(s.reminders).toHaveLength(2);
+    expect(s.reminders[0].startedAt).toBe(started);
+    expect(s.reminders[1].startedAt).toBe(started);
+  });
+
+  test('expired: CLAIM first (CAS offboardingâ†’offboarded), then teardown trigger-first; ids KEPT; reminder dismissed', async () => {
     const s = sweepStubs([row({ offboarding_started_at: daysAgo(8) })]);
     const { client, calls } = clientStub();
     const r = await expireOffboarding(NOW, { ...s.deps, client });
@@ -204,7 +231,7 @@ describe('expireOffboarding', () => {
       { method: 'accounts.delete', id: 'ca_gone' },
     ]);
     expect(s.closed).toEqual([
-      { kind: 'offboarding_reminder', subjectRef: 'gone-guy', resolution: 'offboarding completed' },
+      { kind: 'offboarding_reminder', ref: 'gone-guy', reason: 'the removal became permanent' },
     ]);
   });
 

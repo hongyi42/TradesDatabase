@@ -1,7 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { recordFieldNote as liveRecordFieldNote } from '../writePath/recordFieldNote.js';
 import {
-  flagUnknownRefCapture,
   getTechnician as liveGetTechnician,
   isForeignKeyViolation,
   isInactiveState,
@@ -16,6 +15,7 @@ import {
   getRawCaptureByExternalId,
   isAgentWrittenCapture,
   listCapturesByThread,
+  raiseUnknownRefObservation,
 } from '../db/index.js';
 import type { WorkClassifier } from '../email/classify.js';
 import { resolveNormalizer as liveResolveNormalizer } from './normalize.js';
@@ -88,7 +88,7 @@ export interface InboundWebhookDeps {
   tenantExists?: (tenantId: string) => Promise<boolean>;
   recordDrop?: typeof upsertDroppedAudit;
   getTechnician?: typeof liveGetTechnician;
-  flagReview?: typeof flagUnknownRefCapture;
+  flagReview?: typeof raiseUnknownRefObservation;
   // RUNG 10B: the conversation this message belongs to, fetched from Gmail.
   // Injectable so a test never reaches Composio; returns null on any failure,
   // and the caller falls back to our own captures on that thread.
@@ -161,7 +161,7 @@ export async function handleInboundWebhook(
   const tenantExists = deps.tenantExists ?? liveTenantExists;
   const recordDrop = deps.recordDrop ?? upsertDroppedAudit;
   const getTechnician = deps.getTechnician ?? liveGetTechnician;
-  const flagReview = deps.flagReview ?? flagUnknownRefCapture;
+  const flagReview = deps.flagReview ?? raiseUnknownRefObservation;
   const fetchThread = deps.fetchThread ?? fetchThreadMessages;
   const listThreadCaptures = deps.listThreadCaptures ?? listCapturesByThread;
   // Is this delivery one the door will no-op on? The door's own dedup is the
@@ -369,10 +369,11 @@ export async function handleInboundWebhook(
         });
         // A misprovisioned (unknown-ref) pairing must surface even when its
         // first deliveries are personal mail — otherwise the typo'd pairing
-        // stays invisible until a work email happens to arrive. Advisory.
+        // stays invisible until a work email happens to arrive. No capture
+        // here (personal mail never reaches L1), hence the null. Advisory.
         if (!tech) {
           try {
-            await flagReview({ tenantId, subjectRef: technicianRef, externalId: envelope.externalId });
+            await flagReview({ tenantId, ref: technicianRef, captureId: null });
           } catch {
             /* advisory */
           }
@@ -499,17 +500,18 @@ export async function handleInboundWebhook(
         }),
       },
     });
-    // Unknown ref: keep the capture (ground truth), flag for manager review.
-    // Redeliveries must not re-open a resolved item — the 'duplicate' gate covers
-    // L2-linked captures, and flagUnknownRefCapture's per-message (externalId)
-    // dedup covers unmatched ones (whose redelivery heals as 'ingested').
-    // Advisory: a flag failure never fails an already-landed ingest.
+    // Unknown ref: keep the capture (ground truth), and raise an observation so
+    // the planner sees it (the review queue it used to wait in is retired). One
+    // observation per ref, ever — the once-ever index makes every later message
+    // from the same unknown ref converge to null, and the planner's `recover`
+    // is what re-surfaces a dismissed one. Advisory: a failure never fails an
+    // already-landed ingest.
     if (!tech && r.status !== 'duplicate') {
       try {
         await flagReview({
           tenantId,
-          subjectRef: technicianRef,
-          externalId: envelope.externalId,
+          ref: technicianRef,
+          captureId: r.captureId,
         });
       } catch {
         /* advisory */

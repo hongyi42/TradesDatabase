@@ -199,7 +199,8 @@ export async function checkPairing(
   // die here at the DB level (review findings):
   //  - a concurrent deactivate is never overwritten — the CAS misses and this
   //    sweep stops instead of resurrecting a removed person;
-  //  - a concurrent second checkPairing (cron tick + get_connect_link) loses
+  //  - a concurrent second checkPairing (two overlapping cron ticks; the
+  //    manager's get_connect_link was the other caller until 2026-09-19) loses
   //    the CAS before it can create a duplicate trigger;
   //  - deliveries can only start once the trigger exists (below), by which
   //    time the row is already pending_verification — the webhook's

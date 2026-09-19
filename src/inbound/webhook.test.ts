@@ -7,7 +7,7 @@ import {
   type WebhookHeaders,
 } from './webhook.js';
 import type { RecordFieldNoteInput, RecordFieldNoteResult } from '../writePath/recordFieldNote.js';
-import type { DroppedAuditInput, ReviewItem, Technician } from '../db/index.js';
+import type { DroppedAuditInput, Observation, Technician } from '../db/index.js';
 import type { EmailInput, WorkClassifier } from '../email/classify.js';
 
 // Pure/stubbed unit tests — no DB, no live model. HMAC cases mirror identity.test.ts;
@@ -114,16 +114,16 @@ function techRow(over: Partial<Technician> = {}): Technician {
   };
 }
 
-// Recording stub for the unknown-ref review flag.
+// Recording stub for the unknown-ref observation.
 function flagRecorder() {
-  const calls: Array<{ tenantId: string; subjectRef: string; externalId?: string | null }> = [];
+  const calls: Array<{ tenantId: string; ref: string; captureId: string | null }> = [];
   const fn = async (input: {
     tenantId: string;
-    subjectRef: string;
-    externalId?: string | null;
-  }): Promise<ReviewItem | null> => {
+    ref: string;
+    captureId: string | null;
+  }): Promise<Observation | null> => {
     calls.push(input);
-    return { id: 'review-1' } as ReviewItem;
+    return { id: 'obs-1' } as Observation;
   };
   return { calls, fn };
 }
@@ -417,7 +417,7 @@ describe('handleInboundWebhook', () => {
     expect(drop.calls).toHaveLength(1);
   });
 
-  test('unknown ref → ingested AND flagged for manager review (keep the mail, never lose it)', async () => {
+  test('unknown ref → ingested AND raised for the planner (keep the mail, never lose it)', async () => {
     const raw = body();
     const rec = recorder();
     const flag = flagRecorder();
@@ -428,14 +428,10 @@ describe('handleInboundWebhook', () => {
     );
     expect(result).toEqual({ status: 'ingested', captureId: 'cap-1' });
     expect(rec.calls).toHaveLength(1); // the capture landed
-    expect(flag.calls[0]).toMatchObject({
-      tenantId: TENANT,
-      subjectRef: 'tech-test',
-      externalId: 'gmail-msg-1',
-    });
+    expect(flag.calls[0]).toEqual({ tenantId: TENANT, ref: 'tech-test', captureId: 'cap-1' });
   });
 
-  test('unknown ref + duplicate redelivery → NOT re-flagged (resolved items stay resolved)', async () => {
+  test('unknown ref + duplicate redelivery → NOT re-raised', async () => {
     const raw = body();
     const flag = flagRecorder();
     const result = await handleInboundWebhook(
@@ -466,7 +462,7 @@ describe('handleInboundWebhook', () => {
       baseDeps({
         getTechnician: async () => null,
         flagReview: async () => {
-          throw new Error('review_items unavailable');
+          throw new Error('observations unavailable');
         },
       }),
     );
@@ -564,7 +560,8 @@ describe('handleInboundWebhook', () => {
     );
     expect(result).toEqual({ status: 'skipped_non_work' });
     expect(drop.calls).toHaveLength(1);
-    expect(flag.calls[0]).toMatchObject({ subjectRef: 'tech-test', externalId: 'gmail-msg-1' });
+    // Personal mail never reaches L1, so there is no capture to point at.
+    expect(flag.calls[0]).toEqual({ tenantId: TENANT, ref: 'tech-test', captureId: null });
   });
 
   test('non-work → skipped_non_work, recordFieldNote NOT called, content-free audit written', async () => {

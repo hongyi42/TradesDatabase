@@ -141,15 +141,18 @@ seat confirm; `find_slots` since 2026-07-20 — the read-only ranked slot finder
 its verdict, it books nothing; like every schedule answer it carries the board link (originally excluded — the agent FABRICATED a URL to satisfy the every-answer doctrine, live 2026-07-21); `update_job` since 2026-07-21 — one-shot job-identity editor, title/jobType/priority with old→new echo; `set_technician_horizon` since 2026-07-22 — one-shot visibility dial: how far ahead TECHNICIANS see the schedule, whole weeks 1-12 stored per-tenant (default 4 weeks); technician-tier reads and board views beyond it answer "not published yet", managers never clamp; since 2026-07-23 (plan 4a.5, count unchanged): `move_visit` gained `unassign:true` — PARKS a visit (pulls the person off, keeps day/time; find it under `get_team_schedule unassignedOnly:true` or the board's loose bucket; mutually exclusive with `technicianRef`); since 2026-07-25 (cancel-vocabulary change): `cancel_visit` RENAMED `unschedule_visit` — same behavior, and the name now says it: the visit comes OFF the calendar while the WORK survives, job back in the loose bucket — and +`cancel_job`, the TERMINAL verb: the job closes for good (no un-cancel), leaves the loose bucket, and its live visits are cancelled with it; ALWAYS two-step with every live visit disclosed in the preview; ambiguous manager wording ("cancel the Hendersons") means ASK which; the four autonomous-solver tools added 2026-07-26 (`set_visit_locks`, `run_freeze`) and 2026-07-30 (`run_resolve`, `undo_run`) were REMOVED 2026-09-03, rung 8, and `set_promise` was REMOVED 2026-09-05, rung 9a, with the promise ladder itself — see the retirement notes below: `add_technician_seat`
 (two-step confirm since 2026-07-17 — mints a permanent ref + burns a seat, not reversible;
 `seatExempt:true` since 2026-07-19 adds a SCHEDULE-ONLY person instead — no seat occupied,
-bookable on visits and visible on the board, but `bind_telegram`/`get_connect_link` refuse them:
-no assistant, no Telegram, no email, ever),
+bookable on visits and visible on the board, but `bind_telegram` refuses them (and the mailbox
+connect link did, while it was a chat tool): no assistant, no Telegram, no email, ever),
 `deactivate_technician_seat` (two-step confirm; starts the disable-first grace period),
-`reactivate_technician_seat` (the grace-period undo), `get_connect_link` (mint a Gmail
-Connect Link; 5-min per-person cooldown), `bind_telegram` (connect a person to their numeric
-Telegram user id — auto-claims a cold-pool sandbox if they have none; reaches the box in ~5 min),
-`list_team`, `list_pending_reviews`,
-`resolve_review` (also carries pairing-verification verdicts: resolved = mailbox confirmed →
-active; dismissed = wrong mailbox → pairing torn down). The server both filters `tools/list`
+`reactivate_technician_seat` (the grace-period undo), `bind_telegram` (connect a person to their
+numeric Telegram user id — auto-claims a cold-pool sandbox if they have none; reaches the box in
+~5 min), `list_team`. **Retired 2026-09-19** (plan
+`thoughts/shared/plans/2026-09-19-retire-the-manager-review-queue.md`; manager surface 42 → 39):
+`list_pending_reviews` and `resolve_review` — managers never asked for "pending reviews", so the
+queue reached nobody; what it still carried became planner observations — and `get_connect_link`,
+because email connections move to a settings page in the schedule UI that is not built yet (parked
+as `20260919-manager-settings-page-in-the-schedule-bo`). Until it ships, no new mailbox can be
+connected, and a person who already connected waits in `pending_verification`. The server both filters `tools/list`
 by tier and re-gates every admin call at dispatch — a technician badge structurally has no
 admin surface. Seat caps (`tenants.manager_seats`/`technician_seats`) are DB-enforced; the
 agent cannot talk past them.
@@ -245,19 +248,22 @@ the test is now PLACEMENT:
   email address the manager did not give — and reports what it recorded, never that the item is
   closed.
 - **Outside accounts go through Composio, first move (AGENTS.md rule 8, added 2026-09-07).**
-  Gmail: the agent calls `get_connect_link` (Gmail-only, manager-tier) and hands over the URL.
+  Gmail: NOT connected in chat since 2026-09-19 — `get_connect_link` left the manager's bot and
+  connecting a mailbox moves to the settings page (not built yet); the agent says so plainly.
   Other accounts (Sheets, Excel, Drive): a manager's seat connects them through Composio's own
-  connection tool (the manager session has `manageConnections: true`), never Gmail that way (only
-  `get_connect_link` starts the mailbox check); a technician's seat connects no account, Gmail
-  included, and says so (corrected 2026-09-15 — the first wording routed all four
-  to `get_connect_link`). No web search, no alternative integration, no self-authentication.
+  connection tool (the manager session has `manageConnections: true`, kept on by the operator
+  2026-09-19), never Gmail that way — a Gmail connected there gets no mail watcher, so it looks
+  connected and delivers nothing; a technician's seat connects no account, Gmail included, and
+  says so (corrected 2026-09-15 — the first wording routed all four to `get_connect_link`). No
+  web search, no alternative integration, no self-authentication.
   Everything after the browser approval is already automatic and is NOT the agent's to do —
-  `checkPairing` (`src/composio/pairing.ts`) adopts the ACTIVE account, opens the
-  `pairing_verification` review for a manager, and calls `ensureTrigger`, which creates
+  `checkPairing` (`src/composio/pairing.ts`, still run by the lifecycle sweep for links already
+  handed out) adopts the ACTIVE account, opens the `pairing_verification` item (confirmed on the
+  settings page once it exists), and calls `ensureTrigger`, which creates
   `GMAIL_NEW_GMAIL_MESSAGE` **pinned to that connected account** and stores
   `composio_trigger_id`; a run that dies mid-way is finished by the healing branch on the next
   sweep. So the agent must not report the connection as finished at approval time, only as being
-  verified. If `get_connect_link` is absent from its list it says so and stops.
+  verified.
   *Why the rule exists:* on 2026-09-07 an agent asked to connect a mailbox had NO doctrine
   naming Composio (the string appeared zero times in `bootstrap-box.sh`), improvised with raw
   toolkit calls, and produced a half-connected account — OAuth ACTIVE, but no trigger, no
@@ -290,7 +296,7 @@ every call, so sessions crossing midnight stay grounded. It states what today IS
 `resolve_date` remains the only sanctioned way to compute any OTHER date (eval:
 date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). No result is a bare
 array any more (retrieval layer 4): `find_customer` returns `{customers}`, `list_team` `{team}`,
-`list_pending_reviews` a page, and the hub wraps any other array as `{items, count}` — so every
+and the hub wraps any other array as `{items, count}` — so every
 result carries the rider.
 - The agent calls `record_field_note({ text, channel })`. **If identity resolves to a customer or
   job that already exists, this call RECORDS** — L1 + L2 in one step, `status: 'recorded'`
@@ -560,8 +566,9 @@ register side-by-side in the gateway's `mcp.servers`.
   answer (ruled out 2026-08-25: a planner sentence landing mid-conversation is two voices in one
   chat, and the planner holds no technician write tools). Pacing: NO
   per-person cap (2026-08-18 ruling — pace by urgency, earn the ask, batch the unimportant;
-  the old ≤2-asks/day server cap was removed in PR #153); prolonged silence escalates to the
-  manager's review queue via the planner. Kill switch on the box: `systemctl disable --now
+  the old ≤2-asks/day server cap was removed in PR #153); prolonged silence is the planner's to
+  judge — it may message a manager (the manager's review queue it once escalated into was retired
+  2026-09-19). Kill switch on the box: `systemctl disable --now
   nudge-runner.timer`. Details: setup guide §3c + `Box_Setup_Stuff/nudge-runner.sh` header.
 
 **Phase-5 live verification (2026-07-04, fresh-context probe against the live project):**

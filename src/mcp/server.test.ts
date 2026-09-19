@@ -28,7 +28,11 @@ import { createTenant, setTenantSeats } from '../db/tenants.js';
 import { insertAccessGrant, setTechnicianViewRule } from '../db/technicianView.js';
 import { PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
-import { createObservation } from '../db/observations.js';
+import {
+  createObservation,
+  raiseCallActionObservation,
+  raiseOffboardingObservation,
+} from '../db/observations.js';
 import type { Json } from '../db/database.types.js';
 import { logWebRequests } from '../db/webRequests.js';
 import {
@@ -193,24 +197,6 @@ async function recallAll(
     if (!after) return out;
   }
   throw new Error('recall paging never ended');
-}
-
-// list_pending_reviews is a page too (retrieval layer 4); this walks one kind's
-// queue to the end, so an assertion that an item is ABSENT means something.
-async function reviewsAll(
-  callWith: Awaited<ReturnType<typeof clientFor>>['callWith'],
-  kind: string,
-): Promise<Array<Record<string, unknown>>> {
-  const out: Array<Record<string, unknown>> = [];
-  let after: string | null = null;
-  for (let n = 0; n < 500; n++) {
-    const res = await callWith('list_pending_reviews', { kind, limit: 50, ...(after ? { after } : {}) });
-    if (res.isError) throw new Error(`review page failed: ${res.text}`);
-    out.push(...(res.data.items as Array<Record<string, unknown>>));
-    after = res.data.next as string | null;
-    if (!after) return out;
-  }
-  throw new Error('review paging never ended');
 }
 
 /**
@@ -852,34 +838,6 @@ describe('MCP server', () => {
     expect(Number(caps.rows[0].n)).toBe(1);
   });
 
-  test('resolve_review refuses to "resolve" a staged field note (live token); dismiss cancels it', async () => {
-    const staged = await call('record_field_note', {
-      text: 'to be cancelled',
-      confirmed: { address: '80 Cancel Way' },
-    });
-    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
-    try {
-      const refused = await callWith('resolve_review', {
-        reviewItemId: staged.data.confirmId,
-        resolution: 'resolved',
-      });
-      expect(refused.isError).toBe(true);
-      expect(refused.text).toContain('staged field note');
-
-      const dismissed = await callWith('resolve_review', {
-        reviewItemId: staged.data.confirmId,
-        resolution: 'dismissed',
-      });
-      expect(dismissed.isError).toBe(false);
-    } finally {
-      await mgrClient.close();
-    }
-    // The cancelled token no longer commits anything.
-    const confirm = await call('record_field_note', { confirmId: staged.data.confirmId });
-    expect(confirm.isError).toBe(true);
-    expect(confirm.text).toContain('confirmation not found');
-  });
-
   test('get_customer_context returns the contents page, never the history', async () => {
     const customer = await createCustomer({ tenantId, name: 'Ctx Over Mcp', phone: '555-3300' });
     const job = await createJob({ tenantId, customerId: customer.id, title: 'J' });
@@ -978,8 +936,6 @@ describe('MCP server', () => {
       ['add_technician_seat', { displayName: 'Eve Attacker' }],
       ['deactivate_technician_seat', { ref: 'mgr-test' }],
       ['list_team', {}],
-      ['list_pending_reviews', {}],
-      ['resolve_review', { reviewItemId: 'x', resolution: 'resolved' }],
     ] as const) {
       const denied = await call(tool, args as Record<string, unknown>);
       expect(denied.isError).toBe(true);
@@ -997,8 +953,6 @@ describe('MCP server', () => {
           'add_technician_seat',
           'deactivate_technician_seat',
           'list_team',
-          'list_pending_reviews',
-          'resolve_review',
         ]),
       );
       // get_schedule is NOT on the manager surface (user decision 2026-07-19):
@@ -1117,119 +1071,11 @@ describe('MCP server', () => {
       expect(bob).toMatchObject({ displayName: 'Bob Marley', state: 'offboarding' });
       expect(Object.keys(bob)).not.toContain('composio_connected_account_id');
 
-      // Reviews: open item listed; resolve closes it; bogus id → not found.
-      const item = await upsertOpenReviewItem({
-        tenantId,
-        kind: 'sheet_ref_mismatch',
-        subjectRef: 'tehc-bob',
-        suggestion: 'bob-marley',
-      });
-      // kind narrows the page, so the item is found however long the shared
-      // tenant's queue has grown (retrieval layer 4: the list is paged).
-      const pending = await reviewsAll(callWith, 'sheet_ref_mismatch');
-      expect(pending.map((i) => i.id)).toContain(item.id);
-
-      // ④b fourth rail: a gap item's briefing rides detail to the manager's
-      // agent verbatim — and the tool description carries the never-relay rule.
-      //
-      // Written with `upsertOpenReviewItem` since build 6 Phase 1: `escalate`
-      // and its writer `flagNudgeGap` are deleted, so nothing MINTS a briefing
-      // any more — but every item ever filed still carries one, and this is the
-      // reader that has to keep surfacing it. The detail shape is the one that
-      // writer produced, verbatim.
-      const gapItem = await upsertOpenReviewItem({
-        tenantId,
-        kind: 'overdue_visit_gap',
-        subjectRef: 'agctx-subject-1',
-        suggestion: 'open question on a visit — agentContext carrier',
-        detail: {
-          jobId: '00000000-0000-0000-0000-0000000000aa',
-          technicianRef: 'tech-mcp',
-          startsAtLocal: '2026-12-01 09:00:00+00',
-          endsAtLocal: '2026-12-01 10:00:00+00',
-          escalatedFromNudge: '00000000-0000-0000-0000-0000000000bb',
-          agentContext: 'Job aa: asked once on the visit day; ledger empty; a figure unblocks the invoice.',
-        },
-      });
-      const withBriefing = await reviewsAll(callWith, 'overdue_visit_gap');
-      const briefed = (withBriefing as Array<{ id: string; detail?: { agentContext?: string } }>).find(
-        (r) => r.id === gapItem.id,
-      );
-      expect(briefed?.detail?.agentContext).toBe(
-        'Job aa: asked once on the visit day; ledger empty; a figure unblocks the invoice.',
-      );
-      const tool = (await mgrClient.listTools()).tools.find((t) => t.name === 'list_pending_reviews');
-      expect(tool?.description).toContain('agentContext');
-      expect(tool?.description).toContain('never read it aloud');
-      const resolved = await callWith('resolve_review', {
-        reviewItemId: item.id,
-        resolution: 'dismissed',
-        note: 'sheet fixed',
-      });
-      expect(resolved.data.status).toBe('dismissed');
-      const missing = await callWith('resolve_review', {
-        reviewItemId: '00000000-0000-0000-0000-000000000000',
-        resolution: 'resolved',
-      });
-      expect(missing.isError).toBe(true);
-
-      // A pending_deactivation token cannot be closed as "resolved" via the
-      // generic tool (that would fake a completed deactivation) — but
-      // dismissing it (= cancel) is allowed.
-      const pendingDan = await callWith('deactivate_technician_seat', { ref: 'dan-dare' });
-      expect(pendingDan.data.status).toBe('needs_confirmation');
-      const fakeResolve = await callWith('resolve_review', {
-        reviewItemId: pendingDan.data.confirmId,
-        resolution: 'resolved',
-      });
-      expect(fakeResolve.isError).toBe(true);
-      expect(fakeResolve.text).toContain('pending deactivation');
-      const cancel = await callWith('resolve_review', {
-        reviewItemId: pendingDan.data.confirmId,
-        resolution: 'dismissed',
-      });
-      expect(cancel.isError).toBe(false);
-      const danState = await pg.query<{ state: string }>(
-        "select state from technicians where tenant_id = $1 and ref = 'dan-dare'",
-        [tenantId],
-      );
-      expect(danState.rows[0].state).toBe('invited'); // cancelled — never deactivated
-
-      // Cross-tenant: another tenant's MANAGER (passes requireManager in their
-      // own tenant) still cannot resolve this tenant's item — the DB tenant
-      // guard reads it as not found.
-      const crossItem = await upsertOpenReviewItem({
-        tenantId,
-        kind: 'unknown_ref_capture',
-        subjectRef: 'cross-tenant-probe',
-      });
-      const otherTenantId = (await createTenant('cross-tenant-test', { managerSeats: 1 })).id;
-      const otherMgr = await insertTechnician({
-        tenantId: otherTenantId,
-        ref: 'other-mgr',
-        displayName: 'Other Manager',
-        tier: 'manager',
-      });
-      await setTechnicianState(otherMgr.id, 'active');
-      const { client: otherClient, callWith: otherCall } = await clientFor({
-        tenantId: otherTenantId,
-        technicianRef: 'other-mgr',
-      });
-      try {
-        const cross = await otherCall('resolve_review', {
-          reviewItemId: crossItem.id,
-          resolution: 'dismissed',
-        });
-        expect(cross.isError).toBe(true);
-        expect(cross.text).toContain('review item not found');
-      } finally {
-        await otherClient.close();
-        // The extra tenant goes explicitly, BY ID (tenants is never truncated;
-        // deleting by name once swept up a leftover from a crashed run that
-        // other rows had attached to). Children first — FK.
-        await pg.query('delete from technicians where tenant_id = $1', [otherTenantId]);
-        await pg.query('delete from tenants where id = $1', [otherTenantId]);
-      }
+      // (The review queue's checks stood here — the list, an item's briefing,
+      // resolve and dismiss, a staged deactivation refused as "resolved" and
+      // cancelled, and a cross-tenant resolve. list_pending_reviews and
+      // resolve_review were retired on 2026-09-19; the queue's paging died
+      // with them, and staged tokens now simply expire.)
     } finally {
       await mgrClient.close();
     }
@@ -1337,9 +1183,6 @@ describe('MCP server', () => {
       });
       expect(bindDenied.isError).toBe(true);
       expect(bindDenied.text).toContain('schedule-only');
-      const linkDenied = await callWith('get_connect_link', { ref: 'helper-hman' });
-      expect(linkDenied.isError).toBe(true);
-      expect(linkDenied.text).toContain('schedule-only');
 
       // list_team surfaces the flag on every row.
       const team = await callWith('list_team', {});
@@ -1372,9 +1215,6 @@ describe('MCP server', () => {
       });
       expect(bindWhileOff.isError).toBe(true);
       expect(bindWhileOff.text).toContain('schedule-only');
-      const linkWhileOff = await callWith('get_connect_link', { ref: 'helper-hman' });
-      expect(linkWhileOff.isError).toBe(true);
-      expect(linkWhileOff.text).toContain('schedule-only');
       const back = await callWith('reactivate_technician_seat', { ref: 'helper-hman' });
       expect(back.isError).toBe(false);
       expect(back.data).toMatchObject({ status: 'reactivated', state: 'active' });
@@ -1759,6 +1599,44 @@ describe('retract_capture + retraction folding', () => {
     }
   });
 
+  // The review queue's retirement (2026-09-19): a call that needs a person is a
+  // `call_action` OBSERVATION keyed on its capture. A manager retracting the
+  // call as recorded in error must take the planner's reason to chase anybody
+  // about it with it — the same rule the rung-10 inbound kinds already follow.
+  test('retracting a call dismisses its call_action observation', async () => {
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'phone_call',
+      technicianRef: 'phone-line',
+      rawText: 'please cancel my appointment',
+    });
+    const obs = await raiseCallActionObservation({
+      tenantId,
+      captureId: cap.id,
+      intents: ['cancel'],
+      priority: 'normal',
+      callerPhone: '+15551230099',
+    });
+    if (!obs) throw new Error('fixture call_action was deduped');
+    const { client: mgrClient, callWith: callMgr } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const s = await callMgr('retract_capture', { captureId: cap.id, reason: 'wrong number' });
+      const c = await callMgr('retract_capture', { confirmId: s.data.confirmId });
+      expect(c.data.status).toBe('retracted');
+    } finally {
+      await mgrClient.close();
+    }
+    const { rows } = await pg.query<{ status: string; dismiss_reason: string | null }>(
+      'select status, dismiss_reason from observations where id = $1',
+      [obs.id],
+    );
+    expect(rows[0].status).toBe('dismissed');
+    expect(rows[0].dismiss_reason).toContain('the capture was retracted by mgr-test: wrong number');
+  });
+
   test('double-retract blocked at stage AND at a racing confirm (one retraction row total)', async () => {
     const cap = await appendRawCapture({
       tenantId,
@@ -2112,174 +1990,13 @@ describe('retract_capture + retraction folding', () => {
     }
   });
 
-  test('resolve_review refuses to "resolve" a staged retraction (live token); dismiss cancels', async () => {
-    const cap = await appendRawCapture({
-      tenantId,
-      channel: 'technician_note',
-      technicianRef: 'tech-mcp',
-      rawText: 'cancel-retract target',
-    });
-    const s = await call('retract_capture', { captureId: cap.id, reason: 'oops' });
-    const { client: mgrClient, callWith: callMgr } = await clientFor({
-      tenantId,
-      technicianRef: 'mgr-test',
-    });
-    try {
-      const refused = await callMgr('resolve_review', {
-        reviewItemId: s.data.confirmId,
-        resolution: 'resolved',
-      });
-      expect(refused.isError).toBe(true);
-      expect(refused.text).toContain('staged retraction');
-      const dismissed = await callMgr('resolve_review', {
-        reviewItemId: s.data.confirmId,
-        resolution: 'dismissed',
-      });
-      expect(dismissed.isError).toBe(false);
-    } finally {
-      await mgrClient.close();
-    }
-    const confirm = await call('retract_capture', { confirmId: s.data.confirmId });
-    expect(confirm.isError).toBe(true);
-    expect(confirm.text).toContain('confirmation not found');
-  });
 });
 
-describe('pairing lifecycle tools (Composio seams stubbed)', () => {
-  test('get_connect_link states + cooldown; resolve_review verdicts', { timeout: 30_000 }, async () => {
-    // The earlier admin test leaves technician seats 3/3 occupied — make room.
-    await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
-
-    // Configurable pairing stubs, recorded per call.
-    let checkResult: Awaited<ReturnType<NonNullable<ServerDeps['checkPairing']>>> = {
-      status: 'not_connected',
-    };
-    const linkCalls: string[] = [];
-    const unpairCalls: string[] = [];
-    const pairingStubs: Partial<ServerDeps> = {
-      checkPairing: async () => checkResult,
-      connectLink: async (t) => {
-        linkCalls.push(t.ref);
-        // Mirror the real seam's one side effect — the cooldown stamp.
-        await updateTechnician(t.id, { link_issued_at: new Date().toISOString() });
-        return { url: 'https://connect.composio.example/xyz' };
-      },
-      unpair: async (t) => {
-        unpairCalls.push(t.ref);
-      },
-    };
-
-    // Technician identity: the tool is denied before any stub runs.
-    const denied = await call('get_connect_link', { ref: 'tech-mcp' });
-    expect(denied.isError).toBe(true);
-    expect(denied.text).toContain('manager badge');
-
-    const { client: mgrClient, callWith } = await clientFor(
-      { tenantId, technicianRef: 'mgr-test' },
-      pairingStubs,
-    );
-    try {
-      // Managers see the new tool in the tier-filtered list.
-      const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-      expect(mgrTools).toContain('get_connect_link');
-
-      expect((await callWith('get_connect_link', { ref: 'nobody' })).isError).toBe(true);
-      // An active person has nothing to connect.
-      const active = await callWith('get_connect_link', { ref: 'tech-mcp' });
-      expect(active.isError).toBe(true);
-      expect(active.text).toContain('already connected and active');
-
-      // Invited person: link minted; immediate repeat hits the cooldown.
-      const probe = await insertTechnician({ tenantId, ref: 'pair-probe', displayName: 'Pair Probe' });
-      const linked = await callWith('get_connect_link', { ref: 'pair-probe' });
-      expect(linked.data).toMatchObject({
-        status: 'link_created',
-        url: 'https://connect.composio.example/xyz',
-      });
-      expect(linkCalls).toEqual(['pair-probe']);
-      const cooled = await callWith('get_connect_link', { ref: 'pair-probe' });
-      expect(cooled.isError).toBe(true);
-      expect(cooled.text).toContain('wait a few minutes');
-      expect(linkCalls).toHaveLength(1); // no second Composio call
-
-      // Consent already completed (checkPairing reports paired): no link minted.
-      await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 6 });
-      await insertTechnician({ tenantId, ref: 'pair-early', displayName: 'Pair Early' });
-      checkResult = { status: 'paired', connectedAccountId: 'ca_x', email: 'early@gmail.com' };
-      const early = await callWith('get_connect_link', { ref: 'pair-early' });
-      expect(early.data).toMatchObject({ status: 'awaiting_verification', email: 'early@gmail.com' });
-      expect(linkCalls).toHaveLength(1);
-      checkResult = { status: 'not_connected' };
-
-      // Simulate the sweep having advanced the probe: pending_verification.
-      await updateTechnician(probe.id, {
-        state: 'pending_verification',
-        connected_email: 'jane.probe@gmail.com',
-        composio_connected_account_id: 'ca_probe',
-      });
-      const pending = await callWith('get_connect_link', { ref: 'pair-probe' });
-      expect(pending.data).toMatchObject({
-        status: 'awaiting_verification',
-        email: 'jane.probe@gmail.com',
-      });
-
-      // Verification verdict RESOLVED: right mailbox → active (state-first).
-      const item = await upsertOpenReviewItem({
-        tenantId,
-        kind: 'pairing_verification',
-        subjectRef: 'pair-probe',
-        detail: { email: 'jane.probe@gmail.com', connectedAccountId: 'ca_probe' },
-      });
-      const confirmed = await callWith('resolve_review', {
-        reviewItemId: item.id,
-        resolution: 'resolved',
-      });
-      expect(confirmed.isError).toBe(false);
-      const state1 = await pg.query<{ state: string }>(
-        "select state from technicians where tenant_id = $1 and ref = 'pair-probe'",
-        [tenantId],
-      );
-      expect(state1.rows[0].state).toBe('active'); // cross-channel read-back
-      expect(unpairCalls).toHaveLength(0);
-
-      // Verification verdict DISMISSED: wrong mailbox → unpair seam invoked.
-      const two = await insertTechnician({ tenantId, ref: 'pair-two', displayName: 'Pair Two' });
-      await updateTechnician(two.id, { state: 'pending_verification' });
-      const item2 = await upsertOpenReviewItem({
-        tenantId,
-        kind: 'pairing_verification',
-        subjectRef: 'pair-two',
-      });
-      const dismissed = await callWith('resolve_review', {
-        reviewItemId: item2.id,
-        resolution: 'dismissed',
-      });
-      expect(dismissed.isError).toBe(false);
-      expect(unpairCalls).toEqual(['pair-two']);
-
-      // STALE item on an offboarding row: resolved must NOT resurrect anyone.
-      await updateTechnician(two.id, { state: 'offboarding' });
-      const stale = await upsertOpenReviewItem({
-        tenantId,
-        kind: 'pairing_verification',
-        subjectRef: 'pair-two',
-      });
-      const staleResolve = await callWith('resolve_review', {
-        reviewItemId: stale.id,
-        resolution: 'resolved',
-      });
-      expect(staleResolve.isError).toBe(false); // the item closes...
-      const state2 = await pg.query<{ state: string }>(
-        "select state from technicians where tenant_id = $1 and ref = 'pair-two'",
-        [tenantId],
-      );
-      expect(state2.rows[0].state).toBe('offboarding'); // ...the state does not move
-      expect(unpairCalls).toHaveLength(1); // and no teardown ran either
-    } finally {
-      await mgrClient.close();
-    }
-  });
-});
+// (A 'pairing lifecycle tools' describe stood here: get_connect_link's states
+// and cooldown, and resolve_review's pairing verdicts. Both tools left the
+// manager's bot on 2026-09-19 — email connections move to a settings page that
+// is not built yet. The rows it used to leave behind for the offboarding
+// describe below are created there now.)
 
 describe('bind_telegram (manager tool + cold-pool auto-allocation)', () => {
   test('denies technicians; validates id; guards dup + inactive; auto-claims a sandbox; re-bind returns previous', { timeout: 30_000 }, async () => {
@@ -2435,11 +2152,24 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       enablePairing: async (t) => {
         enableCalls.push(t.ref);
       },
-      // The reactivated-to-invited case re-opens the pairing path — stub the
-      // link seams so that probe never touches live Composio.
-      checkPairing: async () => ({ status: 'not_connected' }),
-      connectLink: async () => ({ url: 'https://connect.composio.example/reopened' }),
     };
+
+    // THE ROWS AND SEATS THIS TEST STARTS FROM. A pairing-tools describe used
+    // to leave them behind (it was deleted with get_connect_link and
+    // resolve_review, 2026-09-19), so they are made here, to the same end state
+    // the describes after this one inherit: 2 manager / 6 technician seats;
+    // pair-probe active with a recorded pairing; pair-two and pair-early
+    // invited; pair-two then parked in offboarding, the way that suite left it.
+    await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 6 });
+    const probe = await insertTechnician({ tenantId, ref: 'pair-probe', displayName: 'Pair Probe' });
+    await updateTechnician(probe.id, {
+      state: 'active',
+      connected_email: 'jane.probe@gmail.com',
+      composio_connected_account_id: 'ca_probe',
+    });
+    const two = await insertTechnician({ tenantId, ref: 'pair-two', displayName: 'Pair Two' });
+    await insertTechnician({ tenantId, ref: 'pair-early', displayName: 'Pair Early' });
+    await updateTechnician(two.id, { state: 'offboarding' });
 
     // Technician identity: denied before any stub runs.
     const denied = await call('reactivate_technician_seat', { ref: 'pair-probe' });
@@ -2482,8 +2212,8 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('record_caller');
       expectSurface(mgrTools, MANAGER_TOOLS_EXPECTED, [...TEAM_LEAD_ONLY_TOOLS, 'get_schedule']);
 
-      // pair-probe is active w/ a recorded pairing (from the pairing suite).
-      // Give it an open verification item to prove deactivation closes it.
+      // pair-probe is active w/ a recorded pairing (set up above). Give it an
+      // open verification item to prove deactivation closes it.
       const stale = await upsertOpenReviewItem({
         tenantId,
         kind: 'pairing_verification',
@@ -2511,14 +2241,17 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       );
       expect(staleAfter.rows[0].status).toBe('resolved');
 
-      // An open grace-period reminder must not survive reactivation (a stale
-      // one would collide with a second episode's reminder).
-      const reminder = await upsertOpenReviewItem({
+      // The grace-period heads-up is moot once the removal is undone: the
+      // planner must not tell a manager about it (an OBSERVATION since the
+      // review queue's retirement, 2026-09-19).
+      const reminder = await raiseOffboardingObservation({
         tenantId,
-        kind: 'offboarding_reminder',
-        subjectRef: 'pair-probe',
-        detail: { startedAt: 'episode-1' },
+        ref: 'pair-probe',
+        displayName: 'Pair Probe',
+        // pg hands a timestamptz back as a Date: the episode key is its ISO form.
+        startedAt: new Date(row1.rows[0].offboarding_started_at as string).toISOString(),
       });
+      if (!reminder) throw new Error('fixture reminder was deduped');
 
       // Reactivate: back to active, clock cleared, pairing re-enabled.
       const undo = await callWith('reactivate_technician_seat', { ref: 'pair-probe' });
@@ -2527,11 +2260,14 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
         state: 'active',
         pairingRestored: true,
       });
-      const reminderAfter = await pg.query<{ status: string }>(
-        'select status from review_items where id = $1',
+      const reminderAfter = await pg.query<{ status: string; dismiss_reason: string | null }>(
+        'select status, dismiss_reason from observations where id = $1',
         [reminder.id],
       );
-      expect(reminderAfter.rows[0].status).toBe('resolved');
+      expect(reminderAfter.rows[0]).toEqual({
+        status: 'dismissed',
+        dismiss_reason: 'reactivated during the grace period',
+      });
       expect(enableCalls).toEqual(['pair-probe']);
       const row2 = await pg.query<{ state: string; offboarding_started_at: string | null }>(
         "select state, offboarding_started_at from technicians where tenant_id = $1 and ref = 'pair-probe'",
@@ -2559,8 +2295,8 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(perma.text).toContain('permanently offboarded');
 
       // A never-paired person (deactivated while invited) reactivates to
-      // INVITED, not active — otherwise get_connect_link refuses them and
-      // their mailbox could never be paired (review finding).
+      // INVITED, not active — the pairing path only acts on invited rows, so
+      // 'active' would leave their mailbox unpairable (review finding).
       const askCarl = await callWith('deactivate_technician_seat', { ref: 'carl-sagan' });
       await callWith('deactivate_technician_seat', {
         ref: 'carl-sagan',
@@ -2577,13 +2313,38 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
         [tenantId],
       );
       expect(carlRow.rows[0].state).toBe('invited');
-      // ...and the pairing path is open again, not dead-ended.
-      const carlLink = await callWith('get_connect_link', { ref: 'carl-sagan' });
-      expect(carlLink.isError).toBe(false);
 
       // Reactivate AT CAP: free pair-probe's seat again, fill every seat, then
       // the undo must hit the purchase message (seat cap is never bypassed).
+      //
+      // On the way, a staged deactivation's 15-minute life (2026-09-19: with
+      // resolve_review gone, expiry is the only thing that ends a forgotten
+      // one). `stagedAt` is backdated in the row to stand in for the wait.
+      const backdate = (id: string) =>
+        pg.query(
+          "update review_items set detail = jsonb_set(detail, '{stagedAt}', to_jsonb($2::text)) where id = $1",
+          [id, new Date(Date.now() - 16 * 60_000).toISOString()],
+        );
+      const statusOf = async (id: string) =>
+        (await pg.query<{ status: string }>('select status from review_items where id = $1', [id]))
+          .rows[0].status;
+      // (a) A "yes" on an expired token is refused, and the token is closed.
+      const lapsed = await callWith('deactivate_technician_seat', { ref: 'pair-probe' });
+      await backdate(lapsed.data.confirmId);
+      const late = await callWith('deactivate_technician_seat', {
+        ref: 'pair-probe',
+        confirmId: lapsed.data.confirmId,
+      });
+      expect(late.isError).toBe(true);
+      expect(late.text).toContain('confirmation expired');
+      expect(await statusOf(lapsed.data.confirmId)).toBe('dismissed');
+      // (b) Staging again over an expired OPEN token must not hand the dead one
+      // back (the dedup would): it is superseded, and the fresh one confirms.
+      const forgotten = await callWith('deactivate_technician_seat', { ref: 'pair-probe' });
+      await backdate(forgotten.data.confirmId);
       const ask2 = await callWith('deactivate_technician_seat', { ref: 'pair-probe' });
+      expect(ask2.data.confirmId).not.toBe(forgotten.data.confirmId);
+      expect(await statusOf(forgotten.data.confirmId)).toBe('dismissed');
       const done2 = await callWith('deactivate_technician_seat', {
         ref: 'pair-probe',
         confirmId: ask2.data.confirmId,
@@ -2875,26 +2636,17 @@ describe('send_email tool (outbound seam stubbed)', () => {
       }
       expect(sendCalls).toHaveLength(3); // staged2 + s3(threw) + s4 — nothing else sent
 
-      // resolve_review: a staged send is a live token — "resolved" is refused,
-      // dismiss (= cancel) is allowed. Manager surface counts exactly 21.
-      const { client: mgrClient, callWith: mgrCall } = await clientFor(
+      // The manager surface as named in surface.expected.ts. (A staged send
+      // used to be refused as "resolved" and cancelled through resolve_review
+      // here; that tool was retired on 2026-09-19 and a send token simply
+      // expires, 15 minutes after staging.)
+      const { client: mgrClient } = await clientFor(
         { tenantId, technicianRef: 'mgr-test' },
         stubs,
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
         expectSurface(mgrTools, MANAGER_TOOLS_EXPECTED, [...TEAM_LEAD_ONLY_TOOLS, 'get_schedule']);
-        const fakeResolve = await mgrCall('resolve_review', {
-          reviewItemId: s6.data.confirmId,
-          resolution: 'resolved',
-        });
-        expect(fakeResolve.isError).toBe(true);
-        expect(fakeResolve.text).toContain('staged email send');
-        const cancel = await mgrCall('resolve_review', {
-          reviewItemId: s6.data.confirmId,
-          resolution: 'dismissed',
-        });
-        expect(cancel.isError).toBe(false);
       } finally {
         await mgrClient.close();
       }
@@ -4037,7 +3789,7 @@ describe('record_standing_fact (staged two-step)', () => {
     expect(after.rows[0].attributes.dog_on_site?.sourceCaptureId).toBe(done.data.captureId);
   });
 
-  test('resolve_review refuses to "resolve" a staged fact (live token); dismiss cancels; re-stage supersedes', async () => {
+  test('a re-staged fact supersedes the earlier token', async () => {
     const customer = await createCustomer({ tenantId, name: 'Fact Cancel', phone: '555-9006' });
     const a = await call('record_standing_fact', { customerId: customer.id, key: 'k_one', value: 1 });
     // Re-stage supersedes: one staged fact per person, the old token is dead.
@@ -4045,27 +3797,9 @@ describe('record_standing_fact (staged two-step)', () => {
     expect(b.data.confirmId).not.toBe(a.data.confirmId);
     const deadA = await call('record_standing_fact', { confirmId: a.data.confirmId });
     expect(deadA.isError).toBe(true);
-
-    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
-    try {
-      const refused = await callWith('resolve_review', {
-        reviewItemId: b.data.confirmId,
-        resolution: 'resolved',
-      });
-      expect(refused.isError).toBe(true);
-      expect(refused.text).toContain('staged standing fact');
-      const cancel = await callWith('resolve_review', {
-        reviewItemId: b.data.confirmId,
-        resolution: 'dismissed',
-      });
-      expect(cancel.isError).toBe(false);
-    } finally {
-      await mgrClient.close();
-    }
-    // The cancelled token no longer commits anything.
-    const confirmCancelled = await call('record_standing_fact', { confirmId: b.data.confirmId });
-    expect(confirmCancelled.isError).toBe(true);
-    expect(confirmCancelled.text).toContain('confirmation not found');
+    // (Its second half — resolve_review refusing to "resolve" the live token and
+    // dismissing it as a cancel — went with that tool, 2026-09-19. `b` is left
+    // unconfirmed; it expires 15 minutes after staging like every token.)
   });
 
   test('batch: several facts stage as ONE token with ONE preview, commit under ONE capture, and fold together on retraction', async () => {
@@ -4741,8 +4475,9 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       const after = await callWith('get_team_schedule', { from: '2026-12-02', to: '2026-12-02' });
       expect(after.data.scheduleVersion).toBeGreaterThan(v1);
 
-      // resolve_review refuses to "resolve" a live scheduling token; dismissing
-      // cancels it (then its confirm finds nothing).
+      // A staged unschedule, and a forged confirmId against it. (It used to be
+      // cancelled through resolve_review here too; that tool was retired on
+      // 2026-09-19, and the restage below supersedes the open token instead.)
       const cancelStage = await callWith('unschedule_visit', {
         visitId: movedId,
         reason: 'testing the refusal',
@@ -4753,20 +4488,6 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       const forged = await callWith('unschedule_visit', { confirmId: customer.id });
       expect(forged.isError).toBe(true);
       expect(forged.text).toContain('confirmation not found');
-      const refused = await callWith('resolve_review', {
-        reviewItemId: cancelStage.data.confirmId,
-        resolution: 'resolved',
-      });
-      expect(refused.isError).toBe(true);
-      expect(refused.text).toContain('unschedule_visit');
-      const dismissed = await callWith('resolve_review', {
-        reviewItemId: cancelStage.data.confirmId,
-        resolution: 'dismissed',
-      });
-      expect(dismissed.isError).toBe(false);
-      const deadConfirm = await callWith('unschedule_visit', { confirmId: cancelStage.data.confirmId });
-      expect(deadConfirm.isError).toBe(true);
-      expect(deadConfirm.text).toContain('confirmation not found');
 
       // CANCEL for real: restage (fresh preview) then confirm.
       const cancelStage2 = await callWith('unschedule_visit', {
@@ -4965,8 +4686,10 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       const visitId = booked.data.visitId as string;
       const staged = await callWith('unschedule_visit', { visitId, reason: 'customer cancelled' });
       expect(staged.data.status).toBe('needs_confirmation');
-      // The snapshot is WALL-CLOCK text: list_pending_reviews hands this detail
-      // to the model, and a raw '+00:00' timestamp there is the 2026-07-22 defect.
+      // detail.expected is what the confirm compares against. It stays WALL-CLOCK
+      // text because that is the rule for anything a model may read
+      // (list_pending_reviews showed it until 2026-09-19), and a raw '+00:00'
+      // there was the 2026-07-22 defect.
       const snap = await pg.query<{ expected: unknown }>(
         `select detail->'expected' as expected from review_items where id = $1`,
         [staged.data.confirmId],
@@ -5792,8 +5515,17 @@ describe('schedule-input verbs (Plan 3a)', () => {
     }
   });
 
-  test('onboarding hook: seat confirm opens availability_setup; set_availability auto-resolves; dismiss = "not known yet"', { timeout: 30_000 }, async () => {
+  test('onboarding hook: seat confirm opens availability_setup; set_availability auto-resolves', { timeout: 30_000 }, async () => {
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    // The open availability_setup item for a ref, read straight from the table
+    // (the manager's queue tool that used to list it was retired, 2026-09-19).
+    const openSetupItem = async (ref: string) =>
+      (
+        await pg.query<{ id: string }>(
+          "select id from review_items where tenant_id = $1 and kind = 'availability_setup' and subject_ref = $2 and status = 'open'",
+          [tenantId, ref],
+        )
+      ).rows[0];
     try {
       // Seat-exempt adds exercise the hook without seat-cap pressure — and the
       // hook MUST fire for them (a pattern is their only route to the scheduler).
@@ -5806,36 +5538,16 @@ describe('schedule-input verbs (Plan 3a)', () => {
       expect(added.data.note).toContain('REQUIRED next step');
       expect(added.data.note).toContain('set_availability');
 
-      const item = (await reviewsAll(callWith, 'availability_setup')).find(
-        (r) => r.kind === 'availability_setup' && r.subjectRef === 'onboard-one',
-      );
-      expect(item).toBeDefined();
+      expect(await openSetupItem('onboard-one')).toBeDefined();
 
       // Setting the pattern closes the obligation.
       const set = await callWith('set_availability', { ref: 'onboard-one', pattern: PATTERN_MON_FRI });
       expect(set.isError).toBe(false);
-      expect(
-        (await reviewsAll(callWith, 'availability_setup')).find(
-          (r) => r.kind === 'availability_setup' && r.subjectRef === 'onboard-one',
-        ),
-      ).toBeUndefined();
-
-      // Second person: the explicit "no availability yet" path via dismiss.
-      const stage2 = await callWith('add_technician_seat', {
-        displayName: 'Onboard Two',
-        seatExempt: true,
-      });
-      await callWith('add_technician_seat', { confirmId: stage2.data.confirmId });
-      const item2 = (await reviewsAll(callWith, 'availability_setup')).find(
-        (r) => r.kind === 'availability_setup' && r.subjectRef === 'onboard-two',
-      );
-      expect(item2).toBeDefined();
-      const dismissed = await callWith('resolve_review', {
-        reviewItemId: item2!.id,
-        resolution: 'dismissed',
-        note: 'no availability yet — hours not known',
-      });
-      expect(dismissed.isError).toBe(false);
+      expect(await openSetupItem('onboard-one')).toBeUndefined();
+      // (A second person's "no availability yet" dismissal stood here; that
+      // door went with resolve_review, 2026-09-19, and the seat note no longer
+      // offers it — an unset pattern simply leaves the item open.)
+      expect(added.data.note).not.toContain('dismiss');
 
       // set_availability with NO open item (pre-hook rows) succeeds quietly.
       const again = await callWith('set_availability', { ref: 'onboard-one', pattern: PATTERN_MON_FRI });
@@ -5848,11 +5560,7 @@ describe('schedule-input verbs (Plan 3a)', () => {
       const added3 = await callWith('add_technician_seat', { confirmId: stage3.data.confirmId });
       expect(added3.isError).toBe(false);
       expect(added3.data.note).toContain('REQUIRED next step');
-      expect(
-        (await reviewsAll(callWith, 'availability_setup')).find(
-          (r) => r.kind === 'availability_setup' && r.subjectRef === 'onboard-three',
-        ),
-      ).toBeDefined();
+      expect(await openSetupItem('onboard-three')).toBeDefined();
     } finally {
       await mgrClient.close();
     }
@@ -7616,7 +7324,6 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
         ['record_field_note', { rawText: 'x', channel: 'technician_note' }],
         ['send_email', { to: 'a@b.c', subject: 'x', body: 'x' }],
         ['book_visit', { customerId: '00000000-0000-0000-0000-000000000000', date: '2026-08-20', startTime: '09:00' }],
-        ['list_pending_reviews', {}],
         ['add_team_member', { name: 'X', tier: 'technician' }],
       ] as Array<[string, Record<string, unknown>]>) {
         const res = await callWith(name, args);
@@ -10039,82 +9746,6 @@ describe('rung 10 — open_job, and the citation on what a yes creates', () => {
     const refused = await call('open_job', { customerId: customer.id, title: 'nope' });
     expect(refused.isError).toBe(true);
     expect(refused.text).toMatch(/manager/i);
-  });
-});
-
-describe('list_pending_reviews pages (retrieval layer 4)', () => {
-  test('20 + next → 5, counts over the whole queue, a withheld detail opens by id, another firm\'s id is not found', async () => {
-    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
-    const other = await createTenant('rl4-review-other', { managerSeats: 1 });
-    const made: string[] = [];
-    try {
-      // A kind no other test writes, so the counts are exactly this fixture.
-      for (let i = 0; i < 25; i++) {
-        const { rows } = await pg.query<{ id: string }>(
-          `insert into review_items (tenant_id, kind, subject_ref, detail, created_at)
-           values ($1, 'rl4_page_probe', $2, $3::jsonb, $4::timestamptz)
-           returning id`,
-          [
-            tenantId,
-            `rl4-${i}`,
-            JSON.stringify(i === 3 ? { words: 'y'.repeat(3000) } : { i }),
-            // Items 18..21 share ONE microsecond timestamp, so the page boundary
-            // (after the 20th) falls inside the tie: a cursor that lost its
-            // microseconds or its id would repeat or skip a row here.
-            i >= 18 && i <= 21
-              ? '2027-01-01 00:00:18.123456+00'
-              : `2027-01-01 00:00:${String(i).padStart(2, '0')}.000001+00`,
-          ],
-        );
-        made.push(rows[0].id);
-      }
-      const foreign = await pg.query<{ id: string }>(
-        `insert into review_items (tenant_id, kind, subject_ref) values ($1, 'rl4_page_probe', 'rl4-foreign') returning id`,
-        [other.id],
-      );
-
-      const p1 = await callWith('list_pending_reviews', { kind: 'rl4_page_probe' });
-      expect(p1.data.items).toHaveLength(20);
-      expect(p1.data.total).toBe(25);
-      expect(p1.data.byKind.rl4_page_probe).toBe(25);
-      expect(p1.data.hasMore).toBe(true);
-      expect(p1.data.now).toBeDefined();
-      const p2 = await callWith('list_pending_reviews', { kind: 'rl4_page_probe', after: p1.data.next });
-      expect(p2.data.items).toHaveLength(5);
-      expect(p2.data.next).toBeNull();
-      const refs = [...p1.data.items, ...p2.data.items].map((i: { subjectRef: string }) => i.subjectRef);
-      expect(new Set(refs).size).toBe(25);
-      expect(refs).not.toContain('rl4-foreign');
-
-      const big = p1.data.items.find((i: { subjectRef: string }) => i.subjectRef === 'rl4-3');
-      expect(big).toMatchObject({ detail: null, detailWithheld: true });
-      expect(p1.data.note).toContain('reviewItemId');
-      const opened = await callWith('list_pending_reviews', { reviewItemId: big.id });
-      expect(opened.data.item.detail.words).toHaveLength(3000);
-      // The same field names the page uses — the drill-down must not rename them.
-      expect(opened.data.item).toMatchObject({ id: big.id, subjectRef: 'rl4-3', detailWithheld: false });
-      expect(opened.data.item.createdAt).toBeDefined();
-      expect(opened.data.item).not.toHaveProperty('subject_ref');
-
-      const notMine = await callWith('list_pending_reviews', { reviewItemId: foreign.rows[0].id });
-      expect(notMine.isError).toBe(false);
-      expect(notMine.data.item).toBeNull();
-      expect(p1.data.next).toContain('.123456');
-      const badCursor = await callWith('list_pending_reviews', { after: 'page-two' });
-      expect(badCursor.isError).toBe(true);
-      const notAnId = await callWith('list_pending_reviews', { reviewItemId: 'not-a-uuid' });
-      expect(notAnId.isError).toBe(false);
-      expect(notAnId.data.item).toBeNull();
-      const empty = await callWith('list_pending_reviews', { kind: 'rl4_no_such_kind' });
-      expect(empty.data.items).toEqual([]);
-      expect(empty.data.note).toContain('no open review items');
-      await pg.query('delete from review_items where id = $1', [foreign.rows[0].id]);
-    } finally {
-      await mgrClient.close();
-      await pg.query('delete from review_items where id = any($1::uuid[])', [made]);
-      await pg.query('delete from review_items where tenant_id = $1', [other.id]);
-      await pg.query('delete from tenants where id = $1', [other.id]);
-    }
   });
 });
 

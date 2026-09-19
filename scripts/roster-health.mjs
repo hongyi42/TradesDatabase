@@ -20,13 +20,20 @@ const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_R
 });
 
 // The one definition of "not live", matching isInactiveState's intent. Kept
-// local because scripts/ must not import from src/ (build-order independence).
-const INACTIVE = new Set(['inactive', 'retired', 'archived', 'disabled']);
+// local because scripts/ must not import from src/ (build-order independence)
+// — so it must be kept in step with src/db/technicians.ts by hand. THESE ARE
+// THE REAL STATES: the first version listed four that no roster row has ever
+// had ('inactive', 'retired', 'archived', 'disabled'), which made every
+// departed person "live". Harmless while the sections only listed things, but
+// the pool check below turns it into a hard exit-1 on a healthy fleet — a
+// deactivation leaves the roster's sandbox_ref in place while the pool row is
+// retired and freed, which then reads as a roster/pool split for every leaver.
+const INACTIVE = new Set(['offboarding', 'offboarded']);
 const isLive = (t) => !INACTIVE.has(String(t.state ?? '').toLowerCase());
 
 const { data: techs, error } = await db
   .from('technicians')
-  .select('id,ref,display_name,tier,state,sandbox_ref,telegram_user_id,tenant_id');
+  .select('id,ref,display_name,tier,state,sandbox_ref,telegram_user_id,tenant_id,host_id');
 if (error) throw new Error(`roster read failed: ${error.message}`);
 const { data: tenants } = await db.from('tenants').select('id,name');
 const tname = Object.fromEntries((tenants ?? []).map((t) => [t.id, t.name]));
@@ -96,16 +103,38 @@ say('     still pointing at it means two people can end up on one bot)');
 // authority on whether a sandbox is free, so compare against THAT.
 const { data: pool, error: poolErr } = await db
   .from('sandbox_pool')
-  .select('sandbox_ref,technician_id,retired_at,tenant_id,bot_username');
+  .select('sandbox_ref,technician_id,retired_at,tenant_id,bot_username,host_id');
 if (poolErr) throw new Error(`pool read failed: ${poolErr.message}`);
-const poolBy = new Map((pool ?? []).map((p) => [p.sandbox_ref, p]));
+// KEYED BY (host, sandbox_ref), because that is the table's own uniqueness
+// (migration 20260707000000) — two hosts can each have an s3, and keying on the
+// name alone would compare a person on one host against the other host's row.
+// A roster row with no host_id falls back to the name, which is unambiguous
+// only while one pool row carries it; when more do, say so instead of guessing.
+const poolByHostRef = new Map((pool ?? []).map((p) => [`${p.host_id}|${p.sandbox_ref}`, p]));
+const poolByRef = new Map();
+for (const p of pool ?? []) poolByRef.set(p.sandbox_ref, [...(poolByRef.get(p.sandbox_ref) ?? []), p]);
 let split = 0;
 for (const t of live.filter((x) => x.sandbox_ref)) {
-  const p = poolBy.get(t.sandbox_ref);
+  const sameRef = poolByRef.get(t.sandbox_ref) ?? [];
+  if (!t.host_id && sameRef.length > 1) {
+    split++;
+    say(`  ${t.sandbox_ref.padEnd(4)} ${t.ref} names no host, and ${sameRef.length} hosts have this sandbox`);
+    problems.push(`${t.sandbox_ref}: roster occupant ${t.ref} names no host_id - cannot tell which pool row is theirs`);
+    continue;
+  }
+  const p = t.host_id ? poolByHostRef.get(`${t.host_id}|${t.sandbox_ref}`) : sameRef[0];
   if (!p) {
     split++;
     say(`  ${t.sandbox_ref.padEnd(4)} ${t.ref} holds a sandbox with NO pool row`);
     problems.push(`${t.sandbox_ref}: roster occupant ${t.ref} but no sandbox_pool row`);
+    continue;
+  }
+  if (p.retired_at) {
+    // Being recycled while somebody still points at it: the box destroys and
+    // re-pools it on its next pull, and they lose their assistant with it.
+    split++;
+    say(`  ${t.sandbox_ref.padEnd(4)} roster: ${t.ref} (tenant ${tname[t.tenant_id]}) pool row is RETIRED (being recycled)`);
+    problems.push(`${t.sandbox_ref}: roster occupant ${t.ref} still points at a pool row marked retired`);
     continue;
   }
   if (p.technician_id === t.id) continue; // roster and pool agree

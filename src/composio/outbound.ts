@@ -30,7 +30,9 @@ export function requireOutboundCapable(tech: Technician | null): asserts tech is
   if (!tech) throw new Error('no roster row for this badge');
   if (tech.state !== 'active') throw new Error(`'${tech?.ref}' is not active (state: ${tech?.state})`);
   if (!tech.composio_connected_account_id) {
-    throw new Error(`'${tech.ref}' has no paired mailbox — pair one via get_connect_link first`);
+    throw new Error(
+      `'${tech.ref}' has no paired mailbox yet — connecting one moves to the settings page`,
+    );
   }
 }
 

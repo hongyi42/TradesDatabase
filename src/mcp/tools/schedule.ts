@@ -1401,8 +1401,10 @@ async function handleUnscheduleVisit(toolCtx: ToolContext): Promise<unknown> {
             reason,
             preview: preview as unknown as Json,
             // Wall-clock slices, never the raw column: list_pending_reviews
-            // returns this detail to the model, and raw `+00:00` timestamps
-            // there are the 2026-07-22 defect (see get_team_schedule's note).
+            // handed this detail to the model until it was retired
+            // (2026-09-19), and wall-clock stays the rule for anything a model
+            // may read — raw `+00:00` timestamps there were the 2026-07-22
+            // defect (see get_team_schedule's note).
             expected: {
               startsAt: wallClock(snapshot?.starts_at),
               endsAt: wallClock(snapshot?.ends_at),

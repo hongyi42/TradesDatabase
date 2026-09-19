@@ -352,7 +352,10 @@ what happened. Whether and when a manager hears about it is yours to judge."
 
 ### Changes required
 
-**`supabase/migrations/20260919160000_drop_review_queue_page.sql`**:
+**`supabase/migrations/20260919160000_drop_review_queue_page.sql`** (renamed from …120000: that
+version collided with `work/the-technician-access-request-flow-tech`'s
+`20260919120000_person_wide_money_grant.sql`, and the ledger keys on the version — whichever applied
+second would have been recorded as already applied and skipped in silence):
 - Header: apply only after the web service is running this code, because the running service calls the
   function until then.
 - Body: `drop function if exists review_queue_page(uuid, text, timestamptz, uuid, int, int);`

@@ -107,7 +107,7 @@ const BASE_TOOLS = [
       'The CONTENTS PAGE for a customer — fixed size, never their whole history. It carries the ' +
       'profile and standing facts; up to 10 jobs — every job still in progress, unbooked or ' +
       'unpaid first, then the newest finished ones — each with status, attributes, ' +
-      'noteCount (notes you may read), restrictedCount (notes on file here that you may not read — a manager can open them), ' +
+      'noteCount (notes you may read), restrictedCount (notes on file here that you may not read — the office can ask a manager to open them for your person), ' +
       'retractedCount (managers: notes retracted as recorded in error — ' +
       'list_recent_captures(jobId, includeRetracted: true) shows each with its reason), ' +
       "lastCaptureAt, lastVisitAt and `newest` — the newest note's first 200 characters with its " +
@@ -500,7 +500,9 @@ async function handleGetCustomerContext(toolCtx: ToolContext): Promise<unknown> 
             : '') +
           (contents.jobsOutsideView > 0
             ? `${contents.jobsOutsideView} more job${contents.jobsOutsideView === 1 ? '' : 's'} on file ` +
-              'for this customer are outside your view (only a manager can open them). '
+              'for this customer are outside your view. If your person needs them, offer to ask ' +
+              'the office, and only on their yes call ask_team_lead with accessRequest ' +
+              '{ customerId } and their reason. '
             : '') +
           'This is the contents page. list_recent_captures(jobId) pages a job\'s notes; ' +
           'get_capture(captureId) gives one note in full.',

@@ -62,7 +62,8 @@ import {
   markNudgeQueued,
 } from '../db/nudges.js';
 import { localDateISO } from '../schedule/availability.js';
-import { TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
+import { TEAM_LEAD_REF, TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
+import { answerAccessRequest } from '../teamLead/accessDesk.js';
 import { MEMORY_FILE_MAX } from '../teamLead/memory.js';
 import { JOB_NOTE_MAX } from '../teamLead/jobNotes.js';
 
@@ -10196,5 +10197,220 @@ describe('the access tools', () => {
     // The planner holds no grant door of its own.
     const refused = await planner.callWith('grant_access', { technician: 'tech-mcp', jobId: open.id, reason: 'x' });
     expect(refused.isError).toBe(true);
+  });
+});
+
+// ── the access REQUEST flow: ask_team_lead's accessRequest (plan B, phase 1) ──
+//
+// The desk itself is unit-tested hermetically in src/teamLead/accessDesk.test.ts.
+// What this block tests is the part only a real server can answer: that the
+// dispatch door threads the caller's identity into the request, that the
+// sensitive shape really does reach the managers through the push queue, and
+// that a technician's seat gets back words rather than ids.
+describe('the access request flow', () => {
+  let mgr: Awaited<ReturnType<typeof clientFor>>;
+
+  beforeAll(async () => {
+    // The firm at its DEFAULT width: the suite's own rule is whole_firm, under
+    // which tech-mcp sees everything and there is nothing to request.
+    await setTechnicianViewRule(tenantId, null, 'server.test');
+    // A manager who can actually be texted: listManagersWithTelegram needs the
+    // binding, and the desk drops anyone with no sandbox.
+    await pg.query(
+      "update technicians set telegram_user_id = '900900', sandbox_ref = 'sbx-mgr' where ref = 'mgr-test'",
+    );
+    mgr = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+  });
+
+  afterEach(async () => {
+    await pg.query('truncate table access_grants');
+    await pg.query('truncate table person_pushes');
+    await pg.query("delete from observations where kind = 'access_request'");
+    await setTechnicianViewRule(tenantId, null, 'server.test');
+  });
+
+  afterAll(async () => {
+    await mgr.client.close();
+    await pg.query('truncate table access_grants');
+    await pg.query('truncate table person_pushes');
+    await pg.query("delete from observations where kind = 'access_request'");
+    await pg.query(
+      "update technicians set telegram_user_id = null, sandbox_ref = null where ref = 'mgr-test'",
+    );
+    await setTechnicianViewRule(tenantId, { jobScope: 'whole_firm' }, 'server.test');
+  });
+
+  async function outsideJob(name: string) {
+    const customer = await createCustomer({ tenantId, name, phone: '555-8300' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: `${name} AC`, priceCents: 40000 });
+    return { customer, job };
+  }
+
+  test('a money request is filed and every reachable manager is texted', async () => {
+    const { job } = await outsideJob('Reqmoney Ng');
+    expect((await call('get_job', { jobId: job.id })).data.inView).toBe(false);
+
+    const res = await call('ask_team_lead', {
+      question: 'the customer is asking me what they still owe',
+      accessRequest: { jobId: job.id, wants: 'money' },
+    });
+    expect(res.isError).toBe(false);
+    expect(res.data.status).toBe('asked_manager');
+    expect(res.data.answer).toContain('Manager Test');
+
+    // The request is on the record, open, with the technician's words.
+    const rows = await pg.query(
+      "select technician_id, status, author, context from observations where kind = 'access_request'",
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0].status).toBe('open');
+    expect(rows.rows[0].author).toBe('planner');
+    expect(rows.rows[0].context.wants).toBe('money');
+    expect(rows.rows[0].context.why).toContain('what they still owe');
+
+    // …and the manager has a text waiting, on the access kind.
+    const pushes = await pg.query('select kind, body, technician_id from person_pushes');
+    expect(pushes.rows).toHaveLength(1);
+    expect(pushes.rows[0].kind).toBe('access');
+    expect(pushes.rows[0].body).toContain('Tech MCP');
+    // NO IDS IN THE CHAT — the manager's seat finds it with list_access.
+    expect(pushes.rows[0].body).not.toContain(job.id);
+    expect(res.data.answer).not.toContain(job.id);
+
+    // Nothing was opened by asking.
+    expect((await call('get_job', { jobId: job.id })).data.inView).toBe(false);
+  });
+
+  test('the same money request twice files one row and sends one text', async () => {
+    const { job } = await outsideJob('Reqtwice Ng');
+    const args = {
+      question: 'still chasing the balance',
+      accessRequest: { jobId: job.id, wants: 'money' as const },
+    };
+    const first = await call('ask_team_lead', args);
+    const second = await call('ask_team_lead', args);
+    expect(first.data.status).toBe('asked_manager');
+    expect(second.data.status).toBe('already_asked');
+    expect((await pg.query("select 1 from observations where kind = 'access_request'")).rows).toHaveLength(1);
+    expect((await pg.query('select 1 from person_pushes')).rows).toHaveLength(1);
+  });
+
+  test('a narrow ask the desk opens really does open the job, and only that job', async () => {
+    const { customer, job } = await outsideJob('Reqnarrow Ng');
+    const other = await createJob({ tenantId, customerId: customer.id, title: 'Reqnarrow heater' });
+    expect((await call('get_job', { jobId: job.id })).data.inView).toBe(false);
+
+    // THE ONE THING STUBBED IS THE DECISION. Everything below it is real: the
+    // grant is written by the live code path, and what proves it worked is that
+    // the technician's own get_job answers differently afterwards.
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'tech-mcp' },
+      {
+        accessDesk: ((input: Parameters<typeof answerAccessRequest>[0]) =>
+          answerAccessRequest(input, {
+            decide: async () => ({ decision: 'open' as const, reason: 'he is on site now' }),
+          })) as unknown as ServerDeps['accessDesk'],
+      },
+    );
+    try {
+      const res = await callWith('ask_team_lead', {
+        question: 'I am at the gate and need the code',
+        accessRequest: { jobId: job.id },
+      });
+      expect(res.isError).toBe(false);
+      expect(res.data.status).toBe('opened');
+      expect(res.data.answer).not.toContain(job.id);
+    } finally {
+      await c.close();
+    }
+
+    // The job is now readable — title and all — and NOTHING else of that
+    // customer's opened with it.
+    const seen = await call('get_job', { jobId: job.id });
+    expect(seen.data.inView).toBeUndefined();
+    expect(seen.data.title).toBe('Reqnarrow Ng AC');
+    expect(seen.data.price_cents).toBeUndefined(); // record only: no figures
+    expect((await call('get_job', { jobId: other.id })).data.inView).toBe(false);
+
+    // One grant, written by the office and reading back as the desk's shape.
+    const grants = await pg.query(
+      'select job_id, opens, opens_money, granted_by, requested_by, reason, expires_at from access_grants',
+    );
+    expect(grants.rows).toHaveLength(1);
+    expect(grants.rows[0].job_id).toBe(job.id);
+    expect(grants.rows[0].opens).toBe('record');
+    expect(grants.rows[0].opens_money).toBe(false);
+    expect(grants.rows[0].granted_by).toBe(TEAM_LEAD_REF);
+    expect(grants.rows[0].requested_by).toBe('tech-mcp');
+    expect(grants.rows[0].reason).toContain('I am at the gate');
+    // A DAY, not the manager's week.
+    const hours = (Date.parse(grants.rows[0].expires_at) - Date.now()) / 3_600_000;
+    expect(hours).toBeGreaterThan(23);
+    expect(hours).toBeLessThan(25);
+    // Nothing was filed and nobody was texted: the desk answered it.
+    expect((await pg.query("select 1 from observations where kind = 'access_request'")).rows).toHaveLength(0);
+    expect((await pg.query('select 1 from person_pushes')).rows).toHaveLength(0);
+  });
+
+  test('the desk is reached with the caller identity, and its answer is relayed verbatim', async () => {
+    const { job } = await outsideJob('Reqthread Ng');
+    const accessDesk = vi.fn(async () => ({ status: 'opened' as const, answer: 'Opened for you until Sunday.' }));
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'tech-mcp' },
+      { accessDesk: accessDesk as unknown as ServerDeps['accessDesk'] },
+    );
+    try {
+      const res = await callWith('ask_team_lead', {
+        question: '  I need\nthe gate code  ',
+        accessRequest: { jobId: job.id, wants: 'record' },
+      });
+      expect(res.isError).toBe(false);
+      expect(res.data.status).toBe('opened');
+      expect(res.data.answer).toBe('Opened for you until Sunday.');
+      expect(accessDesk).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tenantId,
+          askerRef: 'tech-mcp',
+          askerName: 'Tech MCP',
+          askerTier: 'technician',
+          askerTechnicianId: techMcpId,
+          activeManager: false,
+          why: 'I need the gate code', // the same hygiene the question gets
+          jobId: job.id,
+          wants: 'record',
+        }),
+        expect.anything(),
+      );
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('a request with no reason, or a bad wants, is refused before anything is filed', async () => {
+    const { job } = await outsideJob('Reqbad Ng');
+    const noWhy = await call('ask_team_lead', { question: '   ', accessRequest: { jobId: job.id } });
+    expect(noWhy.isError).toBe(true);
+    expect(noWhy.text).toContain('question is required');
+
+    const badWants = await call('ask_team_lead', {
+      question: 'need it',
+      accessRequest: { jobId: job.id, wants: 'everything' },
+    });
+    expect(badWants.isError).toBe(true);
+    expect(badWants.text).toContain('wants must be');
+
+    expect((await pg.query("select 1 from observations where kind = 'access_request'")).rows).toHaveLength(0);
+    expect((await pg.query('select 1 from person_pushes')).rows).toHaveLength(0);
+  });
+
+  test('a manager asking for access is told they already see everything', async () => {
+    const { job } = await outsideJob('Reqmgr Ng');
+    const res = await mgr.callWith('ask_team_lead', {
+      question: 'can I see this',
+      accessRequest: { jobId: job.id, wants: 'money' },
+    });
+    expect(res.isError).toBe(false);
+    expect(res.data.status).toBe('refused');
+    expect((await pg.query('select 1 from person_pushes')).rows).toHaveLength(0);
   });
 });

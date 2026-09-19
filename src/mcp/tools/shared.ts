@@ -69,10 +69,15 @@ export const callerTierOf = (ctx: ToolContext): CallerTier =>
 export const viewerIdOf = (ctx: ToolContext): string | null => ctx.caller?.id ?? null;
 
 // What a technician's seat is told about something outside her view. Plain, and
-// honest about the one way in: the request flow (a later task) will carry the ask.
+// it now names the way in (access plan B): the office can ask for it. The offer
+// is made to the PERSON first and acted on only on their yes — a seat that asks
+// for access on its own initiative is asking a manager a question nobody wanted
+// asked.
 export const OUTSIDE_VIEW_NOTE =
-  'outside your view — you see the customers whose current work you have a trip on. Only a ' +
-  'manager can open this one; say so, and do not guess what it holds. Notes you wrote ' +
+  'outside your view — you see the customers whose current work you have a trip on. Do not ' +
+  'guess what it holds. The office can ask a manager to open it for you: tell your person it ' +
+  'is not open to them and offer to ask, and only if they say yes, call ask_team_lead with ' +
+  'accessRequest (the id above) and their own reason as the question. Notes you wrote ' +
   'yourself there stay readable: list_recent_captures shows them.';
 
 // GROUNDING_BARE=1 (date-eval bare-clock arm, 2026-08-23): the model's ONLY

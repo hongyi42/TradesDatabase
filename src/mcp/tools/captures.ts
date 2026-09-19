@@ -733,7 +733,9 @@ async function handleListRecentCaptures(toolCtx: ToolContext): Promise<unknown> 
             // Restricted = on a record she may open, closed to her by its content
             // (channel, manager_only, a hidden tag). "Outside your view" is kept
             // for a job or customer she may not open at all (OUTSIDE_VIEW_NOTE).
-            ? `no notes you may read here — ${page.restrictedCount} on file are closed to you (a manager can open them)`
+            ? `no notes you may read here — ${page.restrictedCount} on file are closed to you. If ` +
+              'your person needs them, offer to ask the office, and only on their yes call ' +
+              'ask_team_lead with accessRequest { wants: "notes" } and their reason'
             : 'no notes on file here yet'
           : page.hasMore
             // No remaining count: totalVisible is the whole scope, not what is

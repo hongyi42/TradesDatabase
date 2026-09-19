@@ -4,6 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { fileURLToPath } from 'node:url';
 import { TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
 import { answerDeskQuestion } from '../teamLead/desk.js';
+import { answerAccessRequest } from '../teamLead/accessDesk.js';
 import { DESK_QUESTION_MAX } from '../teamLead/deskPrompt.js';
 import { spineNowIso } from '../evalClock.js';
 import type { ForcedToolSpec, JsonSchemaObject } from '../model/forcedTool.js';
@@ -82,6 +83,9 @@ export interface ServerDeps {
   // The Q&A desk seam (build 5.5 Phase 2) — injectable so a dispatch test
   // never calls the live model (the extractor precedent).
   deskAnswer?: typeof answerDeskQuestion;
+  // The access-request seam (plan B) — the desk's ONE write. Injectable for the
+  // same reason as deskAnswer: a dispatch test must never call the live model.
+  accessDesk?: typeof answerAccessRequest;
   // Cost-ledger seam. Injectable for the same reason as the rest: without it
   // every hermetic dispatch test would start writing to the real database.
   recordCost?: typeof appendCostEvents;
@@ -107,14 +111,36 @@ const TOOLS = [
       "Ask the office's team lead a question and get an answer NOW, in this same call — use it " +
       'when the answer would change what you do next: "am I square with the office?", "is the ' +
       'office waiting on anything from my person?", "has this already been chased?". It reads ' +
-      "the office's records and notes; it cannot act, promise, or send anything. If it cannot " +
-      'answer, your question is kept for the office\'s next planning pass automatically.',
+      "the office's records and notes; it does not act — EXCEPT that it can ask for access for " +
+      'you (accessRequest below). If it cannot answer, your question is kept for the office\'s ' +
+      'next planning pass automatically.',
     inputSchema: {
       type: 'object',
       properties: {
         question: {
           type: 'string',
           description: 'The question, plain prose, up to 500 characters.',
+        },
+        accessRequest: {
+          type: 'object',
+          description:
+            'ASK FOR ACCESS to something a tool answered "outside your view". Only ever after ' +
+            "your person has said yes, and `question` carries THEIR reason in their words. The " +
+            'office decides: a narrow ask may be opened on the spot, anything else is texted to ' +
+            'a manager and you are told which. Say what happened; never say they now have ' +
+            'access unless the answer says opened.',
+          properties: {
+            jobId: { type: 'string', description: 'The job they need, as the tool that refused it named it.' },
+            customerId: { type: 'string', description: 'The customer they need. Use jobId instead when it is one job.' },
+            wants: {
+              type: 'string',
+              enum: ['record', 'notes', 'money'],
+              description:
+                'record (default) = the job and the customer\'s details. notes = every note on ' +
+                'it, calls and emails included. money = the dollar figures. notes and money ' +
+                'always go to a manager.',
+            },
+          },
         },
       },
       required: ['question'],
@@ -717,6 +743,44 @@ async function dispatch(
         throw new Error(
           `question is too long (max ${DESK_QUESTION_MAX} characters) — ask the one thing that ` +
             'would change what you do',
+        );
+      }
+      // THE ACCESS BRANCH (plan B). The only thing this tool can do rather than
+      // answer — and it is a different call, not a wider desk: the general desk
+      // loop stays read-only, and the request path never reaches it.
+      // `question` is the WHY, so a request with no reason is refused here
+      // rather than filed: a manager reading "Sam asks to open X — they say:
+      // ''" has been told nothing.
+      if (args.accessRequest !== undefined && args.accessRequest !== null) {
+        const req = args.accessRequest;
+        if (typeof req !== 'object' || Array.isArray(req)) {
+          throw new Error('accessRequest must name a jobId or a customerId, and optionally wants');
+        }
+        const r = req as Record<string, unknown>;
+        const optStr = (k: string): string | undefined => {
+          const v = r[k];
+          if (v === undefined || v === null) return undefined;
+          if (typeof v !== 'string' || !v.trim()) throw new Error(`accessRequest.${k} must be an id`);
+          return v.trim();
+        };
+        const wants = optStr('wants') ?? 'record';
+        if (wants !== 'record' && wants !== 'notes' && wants !== 'money') {
+          throw new Error('accessRequest.wants must be "record", "notes" or "money"');
+        }
+        return await (deps.accessDesk ?? answerAccessRequest)(
+          {
+            tenantId,
+            askerRef: identity.technicianRef,
+            askerName: caller?.display_name ?? identity.technicianRef,
+            askerTier: caller?.tier ?? null,
+            askerTechnicianId: caller?.id ?? null,
+            activeManager,
+            why: question,
+            ...(optStr('jobId') ? { jobId: optStr('jobId') as string } : {}),
+            ...(optStr('customerId') ? { customerId: optStr('customerId') as string } : {}),
+            wants,
+          },
+          {},
         );
       }
       const desk = await (deps.deskAnswer ?? answerDeskQuestion)(

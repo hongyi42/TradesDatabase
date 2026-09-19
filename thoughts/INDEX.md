@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 266 documents · 254 live · 12 superseded.
+Regenerate with `npm run decisions:index`. 268 documents · 256 live · 12 superseded.
 
 ## Superseded — do not build on these
 
@@ -51,6 +51,8 @@ Regenerate with `npm run decisions:index`. 266 documents · 254 live · 12 super
 
 ## Live
 
+- `2026-09-19` `plan` [2026-09-19-access-plan-a-the-managers-access-tools](shared/plans/2026-09-19-access-plan-a-the-managers-access-tools.md) `describes 1 deleted file` · _draft_ — Access plan A of 2 — the manager's access tools (grant_access, revoke_access, list_access, set_technician_vie…
+- `2026-09-19` `plan` [2026-09-19-access-plan-b-the-request-flow-through-the-office](shared/plans/2026-09-19-access-plan-b-the-request-flow-through-the-office.md) `describes 4 deleted files` · _draft_ — Access plan B of 2 — the request flow; the seat asks, the desk filters, narrow asks are opened by the desk at…
 - `2026-09-19` `research` [2026-09-19-the-technician-access-request-flow](shared/research/2026-09-19-the-technician-access-request-flow.md) `landed` — The technician access request flow — what exists today for each hop (the out-of-view answer a technician's se…
 - `2026-09-15` `finding` [2026-09-15-customer-context-becomes-a-table-of-cont](shared/findings/2026-09-15-customer-context-becomes-a-table-of-cont.md) `describes 1 deleted file` `drift 28` — the retrieval-and-delivery layer for technicians, managers and the planner: every tool meets the retrieval go…
 - `2026-09-15` `finding` [2026-09-15-retrieval-layer-2-the-technician-limited](shared/findings/2026-09-15-retrieval-layer-2-the-technician-limited.md) `drift 23` — retrieval layer 2: the technician limited view — scope gate (their visits, their customers' current jobs), gr…

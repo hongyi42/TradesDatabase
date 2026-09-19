@@ -126,8 +126,8 @@ the new tools show, and a real signed call proves a grant opens and a revoke clo
   `src/db/rowCap.ts:15`). Header comment (:11-14) names the new callers.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass
-- [ ] `src/db/technicianView.test.ts` (its `afterEach` already truncates `access_grants`,
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass
+- [x] `src/db/technicianView.test.ts` (its `afterEach` already truncates `access_grants`,
       :209-211): a person-wide money grant sets `moneyAll` and adds no job or customer; revoking it
       succeeds (the NULL-`opens` ledger path) and `moneyAll` goes false; an expired one is ignored;
       a no-scope row without money, or with `opens`, is refused; `getAccessGrant` reads a revoked row.

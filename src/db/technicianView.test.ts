@@ -16,8 +16,11 @@ import {
   type CustomerContents,
 } from './context.js';
 import {
+  getAccessGrant,
   getTechnicianView,
+  getTechnicianViewRule,
   insertAccessGrant,
+  listLiveAccessGrants,
   revokeAccessGrant,
   setTechnicianViewRule,
   viewShowsMoney,
@@ -455,6 +458,121 @@ describe('money: words by default, figures when the firm or a grant opens them',
     // A revoke closes it again — the grant is the only thing holding it open.
     await pg.query('truncate table access_grants');
     expect(viewShowsMoney(await getTechnicianView(tenantId, jane), { customerId: henderson.id })).toBe(false);
+  });
+});
+
+// ACCESS PLAN A (migration 20260919120000): a grant naming no customer and no job
+// opens the figures on whatever she can already open — and nothing else.
+describe('a person-wide money grant', () => {
+  const personWide = (over: Partial<Parameters<typeof insertAccessGrant>[0]> = {}) =>
+    insertAccessGrant({
+      tenantId,
+      technicianId: jane,
+      opensMoney: true,
+      grantedBy: 'mgr-test',
+      reason: 'she collects payments on site',
+      ...over,
+    });
+
+  test('opens the figures everywhere she can look, and opens nothing new', async () => {
+    const before = await getTechnicianView(tenantId, jane);
+    expect(before.moneyAll).toBe(false);
+    const g = await personWide();
+    expect(g.opens).toBeNull();
+    const after = await getTechnicianView(tenantId, jane);
+    expect(after.moneyAll).toBe(true);
+    expect(viewShowsMoney(after, { jobId: leeOpen.id })).toBe(true);
+    // The view itself is exactly as wide as before: no job, no customer added.
+    expect([...after.jobIds].sort()).toEqual([...before.jobIds].sort());
+    expect([...after.customerIds].sort()).toEqual([...before.customerIds].sort());
+    expect(isOutsideView((await contentsFor(henderson.id))!)).toBe(true);
+    expect((await inView(lee.id)).jobs.every((j) => j.moneyAmounts === true)).toBe(true);
+  });
+
+  test('revoking it works (the NULL-opens path through the ledger) and closes the figures', async () => {
+    const g = await personWide();
+    expect(await revokeAccessGrant(g.id, tenantId, 'mgr-test', 'no longer collecting')).toBe(true);
+    expect((await getTechnicianView(tenantId, jane)).moneyAll).toBe(false);
+    // Still readable after the revoke, stamp and names included.
+    const read = await getAccessGrant(g.id, tenantId);
+    expect(read?.revoked_by).toBe('mgr-test');
+    expect(read?.technicians?.display_name).toBeTruthy();
+    expect(await getAccessGrant(g.id, otherTenantId)).toBeNull();
+  });
+
+  test('an expired one opens nothing', async () => {
+    await personWide({ expiresAt: new Date(Date.now() - 60_000).toISOString() });
+    expect((await getTechnicianView(tenantId, jane)).moneyAll).toBe(false);
+  });
+
+  test('the database refuses every other shape of scope-less grant, and a scoped grant without opens', async () => {
+    await expect(personWide({ opensMoney: false })).rejects.toThrow();
+    await expect(personWide({ opens: 'record' })).rejects.toThrow();
+    await expect(
+      insertAccessGrant({
+        tenantId,
+        technicianId: jane,
+        jobId: hJob.id,
+        grantedBy: 'mgr-test',
+        reason: 'no opens given',
+      }),
+    ).rejects.toThrow();
+  });
+});
+
+describe('reading the ledgers back', () => {
+  test('the live list holds live grants only, newest first, with names', async () => {
+    const old = await insertAccessGrant({
+      tenantId, technicianId: jane, jobId: hJob.id, opens: 'record', grantedBy: 'mgr-test', reason: 'first',
+    });
+    const newer = await insertAccessGrant({
+      tenantId, technicianId: jane, customerId: pat.id, opens: 'record', grantedBy: 'mgr-test', reason: 'second',
+      // Ends in the future: the default shape of a manager's grant (7 days), so
+      // the expiry half of the live filter has to keep it.
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    const gone = await insertAccessGrant({
+      tenantId, technicianId: jane, customerId: cal.id, opens: 'record', grantedBy: 'mgr-test', reason: 'third',
+    });
+    await revokeAccessGrant(gone.id, tenantId, 'mgr-test', 'done');
+    await insertAccessGrant({
+      tenantId, technicianId: jane, customerId: lee.id, opens: 'record', grantedBy: 'mgr-test', reason: 'lapsed',
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const { rows, capped } = await listLiveAccessGrants(tenantId);
+    expect(capped).toBe(false);
+    expect(rows.map((r) => r.id)).toEqual([newer.id, old.id]);
+    expect(rows[1].jobs?.title).toBe(hJob.title);
+    expect(rows[0].customers?.name).toBe(pat.name);
+    expect((await listLiveAccessGrants(tenantId, { technicianId: jane })).rows).toHaveLength(2);
+    expect((await listLiveAccessGrants(otherTenantId)).rows).toEqual([]);
+  });
+
+  test("a grant naming another firm's customer or job never carries that firm's names", async () => {
+    const fay = await createCustomer({ tenantId: otherTenantId, name: 'Foreign Fay' });
+    const fayJob = await createJob({ tenantId: otherTenantId, customerId: fay.id, title: 'Foreign roof' });
+    const byCustomer = await insertAccessGrant({
+      tenantId, technicianId: jane, customerId: fay.id, opens: 'record', grantedBy: 'mgr-test', reason: 'x',
+    });
+    await insertAccessGrant({
+      tenantId, technicianId: jane, jobId: fayJob.id, opens: 'record', grantedBy: 'mgr-test', reason: 'y',
+    });
+    const { rows } = await listLiveAccessGrants(tenantId);
+    expect(rows).toHaveLength(2);
+    for (const r of rows) {
+      expect(r.customers).toBeNull();
+      expect(r.jobs).toBeNull();
+      expect(r.technicians?.display_name).toBeTruthy(); // her own firm's roster row stays
+    }
+    expect((await getAccessGrant(byCustomer.id, tenantId))?.customers).toBeNull();
+  });
+
+  test("the firm's rule reads back as stored, or null when the firm has none", async () => {
+    expect(await getTechnicianViewRule(tenantId)).toBeNull();
+    await setTechnicianViewRule(tenantId, { money: 'amounts' }, 'test');
+    const rule = await getTechnicianViewRule(tenantId);
+    expect(rule?.money).toBe('amounts');
+    expect(rule?.job_scope).toBeNull();
   });
 });
 

@@ -8,14 +8,14 @@
 // record_standing_fact): it fetches that same view, once, so a membership test
 // here is a set lookup against the database's answer, never a second rule.
 //
-// It also holds the two ledgers' writers — the grants and the firm's rule — which
-// the manager-seat verbs of the request-flow task will call
-// (20260915-the-technician-access-request-flow-tech). Nothing in the product
-// writes them yet; the tests do.
+// It also holds the two ledgers' readers and writers — the grants and the firm's
+// rule — which the manager's access tools call (src/mcp/tools/access.ts, access
+// plan A, thoughts/shared/plans/2026-09-19-access-plan-a-the-managers-access-tools.md).
 import type { Database } from './database.types.js';
 import { getClient } from './client.js';
 import { TERMINAL_JOB_STATUSES } from './jobs.js';
 import { wrapDbError, type CaptureChannel } from './rawCaptures.js';
+import { POSTGREST_MAX_ROWS, hitRowCap } from './rowCap.js';
 
 export type AccessGrant = Database['public']['Tables']['access_grants']['Row'];
 export type TechnicianViewRule = Database['public']['Tables']['technician_view_rules']['Row'];
@@ -91,10 +91,13 @@ export async function getTechnicianView(
 export interface InsertAccessGrantInput {
   tenantId: string;
   technicianId: string;
-  // Exactly one of the two (the table's CHECK refuses both or neither).
+  // Three shapes, and the table's CHECK (access_grants_scope) refuses any other:
+  //   one customer, with `opens`;  one job, with `opens`;  or
+  //   NEITHER — a person-wide money grant: `opensMoney: true` and no `opens`,
+  //   which opens the figures on whatever she can already open and nothing more.
   customerId?: string;
   jobId?: string;
-  opens: GrantOpens;
+  opens?: GrantOpens | null;
   /** …and the figures on what it covers (operator 2026-09-15: money can be opened). */
   opensMoney?: boolean;
   expiresAt?: string | null; // null / absent = standing
@@ -111,7 +114,7 @@ export async function insertAccessGrant(input: InsertAccessGrantInput): Promise<
       technician_id: input.technicianId,
       customer_id: input.customerId ?? null,
       job_id: input.jobId ?? null,
-      opens: input.opens,
+      opens: input.opens ?? null,
       opens_money: input.opensMoney ?? false,
       expires_at: input.expiresAt ?? null,
       requested_by: input.requestedBy ?? null,
@@ -122,6 +125,80 @@ export async function insertAccessGrant(input: InsertAccessGrantInput): Promise<
     .single();
   if (error || !data) throw wrapDbError('insertAccessGrant failed', error);
   return data;
+}
+
+// A grant with the names a reply needs: who it is for, and what it opens.
+export type AccessGrantWithNames = AccessGrant & {
+  technicians: { ref: string; display_name: string; tenant_id: string } | null;
+  customers: { name: string; tenant_id: string } | null;
+  jobs: {
+    title: string | null;
+    customer_id: string;
+    tenant_id: string;
+    customers: { name: string; tenant_id: string } | null;
+  } | null;
+};
+
+const GRANT_WITH_NAMES =
+  '*, technicians(ref, display_name, tenant_id), customers(name, tenant_id), ' +
+  'jobs(title, customer_id, tenant_id, customers(name, tenant_id))';
+
+// EVERY EMBED IS RE-CHECKED FOR THE FIRM. The foreign keys are id-only, and the
+// writer does not refuse another firm's customer or job (such a grant opens
+// nothing — technician_view_of re-checks the tenant on every join), so an embed
+// that followed one would put ANOTHER firm's names in this firm's reply. Dropped
+// to null here, exactly as v_access_grants' tenant-checked joins drop them.
+function sameFirmNames(g: AccessGrantWithNames): AccessGrantWithNames {
+  const mine = <T extends { tenant_id: string } | null>(e: T): T | null =>
+    e && e.tenant_id === g.tenant_id ? e : null;
+  const job = mine(g.jobs);
+  return {
+    ...g,
+    technicians: mine(g.technicians),
+    customers: mine(g.customers),
+    jobs: job ? { ...job, customers: mine(job.customers) } : null,
+  };
+}
+
+// One grant, in any state (live, expired or revoked), on this firm only. Null for
+// an unknown id or another firm's grant — a caller cannot tell the two apart, and
+// should not be able to.
+export async function getAccessGrant(
+  id: string,
+  tenantId: string,
+): Promise<AccessGrantWithNames | null> {
+  const { data, error } = await getClient()
+    .from('access_grants')
+    .select(GRANT_WITH_NAMES)
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  if (error) throw wrapDbError('getAccessGrant failed', error);
+  return data ? sameFirmNames(data as unknown as AccessGrantWithNames) : null;
+}
+
+// The grants that open something right now — not revoked, not expired — newest
+// first. Told, not paged (the retrieval-layer ruling): `capped` says the list may
+// be short.
+export async function listLiveAccessGrants(
+  tenantId: string,
+  opts: { technicianId?: string } = {},
+): Promise<{ rows: AccessGrantWithNames[]; capped: boolean }> {
+  let query = getClient()
+    .from('access_grants')
+    .select(GRANT_WITH_NAMES)
+    .eq('tenant_id', tenantId)
+    .is('revoked_at', null)
+    // Quoted: a timestamp carries `:` and `.`, which PostgREST's logic-tree
+    // grammar reserves outside double quotes.
+    .or(`expires_at.is.null,expires_at.gt."${new Date().toISOString()}"`)
+    .order('created_at', { ascending: false })
+    .limit(POSTGREST_MAX_ROWS);
+  if (opts.technicianId) query = query.eq('technician_id', opts.technicianId);
+  const { data, error } = await query;
+  if (error) throw wrapDbError('listLiveAccessGrants failed', error);
+  const rows = ((data ?? []) as unknown as AccessGrantWithNames[]).map(sameFirmNames);
+  return { rows, capped: hitRowCap(rows.length) };
 }
 
 // The one change a grant takes: its revocation stamp, once. False when there was
@@ -141,6 +218,18 @@ export async function revokeAccessGrant(
     .select('id');
   if (error) throw wrapDbError('revokeAccessGrant failed', error);
   return (data ?? []).length > 0;
+}
+
+// The firm's rule as stored, or null when the firm has none (every field then
+// takes the shipped default, which lives only in technician_view_of).
+export async function getTechnicianViewRule(tenantId: string): Promise<TechnicianViewRule | null> {
+  const { data, error } = await getClient()
+    .from('technician_view_rules')
+    .select()
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  if (error) throw wrapDbError('getTechnicianViewRule failed', error);
+  return data ?? null;
 }
 
 export interface TechnicianViewRuleInput {

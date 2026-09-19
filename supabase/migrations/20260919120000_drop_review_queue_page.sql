@@ -1,0 +1,21 @@
+-- The manager review queue is retired (2026-09-19): its paging function goes.
+--
+-- DEPLOY ORDER — THE REVERSE OF THE USUAL. Apply this migration only AFTER the
+-- web service is running the code that retired list_pending_reviews (plan
+-- thoughts/shared/plans/2026-09-19-retire-the-manager-review-queue.md). Until
+-- then the running service still calls review_queue_page, and dropping it first
+-- would turn every manager's list_pending_reviews into a database error. Deploys
+-- run no migrations (docs/engineering-memory.md), so nothing enforces this
+-- order but the person applying it.
+--
+-- WHY IT GOES. review_queue_page (plan 4 of the retrieval layer,
+-- 20260917140000) paged the open review queue into list_pending_reviews. The
+-- operator retired that tool — "I don't expect our managers to ask for pending
+-- reviews" — and review_items is now only the store for two-step confirmation
+-- tokens, the pairing check waiting for the settings page, and the availability
+-- reminder. Nothing reads a page of it any more. Its search-path hardening
+-- (20260917160000) goes with it; the other seven functions that migration
+-- altered are untouched.
+--
+-- The exact signature, so this can never drop an overload somebody adds later.
+drop function if exists review_queue_page(uuid, text, timestamptz, uuid, int, int);

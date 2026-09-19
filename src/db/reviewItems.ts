@@ -1,5 +1,6 @@
 import type { Database, Json } from './database.types.js';
 import { getClient } from './client.js';
+import { POSTGREST_MAX_ROWS } from './rowCap.js';
 import { isUniqueViolation } from './rawCaptures.js';
 
 export type ReviewItem = Database['public']['Tables']['review_items']['Row'];
@@ -307,6 +308,34 @@ export async function findOpenReviewItemsByKind(
     .order('created_at', { ascending: true });
   if (error) throw new Error(`findOpenReviewItemsByKind failed: ${error.message}`);
   return data ?? [];
+}
+
+// Every OPEN item of these kinds — FLEET-WIDE unless tenants are named. One
+// caller: the review queue's one-time retirement sweep
+// (src/jobs/retireReviewQueue.ts). Paged past PostgREST's silent 1000-row cap
+// and ordered by id, so a big backlog is read whole and in a stable order.
+export async function listOpenReviewItemsOfKinds(
+  kinds: readonly string[],
+  tenantIds?: readonly string[],
+): Promise<ReviewItem[]> {
+  if (kinds.length === 0 || tenantIds?.length === 0) return []; // `in.()` with zero values errors
+  // The database's own per-read limit, not a literal: a lowered max_rows would
+  // make a hardcoded 1000 end the sweep on the first short page.
+  const PAGE = POSTGREST_MAX_ROWS;
+  const out: ReviewItem[] = [];
+  for (let from = 0; ; from += PAGE) {
+    let query = getClient()
+      .from('review_items')
+      .select()
+      .eq('status', 'open')
+      .in('kind', [...kinds]);
+    if (tenantIds) query = query.in('tenant_id', [...tenantIds]);
+    const { data, error } = await query.order('id', { ascending: true }).range(from, from + PAGE - 1);
+    if (error) throw new Error(`listOpenReviewItemsOfKinds failed: ${error.message}`);
+    out.push(...(data ?? []));
+    if (!data || data.length < PAGE) break;
+  }
+  return out;
 }
 
 export async function listOpenReviewItems(tenantId: string): Promise<ReviewItem[]> {

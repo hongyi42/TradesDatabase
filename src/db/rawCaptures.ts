@@ -123,6 +123,23 @@ export async function getRawCapture(id: string): Promise<RawCapture | null> {
   return data;
 }
 
+// The newest capture a technician ref wrote on a tenant, or null — the review
+// queue's retirement sweep points an unknown-ref observation at it
+// (src/jobs/retireReviewQueue.ts). Tenant-scoped by its query.
+export async function getNewestCaptureIdForRef(tenantId: string, ref: string): Promise<string | null> {
+  const { data, error } = await getClient()
+    .from('raw_captures')
+    .select('id')
+    .eq('tenant_id', tenantId)
+    .eq('technician_ref', ref)
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`getNewestCaptureIdForRef failed: ${error.message}`);
+  return data?.id ?? null;
+}
+
 // External-id dedup lookup, scoped per tenant (matches uq_raw_captures_external_id).
 // The write-path uses this as a cheap fast-path; the unique index is the authority.
 export async function getRawCaptureByExternalId(

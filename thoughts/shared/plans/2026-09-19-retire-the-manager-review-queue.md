@@ -353,7 +353,9 @@ what happened. Whether and when a manager hears about it is yours to judge."
   (`:3869`); otherwise hand-delete that block.
 - Delete **`src/db/reviewQueue.test.ts`**.
 
-**`src/admin/retireReviewQueue.ts`** — the cleanup logic goes in a module so it can be tested:
+**`src/jobs/retireReviewQueue.ts`** (the plan first said `src/admin`; that folder is the operator
+dashboard's HTTP surface, and `src/jobs` is where the procedures scripts and cron run live) — the
+cleanup logic goes in a module so it can be tested:
 `retireReviewQueue({ dryRun }): Promise<Report>`. It works across EVERY tenant, not
 `backfill-schedule.mjs`'s single `getTenantByName('Default Tenant')`, and only through `src/db/`.
 - It handles open items of these kinds: `sheet_ref_mismatch`, `unknown_ref_capture`,
@@ -369,7 +371,7 @@ what happened. Whether and when a manager hears about it is yours to judge."
 - The report gives counts of carried, skipped and dismissed by kind. It never touches any other token,
   `pairing_verification` or `availability_setup`.
 
-**`src/admin/retireReviewQueue.test.ts`**: `pg` fixtures, then an assertion on each row's after-state.
+**`src/jobs/retireReviewQueue.test.ts`**: `pg` fixtures, then an assertion on each row's after-state.
 `seed.mjs` writes no `review_items`, so a run against the seed would prove nothing. The fixtures:
 - one open row of each handled kind
 - one with `escalated_from_nudge`
@@ -406,13 +408,13 @@ imports from `dist/`, so build first.
     (and `pending_deactivation` now does too)", and "pairing waits for the settings page".
 
 ### Automated verification
-- [ ] Grep `project_id`, then run `npx supabase migration up --include-all` on the local stack.
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` and `npm run build` pass.
-- [ ] `src/admin/retireReviewQueue.test.ts` passes: the fixtures' after-states, the dry run and the
+- [x] Grep `project_id`, then run `npx supabase migration up --include-all` on the local stack.
+- [x] `npm run typecheck`, `npm run lint`, `npm test` and `npm run build` pass.
+- [x] `src/jobs/retireReviewQueue.test.ts` passes: the fixtures' after-states, the dry run and the
   idempotent re-run.
-- [ ] `npm run build && node -r dotenv/config scripts/retire-review-queue.mjs --local --dry-run` runs
+- [x] `npm run build && node -r dotenv/config scripts/retire-review-queue.mjs --local --dry-run` runs
   end to end. This is only a wrapper smoke test.
-- [ ] Run `npm run decisions:index` and commit the regenerated files.
+- [x] Run `npm run decisions:index` and commit the regenerated files.
 
 ### Live verification (agent-executable)
 Rollout after merge, in this order:

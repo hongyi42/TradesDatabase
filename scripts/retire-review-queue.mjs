@@ -65,6 +65,8 @@ const report = await retireReviewQueue({ dryRun: DRY_RUN });
 console.log(JSON.stringify({ target: TARGET, ...report }, null, 2));
 console.error(
   DRY_RUN
-    ? 'DRY RUN — nothing was written. Read the counts, then run again without --dry-run.'
+    ? 'DRY RUN — nothing was written. Read the counts, then run again without --dry-run. ' +
+        '`carried` here counts what WOULD be raised; a real run counts only what was new, so it ' +
+        'can be lower (the live writers may have raised the same subject already).'
     : 'Done. A second run should report nothing left to dismiss.',
 );

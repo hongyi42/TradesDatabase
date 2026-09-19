@@ -20,7 +20,10 @@ import {
 // objects are deleted, the columns are not nulled.
 
 const DEFAULT_GRACE_DAYS = 7;
-const REMINDER_WINDOW_MS = 2 * 86_400_000; // "2 days left" heads-up
+// The "2 days left" heads-up window. Exported because the review queue's
+// retirement sweep carries an old reminder forward only while the same
+// sentence is still true (src/jobs/retireReviewQueue.ts).
+export const REMINDER_WINDOW_MS = 2 * 86_400_000;
 
 export function graceDays(): number {
   const n = Number(process.env.GRACE_DAYS);

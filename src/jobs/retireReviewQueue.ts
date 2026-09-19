@@ -7,6 +7,7 @@ import {
   resolveReviewItem,
   type ReviewItem,
 } from '../db/index.js';
+import { REMINDER_WINDOW_MS, graceDays } from '../composio/offboarding.js';
 
 // The review queue's one-time retirement sweep (plan
 // thoughts/shared/plans/2026-09-19-retire-the-manager-review-queue.md, Phase 3).
@@ -51,7 +52,12 @@ export const LEGACY_DEACTIVATION_RESOLUTION =
   'staged before deactivations expired; the review queue was retired 2026-09-19 — stage it again';
 
 export interface KindCounts {
-  carried: number; // raised as an observation before closing
+  // Raised as an observation before closing. In a DRY RUN this counts what
+  // would be attempted; a real run counts only the rows that were actually
+  // new, because the live writers may have raised the same subject already
+  // (the once-ever index returns null then). So a real run's `carried` can be
+  // lower than the dry run's, and that is the writers doing their job.
+  carried: number;
   skipped: number; // left open (an escalation)
   dismissed: number;
 }
@@ -114,28 +120,40 @@ export async function retireReviewQueue(
     }
     if (item.kind === 'offboarding_reminder') {
       const tech = await readTechnician(item.tenant_id, item.subject_ref);
-      if (tech?.state === 'offboarding' && tech.offboarding_started_at) {
-        if (!opts.dryRun) {
-          await raiseOffboarding({
-            tenantId: item.tenant_id,
-            ref: tech.ref,
-            displayName: tech.display_name,
-            startedAt: tech.offboarding_started_at,
-          });
-        }
-        c.carried++;
+      // ONLY WHILE THE SENTENCE IS STILL TRUE. The note says the removal becomes
+      // permanent soon, and "soon" is the sweep's own two-day window. A stale
+      // item from an EARLIER episode (the old writer superseded those; the
+      // reactivate close is advisory, so one can survive) would otherwise tell a
+      // manager that days early — and it would be keyed on the CURRENT episode,
+      // so the live sweep would later converge to null and never say it at the
+      // right time. Past the window the expiry pass is already finishing it.
+      const startedAt =
+        tech && tech.state === 'offboarding' ? tech.offboarding_started_at : null;
+      const remaining = startedAt
+        ? graceDays() * 86_400_000 - (Date.now() - Date.parse(startedAt))
+        : null;
+      if (tech && startedAt && remaining !== null && remaining > 0 && remaining <= REMINDER_WINDOW_MS) {
+        const raised = opts.dryRun
+          ? true
+          : (await raiseOffboarding({
+              tenantId: item.tenant_id,
+              ref: tech.ref,
+              displayName: tech.display_name,
+              startedAt,
+            })) !== null;
+        if (raised) c.carried++;
       }
     } else if (item.kind === 'unknown_ref_capture') {
       const tech = await readTechnician(item.tenant_id, item.subject_ref);
       if (!tech) {
-        if (!opts.dryRun) {
-          await raiseUnknownRef({
-            tenantId: item.tenant_id,
-            ref: item.subject_ref,
-            captureId: await newestCapture(item.tenant_id, item.subject_ref),
-          });
-        }
-        c.carried++;
+        const raised = opts.dryRun
+          ? true
+          : (await raiseUnknownRef({
+              tenantId: item.tenant_id,
+              ref: item.subject_ref,
+              captureId: await newestCapture(item.tenant_id, item.subject_ref),
+            })) !== null;
+        if (raised) c.carried++;
       }
     }
     if (!opts.dryRun) await dismiss(item.id, item.tenant_id, 'dismissed', RETIREMENT_RESOLUTION);

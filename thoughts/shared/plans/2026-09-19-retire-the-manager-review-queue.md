@@ -77,6 +77,14 @@ This plan therefore does three things:
   kinds carry no `technician_id`, and a send can become "the ask" only when it goes to the gap's own person
   (`planner.ts:2902-2945`). So these rows never turn `asked` or hand over to a nudge. The second review
   suggested closing nudges too; checked and not needed.
+- **Nobody can finish a pairing until the settings page ships (final review).** `checkPairing` still
+  runs for a row with a `link_issued_at`, so somebody who approves an OLD link lands in
+  `pending_verification` — and nothing can move them on: `resolve_review` was the only caller of both
+  the `pending_verification → active` CAS and `unpair`. They would be unable to send mail
+  (`requireOutboundCapable` wants `active`) until the page exists. Checked on the pilot 2026-09-19:
+  nobody is in `pending_verification`, and the one invited person with a link had it issued 12 days
+  ago — connect links die in about 25 minutes, so there is no live case. If one appears before the
+  page ships, the operator finishes or tears down that pairing by hand.
 - **Accepted edge, already recorded:** if someone is deactivated while still unconfirmed and then
   reactivated, they come back `active` without a confirmation (`roster.ts:615-617`, "the manager drove both
   actions"). That is the one route past the wait, and it is left as is.
@@ -361,14 +369,19 @@ cleanup logic goes in a module so it can be tested:
 - It handles open items of these kinds: `sheet_ref_mismatch`, `unknown_ref_capture`,
   `offboarding_reminder`, `unlinked_call`, `call_action`, `overdue_visit_gap`, `job_cost_gap`.
 - It carries two kinds forward first:
-  - an `offboarding_reminder` whose person is still `offboarding` → `raiseOffboardingObservation`
+  - an `offboarding_reminder` whose person is still `offboarding` AND inside the sweep's own
+    two-day window → `raiseOffboardingObservation`. Outside it the note ("becomes permanent soon")
+    would be false, and its key is the current episode, so the live sweep would then converge to
+    null and never say it at the right time (final review).
   - an `unknown_ref_capture` whose ref is STILL off the roster (`getTechnician` finds nobody) →
     `raiseUnknownRefObservation`, with the newest `raw_captures` id for that ref or `null`. A ref that has
     since joined is just dismissed.
 - It skips any item with `escalated_from_nudge` set. It dismisses the rest with the resolution "review
   queue retired 2026-09-19; see thoughts/shared/plans/2026-09-19-retire-the-manager-review-queue.md".
 - It also dismisses open `pending_deactivation` rows that have no `detail.stagedAt`.
-- The report gives counts of carried, skipped and dismissed by kind. It never touches any other token,
+- The report gives counts of carried, skipped and dismissed by kind. `carried` counts a raise that
+  was NEW: a dry run counts what it would attempt, a real run only what the once-ever index
+  accepted, so a real run's number can be lower when a live writer got there first (final review). It never touches any other token,
   `pairing_verification` or `availability_setup`.
 
 **`src/jobs/retireReviewQueue.test.ts`**: `pg` fixtures, then an assertion on each row's after-state.

@@ -4,6 +4,7 @@ import {
   appendRawCapture,
   createTenant,
   insertTechnician,
+  raiseUnknownRefObservation,
   updateTechnician,
 } from '../db/index.js';
 import {
@@ -62,6 +63,13 @@ beforeAll(async () => {
   stillGoneStartedAt = new Date(Date.now() - 6 * 86_400_000).toISOString();
   await updateTechnician(stillGone.id, { state: 'offboarding', offboarding_started_at: stillGoneStartedAt });
   await insertTechnician({ tenantId, ref: `${RUN}-came-back`, displayName: 'Came Back' });
+  // A FRESH removal with most of its grace left: a stale item from an earlier
+  // episode must not tell a manager "becomes permanent soon" days early.
+  const fresh = await insertTechnician({ tenantId, ref: `${RUN}-fresh-episode`, displayName: 'Fresh Episode' });
+  await updateTechnician(fresh.id, {
+    state: 'offboarding',
+    offboarding_started_at: new Date(Date.now() - 86_400_000).toISOString(),
+  });
   await insertTechnician({ tenantId, ref: `${RUN}-since-joined`, displayName: 'Since Joined' });
 
   // Mail that arrived through a connection nobody on the roster owns.
@@ -84,7 +92,12 @@ beforeAll(async () => {
   await item('cost', 'job_cost_gap', `${RUN}-cost`);
   await item('stillGone', 'offboarding_reminder', `${RUN}-still-gone`, { startedAt: stillGoneStartedAt });
   await item('cameBack', 'offboarding_reminder', `${RUN}-came-back`, { startedAt: 'an earlier episode' });
+  await item('freshEpisode', 'offboarding_reminder', `${RUN}-fresh-episode`, { startedAt: 'an earlier episode' });
   await item('ghost', 'unknown_ref_capture', `${RUN}-ghost`);
+  // The live webhook got to this one first: the once-ever index returns null,
+  // so a real run must not count it as carried.
+  await raiseUnknownRefObservation({ tenantId, ref: `${RUN}-already-raised`, captureId: null });
+  await item('alreadyRaised', 'unknown_ref_capture', `${RUN}-already-raised`);
   await item('joined', 'unknown_ref_capture', `${RUN}-since-joined`);
   await item('legacyDeactivation', 'pending_deactivation', `${RUN}-legacy`, { requestedBy: 'mgr' });
   await item('liveDeactivation', 'pending_deactivation', `${RUN}-live`, {
@@ -118,21 +131,31 @@ describe('retireReviewQueue', () => {
         call_action: { carried: 0, skipped: 0, dismissed: 1 },
         overdue_visit_gap: { carried: 0, skipped: 1, dismissed: 1 },
         job_cost_gap: { carried: 0, skipped: 0, dismissed: 1 },
-        offboarding_reminder: { carried: 1, skipped: 0, dismissed: 2 },
-        unknown_ref_capture: { carried: 1, skipped: 0, dismissed: 2 },
+        offboarding_reminder: { carried: 1, skipped: 0, dismissed: 3 },
+        // A dry run counts what it WOULD raise, the already-raised one included.
+        unknown_ref_capture: { carried: 2, skipped: 0, dismissed: 3 },
       },
       legacyDeactivations: 1,
     });
     for (const name of Object.keys(ids)) expect((await statusOf(name)).status).toBe('open');
-    expect(await observations()).toEqual([]);
+    // Only the one raised before the sweep, by the fixture.
+    expect((await observations()).map((o) => o.subject_ref)).toEqual([`${RUN}-already-raised`]);
   });
 
   test('a real run closes the retired kinds, carries the live ones, and leaves the rest open', async () => {
     const report = await retireReviewQueue({ dryRun: false, tenantIds: [tenantId] });
     expect(report.dryRun).toBe(false);
     expect(report.legacyDeactivations).toBe(1);
+    // A real run counts only what was NEW: the already-raised ref is dismissed
+    // like the rest, but carried nothing.
+    expect(report.byKind.unknown_ref_capture).toEqual({ carried: 1, skipped: 0, dismissed: 3 });
+    // And the fresh episode is dismissed without a premature heads-up.
+    expect(report.byKind.offboarding_reminder).toEqual({ carried: 1, skipped: 0, dismissed: 3 });
 
-    for (const name of ['sheet', 'unlinked', 'call', 'overdue', 'cost', 'stillGone', 'cameBack', 'ghost', 'joined']) {
+    for (const name of [
+      'sheet', 'unlinked', 'call', 'overdue', 'cost',
+      'stillGone', 'cameBack', 'freshEpisode', 'ghost', 'joined', 'alreadyRaised',
+    ]) {
       expect(await statusOf(name)).toEqual({ status: 'dismissed', resolution: RETIREMENT_RESOLUTION });
     }
     expect(await statusOf('legacyDeactivation')).toEqual({
@@ -149,7 +172,8 @@ describe('retireReviewQueue', () => {
     // the roster (pointed at its newest capture). Not carried: the person who
     // came back, and the ref that has since joined.
     const obs = await observations();
-    expect(obs).toHaveLength(2);
+    // The fixture's already-raised row, plus the two this run carried.
+    expect(obs).toHaveLength(3);
     // The episode key is the roster's own offboarding_started_at, in the form
     // the database hands it back — the same string the offboarding sweep keys
     // on, so a later sweep tick converges on this row instead of adding one.
@@ -158,6 +182,10 @@ describe('retireReviewQueue', () => {
     expect(Date.parse(startedAt)).toBe(Date.parse(stillGoneStartedAt));
     expect(obs[0].subject_ref).toBe(`${RUN}-still-gone@${startedAt}`);
     expect(obs[1]).toMatchObject({
+      kind: 'unknown_ref_capture',
+      subject_ref: `${RUN}-already-raised`,
+    });
+    expect(obs[2]).toMatchObject({
       kind: 'unknown_ref_capture',
       subject_ref: `${RUN}-ghost`,
       context: { ref: `${RUN}-ghost`, captureId: ghostCaptureId },
@@ -172,6 +200,6 @@ describe('retireReviewQueue', () => {
       byKind: { overdue_visit_gap: { carried: 0, skipped: 1, dismissed: 0 } },
       legacyDeactivations: 0,
     });
-    expect(await observations()).toHaveLength(2);
+    expect(await observations()).toHaveLength(3);
   });
 });

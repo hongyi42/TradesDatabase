@@ -54,6 +54,8 @@ export const MANAGER_ONLY_TOOLS = [
   'find_slots',
   'get_availability', // the read half of set_availability (2026-08-04)
   'get_team_schedule',
+  'grant_access', // access plan A (2026-09-19): open a record to one technician
+  'list_access', // access plan A: the firm's rule + live grants
   'list_team',
   'move_visit',
   'open_job', // rung 10: open a job without also booking a visit
@@ -61,11 +63,13 @@ export const MANAGER_ONLY_TOOLS = [
   'reactivate_technician_seat',
   'record_money_event', // the money ledger (2026-08-15)
   'remove_time_off',
+  'revoke_access', // access plan A
   'set_availability',
   'set_firm_profile', // firm identity (2026-08-15)
   'set_job_duration',
   'set_technician_horizon',
   'set_technician_skills',
+  'set_technician_view', // access plan A: the firm's own rule
   'unschedule_visit',
   'update_job',
 ] as const;

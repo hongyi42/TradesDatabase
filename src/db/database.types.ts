@@ -42,7 +42,7 @@ export type Database = {
           granted_by: string
           id: string
           job_id: string | null
-          opens: string
+          opens: string | null
           opens_money: boolean
           reason: string
           requested_by: string | null
@@ -59,7 +59,7 @@ export type Database = {
           granted_by: string
           id?: string
           job_id?: string | null
-          opens: string
+          opens?: string | null
           opens_money?: boolean
           reason: string
           requested_by?: string | null
@@ -76,7 +76,7 @@ export type Database = {
           granted_by?: string
           id?: string
           job_id?: string | null
-          opens?: string
+          opens?: string | null
           opens_money?: boolean
           reason?: string
           requested_by?: string | null
@@ -3202,6 +3202,58 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "tenants"
             referencedColumns: ["id"]
+          },
+        ]
+      }
+      v_access_grants: {
+        Row: {
+          created_at: string | null
+          customer_id: string | null
+          customer_name: string | null
+          expires_at: string | null
+          granted_by: string | null
+          id: string | null
+          job_id: string | null
+          job_title: string | null
+          live: boolean | null
+          opens: string | null
+          opens_money: boolean | null
+          reason: string | null
+          requested_by: string | null
+          revoke_reason: string | null
+          revoked_at: string | null
+          revoked_by: string | null
+          technician_name: string | null
+          technician_ref: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "access_grants_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "access_grants_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "access_grants_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "access_grants_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
           },
         ]
       }

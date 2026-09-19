@@ -152,7 +152,18 @@ numeric Telegram user id — auto-claims a cold-pool sandbox if they have none; 
 queue reached nobody; what it still carried became planner observations — and `get_connect_link`,
 because email connections move to a settings page in the schedule UI that is not built yet (parked
 as `20260919-manager-settings-page-in-the-schedule-bo`). Until it ships, no new mailbox can be
-connected, and a person who already connected waits in `pending_verification`. The server both filters `tools/list`
+connected, and a person who already connected waits in `pending_verification`.
+**ACCESS PLAN A, the same day, adds four and takes it to 43:** `grant_access` opens
+one job, one customer, or — naming neither — money FIGURES on everything that technician can
+already open; `list_access` (the firm's rule plus every live grant, each with the id to revoke);
+`revoke_access` (a stamp, never a delete); `set_technician_view` (the firm's own rule: job scope,
+money, which note channels, hidden tags — it changes only the settings it names). Money is the
+one thing a grant cannot open by accident: it is closed to technicians unless a manager opens it
+firm-wide, for one person, or on one job. Same cache rule as rung 10b.2: every manager sandbox
+needs `nemoclaw <s> gateway restart` after the deploy, or it keeps serving its cached list. The
+PLANNER holds none of these four (operator, 2026-09-19): it reads the history through
+`v_access_grants` in the spine_read catalog and nothing more, which also keeps a shadow tick and
+the Calls-worker's focused passes from ever writing a grant. The server both filters `tools/list`
 by tier and re-gates every admin call at dispatch — a technician badge structurally has no
 admin surface. Seat caps (`tenants.manager_seats`/`technician_seats`) are DB-enforced; the
 agent cannot talk past them.
@@ -344,15 +355,20 @@ result carries the rider.
   it has a trip with at all, and every technician note the person wrote. Consequence worth saying
   out loud: recording a WALK-IN — a note that mints its own trip — leaves the seat unable to read
   the record it just created, beyond that note. The planner is meant to notice and put it to a
-  manager (a later task); until then it is a grant. Anything else comes back as
-  name + id with `inView:false` and an "outside your view" note: `find_customer`,
-  `get_customer_context`, `get_job`, `list_recent_captures`, `search_captures`;
-  `get_capture` answers `found:false`; `record_standing_fact` refuses. MONEY is words for a
+  manager (the seat's job, doctrine 2026-09-19); until then it is a grant. Anything else comes back
+  marked `inView:false` with an "outside your view" note, and the SHAPE differs per door: name + id
+  from `find_customer` and `get_customer_context`, the job id ALONE from `get_job` (no title, no
+  customer), no id at all from `list_recent_captures` and `search_captures`;
+  `get_capture` answers `found:false` with no `inView` marker (deliberately the same answer as
+  "no such note"); `record_standing_fact` refuses. MONEY is words for a
   technician — "invoiced, not yet paid", never an amount or a balance (and the retraction preview
   names a money entry without its amount). A manager widens it per
-  item with a grant (`access_grants`: `record` or `record_and_notes`) or per firm with
-  `technician_view_rules`. The seat verbs for both (and the ask that leads to them) are the
-  request-flow task; until then, set a firm's rule by hand (docs/engineering-memory.md §2).
+  item with a grant (`access_grants`: `record` or `record_and_notes`, and independently the money
+  figures) or per firm with `technician_view_rules`. **Both have manager-seat verbs since
+  2026-09-19** (access plan A): `grant_access` / `revoke_access` / `list_access` /
+  `set_technician_view`. What is still missing is the ASK that leads to one: the technician's seat
+  cannot yet request access, and nobody tells her when a manager opens something. That is plan B
+  (`thoughts/shared/plans/2026-09-19-access-plan-b-the-request-flow-through-the-office.md`).
   Managers' and the planner's reads are unchanged.
 - **Web tools (2026-07-13, all tiers):** `web_search` (Brave snippets via Render — the key never
   reaches a sandbox) and `read_webpage` (hardened reader: URLs from the person or from search

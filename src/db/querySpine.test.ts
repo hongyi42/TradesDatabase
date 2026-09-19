@@ -326,7 +326,7 @@ describe('query_spine — bounds', () => {
 });
 
 describe('query_spine — the view surface is closed', () => {
-  test('spine_reader holds SELECT on exactly the sixteen views and nothing else', async () => {
+  test('spine_reader holds SELECT on exactly the seventeen views and nothing else', async () => {
     // A new table must not become readable by default. This is the test that
     // fails when someone adds a grant without thinking.
     // v_money_events added 2026-08-15 (money-ledger plan, manager-only money
@@ -357,11 +357,16 @@ describe('query_spine — the view surface is closed', () => {
     // PER TRIP with the crew as arrays, so `count(*)` keeps counting trips —
     // this view is where a question about PEOPLE ("how many visits did Ben go
     // on") gets one row per person to count instead.
+    // v_access_grants added 2026-09-19 (access plan A): the planner does not
+    // grant access but reads the history (operator ruling); its `reason` column
+    // is only ever a manager's words or a technician's quoted by code, never
+    // the planner's own, because spine_read is citable.
     const { rows } = await pg.query(
       `select table_name from information_schema.table_privileges
         where grantee = 'spine_reader' order by table_name`,
     );
     expect(rows.map((r) => r.table_name)).toEqual([
+      'v_access_grants',
       'v_cancelled_visits',
       'v_capture_links',
       'v_captures',

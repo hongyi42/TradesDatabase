@@ -2,7 +2,7 @@
 date: 2026-09-19
 task: Access plan A of 2 — the manager's access tools (grant_access, revoke_access, list_access, set_technician_view), a person-wide money grant, and the planner's view of grant history
 research: thoughts/shared/research/2026-09-19-the-technician-access-request-flow.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -213,17 +213,42 @@ technician via `call`. The catalog test near :8039-8074 gains `toContain('v_acce
 
 ### Live verification
 - Prerequisites: `supabase-test` and `render` MCPs; `.env` with `GATEWAY_IDENTITY_SECRET`.
-- [ ] Agent: read back after apply — `access_grants_scope` present, `access_grants_one_scope`
+- [x] Agent: read back after apply — `access_grants_scope` present, `access_grants_one_scope`
       gone, `pg_get_functiondef('technician_view_of'::regproc)` contains `pg_temp` and
       `ag.customer_id is null`, `v_access_grants` exists with `spine_reader` SELECT only.
-- [ ] Operator-run (writes a permanent ledger row on the pilot; the agent prepares the commands,
+      VERIFIED on the pilot 2026-09-19 after the operator applied it: all four true, the ledger
+      trigger carries `is not distinct from old.opens`, and `v_access_grants` grants SELECT to
+      `spine_reader` and nothing to anon/authenticated. Deploy `dep-dangb02jnfac738i0ne0` (web)
+      and `dep-danghe942hec73ee5peg` (lifecycle-heart) are live on d953044. A signed manager
+      call to the deployed service lists 43 tools including all four access doors and none of the
+      retired three; `list_access` answers with the firm's defaults in words and zero grants.
+- [x] Operator-run (writes a permanent ledger row on the pilot; the agent prepares the commands,
       the operator runs them with `!`): a signed manager call grants a pilot technician one job;
       that technician's signed `get_job` reads it; `revoke_access`; `get_job` is `inView:false`
       again. The agent reads back the row and its revoke stamp.
+      RUN 2026-09-19 by the agent, on the operator's instruction. Ben Shelton, one job of Max
+      Delgado's: `inView:false` → granted for a day ("until Sunday 2026-09-20") → the job read back
+      with `price_cents` still hidden → listed → revoked → `inView:false` again. Read back
+      independently in the pilot: one `access_grants` row, `opens='record'`, `opens_money=false`,
+      revoked by `manager-sam` with reason "live check done" (grant `2018e70b`).
+- [x] Gateway restarts, 2026-09-19: every manager seat (s2 first as the canary, then s3, s7, s8,
+      s6), each "health passed". Verified by a real turn, not by status: s2 named grant_access /
+      list_access / revoke_access, s8 named all four including set_technician_view. Probe sessions
+      deleted afterwards. Technician seats need no restart — their 17-tool surface is unchanged.
 
 ### Manual verification
-- [ ] On one manager seat (s2 first): "let <tech> see <customer>'s job for a week", then "what have
+- [x] On one manager seat (s2 first): "let <tech> see <customer>'s job for a week", then "what have
       I opened?" — judge whether the replies read like a person and name the end day.
+      RUN by the operator on Sam's seat, 2026-09-19. "let Ben see the dripping bathroom faucet job
+      at Max Delgado's for a week" granted it until Saturday 2026-09-26 (the weekday, not "in 7
+      days"), and the seat relayed the caveat in its own words: "Ben is not notified automatically,
+      so you'll want to let him know." The list read back the one grant plus the firm's defaults,
+      an unprompted "wdym status in words only" got billing stages with examples and the correct
+      "unless a manager grants dollar figures", and the revoke closed it in plain words.
+      ONE DEFECT, folded into plan B on the operator's call ("not that big a deal right now"): the
+      seat printed `ben-shelton` and the full grant id into the chat, against the 2026-09-14 rule
+      that ids never reach the person. The descriptions never said the id is for the seat's own
+      next call; plan B's phase 2 says it, and rides the restart that plan already needs.
 
 ---
 *Pause after Phase 3's manual check.*

@@ -189,6 +189,13 @@ same offer, naming `customerId` or `wants:'notes'`, in the hidden-jobs note
   kind:'access' })` to the requester — "<Manager> opened <what> for you until <day>. Ask me again
   and I'll read it." / "<Manager> said no to opening <what>: <reason>."
 - `list_access` adds `openRequests` (id, technician, what, wants, why, asked day, managers texted).
+- **Ids stay out of the chat** (live seat check, 2026-09-19, plan A): asked "what have I opened up
+  for people?", the manager's seat relayed `Ben Shelton (ben-shelton)` and `Grant ID: 78d754c7-…`
+  straight into Telegram, against the standing rule from the 2026-09-14 finding. The ids are there
+  because the seat needs them for its NEXT call, and nothing said so. Add to `list_access`,
+  `grant_access` and `revoke_access` descriptions: "the id is for your own next call (revoke_access,
+  grant_access requestId) — never say an id or a roster ref to your person; name the technician and
+  the job in words." Rides this plan's rollout, which restarts every seat anyway.
 
 **`surface.expected.ts`** — `MANAGER_ONLY_TOOLS` gains `decline_access`. **`src/eval/toolCases.ts`** —
 a `decline_access` case on a random uuid (refused in words, not a crash).
@@ -220,7 +227,9 @@ and a real read there would throw 22P02 (the warning at `planner.ts:5394-5398`).
 to open a record, already texted to the managers once); one short ACCESS paragraph: a manager
 answers these, not you; you may remind a manager or tell the technician it is still waiting, or
 dismiss one that no longer matters; the MONEY rule (:92-97) is unchanged.
-**`Box_Setup_Stuff/bootstrap-box.sh`** — technician side, office block §0l (:1194-1250): on "outside
+**`Box_Setup_Stuff/bootstrap-box.sh`** — manager side also gets the ids rule beside the access
+doctrine (the office block already carries it for `inform_team_lead`; the access replies are a
+second place it was needed). Technician side, office block §0l (:1194-1250): on "outside
 your view", offer once to ask the office; never ask without your person's yes; say what you did,
 never "you now have access" unless the answer says opened. Manager side, branched on "whether you
 have grant_access in your tool list" (the rule-7 precedent, :825-841): an access text is answered

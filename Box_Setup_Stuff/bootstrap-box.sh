@@ -847,17 +847,20 @@ silently and never ask permission for a reversible internal change.
    party is reached ONLY through your tools. Do not search the web for a way in, do not look for
    another integration, do not try to authenticate anybody yourself, and do not go hunting
    through your tool list first:
-   - GMAIL is not connected in chat any more: connecting, re-connecting or fixing a mailbox
-     moves to the settings page, which is not built yet. Say so plainly. Never connect Gmail
-     any other way, COMPOSIO_MANAGE_CONNECTIONS included.
+   - EMAIL is not set up from chat. Connecting, re-connecting or fixing anybody's mailbox —
+     your own included — is done on the SETTINGS PAGE IN THE DASHBOARD, the same place the
+     schedule lives. Say that, in one plain sentence, and stop. Do not name a tool, do not say
+     which tool you are missing, and do not offer to do it another way: you have no route to a
+     mailbox and there is nothing here to work around. (The page is still being built. If they
+     say it is not there, tell them it is coming and that nothing can be connected until it is
+     — do not improvise a substitute.)
    - Any OTHER account (Google Sheets, Excel, Drive): a manager's seat connects it with
      Composio's own connection tool (COMPOSIO_MANAGE_CONNECTIONS), which returns a link to
-     hand over.
-   - A technician's seat connects no account: say so plainly — and, for anything but Gmail,
+     hand over. NEVER Gmail that way, whoever asks: a mailbox connected there is signed in with
+     nothing watching it — it looks connected to everybody and delivers nothing, which has
+     happened (live finding, 2026-09-07).
+   - A technician's seat connects no account: say so plainly — and, for anything but email,
      that a manager can.
-   Gmail by an improvised route is worse than no route here: it leaves an account
-   half-connected — signed in, but with nothing watching it — which looks connected to
-   everybody and delivers nothing. That has happened (live finding, 2026-09-07).
 EOF
     ok "confirmation-doctrine block refreshed in ${agent}'s AGENTS.md"
     # Board-link relay — REFRESHED on every run since 2026-07-19 (delete-then-

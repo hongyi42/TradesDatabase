@@ -259,8 +259,12 @@ the test is now PLACEMENT:
   email address the manager did not give — and reports what it recorded, never that the item is
   closed.
 - **Outside accounts go through Composio, first move (AGENTS.md rule 8, added 2026-09-07).**
-  Gmail: NOT connected in chat since 2026-09-19 — `get_connect_link` left the manager's bot and
-  connecting a mailbox moves to the settings page (not built yet); the agent says so plainly.
+  Email: NOT set up from chat since 2026-09-19. The rule tells the seat to name the SETTINGS PAGE
+  IN THE DASHBOARD in one sentence and stop — and explicitly NOT to name a tool or say which one
+  it is missing. That second half was added 2026-09-19 after a manager asked s2 to connect a
+  mailbox and got "I cannot connect Ben's email because get_connect_link is not in my tool list":
+  true, useless to a manager, and a tool name the product does not expose. Doctrine that names a
+  tool survives the tool.
   Other accounts (Sheets, Excel, Drive): a manager's seat connects them through Composio's own
   connection tool (the manager session has `manageConnections: true`, kept on by the operator
   2026-09-19), never Gmail that way — a Gmail connected there gets no mail watcher, so it looks

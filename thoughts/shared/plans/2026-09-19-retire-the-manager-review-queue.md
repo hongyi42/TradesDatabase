@@ -2,7 +2,7 @@
 date: 2026-09-19
 task: Retire the manager review queue (list_pending_reviews + resolve_review) and move email connections out of the manager's bot (get_connect_link); keep review_items as the confirmation-token store
 research: none (task 20260916-retire-the-manager-review-queue-keep-rev; the survey is in its notes and the Decisions below)
-status: draft
+status: complete
 supersedes: thoughts/shared/plans/2026-09-15-the-retrieval-layer-4-schedule-reviews-relay.md (its list_pending_reviews paging and review_queue_page only)
 ---
 

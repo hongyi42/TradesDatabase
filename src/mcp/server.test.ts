@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
 import { Client as PgClient } from 'pg';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -24,8 +24,9 @@ import {
 } from '../db/technicians.js';
 import { createHost } from '../db/hosts.js';
 import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
-import { createTenant, setTenantSeats } from '../db/tenants.js';
-import { insertAccessGrant, setTechnicianViewRule } from '../db/technicianView.js';
+import { createTenant, getTenant, setTenantSeats } from '../db/tenants.js';
+import { servedDayPhrase } from '../schedule/dateResolve.js';
+import { getTechnicianViewRule, insertAccessGrant, setTechnicianViewRule } from '../db/technicianView.js';
 import { PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
 import { createObservation } from '../db/observations.js';
@@ -8032,10 +8033,12 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
       'record_caller',
     ]);
     const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
-    // the catalog — sixteen, matching querySpine.test.ts's grant list; the
+    // the catalog — seventeen, matching querySpine.test.ts's grant list; the
     // count and the list must move together or the description lies to the model
-    // (eighteen until plan 3 of the retrieval layer folded three link views into one)
-    expect(desc).toContain('sixteen views');
+    // (eighteen until plan 3 of the retrieval layer folded three link views into one;
+    // seventeen since access plan A added v_access_grants)
+    expect(desc).toContain('seventeen views');
+    expect(desc).toContain('v_access_grants(');
     // v_office_messages is the inbox only — the catalog must not promise the planner's own messages
     expect(desc).not.toContain('BOTH ways');
     // v_schedule's crew columns are ARRAYS now, and its singular one is gone —
@@ -10355,5 +10358,212 @@ describe('the technician limited view', () => {
     } finally {
       await setTechnicianViewRule(tenantId, null, 'server.test');
     }
+  });
+});
+
+// ACCESS PLAN A (thoughts/shared/plans/2026-09-19-access-plan-a-the-managers-access-tools.md):
+// the manager's four access doors, through the same MCP server a seat calls.
+// The rest of this file runs the seed firm at `whole_firm`, which would hide
+// every scope effect, so this block puts the shipped default back (plan 2's
+// finding 5: a rule left on the shared tenant is invisible to the file that does
+// not set it). Grants are LEDGER rows with no delete path, so they are truncated
+// after every test: one live `everywhere` grant would open the figures for every
+// later test in the file.
+describe('the access tools', () => {
+  let mgr: Awaited<ReturnType<typeof clientFor>>;
+  let planner: Awaited<ReturnType<typeof clientFor>>;
+
+  beforeAll(async () => {
+    await setTechnicianViewRule(tenantId, null, 'server.test');
+    mgr = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    planner = await clientFor({ tenantId, technicianRef: 'spine:team-lead' });
+  });
+
+  afterEach(async () => {
+    await pg.query('truncate table access_grants');
+    await setTechnicianViewRule(tenantId, null, 'server.test');
+  });
+
+  afterAll(async () => {
+    await mgr.client.close();
+    await planner.client.close();
+    await pg.query('truncate table access_grants');
+    await setTechnicianViewRule(tenantId, { jobScope: 'whole_firm' }, 'server.test');
+  });
+
+  // One customer tech-mcp does not serve: two open jobs and one paid.
+  async function outsider(name: string) {
+    const customer = await createCustomer({ tenantId, name, phone: '555-8100' });
+    const open = await createJob({ tenantId, customerId: customer.id, title: `${name} AC`, priceCents: 40000 });
+    const other = await createJob({ tenantId, customerId: customer.id, title: `${name} heater` });
+    const paid = await createJob({ tenantId, customerId: customer.id, title: `${name} old`, status: 'paid' });
+    return { customer, open, other, paid };
+  }
+
+  test('a job grant opens that job for a week, and the reply names the day it ends', async () => {
+    const { customer, open, other } = await outsider('Grantlee Ng');
+    expect((await call('get_job', { jobId: open.id })).data.inView).toBe(false);
+
+    const granted = await mgr.callWith('grant_access', {
+      technician: 'tech-mcp',
+      jobId: open.id,
+      reason: 'covering tomorrow',
+    });
+    expect(granted.isError).toBe(false);
+    // SEVEN days, in the firm's own calendar, and said as a weekday the manager
+    // can repeat. A changed default would pass a shape check; this one fails.
+    const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
+    const inAWeek = new Date(Date.now() + 7 * 86_400_000).toISOString();
+    expect(granted.data.granted.until).toBe(`until ${servedDayPhrase(localDateISO(inAWeek, tz))}`);
+    expect(granted.data.granted.notes).toBe(false);
+    expect(granted.data.granted.money).toBe(false);
+    expect(granted.data.granted.what).toContain('Grantlee Ng');
+    expect(granted.data.note).toContain('not told automatically');
+
+    const seen = await call('get_job', { jobId: open.id });
+    expect(seen.data.title).toBe(`${customer.name} AC`);
+    expect(seen.data.price_cents).toBeUndefined(); // money stays words-only
+    // …and nothing else of that customer's opened with it.
+    expect((await call('get_job', { jobId: other.id })).data.inView).toBe(false);
+  });
+
+  test('money: true opens the figures on that job only', async () => {
+    const { open, other } = await outsider('Grantmo Ng');
+    await mgr.callWith('grant_access', {
+      technician: 'tech-mcp', jobId: open.id, money: true, days: 3, reason: 'collecting on site',
+    });
+    const withMoney = await call('get_job', { jobId: open.id });
+    expect(withMoney.data.price_cents).toBe(40000);
+    expect((await call('get_job', { jobId: other.id })).data.inView).toBe(false);
+  });
+
+  test('a customer grant opens every job of theirs, finished ones included', async () => {
+    const { customer, paid } = await outsider('Grantcus Ng');
+    await mgr.callWith('grant_access', {
+      technician: 'tech-mcp', customerId: customer.id, reason: 'taking over the account',
+    });
+    expect((await call('get_job', { jobId: paid.id })).data.title).toContain('old');
+    const page = await call('get_customer_context', { customerId: customer.id });
+    expect(page.data.inView).not.toBe(false);
+    expect(page.data.jobs.length).toBe(3);
+  });
+
+  test('everywhere opens the figures on everything she can already open, and no new record', async () => {
+    const { open } = await outsider('Grantev Ng');
+    const granted = await mgr.callWith('grant_access', {
+      technician: 'tech-mcp', everywhere: true, money: true, reason: 'she collects payments',
+    });
+    expect(granted.data.granted.until).toBe('until revoked');
+    // Her OWN job now shows figures…
+    const ownJob = await createJob({ tenantId, customerId: (await outsider('Grantown Ng')).customer.id, title: 'own work', priceCents: 12300 });
+    await createVisit({ tenantId, jobId: ownJob.id, technicianId: techMcpId, startsAt: null, endsAt: null });
+    expect((await call('get_job', { jobId: ownJob.id })).data.price_cents).toBe(12300);
+    // …and the out-of-view job is still out of view.
+    expect((await call('get_job', { jobId: open.id })).data.inView).toBe(false);
+  });
+
+  test('everywhere without money, and two scopes at once, are refused', async () => {
+    const { open } = await outsider('Grantref Ng');
+    expect((await mgr.callWith('grant_access', { technician: 'tech-mcp', everywhere: true, reason: 'x' })).isError).toBe(true);
+    const twoScopes = await mgr.callWith('grant_access', {
+      technician: 'tech-mcp', jobId: open.id, everywhere: true, money: true, reason: 'x',
+    });
+    expect(twoScopes.isError).toBe(true);
+    expect(twoScopes.text).toContain('exactly one');
+    // A manager is refused as a target: managers already see everything.
+    const atManager = await mgr.callWith('grant_access', { technician: 'mgr-test', jobId: open.id, reason: 'x' });
+    expect(atManager.isError).toBe(true);
+  });
+
+  test('list_access shows the live grants and the firm rule; revoke_access ends one', async () => {
+    const { customer, open } = await outsider('Grantlist Ng');
+    const granted = await mgr.callWith('grant_access', {
+      technician: 'tech-mcp', jobId: open.id, opens: 'record_and_notes', reason: 'covering tomorrow',
+    });
+    const listed = await mgr.callWith('list_access', {});
+    expect(listed.data.count).toBe(1);
+    expect(listed.data.grants[0].id).toBe(granted.data.granted.id);
+    expect(listed.data.grants[0].technicianRef).toBe('tech-mcp');
+    expect(listed.data.grants[0].notes).toBe(true);
+    expect(listed.data.grants[0].what).toContain(customer.name);
+    expect(listed.data.firmRule.money).toContain('the default');
+
+    const revoked = await mgr.callWith('revoke_access', {
+      grantId: granted.data.granted.id, reason: 'job finished',
+    });
+    expect(revoked.data.revoked).toBe(true);
+    expect((await call('get_job', { jobId: open.id })).data.inView).toBe(false);
+    expect((await mgr.callWith('list_access', {})).data.count).toBe(0);
+    // Twice, and on nonsense: an answer, never an error.
+    expect((await mgr.callWith('revoke_access', { grantId: granted.data.granted.id, reason: 'again' })).data.revoked).toBe(false);
+    const nonsense = await mgr.callWith('revoke_access', { grantId: 'not-an-id', reason: 'x' });
+    expect(nonsense.isError).toBe(false);
+    expect(nonsense.data.revoked).toBe(false);
+  });
+
+  test('set_technician_view changes only what it names, and reset puts a setting back', async () => {
+    const wider = await mgr.callWith('set_technician_view', { jobScope: 'serving_history' });
+    expect(wider.data.changes).toHaveLength(1);
+    const money = await mgr.callWith('set_technician_view', { money: 'amounts' });
+    expect(money.data.rule.jobScope).toContain("all of those customers' jobs"); // kept
+    expect(money.data.rule.money).toContain('dollar figures');
+    expect((await getTechnicianViewRule(tenantId))?.job_scope).toBe('serving_history');
+
+    const back = await mgr.callWith('set_technician_view', { reset: ['money'] });
+    expect(back.data.rule.money).toContain('the default');
+    expect((await getTechnicianViewRule(tenantId))?.money).toBeNull();
+
+    expect((await mgr.callWith('set_technician_view', { technicianChannels: [] })).isError).toBe(true);
+    expect((await mgr.callWith('set_technician_view', {})).isError).toBe(true);
+
+    // hiddenTags is the other way round: an empty list IS "hide nothing", the
+    // default, so it stores null and only reports a change when one happened.
+    const hidden = await mgr.callWith('set_technician_view', { hiddenTags: ['pricing'] });
+    expect(hidden.data.rule.hiddenTags).toBe('pricing');
+    const cleared = await mgr.callWith('set_technician_view', { hiddenTags: [] });
+    expect(cleared.data.changes).toHaveLength(1);
+    expect((await getTechnicianViewRule(tenantId))?.hidden_tags).toBeNull();
+    expect((await mgr.callWith('set_technician_view', { hiddenTags: [] })).data.changes).toHaveLength(0);
+  });
+
+  test('a technician badge is refused all four doors, and never sees them listed', async () => {
+    const names = ((await client.listTools()).tools as Array<{ name: string }>).map((t) => t.name);
+    for (const tool of ['grant_access', 'list_access', 'revoke_access', 'set_technician_view']) {
+      expect(names).not.toContain(tool);
+      const refused = await call(tool, {});
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('admin tools require a manager badge');
+    }
+  });
+
+  test('the planner reads the grant history and nothing of another firm', async () => {
+    const { open } = await outsider('Granthist Ng');
+    await mgr.callWith('grant_access', { technician: 'tech-mcp', jobId: open.id, reason: 'history check' });
+    // A second firm's grant, which this firm's planner must never see: the view's
+    // tenant predicate is the only thing standing between them, and `reason` is
+    // free manager text that routinely names a customer.
+    const otherTenant = await createTenant(`grant-history-${Date.now()}`, { technicianSeats: 1 });
+    const otherTech = await insertTechnician({ tenantId: otherTenant.id, ref: 'their-tech', displayName: 'Their Tech' });
+    const otherCustomer = await createCustomer({ tenantId: otherTenant.id, name: 'Their Customer' });
+    await insertAccessGrant({
+      tenantId: otherTenant.id,
+      technicianId: otherTech.id,
+      customerId: otherCustomer.id,
+      opens: 'record',
+      grantedBy: 'their-mgr',
+      reason: 'another firm entirely',
+    });
+
+    const read = await planner.callWith('spine_read', {
+      sql: 'select technician_ref, job_title, reason, live from v_access_grants',
+    });
+    expect(read.isError).toBe(false);
+    expect(read.text).toContain('history check');
+    expect(read.text).toContain('tech-mcp');
+    expect(read.text).not.toContain('another firm entirely');
+    expect(read.text).not.toContain('their-tech');
+    // The planner holds no grant door of its own.
+    const refused = await planner.callWith('grant_access', { technician: 'tech-mcp', jobId: open.id, reason: 'x' });
+    expect(refused.isError).toBe(true);
   });
 });

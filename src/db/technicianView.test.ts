@@ -16,6 +16,8 @@ import {
   type CustomerContents,
 } from './context.js';
 import {
+  TECHNICIAN_DEFAULT_CHANNELS,
+  TECHNICIAN_JOB_SCOPES,
   getAccessGrant,
   getTechnicianView,
   getTechnicianViewRule,
@@ -463,6 +465,28 @@ describe('money: words by default, figures when the firm or a grant opens them',
 
 // ACCESS PLAN A (migration 20260919120000): a grant naming no customer and no job
 // opens the figures on whatever she can already open — and nothing else.
+// The TS copies of the database's defaults (a tool says them in words; the rule
+// itself lives in technician_view_of). A silent drift would make list_access
+// misdescribe a firm that never set a rule.
+describe("the defaults a tool quotes match the database's own", () => {
+  test('technician channels', async () => {
+    const { rows } = await pg.query<{ channels: string }>(
+      'select (technician_view_of($1, $2, $3)).channels::text as channels',
+      [tenantId, jane, [...TERMINAL_JOB_STATUSES]],
+    );
+    // capture_channel[] has no parser in node-pg, so it arrives as `{a,b,c}`.
+    expect(rows[0].channels.replace(/[{}]/g, '').split(',')).toEqual([...TECHNICIAN_DEFAULT_CHANNELS]);
+  });
+
+  test('job scope and money', async () => {
+    // serving + status: the two the words in list_access call "(the default)".
+    const v = await getTechnicianView(tenantId, jane);
+    expect(v.allScope).toBe(false); // not whole_firm
+    expect(v.moneyAll).toBe(false); // status words, not amounts
+    expect([...TECHNICIAN_JOB_SCOPES]).toContain('serving');
+  });
+});
+
 describe('a person-wide money grant', () => {
   const personWide = (over: Partial<Parameters<typeof insertAccessGrant>[0]> = {}) =>
     insertAccessGrant({

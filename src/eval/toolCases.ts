@@ -1242,6 +1242,84 @@ export function buildToolCases(): ToolCase[] {
     ],
   });
 
+  // ACCESS PLAN A (2026-09-19): the manager's four access doors. A technician
+  // sees what she is serving; these are how a manager widens that.
+  one({
+    id: 'C11',
+    family: 'config',
+    title: 'grant_access opens one job to one technician',
+    tool: 'grant_access',
+    tenant: 'main',
+    badge: 'manager-sam',
+    // One day, on a job Jane already serves, so the grant changes no other
+    // case's answer. It is a LEDGER row: `spine-eval:tools` cannot delete it,
+    // and it survives until the next `spine-eval:world` rebuild truncates the
+    // customers it cascades from. Expect one row per run until then.
+    args: (ctx) => ({
+      technician: 'tech-jane',
+      jobId: jobId(ctx.tenant, 'job-rich-1'),
+      days: 1,
+      reason: 'covering for Marco tomorrow',
+    }),
+    check: all(
+      ok,
+      dbCheck(
+        'the grant must land, for one day, opening the record and no figures',
+        (ctx) => ({
+          text: `select opens, opens_money, expires_at > now() as live, reason from access_grants
+                   where tenant_id = $1 and job_id = $2 order by created_at desc limit 1`,
+          params: [ctx.tenant.id, jobId(ctx.tenant, 'job-rich-1')],
+        }),
+        (rows) =>
+          rows[0]?.opens === 'record' && rows[0]?.opens_money === false && rows[0]?.live === true,
+      ),
+    ),
+  });
+
+  one({
+    id: 'C12',
+    family: 'config',
+    title: 'list_access answers with the firm rule and the live grants',
+    tool: 'list_access',
+    tenant: 'main',
+    badge: 'manager-sam',
+    args: () => ({}),
+    check: ok,
+  });
+
+  one({
+    id: 'C13',
+    family: 'config',
+    title: "set_technician_view states the firm's money posture",
+    tool: 'set_technician_view',
+    tenant: 'main',
+    badge: 'manager-sam',
+    // 'status' IS the shipped default, so this changes nothing another case reads.
+    args: () => ({ money: 'status' }),
+    check: all(
+      ok,
+      dbCheck(
+        "the firm's rule must say status",
+        (ctx) => ({
+          text: 'select money from technician_view_rules where tenant_id = $1',
+          params: [ctx.tenant.id],
+        }),
+        (rows) => rows[0]?.money === 'status',
+      ),
+    ),
+  });
+
+  one({
+    id: 'C14',
+    family: 'config',
+    title: 'revoke_access on an unknown id answers, it does not crash',
+    tool: 'revoke_access',
+    tenant: 'main',
+    badge: 'manager-sam',
+    args: () => ({ grantId: '00000000-0000-4000-8000-000000000000', reason: 'typo' }),
+    check: all(ok, mentions('no grant')),
+  });
+
   one({
     id: 'C10',
     family: 'config',

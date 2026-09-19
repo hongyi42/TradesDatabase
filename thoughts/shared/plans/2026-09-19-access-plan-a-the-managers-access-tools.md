@@ -185,8 +185,8 @@ default, `afterAll` puts `whole_firm` back (plan 2 finding 5); `afterEach` AND `
 technician via `call`. The catalog test near :8039-8074 gains `toContain('v_access_grants')`.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` pass; surface tests pass
-- [ ] New tests: a job grant puts that job in `tech-mcp`'s `get_job`, ends in 7 days as a weekday
+- [x] `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` pass; surface tests pass
+- [x] New tests: a job grant puts that job in `tech-mcp`'s `get_job`, ends in 7 days as a weekday
       phrase; `money: true` opens figures on that job only; a customer grant opens a paid job too;
       `everywhere` opens figures on every in-view job and no new job; a technician badge is refused
       all four tools; `list_access` shows live grants and not revoked ones; `revoke_access` puts

@@ -47,6 +47,7 @@ import {
   refuseNameAsAddress,
 } from './tools/shared.js';
 
+import { accessTools } from './tools/access.js';
 import { capturesTools } from './tools/captures.js';
 import { commsTools } from './tools/comms.js';
 import { customersTools } from './tools/customers.js';
@@ -135,7 +136,7 @@ const TOOLS = [
 // fix to the direction-comes-from-kind warning, lands on one tool and not the
 // other.
 const SPINE_VIEW_CATALOG =
-  'It CANNOT write, and it can only read these sixteen views (nothing else exists to it): ' +
+  'It CANNOT write, and it can only read these seventeen views (nothing else exists to it): ' +
   'v_schedule(visit_id, local_day, local_weekday, starts_at, ends_at, completed_at, status, ' +
   'stage, technician_refs, technician_names, job_id, ' +
   'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
@@ -231,6 +232,14 @@ const SPINE_VIEW_CATALOG =
   'neither are the desk answers given in its name. The block in your ' +
   'briefing shows only the unread ones; this is where the rest of them live, including every ' +
   'one you have already read; ' +
+  // The grant HISTORY (access plan A, 2026-09-19): the planner grants nothing,
+  // but it reads who was opened what, by whom and why.
+  'v_access_grants(id, technician_ref, technician_name, customer_id, customer_name, job_id, ' +
+  'job_title, opens, opens_money, expires_at, requested_by, granted_by, reason, created_at, ' +
+  'revoked_at, revoked_by, revoke_reason, live) — every access grant a technician was given ' +
+  'beyond their own view, live or ended; live=true means it opens something right now. A row ' +
+  'with no customer and no job opens money figures on everything that technician can already ' +
+  'see. expires_at null = until revoked; ' +
   // The roster TRAIL (build 6.5 Phase 1). v_team says who is here NOW; this
   // says how the team got that way — and it is the only honest source for
   // when somebody left, because technicians.updated_at is bumped by any edit.
@@ -275,6 +284,7 @@ const ADMIN_TOOLS = [
   // Contributed by the domain modules in ./tools/. A feature adds its tool
   // THERE; this list only aggregates, so two features adding tools to
   // different domains no longer edit the same lines (2026-09-12).
+  ...accessTools.admin,
   ...customersTools.admin,
   ...scheduleTools.admin,
   ...rosterTools.admin,
@@ -513,6 +523,7 @@ function boardMiniAppLink(): string | null {
 // serves in ./tools/<domain>.ts, so adding a tool cannot forget its handler and
 // two domains cannot collide on one dispatch switch.
 const DOMAIN_HANDLERS: Record<string, ToolHandler> = {
+  ...accessTools.handlers,
   ...capturesTools.handlers,
   ...commsTools.handlers,
   ...customersTools.handlers,

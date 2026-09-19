@@ -11,7 +11,7 @@
 // It also holds the two ledgers' readers and writers — the grants and the firm's
 // rule — which the manager's access tools call (src/mcp/tools/access.ts, access
 // plan A, thoughts/shared/plans/2026-09-19-access-plan-a-the-managers-access-tools.md).
-import type { Database } from './database.types.js';
+import { Constants, type Database } from './database.types.js';
 import { getClient } from './client.js';
 import { TERMINAL_JOB_STATUSES } from './jobs.js';
 import { wrapDbError, type CaptureChannel } from './rawCaptures.js';
@@ -25,6 +25,21 @@ export const TECHNICIAN_JOB_SCOPES = ['own_trips', 'serving', 'serving_history',
 export type TechnicianJobScope = (typeof TECHNICIAN_JOB_SCOPES)[number];
 
 export type GrantOpens = 'record' | 'record_and_notes';
+
+// Every capture channel the database knows, for validating a firm's rule
+// (technician_view_rules.technician_channels). Read from the generated enum, so
+// a channel added by migration is accepted the day the types are regenerated.
+export const CAPTURE_CHANNELS: readonly CaptureChannel[] = Constants.public.Enums.capture_channel;
+
+// What a firm reads when it has set no channels of its own. The AUTHORITY is
+// technician_view_of's coalesce (migration 20260917120000): this copy exists so
+// a tool can say the default in words, and technicianView.test.ts pins the two
+// together, because a rule that misdescribes the firm is worse than none.
+export const TECHNICIAN_DEFAULT_CHANNELS: readonly CaptureChannel[] = [
+  'technician_voice',
+  'technician_note',
+  'technician_photo',
+];
 
 export interface TechnicianView {
   // Every customer and job on the firm (the whole_firm rule).

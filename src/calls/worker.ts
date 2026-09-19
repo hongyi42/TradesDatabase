@@ -2,7 +2,7 @@ import {
   claimNextPendingCall as liveClaimNextPendingCall,
   markCallError as liveMarkCallError,
   markCallIngested as liveMarkCallIngested,
-  openCallActionReview as liveOpenCallActionReview,
+  raiseCallActionObservation as liveRaiseCallAction,
   setAudioRef as liveSetAudioRef,
   type CallIngest,
   type CostContext,
@@ -41,13 +41,12 @@ export interface WorkerDeps {
     transcript: string,
     ctx?: CostContext,
   ) => Promise<{ intents: CallIntent[]; reason: string }>;
-  openCallActionReview: (input: {
+  raiseCallAction: (input: {
     tenantId: string;
     captureId: string;
     intents: string[];
-    priority?: 'normal' | 'high';
-    callerPhone?: string | null;
-    snippet?: string | null;
+    priority: 'normal' | 'high';
+    callerPhone: string | null;
   }) => Promise<unknown>;
   notifyManagers: (tenantId: string, text: string) => Promise<void>;
 }
@@ -63,7 +62,7 @@ const liveDeps: WorkerDeps = {
   redact: redactSensitive,
   recordFieldNote: liveRecordFieldNote,
   classifyCall: (transcript, ctx) => defaultCallClassifier(transcript, ctx),
-  openCallActionReview: liveOpenCallActionReview,
+  raiseCallAction: liveRaiseCallAction,
   notifyManagers,
 };
 
@@ -146,8 +145,8 @@ export async function processNextCall(deps: WorkerDeps = liveDeps): Promise<'idl
     });
 
     // Route the outcome. Mutations are NEVER auto-executed: a reschedule/cancel/
-    // complaint/question — or an unclassified call — opens a review and pushes
-    // the manager; the human acts.
+    // complaint/question — or an unclassified call — raises a `call_action`
+    // observation for the planner and pushes the managers; a person acts.
     //
     // (a) STOOD HERE UNTIL RUNG 10B. A new_job caller who matched nothing opened
     // an `unlinked_call` review and pushed "Call — new customer to link". It was
@@ -159,12 +158,25 @@ export async function processNextCall(deps: WorkerDeps = liveDeps): Promise<'idl
     // Nothing is pushed from here any more; the planner decides whether anyone is
     // worth interrupting.
 
-    // (b) any mutating/enquiry intent — or an unclassified call — → a call_action
-    // review, pushed. The `!== 'duplicate'` gate suppresses re-processing only for
-    // an L2-linked (new_job) redelivery; a non-job call is 'captured' and never
-    // links L2, so a redelivery re-routes here. The review ITEM stays idempotent
-    // (upsert returns the same open row), but the Telegram push is at-least-once —
-    // an accepted best-effort tradeoff, with the pull queue as the durable backstop.
+    // (b) any mutating/enquiry intent — or an unclassified call — → a
+    // `call_action` OBSERVATION plus an instant push. It used to be a review item
+    // in a manager queue nobody opened (retired 2026-09-19); the observation is
+    // what the planner sees on its next regular pass, and the push stays because
+    // that pass can be up to two hours away and a complaint should not wait.
+    //
+    // RETRIES. The observation is idempotent — one per capture id, so a second
+    // raise returns null. Something subtler happens after it lands:
+    // `captureHasLinkedL2` counts ANY observation on a capture as "processed"
+    // (rawCaptures.ts), so a worker retry after the raise gets `duplicate` back
+    // from the door, skips this block (no second raise, no second push), and
+    // also skips structuring — even if a re-classification would now add
+    // `new_job`. Accepted: the first classification stands.
+    //
+    // The `!== 'duplicate'` gate suppresses re-processing only for an L2-linked
+    // (new_job) redelivery; a non-job call is 'captured' and never links L2, so a
+    // redelivery re-routes here until its observation exists. The Telegram push
+    // is at-least-once — an accepted best-effort tradeoff, with the observation
+    // as the durable record.
     const reviewIntents = unclassified
       ? ['unclassified']
       : validated.filter(
@@ -173,13 +185,12 @@ export async function processNextCall(deps: WorkerDeps = liveDeps): Promise<'idl
     if (reviewIntents.length > 0 && result.status !== 'duplicate') {
       const priority: 'normal' | 'high' =
         unclassified || reviewIntents.includes('complaint') ? 'high' : 'normal';
-      await deps.openCallActionReview({
+      await deps.raiseCallAction({
         tenantId: row.tenant_id,
         captureId: result.captureId,
         intents: reviewIntents,
         priority,
         callerPhone: row.caller_phone,
-        snippet: transcript.slice(0, 200),
       });
       await deps.notifyManagers(
         row.tenant_id,

@@ -990,10 +990,13 @@ async function handleRetractCapture(toolCtx: ToolContext): Promise<unknown> {
           // recorded-in-error, and could still text somebody about it.
           // Retraction IS the manager saying "this should not be on the
           // record", which is exactly what dismissing the ask means; `recover`
-          // is there if they change their mind.
+          // is there if they change their mind. A `call_action` is keyed on the
+          // capture too (the review queue's retirement, 2026-09-19): a call
+          // recorded in error must not leave the planner a reason to chase a
+          // manager about it.
           for (const o of await listObservationsByStatus(tenantId, ['open'])) {
             if (o.subject_ref !== target.id) continue;
-            if (!(PINGED_KINDS as string[]).includes(o.kind)) continue;
+            if (!(PINGED_KINDS as string[]).includes(o.kind) && o.kind !== 'call_action') continue;
             await setObservationStatus(
               o.id,
               tenantId,

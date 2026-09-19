@@ -232,12 +232,12 @@ what happened. Whether and when a manager hears about it is yours to judge."
 - Delete `reviewItems.test.ts:32-70` and `technicians.test.ts:344-380`.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint` and `npm test` pass, including the tests above.
-- [ ] `grep -rn "flagUnknownRefCapture\|openCallActionReview\|flagOffboardingReminder" src` is empty.
+- [x] `npm run typecheck`, `npm run lint` and `npm test` pass, including the tests above.
+- [x] `grep -rn "flagUnknownRefCapture\|openCallActionReview\|flagOffboardingReminder" src` is empty.
 
 ### Live verification (agent-executable)
 - Prerequisites: this worktree's local stack (`project_id` `TradesDatabase-retire-the-manager-4eec4e`).
-- [ ] Covered by the codified tests, which read results back from the DB. The pilot has no removal or
+- [x] Covered by the codified tests, which read results back from the DB. The pilot has no removal or
   unknown mailbox to drive live.
 
 ### Manual verification

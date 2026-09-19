@@ -63,6 +63,135 @@ export async function createObservation(
   throw new Error(`createObservation failed: ${error?.message ?? 'no row returned'}`);
 }
 
+// ── THINGS ONLY A MANAGER CAN SETTLE (the review queue's retirement, 2026-09-19) ──
+//
+// These three used to be `review_items` rows that reached a manager only if the
+// manager thought to ask for "pending reviews" — and nobody did. They are
+// observations now, so the planner sees them on its regular pass and decides
+// whether and when a manager hears about one. None of them is in PINGED_KINDS:
+// a removal deadline or an unknown mailbox is not minute-urgent, and the phone
+// path keeps its own instant push for `call_action`.
+//
+// THE NOTE IS WHAT THE PLANNER READS: with no jobTitle/customerName it renders
+// as the gap's `about:` line. So it carries NO DATE and no digit-and-unit
+// phrase — the date rail drops a message that echoes one it was not given —
+// and no caller words, which a later retraction could not reach inside a copy.
+//
+// `technicianId` is null on all three, deliberately: each is a manager's
+// question, and the person named either cannot settle it or has left. With no
+// person on the row, a send can never become the ask, so these rows stay
+// `open` until dismissed — which is why the closer below matches `open` only.
+
+// A removal is about to become permanent. Once per episode: the subject is
+// the person's ref plus the episode's start, so a second deactivation later is
+// a new row, and the offboarding sweep's every-15-minutes re-observation of
+// "under two days left" converges on the one row.
+export async function raiseOffboardingObservation(input: {
+  tenantId: string;
+  ref: string;
+  displayName?: string | null;
+  startedAt: string;
+}): Promise<Observation | null> {
+  const name = input.displayName?.trim() || input.ref;
+  return createObservation({
+    tenantId: input.tenantId,
+    kind: 'offboarding_reminder',
+    subjectRef: `${input.ref}@${input.startedAt}`,
+    technicianId: null,
+    context: {
+      ref: input.ref,
+      startedAt: input.startedAt,
+      note:
+        `${name}'s removal from the team becomes permanent soon and cannot be undone after ` +
+        'that. Until then a manager can undo it (reactivate_technician_seat).',
+    },
+  });
+}
+
+// Mail arrived through a mailbox connection filed under a ref the roster does
+// not have. Once per REF, ever — the planner's `recover` is what brings a
+// dismissed one back. `captureId` is null when the first such message was
+// personal mail, which is dropped before L1 and so has no capture; the note
+// says only that THAT message was not kept, since later work mail from the same
+// connection lands on the record normally.
+export async function raiseUnknownRefObservation(input: {
+  tenantId: string;
+  ref: string;
+  captureId: string | null;
+}): Promise<Observation | null> {
+  return createObservation({
+    tenantId: input.tenantId,
+    kind: 'unknown_ref_capture',
+    subjectRef: input.ref,
+    technicianId: null,
+    context: {
+      ref: input.ref,
+      captureId: input.captureId,
+      note:
+        `Mail arrived through a mailbox connection filed under '${input.ref}', and nobody on ` +
+        'the team has that ref. ' +
+        (input.captureId
+          ? `It is kept on the record as capture ${input.captureId}.`
+          : 'Its first message was personal mail, so that one was not kept.'),
+    },
+  });
+}
+
+// A phone call asked for something only a person should do — a reschedule,
+// cancel, question, complaint — or the router could not read it at all. One
+// per call (the subject is the L1 capture id), so a worker retry converges.
+// The words stay in the capture, and the note points there.
+export async function raiseCallActionObservation(input: {
+  tenantId: string;
+  captureId: string;
+  intents: string[];
+  priority: 'normal' | 'high';
+  callerPhone: string | null;
+}): Promise<Observation | null> {
+  const from = input.callerPhone ? ` from ${input.callerPhone}` : '';
+  return createObservation({
+    tenantId: input.tenantId,
+    kind: 'call_action',
+    subjectRef: input.captureId,
+    technicianId: null,
+    context: {
+      captureId: input.captureId,
+      intents: input.intents,
+      priority: input.priority,
+      callerPhone: input.callerPhone,
+      note:
+        `${input.priority === 'high' ? 'Urgent: ' : ''}A phone call${from} asked to: ` +
+        `${input.intents.join(', ')} (the call router's reading; nothing was changed). The ` +
+        `managers got a one-line alert when it came in. Capture ${input.captureId}; spine_read ` +
+        'v_captures for the words.',
+    },
+  });
+}
+
+// Close every OPEN detector observation of one kind about one roster person —
+// the fact it was about has settled (a removal undone or made permanent). The
+// `retract_capture` precedent: code dismisses, with a reason the planner and
+// the manager can read, and `recover` still works. Keyed on `context->>'ref'`,
+// which every ref-carrying raise above writes. Returns how many rows closed.
+export async function dismissOpenObservationsForRef(
+  tenantId: string,
+  kind: ReviewKind,
+  ref: string,
+  reason: string,
+): Promise<number> {
+  const { data, error } = await getClient()
+    .from('observations')
+    .update({ status: 'dismissed', dismiss_reason: reason, dismissed_at: new Date().toISOString() })
+    .eq('tenant_id', tenantId)
+    .eq('kind', kind)
+    .eq('status', 'open')
+    .eq('author', 'detector')
+    .eq('context->>ref', ref)
+    .select('id');
+  if (error) throw new Error(`dismissOpenObservationsForRef failed: ${error.message}`);
+  return (data ?? []).length;
+}
+
 // PAGED past PostgREST's silent 1000-row cap (code-review): the open set is
 // unbounded BY DESIGN (the record grows; the planner curates), so an unpaged
 // read would silently show the planner only the oldest 1000 and hide every

@@ -28,7 +28,11 @@ import { createTenant, setTenantSeats } from '../db/tenants.js';
 import { insertAccessGrant, setTechnicianViewRule } from '../db/technicianView.js';
 import { PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
-import { createObservation } from '../db/observations.js';
+import {
+  createObservation,
+  raiseCallActionObservation,
+  raiseOffboardingObservation,
+} from '../db/observations.js';
 import type { Json } from '../db/database.types.js';
 import { logWebRequests } from '../db/webRequests.js';
 import {
@@ -1759,6 +1763,44 @@ describe('retract_capture + retraction folding', () => {
     }
   });
 
+  // The review queue's retirement (2026-09-19): a call that needs a person is a
+  // `call_action` OBSERVATION keyed on its capture. A manager retracting the
+  // call as recorded in error must take the planner's reason to chase anybody
+  // about it with it — the same rule the rung-10 inbound kinds already follow.
+  test('retracting a call dismisses its call_action observation', async () => {
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'phone_call',
+      technicianRef: 'phone-line',
+      rawText: 'please cancel my appointment',
+    });
+    const obs = await raiseCallActionObservation({
+      tenantId,
+      captureId: cap.id,
+      intents: ['cancel'],
+      priority: 'normal',
+      callerPhone: '+15551230099',
+    });
+    if (!obs) throw new Error('fixture call_action was deduped');
+    const { client: mgrClient, callWith: callMgr } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const s = await callMgr('retract_capture', { captureId: cap.id, reason: 'wrong number' });
+      const c = await callMgr('retract_capture', { confirmId: s.data.confirmId });
+      expect(c.data.status).toBe('retracted');
+    } finally {
+      await mgrClient.close();
+    }
+    const { rows } = await pg.query<{ status: string; dismiss_reason: string | null }>(
+      'select status, dismiss_reason from observations where id = $1',
+      [obs.id],
+    );
+    expect(rows[0].status).toBe('dismissed');
+    expect(rows[0].dismiss_reason).toContain('the capture was retracted by mgr-test: wrong number');
+  });
+
   test('double-retract blocked at stage AND at a racing confirm (one retraction row total)', async () => {
     const cap = await appendRawCapture({
       tenantId,
@@ -2511,14 +2553,17 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       );
       expect(staleAfter.rows[0].status).toBe('resolved');
 
-      // An open grace-period reminder must not survive reactivation (a stale
-      // one would collide with a second episode's reminder).
-      const reminder = await upsertOpenReviewItem({
+      // The grace-period heads-up is moot once the removal is undone: the
+      // planner must not tell a manager about it (an OBSERVATION since the
+      // review queue's retirement, 2026-09-19).
+      const reminder = await raiseOffboardingObservation({
         tenantId,
-        kind: 'offboarding_reminder',
-        subjectRef: 'pair-probe',
-        detail: { startedAt: 'episode-1' },
+        ref: 'pair-probe',
+        displayName: 'Pair Probe',
+        // pg hands a timestamptz back as a Date: the episode key is its ISO form.
+        startedAt: new Date(row1.rows[0].offboarding_started_at as string).toISOString(),
       });
+      if (!reminder) throw new Error('fixture reminder was deduped');
 
       // Reactivate: back to active, clock cleared, pairing re-enabled.
       const undo = await callWith('reactivate_technician_seat', { ref: 'pair-probe' });
@@ -2527,11 +2572,14 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
         state: 'active',
         pairingRestored: true,
       });
-      const reminderAfter = await pg.query<{ status: string }>(
-        'select status from review_items where id = $1',
+      const reminderAfter = await pg.query<{ status: string; dismiss_reason: string | null }>(
+        'select status, dismiss_reason from observations where id = $1',
         [reminder.id],
       );
-      expect(reminderAfter.rows[0].status).toBe('resolved');
+      expect(reminderAfter.rows[0]).toEqual({
+        status: 'dismissed',
+        dismiss_reason: 'reactivated during the grace period',
+      });
       expect(enableCalls).toEqual(['pair-probe']);
       const row2 = await pg.query<{ state: string; offboarding_started_at: string | null }>(
         "select state, offboarding_started_at from technicians where tenant_id = $1 and ref = 'pair-probe'",

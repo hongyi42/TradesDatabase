@@ -52,11 +52,12 @@ interface Recorded {
   ingested: Array<{ id: string; captureId: string; matchStatus: string; audioDeleteAfter: string }>;
   errors: Array<{ id: string; message: string }>;
   record: RecordFieldNoteInput[];
-  actionReviews: Array<{
+  callActions: Array<{
     tenantId: string;
     captureId: string;
     intents: string[];
-    priority?: 'normal' | 'high';
+    priority: 'normal' | 'high';
+    callerPhone: string | null;
   }>;
   notifications: Array<{ tenantId: string; text: string }>;
 }
@@ -67,7 +68,7 @@ function makeDeps(over: Partial<WorkerDeps> = {}): { deps: WorkerDeps; calls: Re
     ingested: [],
     errors: [],
     record: [],
-    actionReviews: [],
+    callActions: [],
     notifications: [],
   };
   const deps: WorkerDeps = {
@@ -94,8 +95,8 @@ function makeDeps(over: Partial<WorkerDeps> = {}): { deps: WorkerDeps; calls: Re
     },
     // Default: a plain new-work call, so existing tests keep structuring L2.
     classifyCall: async () => ({ intents: ['new_job'], reason: '' }),
-    openCallActionReview: async (input) => {
-      calls.actionReviews.push(input);
+    raiseCallAction: async (input) => {
+      calls.callActions.push(input);
     },
     notifyManagers: async (tenantId, text) => {
       calls.notifications.push({ tenantId, text });
@@ -155,7 +156,7 @@ describe('processNextCall', () => {
       },
     });
     expect(await processNextCall(deps)).toBe('ingested');
-    expect(calls.actionReviews).toHaveLength(0);
+    expect(calls.callActions).toHaveLength(0);
     expect(calls.notifications).toHaveLength(0);
     expect(calls.ingested[0]).toMatchObject({
       captureId: 'cap9',
@@ -199,24 +200,23 @@ describe('processNextCall', () => {
     expect(await processNextCall(deps)).toBe('ingested');
     expect(calls.record[0].structure).toBe(true);
     expect(calls.record[0].sourceMeta).toMatchObject({ callIntents: ['new_job'], reason: 'new work' });
-    expect(calls.actionReviews).toHaveLength(0);
+    expect(calls.callActions).toHaveLength(0);
     expect(calls.notifications).toHaveLength(0);
   });
 
-  test('cancel intent → L1 only (structure false) + a pushed call_action review', async () => {
+  test('cancel intent → L1 only (structure false) + a call_action observation, pushed', async () => {
     const { deps, calls } = makeDeps({
       classifyCall: async () => ({ intents: ['cancel'], reason: 'wants to cancel' }),
     });
     expect(await processNextCall(deps)).toBe('ingested');
     expect(calls.record[0].structure).toBe(false);
-    expect(calls.actionReviews).toEqual([
+    expect(calls.callActions).toEqual([
       {
         tenantId: 'T1',
         captureId: 'cap1',
         intents: ['cancel'],
         priority: 'normal',
         callerPhone: '+15551234567',
-        snippet: expect.any(String),
       },
     ]);
     expect(calls.notifications).toHaveLength(1);
@@ -229,8 +229,8 @@ describe('processNextCall', () => {
     });
     expect(await processNextCall(deps)).toBe('ingested');
     expect(calls.record[0].structure).toBe(true); // new_job present → structure on
-    expect(calls.actionReviews).toHaveLength(1);
-    expect(calls.actionReviews[0].intents).toEqual(['cancel']); // new_job routed to L2, not the review
+    expect(calls.callActions).toHaveLength(1);
+    expect(calls.callActions[0].intents).toEqual(['cancel']); // new_job routed to L2, not the review
     expect(calls.notifications).toHaveLength(1);
   });
 
@@ -244,8 +244,8 @@ describe('processNextCall', () => {
     });
     expect(await processNextCall(deps)).toBe('ingested');
     // The cancel still reaches a human (new_job excluded from the intent list).
-    expect(calls.actionReviews).toHaveLength(1);
-    expect(calls.actionReviews[0]).toMatchObject({ captureId: 'capBoth', intents: ['cancel'] });
+    expect(calls.callActions).toHaveLength(1);
+    expect(calls.callActions[0]).toMatchObject({ captureId: 'capBoth', intents: ['cancel'] });
     // ONE push, not two.
     expect(calls.notifications).toHaveLength(1);
   });
@@ -255,7 +255,7 @@ describe('processNextCall', () => {
       classifyCall: async () => ({ intents: ['complaint'], reason: 'angry customer' }),
     });
     expect(await processNextCall(deps)).toBe('ingested');
-    expect(calls.actionReviews[0]).toMatchObject({ intents: ['complaint'], priority: 'high' });
+    expect(calls.callActions[0]).toMatchObject({ intents: ['complaint'], priority: 'high' });
     expect(calls.notifications[0].text).toContain('🔴');
   });
 
@@ -268,7 +268,7 @@ describe('processNextCall', () => {
     expect(await processNextCall(deps)).toBe('ingested'); // fail-safe, never silence
     expect(calls.record[0].structure).toBe(false);
     expect(calls.record[0].sourceMeta).toMatchObject({ callIntents: ['unclassified'] });
-    expect(calls.actionReviews[0]).toMatchObject({ intents: ['unclassified'], priority: 'high' });
+    expect(calls.callActions[0]).toMatchObject({ intents: ['unclassified'], priority: 'high' });
     expect(calls.notifications).toHaveLength(1);
   });
 
@@ -278,7 +278,7 @@ describe('processNextCall', () => {
       classifyCall: async () => ({ intents: ['made_up' as never], reason: 'garbage label' }),
     });
     expect(await processNextCall(deps)).toBe('ingested');
-    expect(calls.actionReviews[0]).toMatchObject({ intents: ['unclassified'], priority: 'high' });
+    expect(calls.callActions[0]).toMatchObject({ intents: ['unclassified'], priority: 'high' });
   });
 
   test("'other' only → L1 kept, NO review, NO push", async () => {
@@ -287,7 +287,7 @@ describe('processNextCall', () => {
     });
     expect(await processNextCall(deps)).toBe('ingested');
     expect(calls.record[0].structure).toBe(false);
-    expect(calls.actionReviews).toHaveLength(0);
+    expect(calls.callActions).toHaveLength(0);
     expect(calls.notifications).toHaveLength(0);
   });
 
@@ -297,7 +297,7 @@ describe('processNextCall', () => {
       recordFieldNote: async () => ({ status: 'duplicate', captureId: 'capDup' }),
     });
     expect(await processNextCall(deps)).toBe('ingested');
-    expect(calls.actionReviews).toHaveLength(0); // already processed — do not re-open/re-push
+    expect(calls.callActions).toHaveLength(0); // already processed — do not re-open/re-push
     expect(calls.notifications).toHaveLength(0);
   });
 

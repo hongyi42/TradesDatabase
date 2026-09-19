@@ -26,6 +26,7 @@ import {
   cancelSandboxRetirement as liveCancelRetirement,
   casTechnician,
   claimSandbox,
+  dismissOpenObservationsForRef,
   findTechnicianByTelegramUserId,
   getOpenReviewItem,
   getPoolRowByTechnician,
@@ -640,11 +641,12 @@ async function handleReactivateTechnicianSeat(toolCtx: ToolContext): Promise<unk
       if (!restored) {
         throw new Error(`'${ref}' changed state while reactivating — check list_team and retry`);
       }
-      // An open grace-period reminder is now moot — and if it stayed open, a
-      // SECOND deactivation episode's reminder would collide with it and show
-      // the stale deadline (review finding). Advisory close.
+      // The grace-period heads-up is moot now. It is an observation since the
+      // review queue's retirement (2026-09-19), keyed per episode, so a second
+      // deactivation raises its own — this only stops the planner telling a
+      // manager about a removal that has just been undone. Advisory close.
       try {
-        await resolveOpenReviewItemFor(tenantId, 'offboarding_reminder', ref, 'resolved', 'reactivated during grace period');
+        await dismissOpenObservationsForRef(tenantId, 'offboarding_reminder', ref, 'reactivated during the grace period');
       } catch {
         /* advisory */
       }

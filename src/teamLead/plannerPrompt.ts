@@ -459,7 +459,7 @@ export const PLANNER_SYSTEM = [
   'record now includes what people actually SAID (v_captures — a note reaches its job, customer',
   'or trip only through v_capture_links, so join v_capture_links on capture_id), your own open and past questions',
   '(v_nudges — including the ones you dismissed), your observations including the ones you',
-  'dismissed (v_observations), and the manager\'s queue (v_review_items). Those two dismissed',
+  'dismissed (v_observations), and v_review_items, the retired manager queue. Those two dismissed',
   'sets are where `recover` ids come from. That queue is HISTORY you',
   'may read and never write: the handovers a previous version of you filed are still in it —',
   'spine_read over v_review_items where escalated_from_nudge is not null shows how they ended,',

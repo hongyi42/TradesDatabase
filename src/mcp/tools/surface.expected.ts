@@ -53,9 +53,7 @@ export const MANAGER_ONLY_TOOLS = [
   'deactivate_technician_seat',
   'find_slots',
   'get_availability', // the read half of set_availability (2026-08-04)
-  'get_connect_link',
   'get_team_schedule',
-  'list_pending_reviews',
   'list_team',
   'move_visit',
   'open_job', // rung 10: open a job without also booking a visit
@@ -63,7 +61,6 @@ export const MANAGER_ONLY_TOOLS = [
   'reactivate_technician_seat',
   'record_money_event', // the money ledger (2026-08-15)
   'remove_time_off',
-  'resolve_review',
   'set_availability',
   'set_firm_profile', // firm identity (2026-08-15)
   'set_job_duration',

@@ -130,7 +130,6 @@ describe('tool cases — the corpus covers the surface', () => {
       'web_search',
       'read_webpage',
       'send_email',
-      'get_connect_link',
     ];
     for (const tool of externalTools) {
       const owning = cases.filter((c) => c.tool === tool);

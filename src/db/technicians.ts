@@ -11,7 +11,8 @@ export interface InsertTechnicianInput {
   displayName: string;
   tier?: TechnicianTier;
   // Seat-exempt = a schedulable NAME only (no seat occupied, and the identity
-  // verbs — bind_telegram / get_connect_link — refuse the row). Implies state
+  // verbs — bind_telegram, and the connect link that moved to the settings
+  // page — refuse the row). Implies state
   // 'active': the row skips the pairing lifecycle entirely, and an 'invited'
   // it could never leave would read as stuck. Derived HERE so no caller can
   // mint the stuck combination.

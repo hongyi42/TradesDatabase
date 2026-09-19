@@ -20,11 +20,6 @@ import {
 } from '../composio/outbound.js';
 import { teardownPersonSession as liveTeardownSession } from '../composio/sessions.js';
 import {
-  checkPairing as liveCheckPairing,
-  createConnectLink as liveCreateConnectLink,
-  unpair as liveUnpair,
-} from '../composio/pairing.js';
-import {
   disablePairing as liveDisablePairing,
   enablePairing as liveEnablePairing,
 } from '../composio/offboarding.js';
@@ -52,7 +47,6 @@ import { commsTools } from './tools/comms.js';
 import { customersTools } from './tools/customers.js';
 import { moneyTools } from './tools/money.js';
 import { officeTools } from './tools/office.js';
-import { reviewsTools } from './tools/reviews.js';
 import { rosterTools } from './tools/roster.js';
 import { scheduleTools } from './tools/schedule.js';
 import type { ToolHandler } from './tools/types.js';
@@ -72,9 +66,8 @@ export interface ServerDeps {
   extract?: Extractor; // injectable so tests don't call the live model
   identity?: RequestIdentity; // gateway-pinned tenant + technician for this request
   // Composio pairing seams — injectable so tests never need COMPOSIO_API_KEY.
-  connectLink?: typeof liveCreateConnectLink;
-  checkPairing?: typeof liveCheckPairing;
-  unpair?: typeof liveUnpair;
+  // (connectLink / checkPairing / unpair left with get_connect_link and
+  // resolve_review, 2026-09-19: no tool reaches them until the settings page.)
   disablePairing?: typeof liveDisablePairing;
   enablePairing?: typeof liveEnablePairing;
   sendEmail?: typeof liveSendGmailEmail;
@@ -218,8 +211,9 @@ const SPINE_VIEW_CATALOG =
   'the assistant set aside and can bring back, and they are one of the two places `recover` ' +
   'ids come from; ' +
   'v_review_items(id, kind, status, subject_ref, suggestion, resolution, job_id, ' +
-  'technician_ref, escalated_from_nudge, created_at, resolved_at) — the ' +
-  "manager's queue; status='open' is what nobody has acted on; " +
+  'technician_ref, escalated_from_nudge, created_at, resolved_at) — the confirmation ' +
+  "tokens people have staged and not yet confirmed, plus the retired manager queue's " +
+  'history; ' +
   'v_observations(id, kind, status, subject_ref, technician_ref, technician_name, job_id, ' +
   'dismiss_reason, dismissed_at, not_before, noticed_at, author) — everything the record has ' +
   "noticed, the DISMISSED ones included: status='dismissed' rows are the OTHER place `recover` " +
@@ -279,7 +273,6 @@ const ADMIN_TOOLS = [
   ...scheduleTools.admin,
   ...rosterTools.admin,
   ...moneyTools.admin,
-  ...reviewsTools.admin,
   {
     name: 'query_spine',
     description:
@@ -518,7 +511,6 @@ const DOMAIN_HANDLERS: Record<string, ToolHandler> = {
   ...customersTools.handlers,
   ...moneyTools.handlers,
   ...officeTools.handlers,
-  ...reviewsTools.handlers,
   ...rosterTools.handlers,
   ...scheduleTools.handlers,
 };

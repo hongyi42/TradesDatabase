@@ -326,14 +326,14 @@ what happened. Whether and when a manager hears about it is yours to judge."
 - **`:7619`:** drop the `list_pending_reviews` entry.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint` and `npm test` pass. `expectSurface` fails by name if the tool
+- [x] `npm run typecheck`, `npm run lint` and `npm test` pass. `expectSurface` fails by name if the tool
   list is wrong.
-- [ ] `grep -rn "list_pending_reviews\|resolve_review\|get_connect_link\|getReviewQueuePage" src` finds only
+- [x] `grep -rn "list_pending_reviews\|resolve_review\|get_connect_link\|getReviewQueuePage" src` finds only
   historical comments.
 
 ### Live verification (agent-executable)
 - Prerequisites: the local stack.
-- [ ] Covered by `server.test.ts`'s MCP round-trips, which check listing, dispatch and DB read-back.
+- [x] Covered by `server.test.ts`'s MCP round-trips, which check listing, dispatch and DB read-back.
 
 ### Manual verification
 - (none)

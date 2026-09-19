@@ -694,9 +694,11 @@ async function handleCancelJob(toolCtx: ToolContext): Promise<unknown> {
         if (!reason) throw new Error('reason is required — say why the work is being cancelled');
         // WHAT IS BEING APPROVED: exactly these live visits at these times,
         // read BEFORE the preview (a change between the reads refuses at the
-        // yes). Wall-clock form — list_pending_reviews shows this detail to the
-        // model. Without it the yes cancelled whatever the job had AT yes-time,
-        // including a visit booked or moved after the manager read the preview.
+        // yes). Wall-clock form — list_pending_reviews showed this detail to the
+        // model until it was retired (2026-09-19), and wall-clock stays the rule
+        // for anything a model may read. Without it the yes cancelled whatever
+        // the job had AT yes-time, including a visit booked or moved after the
+        // manager read the preview.
         const approvedVisits = await snapshotJobVisits(tenantId, jobId);
         const preview = await previewCancelJob(tenantId, jobId);
         // Staging replaces any prior staged job-cancel BY THIS CALLER (the

@@ -352,7 +352,7 @@ export async function listOpenReviewItems(tenantId: string): Promise<ReviewItem[
 // (The review queue's page reader stood here — list_pending_reviews' read over
 // the review_queue_page function, retrieval layer 4. Both went when the queue
 // was retired, 2026-09-19; the function is dropped by migration
-// 20260919120000.)
+// 20260919160000.)
 
 // Re-annotate an already-CLOSED item's resolution text. The one caller is the
 // send_email confirm path: the token is consumed ('send confirmed by …')

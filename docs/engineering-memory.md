@@ -1483,7 +1483,7 @@ about this feature to ask it."* `list_pending_reviews` and `resolve_review` are 
   1. Deploy the code.
   2. Restart the manager seats' gateways — `tools/list` is cached per gateway, so a server-side
      check passes while seats still show the old tools.
-  3. Apply `20260919120000_drop_review_queue_page.sql` — only AFTER the deploy, because the old
+  3. Apply `20260919160000_drop_review_queue_page.sql` — only AFTER the deploy, because the old
      service calls the function.
   4. Run the cleanup script, `--hosted --dry-run` first.
 

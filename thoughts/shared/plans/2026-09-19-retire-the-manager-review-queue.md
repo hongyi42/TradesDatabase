@@ -352,7 +352,7 @@ what happened. Whether and when a manager hears about it is yours to judge."
 
 ### Changes required
 
-**`supabase/migrations/20260919120000_drop_review_queue_page.sql`**:
+**`supabase/migrations/20260919160000_drop_review_queue_page.sql`**:
 - Header: apply only after the web service is running this code, because the running service calls the
   function until then.
 - Body: `drop function if exists review_queue_page(uuid, text, timestamptz, uuid, int, int);`

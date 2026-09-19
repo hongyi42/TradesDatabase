@@ -103,7 +103,7 @@ refused. **5 — rollout and a live run** with a real technician and manager sea
 becomes `kind in ('schedule','call','ops','access')` (pattern: `20260917200000_person_pushes_ops_kind.sql:33-38`);
 `create unique index uq_open_access_request on observations (tenant_id, (context->>'requestKey'))
 where kind = 'access_request' and status in ('open','asked');`. Local apply + `gen:types:local`.
-`src/db/personPushes.ts:10` — `PersonPushKind` gains `'access'`. `src/db/reviewItems.ts:10` —
+`src/db/personPushes.ts:10` — `PersonPushKind` gains `'access'`. `src/db/reviewItems.ts:17` (#261 rewrote this file; the union moved) —
 `ReviewKind` gains `'access_request'` (task `20260916-retire-the-manager-review-queue-keep-rev`
 edits this file too: merge both).
 
@@ -143,10 +143,10 @@ technicianRef, technicianName, jobId?, customerId, targetName, wants, why, manag
    `desk.ts:155-163, 228-245`): an `ask` row (the technician's words) and a `desk` row born read
    (the outcome and, for step 5, the model's reason), then mark the ask read.
 
-**`src/mcp/server.ts`** — `ask_team_lead` (:109-128): `question` stays required (it is the why); new
+**`src/mcp/server.ts`** — `ask_team_lead` (:105-122 on main after #262/#264; re-grep, these move): `question` stays required (it is the why); new
 optional `accessRequest: { jobId?, customerId?, wants?: 'record'|'notes'|'money' }`; the
 description's "it cannot act, promise, or send anything" becomes "it does not act — except that
-it can ask for access for you (accessRequest)". Handler (:701-744): with `accessRequest`, call
+it can ask for access for you (accessRequest)". Handler (:704-747): with `accessRequest`, call
 `(deps.accessDesk ?? answerAccessRequest)`; return `{ status: 'opened'|'asked_manager'|
 'already_open'|'already_asked'|'refused', answer }`. `ServerDeps` gains `accessDesk?`.
 
@@ -189,6 +189,26 @@ same offer, naming `customerId` or `wants:'notes'`, in the hidden-jobs note
   kind:'access' })` to the requester — "<Manager> opened <what> for you until <day>. Ask me again
   and I'll read it." / "<Manager> said no to opening <what>: <reason>."
 - `list_access` adds `openRequests` (id, technician, what, wants, why, asked day, managers texted).
+- **Five fixes to plan A's tools, from its final code review (2026-09-19), all in
+  `src/mcp/tools/access.ts`** — none urgent, and four of them need the fleet restart this plan
+  already does (operator: fold them in):
+  1. `revoke_access` says "<Name> can no longer open <what>", but access is the UNION of every live
+     grant plus the firm's rule. Revoking one of two overlapping grants, or a person-wide money
+     grant while the firm's rule already says `amounts`, makes that sentence false — and it is the
+     sentence a manager acts on. Re-read the view after the revoke and say what is actually closed
+     ("…but she still opens it through another grant, granted by <who> until <day>").
+  2. An `everywhere` money grant defaults to STANDING (plan A's choice) but the tool description
+     never says so, and `standing: false` is silently ignored on that path. Say it in the
+     description, and let `standing: false` mean "use `days`, default 7".
+  3. `set_technician_view` reports a change whose `from` and `to` render identically when a stored
+     value replaces a null that meant the same thing (`money: 'status'` on a firm with no rule).
+     Report a change only when the WORDS differ; keep the stored diff as the gate for writing.
+  4. `ruleWords` renders a stored EMPTY `technician_channels` as a blank string, when `{}` is the
+     most restrictive setting there is (every note but her own closed). Say that in words.
+  5. `grantWhat` falls back to `the "untitled" job` when `sameFirmNames` nulled an embed — a grant
+     that opens NOTHING (another firm's id) is described as opening a job and a customer's details.
+     Say "a record on another firm: this grant opens nothing". Plan B writes grants through the
+     same `insertAccessGrant`, so this becomes reachable here.
 - **Ids stay out of the chat** (live seat check, 2026-09-19, plan A): asked "what have I opened up
   for people?", the manager's seat relayed `Ben Shelton (ben-shelton)` and `Grant ID: 78d754c7-…`
   straight into Telegram, against the standing rule from the 2026-09-14 finding. The ids are there
@@ -197,7 +217,7 @@ same offer, naming `customerId` or `wants:'notes'`, in the hidden-jobs note
   grant_access requestId) — never say an id or a roster ref to your person; name the technician and
   the job in words." Rides this plan's rollout, which restarts every seat anyway.
 
-**`surface.expected.ts`** — `MANAGER_ONLY_TOOLS` gains `decline_access`. **`src/eval/toolCases.ts`** —
+**`surface.expected.ts`** — `MANAGER_ONLY_TOOLS` gains `decline_access` (manager catalog 43 → 44). **`src/eval/toolCases.ts`** —
 a `decline_access` case on a random uuid (refused in words, not a crash).
 
 ### Automated verification
@@ -227,7 +247,7 @@ and a real read there would throw 22P02 (the warning at `planner.ts:5394-5398`).
 to open a record, already texted to the managers once); one short ACCESS paragraph: a manager
 answers these, not you; you may remind a manager or tell the technician it is still waiting, or
 dismiss one that no longer matters; the MONEY rule (:92-97) is unchanged.
-**`Box_Setup_Stuff/bootstrap-box.sh`** — manager side also gets the ids rule beside the access
+**`Box_Setup_Stuff/bootstrap-box.sh`** (#264 rewrote the email paragraph in this block on 2026-09-19 — re-read §0l before editing; `inform_team_lead` sits at :1214 now) — manager side also gets the ids rule beside the access
 doctrine (the office block already carries it for `inform_team_lead`; the access replies are a
 second place it was needed). Technician side, office block §0l (:1194-1250): on "outside
 your view", offer once to ask the office; never ask without your person's yes; say what you did,

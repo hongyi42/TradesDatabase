@@ -23,10 +23,17 @@ import {
 // query below rather than left to the caller (the getObservationForTenant
 // precedent, applied one level down).
 //
-// STATUS IS THE LIFECYCLE, borrowed whole: 'open' (filed, waiting), 'dismissed'
-// (answered — granted, declined, or set aside by the planner). 'asked' is
-// unused here but accepted everywhere a guard names the unsettled set, because
-// the partial unique index covers both and a planner verb may yet write one.
+// STATUS IS THE LIFECYCLE: 'open' (filed, waiting) and 'dismissed' (settled —
+// granted, declined, or lapsed). 'asked' is unused here but accepted wherever a
+// guard names the unsettled set, because the partial unique index covers both.
+//
+// IT IS NOT THE PLANNER'S QUEUE (operator ruling, 2026-09-19). The office is a
+// middleman for ONE inference: open this narrow ask, or put it to a manager.
+// After that it is done — it does not chase, does not remind, and has no
+// dismiss to make, because this is not an observation it curates. A request
+// nobody answers is simply GONE after a day. That is why nothing here runs on a
+// timer and nothing sweeps: the lapse is applied where it is read, and the row
+// stays as history.
 
 export type AccessRequest = Observation;
 
@@ -38,6 +45,21 @@ export type AccessWants = 'record' | 'notes' | 'money';
 // partial unique index (uq_open_access_request, migration 20260919170000) is
 // built on. Written once so the guard and the index can never drift.
 export const UNSETTLED_REQUEST_STATUSES = ['open', 'asked'] as const;
+
+// A DAY, and then it is gone (operator, 2026-09-19). Long enough for a shift
+// and an evening; past that the need has usually passed or she has solved it
+// another way, and asking again costs her one message. A manager answering
+// two days late would be opening a record for a reason nobody remembers.
+export const REQUEST_LAPSE_MS = 24 * 60 * 60 * 1000;
+
+/** Has this request run out of time? Read at every door rather than swept, so
+ *  there is no cron and no window in which a lapsed row is still answerable. */
+export const hasLapsed = (row: AccessRequest, now: Date = new Date()): boolean =>
+  now.getTime() - Date.parse(row.noticed_at) >= REQUEST_LAPSE_MS;
+
+/** The cutoff a query filters on, for the same rule applied in the database. */
+const liveSince = (now: Date = new Date()): string =>
+  new Date(now.getTime() - REQUEST_LAPSE_MS).toISOString();
 
 export interface AccessRequestContext {
   /** The dedup key — see requestKeyOf. */
@@ -122,6 +144,18 @@ export async function findOpenAccessRequest(
   return (data as AccessRequest | null) ?? null;
 }
 
+// LAPSE IT WHERE IT IS FOUND. The unique index keys on status, not on age, so a
+// day-old row would still refuse her a second ask — "automatically gone" has to
+// actually move the row. The desk calls this when it finds a stale one and then
+// files a fresh request, so the expiry costs no timer and no sweep: it happens
+// on the next ask, which is the only moment it matters.
+export async function lapseAccessRequest(
+  tenantId: string,
+  id: string,
+): Promise<AccessRequest | null> {
+  return closeAccessRequest(tenantId, id, 'no manager answered within a day, so it lapsed');
+}
+
 // One request by id, this firm's only, and an access_request only. Null for an
 // unknown id, another firm's row, or an observation of any other kind — a
 // caller cannot tell those apart, and should not be able to.
@@ -141,16 +175,23 @@ export async function getAccessRequest(
 }
 
 // Everything still waiting, oldest first — what list_access shows a manager and
-// what the planner chases. Unbounded by design like the observation set itself,
-// but a firm with more open access requests than PostgREST's cap has a problem
-// no paging would fix; the cap is noted by the caller instead.
-export async function listOpenAccessRequests(tenantId: string): Promise<AccessRequest[]> {
+// what the planner chases. Unpaged, deliberately: a firm with more open access
+// requests than PostgREST's cap has a problem no paging would fix, and the
+// realistic count is single digits (one per person per thing per width, and
+// each one is texted to every manager the moment it is filed).
+export async function listOpenAccessRequests(
+  tenantId: string,
+  now: Date = new Date(),
+): Promise<AccessRequest[]> {
   const { data, error } = await getClient()
     .from('observations')
     .select()
     .eq('tenant_id', tenantId)
     .eq('kind', 'access_request')
     .in('status', [...UNSETTLED_REQUEST_STATUSES])
+    // A lapsed request is not shown to a manager: answering one is opening a
+    // record for a reason nobody remembers.
+    .gte('noticed_at', liveSince(now))
     .order('noticed_at', { ascending: true })
     .order('id', { ascending: true });
   if (error) throw new Error(`listOpenAccessRequests failed: ${error.message}`);
@@ -197,7 +238,9 @@ export async function reopenAccessRequest(
   return setObservationStatus(
     id,
     tenantId,
-    { status: 'open', dismissReason: null, dismissedAt: null },
+    // `not_before` clears too, for the reason `recover` clears it: a request
+    // brought back wearing an old hold would go straight back to sleep.
+    { status: 'open', dismissReason: null, dismissedAt: null, notBefore: null },
     ['dismissed'],
   );
 }

@@ -864,15 +864,6 @@ const ctxList = (n: Nudge, k: string): string[] => {
   });
 };
 
-// A plain list of NAMES off the context — ctxList above reads job candidates
-// ({title, status}) and renders a bare string as "(unreadable)", which is
-// exactly what it should do there and exactly wrong here.
-const ctxNames = (n: Nudge, k: string): string[] => {
-  const raw = ((n.context ?? {}) as Record<string, unknown>)[k];
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((e): e is string => typeof e === 'string' && e.trim() !== '');
-};
-
 function hoursBetween(fromIso: string, toMs: number): number {
   const ms = toMs - Date.parse(fromIso);
   return Number.isNaN(ms) ? 0 : Math.round((ms / 3_600_000) * 10) / 10;
@@ -1687,39 +1678,6 @@ export function buildGapView(
       // it needs; the age of the text is not.
       lines.push('  you have already texted a manager about this one');
     }
-  }
-  // ACCESS PLAN B — A TECHNICIAN ASKED TO OPEN SOMETHING. Not a hole in the
-  // record and not a question you asked: it is a person waiting on a manager,
-  // and a manager has already been texted once. You are here to chase it or to
-  // tell them it is still waiting — never to answer it.
-  //
-  // THE ELAPSED PHRASE IS THIS KIND'S ONLY DATE LABEL, and that is exactly why
-  // it may be printed. `dateLabels` is built from asked_at, endsAtLocal and
-  // elapsedLabel(asked_at ?? created_at); observationAsGapRow hardcodes
-  // asked_at: null, so for this kind the list is the one phrase below, byte for
-  // byte. Print anything else temporal here — a day name, a date, "yesterday" —
-  // and the rail drops the planner's WHOLE message as "a date it was not
-  // given". (The PINGED_KINDS block above omits its elapsed phrase for the
-  // opposite reason: its timestamp is marks.askedAt, which is NOT in
-  // dateLabels.)
-  if (n.kind === 'access_request') {
-    const ago = elapsedLabel(n.created_at, nowMs);
-    const wants = ctxStr(n, 'wants');
-    const wantWords =
-      wants === 'money'
-        ? 'the money figures'
-        : wants === 'notes'
-          ? 'every note on it'
-          : 'the record';
-    const texted = ctxNames(n, 'managersTexted');
-    lines.push(
-      `  ${ctxStr(n, 'technicianName') ?? 'a technician'} asked${ago ? ` ${ago}` : ''} to open ` +
-        `${ctxStr(n, 'targetName') ?? 'part of the record'} — they want ${wantWords}`,
-      `  in their words: "${flat(ctxStr(n, 'why') ?? '', QUESTION_SHOWN_CHARS)}"`,
-      texted.length > 0
-        ? `  texted to: ${texted.join(', ')} — a manager answers this, not you`
-        : '  texted to: nobody could be reached — a manager answers this, not you',
-    );
   }
   if (n.asked_at) {
     // WHETHER ANYTHING CAME BACK (build 6.5 Phase 5). The age alone made
@@ -3730,27 +3688,6 @@ async function applyDecision(
             'with as:"chat" and no countsAsTheAsk',
         };
       }
-      // AN ACCESS REQUEST CANNOT BE THE ASK (access plan B). It is closed by a
-      // MANAGER'S answer, not by anything a person says back to a message — so
-      // a send that marked it asked would outlive the answer: the row moves to
-      // `asked`, the manager's grant still closes it, and in between the
-      // planner is holding a question whose reply can never settle it (the
-      // `observe` hazard, a few cases above). EVERY MEMBER IS CHECKED, not just
-      // the lead: the group rule below never looks at kind, and apply marks
-      // every member asked — so one access request hidden in a group of four
-      // would slip through a lead-only test.
-      const askIds = d.nudgeIds && d.nudgeIds.length > 1 ? d.nudgeIds : [d.nudgeId];
-      if (d.countsAsTheAsk) {
-        const accessId = askIds.find((id) => (id ? getGap(id)?.kind : null) === 'access_request');
-        if (accessId) {
-          return {
-            outcome: 'refused',
-            detail:
-              'an access request is answered by a manager, not by a reply to you — send it ' +
-              'without countsAsTheAsk (you may remind a manager, or tell them it is still waiting)',
-          };
-        }
-      }
       // THE NOTE DIES WITH THE TEXT. Validate guaranteed the pair travels
       // together in one plan; this is the apply-time half, and it is what makes
       // the note BOUNDED. The text can still be refused here — a manager was
@@ -4423,7 +4360,7 @@ export async function runPlanner(
       // — worn as gap rows in state 'noticed'. Merged oldest-first so the
       // prompt reads as one list. The DISMISSED set rides along to validate
       // `recover`, and the stage map keys each decision row to its table.
-      const [openNudges, openObs, unreadMessages] = await Promise.all([
+      const [openNudges, openObsAll, unreadMessages] = await Promise.all([
         listNudges(tenantId, [...OPEN_NUDGE_STATUSES]),
         listObservations(tenantId, ['open']),
         // The planner's inbox (build 5.5): unread seat informs, read in the
@@ -4448,6 +4385,17 @@ export async function runPlanner(
           throw err;
         }),
       ]);
+      // ACCESS REQUESTS ARE NOT THE PLANNER'S WORK (operator ruling,
+      // 2026-09-19). The office is a middleman for ONE inference — open this
+      // narrow ask, or put it to a manager — and after that it is done: it does
+      // not chase, does not remind, and has no dismissal to make, because this
+      // is not an observation it curates. An unanswered one is simply gone after
+      // a day (REQUEST_LAPSE_MS). Dropped HERE, at the one read, so no verb
+      // needs a special case and none of the gap machinery can reach the kind.
+      // What the planner still hears about access is what HAPPENED: a manager's
+      // grant, decline or revoke arrives as an inform in its inbox, and
+      // v_access_grants holds the whole history.
+      const openObs = openObsAll.filter((o) => o.kind !== 'access_request');
       // OBSERVATIONS FIRST so the nudge label wins a same-id collision — the
       // stage map must agree with the F7 view rule below, or decisions on the
       // live ask get recorded under the observation FK (code-review).

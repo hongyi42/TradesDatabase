@@ -211,6 +211,11 @@ describe('the access desk — what always goes to a manager', () => {
     // No ids in a manager's text either — the seat finds it with list_access.
     expect(rec.pushes[0].body).not.toContain(JOB_ID);
     expect(out.answer).toContain('Dana Reed');
+    // WHAT IS PROMISED IS WHAT IS GUARANTEED (operator, 2026-09-19): nothing
+    // runs on a timer, so the desk must not promise a message that may never
+    // come. A manager's answer texts her; silence does not.
+    expect(out.answer).not.toContain("You'll get a message here when they answer");
+    expect(out.answer).toContain('ask me about this job again');
   });
 
   test('every note also skips the model', async () => {
@@ -285,7 +290,10 @@ describe('the access desk — what always goes to a manager', () => {
     expect(out.status).toBe('asked_manager');
     expect(rec.requests).toHaveLength(1);
     expect(rec.pushes).toHaveLength(0);
-    expect(out.answer).toContain('No manager can be texted');
+    expect(out.answer).toContain('No manager could be texted');
+    // Honest about what did NOT happen: nobody was alerted, so she should not
+    // sit waiting on a message.
+    expect(out.answer).toContain('nobody has been alerted');
   });
 
   test('one manager\'s failed text does not lose the other, nor the request', async () => {
@@ -354,13 +362,47 @@ describe('the access desk — what it answers without filing anything', () => {
 
   test('the same ask twice says when it went and does not text again', async () => {
     const { deps, rec } = stub({
+      // Three hours ago: still live.
       findRequest: async () =>
-        ({ id: 'obs-1', noticed_at: '2026-09-16T17:00:00Z' }) as unknown as Observation,
+        ({ id: 'obs-1', noticed_at: '2026-09-19T14:00:00Z' }) as unknown as Observation,
     });
     const out = await answerAccessRequest(ask({ wants: 'money' }), deps);
     expect(out.status).toBe('already_asked');
-    expect(out.answer).toMatch(/Wednesday/);
     expect(rec.requests).toHaveLength(0);
+    expect(rec.pushes).toHaveLength(0);
+  });
+
+  // A DAY OLD IS GONE (operator, 2026-09-19): the office does not follow up, so
+  // an unanswered request lapses — and the lapse has to MOVE the row, because
+  // the unique index keys on status and would otherwise refuse her forever.
+  test('a day-old request lapses and the ask goes again, rather than being refused', async () => {
+    const lapsed: string[] = [];
+    const { deps, rec } = stub({
+      findRequest: async () =>
+        ({ id: 'obs-old', noticed_at: '2026-09-18T16:00:00Z' }) as unknown as Observation,
+      lapseRequest: (async (_t: string, id: string) => {
+        lapsed.push(id);
+        return null;
+      }) as never,
+    });
+    const out = await answerAccessRequest(ask({ wants: 'money' }), deps);
+    expect(lapsed).toEqual(['obs-old']);
+    expect(out.status).toBe('asked_manager');
+    expect(rec.requests).toHaveLength(1); // a FRESH one
+    expect(rec.pushes).toHaveLength(1); // …and the managers hear about it again
+  });
+
+  test('a failed lapse costs nothing: she is told it is still waiting', async () => {
+    const { deps, rec } = stub({
+      findRequest: async () =>
+        ({ id: 'obs-old', noticed_at: '2026-09-18T16:00:00Z' }) as unknown as Observation,
+      lapseRequest: (async () => {
+        throw new Error('close failed');
+      }) as never,
+      openRequest: async () => null, // the index still holds the old row
+    });
+    const out = await answerAccessRequest(ask({ wants: 'money' }), deps);
+    expect(out.status).toBe('already_asked');
     expect(rec.pushes).toHaveLength(0);
   });
 

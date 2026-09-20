@@ -6,10 +6,11 @@
 //
 // A technician's seat reads only what she is serving (technician_view_of, plan 2
 // of the retrieval layer); everything else answers "outside your view". These
-// four tools are how a MANAGER widens that: one grant at a time (grant_access,
-// revoke_access, list_access) or the firm's own rule (set_technician_view).
+// five tools are how a MANAGER widens that: one grant at a time (grant_access,
+// revoke_access, list_access), the firm's own rule (set_technician_view), or by
+// saying no to a technician's request (decline_access, access plan B).
 //
-// ALL FOUR ARE ADMIN, and the planner holds none of them (operator, 2026-09-19):
+// ALL FIVE ARE ADMIN, and the planner holds none of them (operator, 2026-09-19):
 // the desk opens narrow asks in the moment (plan B), the planner only reads the
 // history (v_access_grants). A planner tool would also fire in shadow runs and
 // in the Calls-worker's focused passes, which share the team-lead schemas.
@@ -35,6 +36,7 @@ import {
   getTechnician,
   getTechnicianView,
   getTechnicianViewRule,
+  hasLapsed,
   getTenant,
   insertAccessGrant,
   isInactiveState,
@@ -90,9 +92,9 @@ const ADMIN_TOOLS = [
       'paid"). It lasts `days` (default 7) or, with standing:true, until revoked — EXCEPT an ' +
       'everywhere grant, which stands until revoked by DEFAULT; pass standing:false there to ' +
       'make it last `days` instead. A plain "yes" from the manager means the defaults. ' +
-      'ANSWERING A REQUEST: pass requestId (list_access shows the open ones) and nothing else is ' +
-      'needed — it fills in who asked and what they asked for, closes the request, and texts ' +
-      'them the answer. Do not pass `technician` with it. Without a requestId the technician is ' +
+      'ANSWERING A REQUEST: pass requestId (list_access shows the open ones) plus your reason — ' +
+      'those two are enough. It fills in who asked and what they asked for, closes the request, ' +
+      'and texts them the answer. Do not pass `technician` with it. Without a requestId the technician is ' +
       'NOT told automatically — relay the note, which says which case you are in. ' +
       'The ids here are for YOUR next call only: never say an id or a roster ref to your ' +
       'person — name the technician and the job in words.',
@@ -232,7 +234,12 @@ function optBool(args: Record<string, unknown>, key: string): boolean | undefine
 // uuid-typed column and come back as a raw database error.
 function checkedId(v: string | undefined, what: string): string | undefined {
   if (v === undefined) return undefined;
-  if (!UUID_RE.test(v)) throw new Error(`${what} is not a valid id: take it from find_customer or get_job`);
+  if (!UUID_RE.test(v)) {
+    throw new Error(
+      `${what} is not a valid id: take it from ` +
+        (what.includes('request') ? 'list_access' : 'find_customer or get_job'),
+    );
+  }
   return v;
 }
 
@@ -379,11 +386,18 @@ async function handleGrantAccess(toolCtx: ToolContext): Promise<unknown> {
     }
     if (request.status === 'dismissed') {
       // WHAT BECAME OF IT — the dismissal reason is the whole record, and a
-      // bare "already answered" would send the seat looking for a bug. Not
-      // "answered", though: the office can set one aside too, and telling a
-      // manager somebody answered it when nobody did is worse than vague.
+      // bare "already answered" would send the seat looking for a bug.
       throw new Error(
         `that request is no longer open: ${request.dismiss_reason ?? 'settled'}. Nothing changed.`,
+      );
+    }
+    // A DAY OLD IS GONE (operator, 2026-09-19). Answering it now would open a
+    // record for a reason nobody remembers, and she has almost certainly
+    // asked again or solved it another way.
+    if (hasLapsed(request)) {
+      throw new Error(
+        'that request is more than a day old, so it has lapsed — nothing changed. If they still ' +
+          'need it they will ask again, or grant it directly with technician + jobId.',
       );
     }
   }
@@ -466,11 +480,21 @@ async function handleGrantAccess(toolCtx: ToolContext): Promise<unknown> {
 
   const tech = await getTechnician(tenantId, ref);
   if (!tech) throw new Error(`technician '${ref}' not found on the roster: list_team shows the refs`);
+  // NAMING THE WAY OUT MATTERS HERE, because both of these refusals happen
+  // BEFORE the request is closed: without a second verb the row would sit in
+  // list_access and in the planner's open set for good, and the planner would
+  // keep chasing somebody who has left. decline_access has no tier or state
+  // check, so it is always able to settle one.
+  const stranded = request ? ' — use decline_access to close their request' : '';
   if (tech.tier === 'manager') {
-    throw new Error(`${tech.display_name} is a manager, and managers already see the whole record`);
+    throw new Error(
+      `${tech.display_name} is a manager, and managers already see the whole record${stranded}`,
+    );
   }
   if (isInactiveState(tech.state)) {
-    throw new Error(`${tech.display_name}'s seat is deactivated: reactivate it first`);
+    throw new Error(
+      `${tech.display_name}'s seat is deactivated: reactivate it first${stranded}`,
+    );
   }
   // getJob / getCustomer take no tenant: the firm is checked here, and another
   // firm's id answers exactly like an unknown one.
@@ -547,9 +571,20 @@ async function handleGrantAccess(toolCtx: ToolContext): Promise<unknown> {
     throw err;
   }
 
+  // THE READ-BACK IS DECORATION, and it used to throw. By this point the
+  // request is closed and the grant is written, so a throw here lost the
+  // technician's text and the planner's line for good: a retry answers "that
+  // request is no longer open", and nothing would ever tell her she has
+  // access. Degrade to the plainer words instead — everything below is true
+  // whether or not the row could be read back.
   const g = await getAccessGrant(inserted.id, tenantId);
-  if (!g) throw new Error('the grant was recorded but could not be read back: check list_access');
-  const what = grantWhat(g);
+  const what = g
+    ? grantWhat(g)
+    : scoped.jobId
+      ? 'the job they asked about, and that customer\'s details'
+      : scoped.customerId
+        ? 'that customer\'s jobs and details'
+        : `money figures on everything ${tech.display_name} can already open`;
 
   await tellThePlanner(
     tenantId,
@@ -576,7 +611,7 @@ async function handleGrantAccess(toolCtx: ToolContext): Promise<unknown> {
 
   return {
     granted: {
-      id: g.id,
+      ...(g ? { id: g.id } : {}),
       technician: tech.display_name,
       what,
       notes: opens === 'record_and_notes',
@@ -584,6 +619,7 @@ async function handleGrantAccess(toolCtx: ToolContext): Promise<unknown> {
       until,
       ...(request ? { answeredRequest: true } : {}),
     },
+    ...(g ? {} : { note2: 'The grant is recorded; list_access will show it.' }),
     note:
       `${tech.display_name} can now open ${what}${grantDetail(opens, money)}, ${until}. ` +
       (request
@@ -609,6 +645,12 @@ async function handleDeclineAccess(toolCtx: ToolContext): Promise<unknown> {
     return {
       declined: false,
       note: `that request is no longer open: ${request.dismiss_reason ?? 'settled'}. Nothing changed.`,
+    };
+  }
+  if (hasLapsed(request)) {
+    return {
+      declined: false,
+      note: 'that request is more than a day old, so it lapsed on its own — nothing changed.',
     };
   }
   const manager = toolCtx.caller?.display_name ?? identity.technicianRef;

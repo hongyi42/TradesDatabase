@@ -2,6 +2,8 @@ import {
   createOfficeMessage,
   findOpenAccessRequest,
   getCustomer,
+  hasLapsed,
+  lapseAccessRequest,
   getJob,
   getTechnicianView,
   getTenant,
@@ -71,7 +73,7 @@ import {
 // that can drift.
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const DAY_MS = 86_400_000;
+const HOUR_MS = 3_600_000;
 // What the desk may open by itself, and the only shape it can: one job's
 // record, for one day. Not a default — a ceiling, and it is not an argument.
 const DESK_GRANT_HOURS = 24;
@@ -114,6 +116,7 @@ export interface AccessDeskDeps {
   queuePush?: typeof queuePersonPush;
   openRequest?: typeof openAccessRequest;
   findRequest?: typeof findOpenAccessRequest;
+  lapseRequest?: typeof lapseAccessRequest;
   createMessage?: typeof createOfficeMessage;
   markRead?: typeof markOfficeMessagesRead;
   firmTenant?: typeof getTenant;
@@ -295,14 +298,19 @@ export async function answerAccessRequest(
   // 4. HAS SHE ALREADY ASKED? One open request per person per thing per width:
   // a retried seat call, or the same ask twice in a morning, must not text
   // every manager twice.
+  // KEYED ON WHAT SHE ASKED, not on what the desk narrowed it to. The
+  // narrowing depends on how many live jobs that customer has RIGHT NOW, so a
+  // customer-wide ask at 9am (one live job, narrowed to it) and the same ask at
+  // 11am (a second job opened, so not narrowed) would key differently and text
+  // every manager twice — the exact thing the key exists to prevent.
   const requestKey = requestKeyOf({
     technicianId: askerTechnicianId,
-    jobId: target.jobId,
-    customerId: target.customerId,
+    jobId: input.jobId,
+    customerId: input.customerId ?? target.customerId,
     wants,
   });
   const waiting = await findRequest(tenantId, requestKey);
-  if (waiting) {
+  if (waiting && !hasLapsed(waiting, now())) {
     const tz = await firmTz(tenantId, deps);
     return {
       status: 'already_asked',
@@ -311,13 +319,26 @@ export async function answerAccessRequest(
         'still with your manager. I have not sent it again.',
     };
   }
+  // A DAY OLD AND UNANSWERED IS GONE (operator, 2026-09-19). Move the row here,
+  // at the only moment it matters — the unique index keys on status, so leaving
+  // it open would refuse her a second ask forever. Then fall through and file a
+  // fresh one, which texts the managers again. Best-effort: if the close fails
+  // the insert below collides and she is told it is still waiting, which is the
+  // old behaviour and not a loss.
+  if (waiting) {
+    try {
+      await (deps.lapseRequest ?? lapseAccessRequest)(tenantId, waiting.id);
+    } catch (err) {
+      console.error(`[accessDesk] tenant ${tenantId}: could not lapse request ${waiting.id}`, err);
+    }
+  }
 
   // 5. THE NARROW SHAPE — one job, the record only. The one case the desk may
   // open itself, and the only one that reaches the model at all.
   if (target.jobId && wants === 'record') {
     const decision = await decideNarrow(input, target, deps);
     if (decision.decision === 'open') {
-      const expiresAt = new Date(now().getTime() + DESK_GRANT_HOURS * (DAY_MS / 24)).toISOString();
+      const expiresAt = new Date(now().getTime() + DESK_GRANT_HOURS * HOUR_MS).toISOString();
       await (deps.insertGrant ?? insertAccessGrant)({
         tenantId,
         technicianId: askerTechnicianId,
@@ -489,9 +510,21 @@ async function askTheManagers(
 
   // One text each, and the body says how to answer. NO IDS: the manager's seat
   // finds the request with list_access.
-  const body =
-    `${input.askerName} asks to open ${what} — they say: "${why}". ` +
-    'Reply to answer: yes, yes for good, yes with prices, or no.';
+  //
+  // THE MENU IS WIDTH-AWARE, and that is not cosmetic. A plain "yes" answers
+  // the question that was ASKED — grant_access fills `money` and `opens` from
+  // the request — so on a money ask "yes" already opens the figures. Offering
+  // "yes with prices" beside it would imply the plain yes withholds them, and
+  // a manager meaning "the record, not the numbers" would open the numbers.
+  // The ledger has no delete path, so that mistake is only revocable, never
+  // undoable.
+  const menu =
+    wants === 'money'
+      ? 'Reply yes to open the figures, yes for good to leave them open, or no.'
+      : wants === 'notes'
+        ? 'Reply yes to open every note on it, yes for good to leave it open, or no.'
+        : 'Reply to answer: yes, yes for good, yes with prices, or no.';
+  const body = `${input.askerName} asks to open ${what} — they say: "${why}". ${menu}`;
   for (const m of managers) {
     try {
       await (deps.queuePush ?? queuePersonPush)({
@@ -507,12 +540,17 @@ async function askTheManagers(
     }
   }
 
+  // WHAT IS PROMISED IS WHAT IS GUARANTEED. A manager's yes or no texts her; an
+  // unanswered request simply lapses after a day, with nothing running on a
+  // timer to tell her so (operator, 2026-09-19 — the office does not follow
+  // up). So the desk says it has asked and points her back here, rather than
+  // promising a message that may never come.
   const answer =
     names.length > 0
-      ? `Asked your manager by text (${listNames(names)}). You'll get a message here when they ` +
-        'answer, and I will not ask twice.'
-      : 'No manager can be texted right now, so I have put your request on the office record. It ' +
-        'will be picked up, but not in the next few minutes.';
+      ? `Asked your manager by text (${listNames(names)}). If they open it you'll get a message ` +
+        "here; if you hear nothing, ask me about this job again and I'll tell you where it got to."
+      : 'No manager could be texted just now. Your request is on the office record, but nobody ' +
+        'has been alerted — if it matters today, catch a manager yourself.';
   await recordPair(input, target, answer, null, deps);
   return { status: 'asked_manager', answer };
 }

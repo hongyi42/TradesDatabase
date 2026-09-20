@@ -7891,27 +7891,24 @@ describe('retrieval layer 3 — a technician is never told an amount (doctrine)'
   });
 });
 
-// ── access requests on the planner's list (access plan B, phase 3) ──────────
+// ── access requests and the planner (access plan B, phase 3, re-cut on the
+// operator's ruling of 2026-09-19) ─────────────────────────────────────────
 //
-// The planner ANSWERS none of these. What these pin is that it can see one
-// clearly enough to chase it, and that none of its verbs can settle it.
-describe('access requests in the planner', () => {
+// THE PLANNER HAS NO PART IN THESE. The office is a middleman for ONE
+// inference — open this narrow ask, or put it to a manager — and is then done.
+// So the tests are about ABSENCE: the kind never becomes a gap, nothing in the
+// doctrine tells the planner to work one, and the one door that could still
+// reach a settled request (recover, via the dismissed-ids list) is shut.
+describe('access requests and the planner', () => {
   const NOW = '2026-08-15T18:00:00.000Z';
   const request = (over: Partial<Nudge> = {}): Nudge =>
     nudge({
       id: 'a1',
       kind: 'access_request',
       status: 'open',
-      // Its own subject, as openAccessRequest writes it. The shared fixture's
-      // 'a1' collides with the sibling nudge's subject_ref in uq_nudges_subject_ever,
-      // which refuses the send for a reason that has nothing to do with access —
-      // and would have let this test pass with the guard removed.
       subject_ref: 'access:11111111-1111-4111-8111-111111111111',
       question: null,
       created_at: '2026-08-15T14:00:00.000Z',
-      // A real request is never `asked`: the desk texts the managers itself and
-      // the planner's send is not what closes it. Leaving the fixture's stamp on
-      // would have added a dateLabels block no such row ever carries.
       asked_at: null,
       context: {
         requestKey: 'tech-1:j9:money',
@@ -7927,141 +7924,61 @@ describe('access requests in the planner', () => {
       ...over,
     } as never);
 
-  test('the gap view says who asked, for what, why, and who was texted', () => {
-    const view = buildGapView(request(), Date.parse(NOW), [], false, new Set(), [], [], 'UTC');
-    expect(view.block).toContain('Ben Shelton asked');
-    expect(view.block).toContain('boiler swap');
-    expect(view.block).toContain('they want the money figures');
-    expect(view.block).toContain('what they still owe');
-    expect(view.block).toContain('texted to: Dana Reed');
-    expect(view.block).toContain('a manager answers this, not you');
-  });
-
-  test('it carries NO date and NO figure — the date rail would drop a message echoing one', () => {
-    const view = buildGapView(request(), Date.parse(NOW), [], false, new Set(), [], [], 'UTC');
-    // The only temporal fact is the elapsed phrase, which the rail allows.
-    expect(view.block).not.toContain('2026-08-15');
-    expect(view.block).not.toMatch(/\$\d/);
-  });
-
-  // THE TWO VERBS THAT MUST NOT TOUCH ONE. `send countsAsTheAsk` would mark it
-  // asked, and then a manager's grant closes it while the planner holds a
-  // question no reply can settle; `recover` would reopen one already answered.
-  test('send cannot make an access request its own question — as the lead, or hidden in a group', async () => {
-    // Requests reach the planner as OBSERVATIONS, which is their own reader.
-    const observations = [request({ id: 'a1' })] as unknown as Observation[];
-    const recordedLead: Record<string, unknown>[] = [];
-    const recordedGroup: Record<string, unknown>[] = [];
-    const lead = await runPlanner(NOW, 'live', baseDeps({
-      listNudges: async () => [nudge({ id: 'n1', status: 'pending', asked_at: null, question: null })],
-      listObservations: async () => observations,
-      recordDecisions: async (rs) => { recordedLead.push(...(rs as unknown as Record<string, unknown>[])); return rs.length; },
-      runLoop: loopReturning([
-        { nudgeId: 'a1', action: 'send', message: 'chasing this', as: 'chat', countsAsTheAsk: true, confidence: 'high', reason: 'x' },
-      ]),
-    }));
-    expect(lead.refusedAtApply).toBe(1);
-    const why = recordedLead.find((r) => r.nudgeId === 'a1')?.outcomeDetail as string;
-    expect(why).toContain('answered by a manager, not by a reply to you');
-
-    // …and it cannot ride in as a group MEMBER either. THE LEAD HAS TO BE A
-    // SAME-STAGE SIBLING for this to reach the member check at all: an
-    // observation renders `noticed`, and a group whose lead is a `pending`
-    // nudge is refused earlier, by the one-stage-per-group rail. So the lead
-    // here is another observation on the same person and the same job — a
-    // shape that passes every validate-time group rail, and the exact shape
-    // that would arrive in production (a visit gap plus that technician's
-    // access request). Apply asks EVERY member, so a lead-only check would
-    // mark the request asked and leave the planner holding a question no reply
-    // can settle.
-    const sibling = {
-      ...(request({ id: 'o1' }) as unknown as Record<string, unknown>),
-      kind: 'overdue_visit_gap',
-      subject_ref: 'visit-1',
-      context: { technicianName: 'Ben Shelton', technicianRef: 'ben-shelton', jobId: 'j9', customerName: 'Alice Byrne' },
-    } as unknown as Observation;
-    const grouped = await runPlanner(NOW, 'live', baseDeps({
+  test('an open request never reaches the planner as a gap', async () => {
+    const recorded: Record<string, unknown>[] = [];
+    const summary = await runPlanner(NOW, 'live', baseDeps({
       listNudges: async () => [],
-      listObservations: async () => [sibling, request({ id: 'a1' }) as unknown as Observation],
-      recordDecisions: async (rs) => { recordedGroup.push(...(rs as unknown as Record<string, unknown>[])); return rs.length; },
-      runLoop: loopReturning([
-        {
-          nudgeId: 'o1',
-          nudgeIds: ['o1', 'a1'],
-          action: 'send',
-          message: 'chasing both',
-          as: 'chat',
-          countsAsTheAsk: true,
-          confidence: 'high',
-          reason: 'x',
-        },
-      ]),
+      // The reader returns it; the planner drops it.
+      listObservations: async () => [request()] as unknown as Observation[],
+      recordDecisions: async (rs) => { recorded.push(...(rs as unknown as Record<string, unknown>[])); return rs.length; },
+      runLoop: loopReturning([]),
     }));
-    expect(grouped.applied).toBe(0);
-    expect(grouped.dropped).toBe(0); // it reached APPLY, not a validate rail
-    expect(grouped.refusedAtApply).toBeGreaterThan(0);
-    const groupWhy = recordedGroup.find((r) => r.nudgeId === 'a1')?.outcomeDetail as string;
-    expect(groupWhy).toContain('answered by a manager, not by a reply to you');
+    // Nothing to plan for: the one open row was not the planner's work, so the
+    // tick skips the firm entirely rather than showing it something to do.
+    expect(summary.planned).toBe(0);
+    expect(recorded).toHaveLength(0);
   });
 
-  test('an ordinary send about one is still allowed — the planner may chase or tell them', async () => {
-    const out = await runPlanner(NOW, 'live', baseDeps({
-      listNudges: async () => [],
-      listObservations: async () => [request({ id: 'a1' })] as unknown as Observation[],
+  test('a decision naming one is dropped — it is not in the plan at all', async () => {
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => [nudge({ status: 'pending', asked_at: null, question: null })],
+      listObservations: async () => [request()] as unknown as Observation[],
       runLoop: loopReturning([
-        {
-          nudgeId: 'a1',
-          action: 'send',
-          to: 'Dana Reed',
-          message: 'Ben is still waiting on that one from this morning.',
-          as: 'chat',
-          confidence: 'high',
-          reason: 'nudging the manager',
-        },
+        { nudgeId: 'a1', action: 'dismiss', confidence: 'high', reason: 'no longer matters' },
       ]),
     }));
-    expect(out.refusedAtApply).toBe(0);
+    expect(summary.applied).toBe(0);
+    expect(summary.dropped).toBeGreaterThan(0);
   });
 
-  test('recover cannot reopen an answered request — the write names the excluded kind', async () => {
+  test('recover still cannot reopen a settled request — the ceiling rides the write', async () => {
     const calls: Array<{ id: string; excluded?: string[] }> = [];
     const summary = await runPlanner(NOW, 'live', baseDeps({
-      listNudges: async () => [nudge()], // something else keeps the tick alive
+      listNudges: async () => [nudge()],
       listObservations: async () => [],
-      // An ANSWERED request is dismissed, so the planner may legitimately name
-      // it — which is exactly the case that must not reopen.
-      listDismissedIds: async () => ['a-answered'],
+      // A settled request IS dismissed, so its id is offered to recover.
+      listDismissedIds: async () => ['a-settled'],
       setObservation: async (id, _t, _patch, _from, excludeKinds) => {
         calls.push({ id, excluded: excludeKinds as string[] | undefined });
-        return null; // the real write matches no row — the ceiling did its job
+        return null;
       },
       recoverGap: async () => null,
       runLoop: loopReturning([
-        { nudgeId: 'a-answered', action: 'recover', confidence: 'high', reason: 'bringing it back' },
+        { nudgeId: 'a-settled', action: 'recover', confidence: 'high', reason: 'bringing it back' },
       ]),
     }));
-    // It did not come back.
     expect(summary.applied).toBe(0);
-    // The ceiling is passed to the write, so the database refuses the row
-    // rather than the verb carrying a special case for this kind.
-    const recoverCall = calls.find((c) => c.id === 'a-answered');
-    expect(recoverCall?.excluded).toContain('access_request');
+    expect(calls.find((c) => c.id === 'a-settled')?.excluded).toContain('access_request');
   });
 
-  test('the planner is TOLD a manager answers these, and never to make one its own question', () => {
-    expect(PLANNER_SYSTEM).toContain('ACCESS REQUESTS');
-    expect(PLANNER_SYSTEM).toContain('A MANAGER answers these');
-    expect(PLANNER_SYSTEM).toContain('Never mark one as your');
-    // …and the standing money rule is untouched by this plan.
+  test('the doctrine says the office does not chase one, and never mentions dismissing it', () => {
+    expect(PLANNER_SYSTEM).toContain('ACCESS.');
+    expect(PLANNER_SYSTEM).toContain('It never reaches this list');
+    expect(PLANNER_SYSTEM).toContain('gone within a day');
+    // The verbs the earlier cut handed it, all withdrawn.
+    expect(PLANNER_SYSTEM).not.toContain('remind a manager');
+    expect(PLANNER_SYSTEM).not.toContain('still waiting');
+    // …and the standing money rule is untouched by any of this.
     expect(PLANNER_SYSTEM).toContain('never told an AMOUNT');
-  });
-
-  test('nobody reachable is said plainly, not left blank', () => {
-    const view = buildGapView(
-      request({ context: { ...(request().context as object), managersTexted: [] } } as never),
-      Date.parse(NOW),
-      [], false, new Set(), [], [], 'UTC',
-    );
-    expect(view.block).toContain('nobody could be reached');
   });
 });

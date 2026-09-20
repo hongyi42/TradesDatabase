@@ -757,16 +757,20 @@ async function dispatch(
           throw new Error('accessRequest must name a jobId or a customerId, and optionally wants');
         }
         const r = req as Record<string, unknown>;
-        const optStr = (k: string): string | undefined => {
+        const optStr = (k: string, what = 'an id'): string | undefined => {
           const v = r[k];
           if (v === undefined || v === null) return undefined;
-          if (typeof v !== 'string' || !v.trim()) throw new Error(`accessRequest.${k} must be an id`);
+          if (typeof v !== 'string' || !v.trim()) throw new Error(`accessRequest.${k} must be ${what}`);
           return v.trim();
         };
-        const wants = optStr('wants') ?? 'record';
+        const wants = optStr('wants', 'a word') ?? 'record';
         if (wants !== 'record' && wants !== 'notes' && wants !== 'money') {
           throw new Error('accessRequest.wants must be "record", "notes" or "money"');
         }
+        // Read once each: these throw on a malformed value, and evaluating them
+        // inside an object spread put that throw somewhere surprising.
+        const jobId = optStr('jobId');
+        const customerId = optStr('customerId');
         return await (deps.accessDesk ?? answerAccessRequest)(
           {
             tenantId,
@@ -776,8 +780,8 @@ async function dispatch(
             askerTechnicianId: caller?.id ?? null,
             activeManager,
             why: question,
-            ...(optStr('jobId') ? { jobId: optStr('jobId') as string } : {}),
-            ...(optStr('customerId') ? { customerId: optStr('customerId') as string } : {}),
+            ...(jobId ? { jobId } : {}),
+            ...(customerId ? { customerId } : {}),
             wants,
           },
           {},

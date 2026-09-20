@@ -183,8 +183,13 @@ itself for a day, through one bounded model call whose every grant field is fixe
 anything with money, with the notes, or wider than one job is filed as an `access_request`
 observation and texted to every reachable manager. A manager answers with
 `grant_access { requestId }` or `decline_access`, the technician is texted either way, and the
-request is closed under a status guard so the FIRST answer wins. The planner sees every step and
-chases what goes unanswered, but answers nothing itself. The server both filters `tools/list`
+request is closed under a status guard so the FIRST answer wins. THE OFFICE IS A MIDDLEMAN FOR
+ONE INFERENCE AND NOTHING MORE (operator ruling, 2026-09-19): it decides once — open it, or put
+it to a manager — and then it is done. It does not chase, does not remind, and has no dismissal
+to make; an unanswered request simply lapses after 24 hours, with nothing running on a timer, and
+the technician can ask again. So the kind never enters the planner's gap list at all. What the
+planner hears is what HAPPENED: a manager's grant, decline or revoke as one inbox line, plus
+v_access_grants for the history. The server both filters `tools/list`
 by tier and re-gates every admin call at dispatch — a technician badge structurally has no
 admin surface. Seat caps (`tenants.manager_seats`/`technician_seats`) are DB-enforced; the
 agent cannot talk past them.

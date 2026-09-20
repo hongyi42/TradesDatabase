@@ -43,6 +43,31 @@ rollout: a note that lands where the record did not expect it now says so to the
   300 characters, so the desk row leads with "Opened <what> for <tech> until <day>"), every
   manager grant, decline and revoke as one inbox row from that manager, and `v_access_grants` as
   the complete record (the appendix can drop pairs in a burst; the view cannot).
+- **SUPERSEDED 2026-09-19 (operator ruling, at the final review): THE OFFICE DOES NOT FOLLOW UP.**
+  "The planner is the middleman here, and we only ever needed the planner in between for
+  inference on narrow cases. The ask for access should go to the planner exactly once, and then
+  the planner either gives the access itself or passes through the manager. If the manager does
+  not respond, then the item is automatically gone. When the technician asks, the only decision
+  that the planner makes is to give access or send to the manager. After that, it is not the
+  planner's job to follow up. This is different from the observations that the planner has been
+  working with so the verb 'dismiss' doesn't really make sense here."
+
+  What this overturned in the two bullets below, and in phase 3 as first built: the request does
+  NOT stay on the planner's list, the planner does NOT chase a manager or tell the technician it
+  is still waiting, and there is no dismissal to make. The kind is filtered out of the planner's
+  one observation read, so no verb needs a special case; the gap-view branch and the
+  `countsAsTheAsk` guard were deleted as unreachable. The `recover` ceiling STAYS — a settled
+  request is dismissed, so its id still reaches the planner through the dismissed-ids list.
+  An unanswered request LAPSES after 24 hours (operator's choice at the same moment), applied
+  where it is read rather than by a sweep: `findOpenAccessRequest` + `hasLapsed` closes the stale
+  row on the next ask and files a fresh one, and both answer doors refuse a lapsed id. Nothing
+  runs on a timer.
+
+  And because nothing chases, the desk stopped promising a reply: "you'll get a message here when
+  they answer" became "if they open it you'll get a message here; if you hear nothing, ask me
+  about this job again". A manager's yes or no still texts her; silence does not. The operator
+  chose this over adding a sweep to text her on the lapse.
+
 - **A forwarded request is an observation** (kind `access_request`, author `planner`, a fresh-uuid
   `subject_ref`, a `requestKey` in `context`). It stays in the planner's list until answered
   (operator accepted), so the planner can chase the manager or tell the technician. A partial

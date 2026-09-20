@@ -185,6 +185,40 @@ describe('the access desk — what always goes to a manager', () => {
     expect(rec.requests[0].context.wants).toBe('notes');
   });
 
+  // THE MANAGER MUST BE ASKED FOR THE LEAST THAT ANSWERS HER, and only the
+  // office can arrange that. A customer outside her view lists NO job ids
+  // (find_customer gives id+name, get_customer_context gives `jobs: []`), so a
+  // seat asking about one job of a customer it cannot see has nothing to name.
+  // Measured twice on the pilot: she asked about one job, the manager was asked
+  // to open every job that customer ever had, and granted it.
+  test('a MONEY ask on a customer with one unfinished job is narrowed to that job', async () => {
+    const { deps, rec } = stub();
+    const out = await answerAccessRequest(ask({ jobId: undefined, customerId: CUST_ID, wants: 'money' }), deps);
+    expect(out.status).toBe('asked_manager');
+    expect(rec.requests[0].context.jobId).toBe(JOB_ID);
+    expect(rec.requests[0].context.targetName).toContain('boiler swap');
+    expect(rec.requests[0].context.targetName).not.toContain('every job');
+  });
+
+  test('a NOTES ask is narrowed the same way', async () => {
+    const { deps, rec } = stub();
+    const out = await answerAccessRequest(ask({ jobId: undefined, customerId: CUST_ID, wants: 'notes' }), deps);
+    expect(out.status).toBe('asked_manager');
+    expect(rec.requests[0].context.jobId).toBe(JOB_ID);
+  });
+
+  test('…but NOT when the narrowed job would already answer her', async () => {
+    // She can open the job and be told its figures already, so narrowing would
+    // dead-end an ask that is legitimately about the jobs she CANNOT see.
+    const { deps, rec } = stub({
+      technicianView: async () => ({
+        ...emptyView(), jobIds: new Set([JOB_ID]), moneyJobIds: new Set([JOB_ID]),
+      }),
+    });
+    await answerAccessRequest(ask({ jobId: undefined, customerId: CUST_ID, wants: 'money' }), deps);
+    expect(rec.requests[0].context.jobId).toBeUndefined();
+  });
+
   test('a customer with two unfinished jobs stays customer-wide and is not narrowed', async () => {
     const { deps, rec } = stub({
       listOpenJobs: async () => [job(), job({ id: '44444444-4444-4444-8444-444444444444', title: 'tap' })],

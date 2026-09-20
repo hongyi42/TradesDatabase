@@ -232,11 +232,33 @@ export async function answerAccessRequest(
     // customer normally has one unfinished job — the one she has a trip on.
     // Narrowing to THAT job would answer "it is already open to you" to
     // somebody asking for the history, file nothing, and text nobody.
-    if (wants === 'record') {
-      const live = await openJobs(customer.id);
-      if (live.length === 1 && !viewHasJob(view, live[0].id)) {
-        target = { ...target, jobId: live[0].id, jobTitle: live[0].title };
-      }
+    //
+    // EVERY WIDTH, not just `record` (2026-09-20). The gate used to be
+    // `wants === 'record'` because narrowing decided whether the DESK could
+    // open it. The desk opens nothing now, so narrowing is only about what the
+    // MANAGER is asked for — and it has to happen HERE, because the seat
+    // cannot do it. A customer outside her view answers with NO job ids at all
+    // (find_customer gives id+name, get_customer_context gives `jobs: []`), so
+    // a seat asking about one job of a customer it cannot see has no id to
+    // name and must ask customer-wide. Measured twice on the pilot: she asked
+    // about one job, the manager was asked to open every job that customer
+    // ever had, and granted it. Telling the seat to "use jobId" cannot fix
+    // that; it has no jobId to use.
+    const live = await openJobs(customer.id);
+    if (live.length === 1) {
+      const only = live[0];
+      // …unless the narrowed job would already answer her, in which case
+      // narrowing would dead-end a legitimately customer-wide ask (she asks
+      // wide precisely because the jobs she cannot see are the hidden ones).
+      // `notes` is never "already satisfied": the view answers whether she may
+      // open a job, never whether she may read every note on it.
+      const alreadySatisfied =
+        wants === 'record'
+          ? viewHasJob(view, only.id)
+          : wants === 'money'
+            ? viewHasJob(view, only.id) && viewShowsMoney(view, { jobId: only.id })
+            : false;
+      if (!alreadySatisfied) target = { ...target, jobId: only.id, jobTitle: only.title };
     }
   }
 

@@ -10401,7 +10401,13 @@ describe('the access request flow', () => {
       // A manager opens exactly what was asked for, so an over-wide ask is an
       // over-wide grant — and the customer never agreed to that.
       expect(req?.description).toContain('ASK FOR THE LEAST THAT ANSWERS THEM');
-      expect(req?.description).toContain('even if you looked the job up through the customer');
+      // The instruction must be one the seat can actually FOLLOW: a customer
+      // outside its view lists no jobs, so "use jobId even when you looked the
+      // job up through the customer" was unactionable and was measured failing
+      // twice. It now points at the tool that does hand over an id, and says
+      // the office narrows the rest.
+      expect(req?.description).toContain('whenever a tool has given you one');
+      expect(req?.description).toContain('the office narrows that');
       expect(req?.properties?.customerId?.description).toContain('EVERY job');
       expect(req?.properties?.customerId?.description).toContain('never as a shortcut');
       // …and it must not promise an opening the office cannot make.

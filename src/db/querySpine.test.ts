@@ -6,6 +6,7 @@ import { createCustomer } from './customers.js';
 import { createJob } from './jobs.js';
 import { createVisit } from './visits.js';
 import { upsertTenantProfile } from './tenantProfiles.js';
+import { nl } from './time.js';
 
 // The security properties of the query_spine read surface, asserted against the
 // real database rather than reasoned about. Isolation here rests on a view
@@ -79,8 +80,8 @@ beforeAll(async () => {
       tenantId: tag === 'a' ? tenantA : tenantB,
       jobId: jobIds[tag],
       technicianId: techIds[tag],
-      startsAt: `2027-03-02T${String(hour).padStart(2, '0')}:00:00Z`,
-      endsAt: `2027-03-02T${String(hour).padStart(2, '0')}:45:00Z`,
+      startsAt: nl(`2027-03-02T${String(hour).padStart(2, '0')}:00:00Z`),
+      endsAt: nl(`2027-03-02T${String(hour).padStart(2, '0')}:45:00Z`),
       status,
     });
     return row.id;
@@ -521,16 +522,16 @@ describe('query_spine — local_day is the stored wall clock (plan 2026-09-15 re
       await createVisit({
         tenantId,
         jobId: job.id,
-        startsAt: `2027-03-09T${at}:00Z`,
-        endsAt: `2027-03-09T${until}:00Z`,
+        startsAt: nl(`2027-03-09T${at}:00Z`),
+        endsAt: nl(`2027-03-09T${until}:00Z`),
         status: 'confirmed',
       });
       // A cancelled one at the same edge of the day, for v_cancelled_visits.
       await createVisit({
         tenantId,
         jobId: job.id,
-        startsAt: tag === 'la' ? '2027-03-09T05:00:00Z' : '2027-03-09T23:00:00Z',
-        endsAt: tag === 'la' ? '2027-03-09T05:30:00Z' : '2027-03-09T23:30:00Z',
+        startsAt: nl(tag === 'la' ? '2027-03-09T05:00:00Z' : '2027-03-09T23:00:00Z'),
+        endsAt: nl(tag === 'la' ? '2027-03-09T05:30:00Z' : '2027-03-09T23:30:00Z'),
         status: 'cancelled',
       });
       if (tag === 'la') pacific = tenantId;

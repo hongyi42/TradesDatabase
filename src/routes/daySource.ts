@@ -13,6 +13,7 @@ import { formatAddress, type RouteStop } from './deepLink.js';
 import { getTechnician } from '../db/technicians.js';
 import { listVisitsForTechnician } from '../db/visits.js';
 import { listJobsWithCustomerByIds } from '../db/jobs.js';
+import { dayEndNaive, dayStartNaive } from '../db/time.js';
 
 export interface DayStops {
   date: string; // YYYY-MM-DD (UTC day)
@@ -50,8 +51,12 @@ export async function listDayStops(
   if (!tech) return [];
   const visits = await listVisitsForTechnician(
     tech.id,
-    `${fromDate.slice(0, 10)}T00:00:00.000Z`,
-    `${toDate.slice(0, 10)}T23:59:59.999Z`,
+    dayStartNaive(fromDate.slice(0, 10)),
+    // EXCLUSIVE next midnight, the convention every other day bound here uses.
+    // This site alone used an INCLUSIVE '23:59:59.999' until 2026-09-20; the
+    // bound widens by one millisecond, which no booking can occupy (HHMM_RE is
+    // minute-granular) and which the day clamp below would include anyway.
+    dayEndNaive(toDate.slice(0, 10)),
     ['confirmed'],
   );
   const jobs = await listJobsWithCustomerByIds(tenantId, [

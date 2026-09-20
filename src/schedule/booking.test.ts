@@ -29,6 +29,7 @@ import {
   previewUnscheduleVisit,
   snapshotJobVisits,
 } from './booking.js';
+import { nl } from '../db/time.js';
 
 // Integration against the local stack, scheduling.test.ts truncate discipline.
 const TRUNCATE =
@@ -502,8 +503,8 @@ describe('moveVisit', () => {
       tenantId,
       jobId: mover.job.id,
       technicianId: tech.id,
-      startsAt: '2026-11-19T09:00:00.000Z',
-      endsAt: '2026-11-19T11:00:00.000Z',
+      startsAt: nl('2026-11-19T09:00:00.000Z'),
+      endsAt: nl('2026-11-19T11:00:00.000Z'),
       status: 'confirmed',
     });
     await expect(

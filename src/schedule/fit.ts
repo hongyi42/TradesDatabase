@@ -26,6 +26,7 @@ import {
   type WeeklyPattern,
 } from '../db/index.js';
 import { localDayOfWeek } from './availability.js';
+import { dayEndNaive, dayStartNaive } from '../db/time.js';
 import { optimizeStopOrder, type ComputeRoutes } from '../routes/googleRoutes.js';
 import type { RouteStop } from '../routes/deepLink.js';
 
@@ -62,7 +63,7 @@ export interface Gap {
 
 // The day's working windows for a naive-local calendar date.
 export function dayWindows(pattern: WeeklyPattern, dateISO: string): [string, string][] {
-  const windows = pattern[localDayOfWeek(`${dateISO}T00:00:00.000Z`, 'UTC')];
+  const windows = pattern[localDayOfWeek(dayStartNaive(dateISO), 'UTC')];
   return Array.isArray(windows) ? windows : [];
 }
 
@@ -72,7 +73,7 @@ export function dayWindows(pattern: WeeklyPattern, dateISO: string): [string, st
 // early, incl. a "Sunday" for a Monday slot — resolve_date's lesson again;
 // mechanism over instruction, so the server leaves no calendar math to do).
 export const weekdayLabel = (dateISO: string): string => {
-  const d = localDayOfWeek(`${dateISO}T00:00:00.000Z`, 'UTC');
+  const d = localDayOfWeek(dayStartNaive(dateISO), 'UTC');
   return d.charAt(0).toUpperCase() + d.slice(1);
 };
 
@@ -387,8 +388,8 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
   // than 1000 visits in the window no longer reads its later days as empty.
   const placedRows = await listVisitsWithRefsForTenant(
     input.tenantId,
-    `${input.earliest}T00:00:00.000Z`,
-    addDaysISO(input.latest, 1) + 'T00:00:00.000Z',
+    dayStartNaive(input.earliest),
+    dayEndNaive(input.latest),
     ['confirmed'],
   );
   // Rows with SOMEBODY on them — a trip nobody is going on occupies nobody's
@@ -475,8 +476,8 @@ export async function findDisplacementCandidates(
   const rows = (
     await listVisitsWithRefsForTenant(
       tenantId,
-      `${earliest}T00:00:00.000Z`,
-      addDaysISO(latest, 1) + 'T00:00:00.000Z',
+      dayStartNaive(earliest),
+      dayEndNaive(latest),
       ['confirmed'],
     )
   ).filter((r) => r.id !== excludeVisitId);

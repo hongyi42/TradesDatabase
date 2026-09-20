@@ -16,6 +16,7 @@ import type { ExtractedFields } from './extract.js';
 // the db through the concrete modules, not the barrel, so they are untouched.
 vi.mock('../db/index.js', { spy: true });
 import { findCustomersByThread } from '../db/index.js';
+import { nl } from '../db/time.js';
 
 // matchIdentity reads customers + the DB-owned schedule (assignments), so this
 // is a DB-backed test against the local stack: we seed rows, then assert.
@@ -38,8 +39,8 @@ async function bookOn(technicianId: string, customerId: string, hour: string) {
     tenantId,
     jobId: job.id,
     technicianId,
-    startsAt: `${DAY}T${hour}:00:00.000Z`,
-    endsAt: `${DAY}T${Number(hour) + 2}:00:00.000Z`,
+    startsAt: nl(`${DAY}T${hour}:00:00.000Z`),
+    endsAt: nl(`${DAY}T${Number(hour) + 2}:00:00.000Z`),
     status: 'confirmed',
   });
   return { job, assignment };
@@ -221,8 +222,8 @@ describe('matchIdentity — schedule branch (confirmed assignments)', () => {
       tenantId,
       jobId: job.id,
       technicianId: tech3.id,
-      startsAt: '2026-06-20T15:00:00.000Z', // day AFTER the capture
-      endsAt: '2026-06-20T17:00:00.000Z',
+      startsAt: nl('2026-06-20T15:00:00.000Z'), // day AFTER the capture
+      endsAt: nl('2026-06-20T17:00:00.000Z'),
       status: 'confirmed',
     });
     // A CANCELLED visit ON the capture day must not suggest either — only
@@ -231,8 +232,8 @@ describe('matchIdentity — schedule branch (confirmed assignments)', () => {
       tenantId,
       jobId: job.id,
       technicianId: tech3.id,
-      startsAt: `${DAY}T09:00:00.000Z`,
-      endsAt: `${DAY}T11:00:00.000Z`,
+      startsAt: nl(`${DAY}T09:00:00.000Z`),
+      endsAt: nl(`${DAY}T11:00:00.000Z`),
       status: 'confirmed',
     });
     await updateVisitStatus(cancelled.id, 'cancelled', 'test');

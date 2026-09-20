@@ -14,6 +14,7 @@ import { createJob, insertJobCapture, listJobsWithCustomerByIds } from './jobs.j
 import { listJobIdsWithCostEvents } from './moneyEvents.js';
 import { createVisit, insertVisitNote, updateVisitStatus } from './visits.js';
 import { createTenant } from './tenants.js';
+import { nl } from './time.js';
 
 // The planner's and the watcher's capture readers over the ONE membership
 // definition (retrieval layer plan 3). Ported from rawCaptures.test.ts, where the
@@ -52,7 +53,7 @@ async function reportedVisit(o: { tenantId: string; jobId: string; captureId: st
     startsAt: null,
     endsAt: null,
     status: 'completed',
-    completedAt: '2026-08-16T13:00:00.000Z',
+    completedAt: nl('2026-08-16T13:00:00.000Z'),
     sourceCaptureId: o.captureId,
   });
   await insertVisitNote({ tenantId: o.tenantId, visitId: v.id, captureId: o.captureId });

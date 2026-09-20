@@ -33,6 +33,7 @@ import {
 import { MAX_DELIVERY_ATTEMPTS, MAX_SERVE_COUNT } from '../control/nudgeQueue.js';
 import { localDateISO, localTimeHHMM, parseAsUtc } from '../schedule/availability.js';
 import { naiveLocalISO } from '../schedule/booking.js';
+import { asNaiveLocal, type NaiveLocal } from '../db/time.js';
 
 // The Stage-0 watcher (plan 2026-08-15 feature A): a DETERMINISTIC detector for
 // the archetype gap — a confirmed visit whose scheduled end passed hours ago
@@ -363,7 +364,7 @@ export async function runWatchers(
       }
       // Real-UTC instant → the firm's wall clock in the canonical naive-local
       // storage form (booking.ts owns the format). Minute precision.
-      const naiveLocal = (iso: string): string =>
+      const naiveLocal = (iso: string): NaiveLocal =>
         naiveLocalISO(localDateISO(iso, tz), localTimeHHMM(iso, tz));
       // Minute-floored epoch of a naive-local ISO — the compare bound that
       // pairs with naiveLocal's minute precision (see the header note).
@@ -401,9 +402,11 @@ export async function runWatchers(
       const openGaps = openItems.flatMap(({ item, spec }) => {
         const d = (item.detail ?? {}) as Record<string, unknown>;
         const jobId = typeof d.jobId === 'string' ? d.jobId : null;
+        // Out of a JSONB detail blob, so the species is ASSERTED here, not
+        // proved — asNaiveLocal names every such re-entry point.
         const startsAtLocal =
           typeof d.startsAtLocal === 'string' && !Number.isNaN(Date.parse(d.startsAtLocal))
-            ? d.startsAtLocal
+            ? asNaiveLocal(d.startsAtLocal)
             : null;
         // The FLAG time, firm wall clock — the anchor auto-resolve compares
         // activity against (final-review build 5): "field report arrived after

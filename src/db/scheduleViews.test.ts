@@ -4,6 +4,7 @@ import { createTenant } from './tenants.js';
 import { createCustomer } from './customers.js';
 import { createJob } from './jobs.js';
 import { createVisit } from './visits.js';
+import { nl } from './time.js';
 
 // THE LOCAL DAY IS THE STORED WALL CLOCK — pinned against the real database.
 //
@@ -43,25 +44,25 @@ let jobId: string;
 // view produced — the value this case exists to refuse.
 const CASES = [
   {
-    startsAt: '2026-09-15T06:00:00.000Z',
+    startsAt: nl('2026-09-15T06:00:00.000Z'),
     day: '2026-09-15',
     weekday: 'Tuesday',
     note: 'the recorded defect: a 6 AM visit read as 2026-09-14 (Monday) for a Pacific firm',
   },
   {
-    startsAt: '2026-09-15T23:00:00.000Z',
+    startsAt: nl('2026-09-15T23:00:00.000Z'),
     day: '2026-09-15',
     weekday: 'Tuesday',
     note: 'the other direction: an 11 PM visit rolls to the NEXT day for a UTC+ firm',
   },
   {
-    startsAt: '2026-11-01T01:30:00.000Z',
+    startsAt: nl('2026-11-01T01:30:00.000Z'),
     day: '2026-11-01',
     weekday: 'Sunday',
     note: 'US fall-back day — 01:30 local happens twice, but a wall clock has no ambiguity to resolve',
   },
   {
-    startsAt: '2026-09-15T14:00:00.000Z',
+    startsAt: nl('2026-09-15T14:00:00.000Z'),
     day: '2026-09-15',
     weekday: 'Tuesday',
     note: 'CONTROL: mid-afternoon survives a 7h shift within the same day, so it passes either way — its job is to prove the cases above are the ones doing the work',
@@ -95,7 +96,7 @@ beforeAll(async () => {
       jobId,
       technicianId: null,
       startsAt: c.startsAt,
-      endsAt: c.startsAt.replace(/T(\d{2})/, (_m, h) => `T${String(Number(h) + 1).padStart(2, '0')}`),
+      endsAt: nl(c.startsAt.replace(/T(\d{2})/, (_m, h) => `T${String(Number(h) + 1).padStart(2, '0')}`)),
       status: 'confirmed',
     });
     visitIds.set(c.startsAt, visit.id);
@@ -107,8 +108,8 @@ beforeAll(async () => {
     tenantId,
     jobId,
     technicianId: null,
-    startsAt: '2026-09-15T06:00:00.000Z',
-    endsAt: '2026-09-15T07:00:00.000Z',
+    startsAt: nl('2026-09-15T06:00:00.000Z'),
+    endsAt: nl('2026-09-15T07:00:00.000Z'),
     status: 'cancelled',
   });
   cancelledVisitId = cancelled.id;

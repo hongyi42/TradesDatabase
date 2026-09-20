@@ -13,6 +13,7 @@ import { updateVisitStatus } from '../db/visits.js';
 import * as rosterCache from '../telegram/rosterCache.js';
 import * as botIds from '../telegram/botIds.js';
 import { setPublicKeyForTests } from '../telegram/initData.js';
+import { nl } from '../db/time.js';
 
 // Integration: the /console routes over a real HTTP server on an ephemeral
 // port against the local stack (the boardApi.test.ts harness, reused because
@@ -277,7 +278,7 @@ describe('reads', () => {
       startTime: '15:00',
       endTime: '16:00',
     });
-    await updateVisitStatus(done.assignment.id, 'completed', null, `${DAY_A}T16:05:00`);
+    await updateVisitStatus(done.assignment.id, 'completed', null, nl(`${DAY_A}T16:05:00`));
 
     const con = await (await calendar(`?from=${DAY_A}&to=${DAY_A}`, tma(MGR))).json();
     const stop = con.days[0].stops.find(

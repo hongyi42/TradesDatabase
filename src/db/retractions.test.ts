@@ -13,6 +13,7 @@ import { getCustomerContents, type CustomerContents } from './context.js';
 import { createCustomer } from './customers.js';
 import { createJob } from './jobs.js';
 import { createVisit, insertVisitNote } from './visits.js';
+import { nl, type NaiveLocal } from './time.js';
 
 // Phase 1 of the note lifecycle: retraction schema + folding primitives.
 // Integration tests against the LOCAL stack (testEnvGuard-pinned).
@@ -147,7 +148,7 @@ describe('getCustomerContents retraction fold', () => {
     // The bad trip is the LATER one, so lastVisitAt tells the fold apart.
     const goodNote = await note({ rawText: 'good note' });
     const badNote = await note({ rawText: 'bad note — wrong customer' });
-    const reported = async (captureId: string, completedAt: string) => {
+    const reported = async (captureId: string, completedAt: NaiveLocal) => {
       const v = await createVisit({
         tenantId,
         jobId: job.id,
@@ -161,8 +162,8 @@ describe('getCustomerContents retraction fold', () => {
       await insertVisitNote({ tenantId, visitId: v.id, captureId });
       return v;
     };
-    await reported(goodNote.id, '2026-08-16T13:00:00.000Z');
-    await reported(badNote.id, '2026-08-17T13:00:00.000Z');
+    await reported(goodNote.id, nl('2026-08-16T13:00:00.000Z'));
+    await reported(badNote.id, nl('2026-08-17T13:00:00.000Z'));
 
     const before = (await getCustomerContents(tenantId, customer.id, 'manager')) as CustomerContents;
     expect(before.jobs[0].noteCount).toBe(2);

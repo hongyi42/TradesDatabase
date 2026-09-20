@@ -51,6 +51,7 @@ import {
   latestScheduleVersion,
   listScheduleEventsSince,
 } from './scheduleEvents.js';
+import { nl, type NaiveLocal } from './time.js';
 
 // Integration against the TEST project, self-cleaning (pattern:
 // technicians.test.ts, incl. the roster truncate/seat-restore discipline).
@@ -214,7 +215,7 @@ describe('visit_notes — the note↔trip link (rung 9b)', () => {
       startsAt: null,
       endsAt: null,
       status: 'completed',
-      completedAt: '2026-08-16T13:00:00.000Z',
+      completedAt: nl('2026-08-16T13:00:00.000Z'),
     });
     const cap = await appendRawCapture({
       tenantId,
@@ -258,7 +259,7 @@ describe('visits — the schedule half', () => {
     const customer = await createCustomer({ tenantId, name: `Cust for ${title}` });
     return createJob({ tenantId, customerId: customer.id, title, status: 'open' });
   }
-  const T = (h: number) => `2026-09-01T${String(h).padStart(2, '0')}:00:00.000Z`;
+  const T = (h: number) => nl(`2026-09-01T${String(h).padStart(2, '0')}:00:00.000Z`);
 
   test('legal transition walk proposed→confirmed→completed; illegal transitions throw', async () => {
     const job = await makeJob('walk');
@@ -344,13 +345,13 @@ describe('visits — the schedule half', () => {
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
-      startsAt: '2026-09-05T09:00:00.000Z',
-      endsAt: '2026-09-05T11:00:00.000Z',
+      startsAt: nl('2026-09-05T09:00:00.000Z'),
+      endsAt: nl('2026-09-05T11:00:00.000Z'),
       status: 'confirmed',
     });
     const moved = await moveVisitRow(original.id, {
-      startsAt: '2026-09-05T14:00:00.000Z',
-      endsAt: '2026-09-05T16:00:00.000Z',
+      startsAt: nl('2026-09-05T14:00:00.000Z'),
+      endsAt: nl('2026-09-05T16:00:00.000Z'),
       reason: 'customer asked for the afternoon',
     });
     expect(moved.id).toBe(original.id); // the SAME visit
@@ -372,15 +373,15 @@ describe('visits — the schedule half', () => {
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
-      startsAt: '2026-09-25T09:00:00.000Z',
-      endsAt: '2026-09-25T11:00:00.000Z',
+      startsAt: nl('2026-09-25T09:00:00.000Z'),
+      endsAt: nl('2026-09-25T11:00:00.000Z'),
       status: 'confirmed',
     });
     // Explicit null = detach (the !== undefined idiom — `??` would resurrect
     // the old technician; plan 4a.5).
     const detached = await moveVisitRow(original.id, {
-      startsAt: '2026-09-25T09:00:00.000Z',
-      endsAt: '2026-09-25T11:00:00.000Z',
+      startsAt: nl('2026-09-25T09:00:00.000Z'),
+      endsAt: nl('2026-09-25T11:00:00.000Z'),
       technicianId: null,
       reason: 'parked',
     });
@@ -388,8 +389,8 @@ describe('visits — the schedule half', () => {
     expect(detached.id).toBe(original.id);
     // Omitted still means "same technician" — the pre-4a.5 contract holds.
     const kept = await moveVisitRow(detached.id, {
-      startsAt: '2026-09-25T13:00:00.000Z',
-      endsAt: '2026-09-25T15:00:00.000Z',
+      startsAt: nl('2026-09-25T13:00:00.000Z'),
+      endsAt: nl('2026-09-25T15:00:00.000Z'),
       reason: 'shifted',
     });
     expect(await listParticipants(kept.id)).toHaveLength(0); // still nobody on it
@@ -402,15 +403,15 @@ describe('visits — the schedule half', () => {
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
-      startsAt: '2026-09-06T09:00:00.000Z',
-      endsAt: '2026-09-06T11:00:00.000Z',
+      startsAt: nl('2026-09-06T09:00:00.000Z'),
+      endsAt: nl('2026-09-06T11:00:00.000Z'),
       status: 'confirmed',
     });
     // Swapped start/end must not touch the confirmed booking.
     await expect(
       moveVisitRow(original.id, {
-        startsAt: '2026-09-06T16:00:00.000Z',
-        endsAt: '2026-09-06T14:00:00.000Z',
+        startsAt: nl('2026-09-06T16:00:00.000Z'),
+        endsAt: nl('2026-09-06T14:00:00.000Z'),
         reason: 'oops',
       }),
     ).rejects.toThrow(/invalid time range.*nothing changed/);
@@ -429,23 +430,23 @@ describe('visits — the schedule half', () => {
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
-      startsAt: '2026-10-02T09:00:00.000Z',
-      endsAt: '2026-10-02T11:00:00.000Z',
+      startsAt: nl('2026-10-02T09:00:00.000Z'),
+      endsAt: nl('2026-10-02T11:00:00.000Z'),
       status: 'confirmed',
     });
     const mover = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
-      startsAt: '2026-10-02T14:00:00.000Z',
-      endsAt: '2026-10-02T15:00:00.000Z',
+      startsAt: nl('2026-10-02T14:00:00.000Z'),
+      endsAt: nl('2026-10-02T15:00:00.000Z'),
       status: 'confirmed',
     });
     let raised: unknown;
     try {
       await moveVisitRow(mover.id, {
-        startsAt: '2026-10-02T09:30:00.000Z',
-        endsAt: '2026-10-02T10:30:00.000Z',
+        startsAt: nl('2026-10-02T09:30:00.000Z'),
+        endsAt: nl('2026-10-02T10:30:00.000Z'),
         reason: 'onto a taken slot',
       });
     } catch (err) {
@@ -464,15 +465,15 @@ describe('visits — the schedule half', () => {
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
-      startsAt: '2026-10-09T09:00:00.000Z',
-      endsAt: '2026-10-09T11:00:00.000Z',
+      startsAt: nl('2026-10-09T09:00:00.000Z'),
+      endsAt: nl('2026-10-09T11:00:00.000Z'),
       status: 'confirmed',
     });
     await updateVisitStatus(original.id, 'cancelled', 'called off');
     await expect(
       moveVisitRow(original.id, {
-        startsAt: '2026-10-09T14:00:00.000Z',
-        endsAt: '2026-10-09T15:00:00.000Z',
+        startsAt: nl('2026-10-09T14:00:00.000Z'),
+        endsAt: nl('2026-10-09T15:00:00.000Z'),
         reason: 'too late',
       }),
     ).rejects.toThrow(/cannot move a cancelled visit/);
@@ -493,8 +494,8 @@ describe('visits — the schedule half', () => {
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
-      startsAt: '2026-10-23T09:00:00.000Z',
-      endsAt: '2026-10-23T11:00:00.000Z',
+      startsAt: nl('2026-10-23T09:00:00.000Z'),
+      endsAt: nl('2026-10-23T11:00:00.000Z'),
       status: 'confirmed',
     });
     const locker = new Client({ connectionString: process.env.DATABASE_URL });
@@ -503,8 +504,8 @@ describe('visits — the schedule half', () => {
       await locker.query('begin');
       await locker.query('select id from visits where id = $1 for update', [original.id]);
       const racer = moveVisitRow(original.id, {
-        startsAt: '2026-10-23T14:00:00.000Z',
-        endsAt: '2026-10-23T15:00:00.000Z',
+        startsAt: nl('2026-10-23T14:00:00.000Z'),
+        endsAt: nl('2026-10-23T15:00:00.000Z'),
         reason: 'moved while being cancelled',
       });
       await locker.query("update visits set status = 'cancelled' where id = $1", [original.id]);
@@ -538,17 +539,17 @@ describe('visits — the schedule half', () => {
     });
     const placed = await mk({
       tenantId, jobId: job.id, technicianId: null,
-      startsAt: '2026-10-16T09:00:00.000Z', endsAt: '2026-10-16T10:00:00.000Z', status: 'confirmed',
+      startsAt: nl('2026-10-16T09:00:00.000Z'), endsAt: nl('2026-10-16T10:00:00.000Z'), status: 'confirmed',
     });
     const happened = await mk({
       tenantId, jobId: job.id, technicianId: null,
       startsAt: null, endsAt: null, status: 'completed',
-      completedAt: '2026-10-16T11:00:00.000Z',
+      completedAt: nl('2026-10-16T11:00:00.000Z'),
     });
     const reported = await mk({
       tenantId, jobId: job.id, technicianId: null,
       startsAt: null, endsAt: null, status: 'completed',
-      completedAt: '2026-10-16T11:00:00.000Z',
+      completedAt: nl('2026-10-16T11:00:00.000Z'),
     });
     const cap = await appendRawCapture({
       tenantId, channel: 'technician_note', rawText: 'stage fixture',
@@ -592,24 +593,24 @@ describe('visits — the schedule half', () => {
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
-      startsAt: '2026-09-02T09:00:00.000Z',
-      endsAt: '2026-09-02T11:00:00.000Z',
+      startsAt: nl('2026-09-02T09:00:00.000Z'),
+      endsAt: nl('2026-09-02T11:00:00.000Z'),
       status: 'confirmed',
     });
     const cancelledRow = await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
-      startsAt: '2026-09-02T12:00:00.000Z',
-      endsAt: '2026-09-02T13:00:00.000Z',
+      startsAt: nl('2026-09-02T12:00:00.000Z'),
+      endsAt: nl('2026-09-02T13:00:00.000Z'),
     });
     await updateVisitStatus(cancelledRow.id, 'cancelled');
     await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
-      startsAt: '2026-09-03T09:00:00.000Z', // outside the window
-      endsAt: '2026-09-03T11:00:00.000Z',
+      startsAt: nl('2026-09-03T09:00:00.000Z'), // outside the window
+      endsAt: nl('2026-09-03T11:00:00.000Z'),
     });
 
     const hits = await listVisitsForTechnician(
@@ -684,13 +685,13 @@ describe('unplaced visits (Plan 4b-2): shapes + the narrowed overlap guard)', ()
     await expect(
       createVisit({
         tenantId, jobId: job.id, technicianId: null,
-        startsAt: '2026-10-05T09:00:00.000Z', endsAt: null,
+        startsAt: nl('2026-10-05T09:00:00.000Z'), endsAt: null,
       }),
     ).rejects.toThrow(/BOTH times, or neither/);
     await expect(
       createVisit({
         tenantId, jobId: job.id, technicianId: null,
-        startsAt: null, endsAt: '2026-10-05T10:00:00.000Z',
+        startsAt: null, endsAt: nl('2026-10-05T10:00:00.000Z'),
       }),
     ).rejects.toThrow(/BOTH times, or neither/);
     // INVERTED: the raw all-null insert used to raise
@@ -714,7 +715,7 @@ describe('unplaced visits (Plan 4b-2): shapes + the narrowed overlap guard)', ()
 
   test('the narrowed guard: placed overlaps still raise 23P01; untimed twins both insert', async () => {
     const job = await makeJob('narrowed-guard');
-    const D = (h: number) => `2026-10-12T${String(h).padStart(2, '0')}:00:00.000Z`;
+    const D = (h: number) => nl(`2026-10-12T${String(h).padStart(2, '0')}:00:00.000Z`);
     // Placed protection is EXACTLY as before.
     await createVisit({
       tenantId, jobId: job.id, technicianId: tech.id,
@@ -763,8 +764,8 @@ describe('assignment reads + schedule events (Plan 1, schedule core)', () => {
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
-      startsAt: '2026-10-10T09:00:00.000Z',
-      endsAt: '2026-10-10T11:00:00.000Z',
+      startsAt: nl('2026-10-10T09:00:00.000Z'),
+      endsAt: nl('2026-10-10T11:00:00.000Z'),
       status: 'confirmed',
     });
     const b = await createVisit({
@@ -772,16 +773,16 @@ describe('assignment reads + schedule events (Plan 1, schedule core)', () => {
       jobId: job.id,
       technicianId: otherTech.id,
       // Straddles the window start — overlap semantics must include it.
-      startsAt: '2026-10-09T23:00:00.000Z',
-      endsAt: '2026-10-10T01:00:00.000Z',
+      startsAt: nl('2026-10-09T23:00:00.000Z'),
+      endsAt: nl('2026-10-10T01:00:00.000Z'),
       status: 'confirmed',
     });
     await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: otherTech.id,
-      startsAt: '2026-10-10T13:00:00.000Z', // proposed → excluded by default
-      endsAt: '2026-10-10T14:00:00.000Z',
+      startsAt: nl('2026-10-10T13:00:00.000Z'), // proposed → excluded by default
+      endsAt: nl('2026-10-10T14:00:00.000Z'),
     });
     // Half-open [from, to) boundary pins (Phase-3 day windows lean on these):
     // ends exactly AT the window start / starts exactly AT the window end.
@@ -789,16 +790,16 @@ describe('assignment reads + schedule events (Plan 1, schedule core)', () => {
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
-      startsAt: '2026-10-09T22:00:00.000Z',
-      endsAt: '2026-10-10T00:00:00.000Z', // == fromISO → excluded
+      startsAt: nl('2026-10-09T22:00:00.000Z'),
+      endsAt: nl('2026-10-10T00:00:00.000Z'), // == fromISO → excluded
       status: 'confirmed',
     });
     await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: tech.id,
-      startsAt: '2026-10-11T00:00:00.000Z', // == toISO → excluded
-      endsAt: '2026-10-11T02:00:00.000Z',
+      startsAt: nl('2026-10-11T00:00:00.000Z'), // == toISO → excluded
+      endsAt: nl('2026-10-11T02:00:00.000Z'),
       status: 'confirmed',
     });
 
@@ -949,9 +950,9 @@ describe('job duration ladder (Plan 4b-1)', () => {
 describe('loose-bucket listers (Plan 4a)', () => {
   // Relative dates only — a bucket read is anchored at "today", so fixed
   // fixtures rot. Naive-local convention: wall-clock written as if UTC.
-  const rel = (days: number, hh: string): string => {
+  const rel = (days: number, hh: string) => {
     const d = new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
-    return `${d}T${hh}:00.000Z`;
+    return nl(`${d}T${hh}:00.000Z`);
   };
   let parkedFutureId: string;
   let bucketJobId: string;
@@ -1067,13 +1068,13 @@ describe('loose-bucket listers (Plan 4a)', () => {
 // below would pick up its row (review finding — fixed fixtures + relative
 // fixtures must not share a tenant).
 describe('listOverdueConfirmedVisits', () => {
-  const FROM = '2026-08-10T08:00:00.000Z';
-  const TO = '2026-08-10T12:00:00.000Z';
+  const FROM = nl('2026-08-10T08:00:00.000Z');
+  const TO = nl('2026-08-10T12:00:00.000Z');
   let tenantW: string;
   let watchJobId: string;
   let tenantB: string | undefined;
 
-  const mkVisit = async (jobId: string, startsAt: string, endsAt: string, tid?: string) =>
+  const mkVisit = async (jobId: string, startsAt: NaiveLocal, endsAt: NaiveLocal, tid?: string) =>
     createVisit({
       tenantId: tid ?? tenantW,
       jobId,
@@ -1103,12 +1104,12 @@ describe('listOverdueConfirmedVisits', () => {
   });
 
   test('window bounds: from inclusive, to exclusive; oldest end first; non-confirmed and unplaced excluded', async () => {
-    const atFrom = await mkVisit(watchJobId, '2026-08-10T07:00:00.000Z', FROM); // ends exactly at from → IN
-    const mid = await mkVisit(watchJobId, '2026-08-10T09:00:00.000Z', '2026-08-10T10:00:00.000Z');
-    await mkVisit(watchJobId, '2026-08-10T11:00:00.000Z', TO); // ends exactly at to → OUT
-    const done = await mkVisit(watchJobId, '2026-08-10T08:30:00.000Z', '2026-08-10T09:30:00.000Z');
+    const atFrom = await mkVisit(watchJobId, nl('2026-08-10T07:00:00.000Z'), FROM); // ends exactly at from → IN
+    const mid = await mkVisit(watchJobId, nl('2026-08-10T09:00:00.000Z'), nl('2026-08-10T10:00:00.000Z'));
+    await mkVisit(watchJobId, nl('2026-08-10T11:00:00.000Z'), TO); // ends exactly at to → OUT
+    const done = await mkVisit(watchJobId, nl('2026-08-10T08:30:00.000Z'), nl('2026-08-10T09:30:00.000Z'));
     await updateVisitStatus(done.id, 'completed');
-    const gone = await mkVisit(watchJobId, '2026-08-10T10:15:00.000Z', '2026-08-10T10:45:00.000Z');
+    const gone = await mkVisit(watchJobId, nl('2026-08-10T10:15:00.000Z'), nl('2026-08-10T10:45:00.000Z'));
     await updateVisitStatus(gone.id, 'cancelled', 'watcher test');
     await createVisit({
       // unplaced (windowed) row — no times, can never match a time filter
@@ -1129,7 +1130,7 @@ describe('listOverdueConfirmedVisits', () => {
     tenantB = (await createTenant(`watch-tenant-b-${Date.now()}`)).id;
     const bCustomer = await createCustomer({ tenantId: tenantB, name: 'Other Firm Casa' });
     const bJob = await createJob({ tenantId: tenantB, customerId: bCustomer.id, title: 'B work' });
-    const bRow = await mkVisit(bJob.id, '2026-08-10T09:00:00.000Z', '2026-08-10T10:00:00.000Z', tenantB);
+    const bRow = await mkVisit(bJob.id, nl('2026-08-10T09:00:00.000Z'), nl('2026-08-10T10:00:00.000Z'), tenantB);
 
     const rowsA = await listOverdueConfirmedVisits(tenantW, FROM, TO);
     expect(rowsA.some((r) => r.id === bRow.id)).toBe(false);
@@ -1146,7 +1147,7 @@ describe('listOverdueConfirmedVisits', () => {
 // guard rather than a fixture collision (the listOverdueConfirmedVisits note).
 describe('a visit carries a crew (rung 9c)', () => {
   const D = (day: number, hour: number) =>
-    `2026-12-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:00:00.000Z`;
+    nl(`2026-12-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:00:00.000Z`);
   let crewTenant: string;
   let jobId: string;
   let ben: Technician;

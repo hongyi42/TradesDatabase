@@ -7,6 +7,7 @@ import { insertTechnician } from './technicians.js';
 import { createVisit, listVisitsForTenant, listVisitsWithRefsForTenant } from './visits.js';
 import { hitRowCap, POSTGREST_MAX_ROWS, rowCapNote } from './rowCap.js';
 import { readLooseBucket } from '../schedule/boardRead.js';
+import { nl } from './time.js';
 
 // Retrieval layer 4, phase 2: the schedule's window readers are COMPLETE, and
 // the loose bucket carries what the recall view needs. Each describe runs on its
@@ -84,8 +85,8 @@ describe('readLooseBucket — what the recall view reads', () => {
     const parked = await createVisit({
       tenantId,
       jobId: job.id,
-      startsAt: '2027-06-10T09:00:00Z',
-      endsAt: '2027-06-10T10:00:00Z',
+      startsAt: nl('2027-06-10T09:00:00Z'),
+      endsAt: nl('2027-06-10T10:00:00Z'),
       status: 'confirmed',
     });
     const untimed = await createVisit({

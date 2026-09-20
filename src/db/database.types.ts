@@ -2882,7 +2882,6 @@ export type Database = {
           labor_hours: number | null
           reason: string | null
           source_capture_id: string | null
-          started_at: string | null
           starts_at: string | null
           status: Database["public"]["Enums"]["visit_status"]
           tenant_id: string
@@ -2898,7 +2897,6 @@ export type Database = {
           labor_hours?: number | null
           reason?: string | null
           source_capture_id?: string | null
-          started_at?: string | null
           starts_at?: string | null
           status?: Database["public"]["Enums"]["visit_status"]
           tenant_id: string
@@ -2914,7 +2912,6 @@ export type Database = {
           labor_hours?: number | null
           reason?: string | null
           source_capture_id?: string | null
-          started_at?: string | null
           starts_at?: string | null
           status?: Database["public"]["Enums"]["visit_status"]
           tenant_id?: string

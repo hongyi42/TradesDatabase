@@ -304,6 +304,156 @@ describe('a field note attaches to its trip (rung 9b)', () => {
     expect(Number(rows[0].n)).toBe(1);
   });
 
+  // ── what the record ASSUMED (access plan B, phase 4) ─────────────────────
+  //
+  // NOTHING BELOW CHANGES WHAT IS FILED. Every one of these notes is recorded
+  // exactly as it was before; what is new is that the result SAYS what had to
+  // be guessed, so the seat can ask. The operator's doctrine is the point:
+  // code never restricts a filing, and a contradiction is noticed by the seat.
+
+  test('an off-crew note lands as it always did, and says whose trip it went on', async () => {
+    const { job, phone } = await jobFor('Assumed Amy');
+    const onIt = await freshTech();
+    // The fixture's ref lags its display name by one (post-increment), so the
+    // NAME is read after creating them rather than rebuilt from the ref.
+    const onItName = `Attach Tech ${techSeq}`;
+    // ONE live visit, on a day that is not the note's — so step 1 misses and
+    // step 2 takes it, which is the only step that can land a note on somebody
+    // else's trip.
+    const visit = await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianIds: [onIt],
+      startsAt: naive('09:00', TOMORROW),
+      endsAt: naive('10:00', TOMORROW),
+      status: 'confirmed',
+    });
+    const stranger = await freshTech();
+    const strangerRef = `attach-tech-${techSeq - 1}`;
+    expect(stranger).not.toBe(onIt);
+    const before = await visitCount();
+
+    const r = await recordFieldNote(
+      noteBy(strangerRef, 'technician_note', 'picked this up for him, all done'),
+      stub({ phone, customerName: 'Assumed Amy', jobTitle: 'Assumed Amy work' }),
+    );
+
+    // THE FILING IS UNCHANGED: same trip, no new one, and it is recorded.
+    expect(r.status).toBe('matched');
+    expect(r.visitId).toBe(visit.id);
+    expect(await visitCount()).toBe(before);
+    // …and the record says what it assumed, in words a person can answer.
+    expect(r.assumed).toBeDefined();
+    expect(r.assumed?.join(' ')).toContain("you are not on that trip's crew");
+    // THE CREW IS NAMED, not id'd — this sentence is read out to a person.
+    expect(r.assumed?.join(' ')).toContain(onItName);
+    expect(r.assumed?.join(' ')).not.toContain(visit.id);
+    expect(r.assumed?.join(' ')).not.toContain(onIt);
+    expect(r.assumed?.join(' ')).not.toContain('attach-tech-'); // never the roster ref
+  });
+
+  test('…and it says so when the note also marked that trip done', async () => {
+    const { job, phone } = await jobFor('Assumed Abe');
+    const onIt = await freshTech();
+    // A trip that has already STARTED, so the happened flip fires on it.
+    await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianIds: [onIt],
+      startsAt: naive('00:00'),
+      endsAt: naive('23:59'),
+      status: 'confirmed',
+    });
+    await freshTech();
+    const strangerRef = `attach-tech-${techSeq - 1}`;
+    const r = await recordFieldNote(
+      noteBy(strangerRef, 'technician_note', 'covered it, finished'),
+      stub({ phone, customerName: 'Assumed Abe', jobTitle: 'Assumed Abe work' }),
+    );
+    const row = await visitRow(r.visitId as string);
+    expect(row.status).toBe('completed'); // unchanged behaviour
+    expect(r.assumed?.join(' ')).toContain('marked that trip done');
+  });
+
+  test('a note that had to MAKE a trip says so, and says what it does not open', async () => {
+    const { phone } = await jobFor('Assumed Ali');
+    await freshTech();
+    const r = await recordFieldNote(
+      noteBy(`attach-tech-${techSeq - 1}`, 'technician_note', 'was passing, fixed it'),
+      stub({ phone, customerName: 'Assumed Ali', jobTitle: 'Assumed Ali work' }),
+    );
+    expect(r.status).toBe('matched');
+    expect(r.assumed?.join(' ')).toContain('No trip on this job matched this note');
+    // THE CONSEQUENCE, stated truthfully: a note-minted trip opens NOTHING —
+    // technician_view_of excludes any visit whose source capture is a
+    // technician channel, so not even this job becomes readable. "the rest of
+    // this customer's record" would send her to a get_job that refuses her.
+    expect(r.assumed?.join(' ')).toContain('does not open this job or this customer');
+    expect(r.assumed?.join(' ')).not.toContain('the rest of');
+  });
+
+  // THE GUARD THAT MAKES offCrew SAFE. Without `crew.length > 0`, a technician
+  // whose note lands on a trip NOBODY is on would be told she took somebody
+  // else's — and the whole suite would stay green.
+  test('a trip nobody is on is not somebody else\'s trip', async () => {
+    const { job, phone } = await jobFor('Assumed Ada');
+    // One live visit, another day, NO crew — so step 1 misses (wrong day) and
+    // step 2 takes it.
+    await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianIds: [],
+      startsAt: naive('09:00', TOMORROW),
+      endsAt: naive('10:00', TOMORROW),
+      status: 'confirmed',
+    });
+    await freshTech();
+    const r = await recordFieldNote(
+      noteBy(`attach-tech-${techSeq - 1}`, 'technician_note', 'did this one'),
+      stub({ phone, customerName: 'Assumed Ada', jobTitle: 'Assumed Ada work' }),
+    );
+    expect(r.status).toBe('matched');
+    expect(r.assumed).toBeUndefined();
+  });
+
+  test('an inbound channel is never told what YOU assumed — there is no seat to ask', async () => {
+    const { job, phone } = await jobFor('Assumed Eve');
+    const onIt = await freshTech();
+    await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianIds: [onIt],
+      startsAt: naive('09:00', TOMORROW),
+      endsAt: naive('10:00', TOMORROW),
+      status: 'confirmed',
+    });
+    // An email lands on the same job through step 2, off-crew by construction.
+    const r = await recordFieldNote(
+      { ...noteBy('anyone', 'technician_note', 'customer wrote in'), channel: 'email' as const },
+      stub({ phone, customerName: 'Assumed Eve', jobTitle: 'Assumed Eve work' }),
+    );
+    expect(r.assumed).toBeUndefined();
+  });
+
+  test('an ORDINARY filing carries no `assumed` key at all', async () => {
+    const { job, phone } = await jobFor('Assumed Ann');
+    const tech = await freshTech();
+    await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianIds: [tech],
+      startsAt: naive('00:00'),
+      endsAt: naive('23:59'),
+      status: 'confirmed',
+    });
+    const r = await recordFieldNote(
+      noteBy(`attach-tech-${techSeq - 1}`, 'technician_note', 'all done'),
+      stub({ phone, customerName: 'Assumed Ann', jobTitle: 'Assumed Ann work' }),
+    );
+    expect(r.status).toBe('matched');
+    expect(r.assumed).toBeUndefined();
+  });
+
   test('a note filed BEFORE the visit starts attaches as evidence, and leaves it PLACED', async () => {
     const { job, phone } = await jobFor('Early Ed');
     const tech = await freshTech();

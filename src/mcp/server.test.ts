@@ -10430,6 +10430,79 @@ describe('the access request flow', () => {
     expect((await pg.query('select 1 from person_pushes')).rows).toHaveLength(0);
   });
 
+  // ── the note says what it assumed (phase 4) ───────────────────────────────
+
+  test('a note on a colleague\'s trip comes back with `assumed`, and is still recorded', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Assumedsrv Ng', phone: '555-8402' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Assumedsrv work' });
+    // ONE live trip on the job, crewed by the MANAGER — so the technician's
+    // note falls to step 2 and lands on somebody else's trip.
+    await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianIds: [
+        (await pg.query("select id from technicians where ref = 'mgr-test'")).rows[0].id as string,
+      ],
+      startsAt: null,
+      endsAt: null,
+      status: 'confirmed',
+    });
+    const res = await call('record_field_note', {
+      text: 'picked this one up for them, it is done',
+      confirmed: { customerId: customer.id },
+    });
+    expect(res.isError).toBe(false);
+    expect(res.data.status).toBe('recorded');
+    expect(Array.isArray(res.data.assumed)).toBe(true);
+    expect(res.data.assumed.join(' ')).toContain("not on that trip's crew");
+    // A person reads this: no ids, no roster refs.
+    expect(res.data.assumed.join(' ')).not.toContain(job.id);
+    expect(res.data.assumed.join(' ')).not.toContain('mgr-test');
+  });
+
+  test('a MANAGER filing is never told they are off a crew — they never are', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Assumedmgr Ng', phone: '555-8404' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Assumedmgr work' });
+    // The trip is the TECHNICIAN's; the manager files the note.
+    await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianIds: [techMcpId],
+      startsAt: null,
+      endsAt: null,
+      status: 'confirmed',
+    });
+    const res = await mgr.callWith('record_field_note', {
+      text: 'spoke to the customer, they are happy',
+      confirmed: { customerId: customer.id },
+    });
+    expect(res.isError).toBe(false);
+    expect(res.data.status).toBe('recorded');
+    // A manager is not on crews. Telling them so every time would cost the seat
+    // a question and the planner an item, for a fact that is always true.
+    expect(res.data.assumed).toBeUndefined();
+  });
+
+  test('an ordinary filing has no `assumed` key', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Assumedord Ng', phone: '555-8403' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Assumedord work' });
+    await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianIds: [techMcpId],
+      startsAt: null,
+      endsAt: null,
+      status: 'confirmed',
+    });
+    const res = await call('record_field_note', {
+      text: 'finished it this morning',
+      confirmed: { customerId: customer.id },
+    });
+    expect(res.isError).toBe(false);
+    expect(res.data.status).toBe('recorded');
+    expect(res.data.assumed).toBeUndefined();
+  });
+
   // ── the ANSWER (phase 2) ───────────────────────────────────────────────────
 
   // File a real request the way a technician does, and hand back its id.

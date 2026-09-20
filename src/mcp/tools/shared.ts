@@ -515,6 +515,10 @@ export async function commitNote(input: {
     // No ids: no technician tool takes a gap id, and a ref in a person's face is
     // the machine artifact the (re: …) anchor exists to keep out of the chat.
     ...(openQuestions.length > 0 ? { openQuestions } : {}),
+    // WHAT THE RECORD ASSUMED to file it (access plan B phase 4). Present only
+    // when something was guessed — the note is recorded either way, and this is
+    // the seat's cue to ask the person what actually happened.
+    ...(result.assumed ? { assumed: result.assumed } : {}),
   };
 }
 

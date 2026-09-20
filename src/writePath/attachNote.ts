@@ -61,6 +61,18 @@ export interface ResolvedVisitForNote {
   /** null = nothing to attach to, and this channel may not create one. */
   visit: VisitWithParticipants | null;
   created: boolean;
+  /**
+   * The note landed on a trip whose crew does not include the filer (step 2
+   * below: the job's one live visit, whatever day it sits on, taken because
+   * there was nothing better). NOTHING IS REFUSED OR RE-ROUTED BY THIS — the
+   * attach behaves exactly as it always has (operator doctrine, 2026-09-19:
+   * "code doesn't restrict"; a technician covering somebody else's trip is
+   * ordinary). It exists so the SEAT can say what it assumed and ask, which is
+   * where a contradiction gets noticed. Step 1 already requires her or an
+   * empty crew, and step 3 creates a trip she is the crew of, so both are
+   * false by construction.
+   */
+  offCrew: boolean;
   /** The note's time in the SAME convention the visit's times use. */
   noteLocal: string;
 }
@@ -105,14 +117,26 @@ export async function resolveVisitForNote(
         ? v
         : best,
     );
-    return { visit: nearest, created: false, noteLocal };
+    return { visit: nearest, created: false, offCrew: false, noteLocal };
   }
 
-  // (2) The job's one live visit, whatever day it sits on.
-  if (live.length === 1) return { visit: live[0], created: false, noteLocal };
+  // (2) The job's one live visit, whatever day it sits on. THE ONE STEP THAT
+  // CAN LAND A NOTE ON SOMEBODY ELSE'S TRIP: there is no crew test here, by
+  // design — a note about this job with one trip open belongs on that trip far
+  // more often than it belongs nowhere. We record that we assumed it.
+  if (live.length === 1) {
+    const crew = participantIdsOf(live[0], input.tenantId);
+    return {
+      visit: live[0],
+      created: false,
+      offCrew:
+        crew.length > 0 && (input.technicianId === null || !crew.includes(input.technicianId)),
+      noteLocal,
+    };
+  }
 
   // (3) A trip with no booking behind it — technician channels only.
-  if (!input.mayCreate) return { visit: null, created: false, noteLocal };
+  if (!input.mayCreate) return { visit: null, created: false, offCrew: false, noteLocal };
   const created = await createVisit({
     tenantId: input.tenantId,
     jobId: input.jobId,
@@ -141,5 +165,6 @@ export async function resolveVisitForNote(
       technicians: null, // names are not this path's business; ids are
     })),
   };
-  return { visit, created: true, noteLocal };
+  // She is the crew of a trip her own note just made.
+  return { visit, created: true, offCrew: false, noteLocal };
 }

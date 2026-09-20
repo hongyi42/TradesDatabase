@@ -129,12 +129,12 @@ const TOOLS = [
             'ONLY A MANAGER CAN OPEN A RECORD: the office files the request and texts every ' +
             'manager it can reach, and your person is texted when one answers. Say that you ' +
             'asked; never say they now have access, and never promise a reply. ' +
-            'ASK FOR THE LEAST THAT ANSWERS THEM. A manager opens what you asked for, so ask ' +
-            'for ONE JOB (jobId) whenever your person named a job — even if you looked the job ' +
-            'up through the customer. customerId asks to open EVERY job that customer has, ' +
-            'finished ones included, and is only right when they genuinely need the account. ' +
-            'The same goes for `wants`: ask for the record unless they actually need the ' +
-            'figures or the calls and emails.',
+            'ASK FOR THE LEAST THAT ANSWERS THEM. A manager opens what you asked for, so pass ' +
+            'jobId whenever a tool has given you one — get_job answers with the job id even ' +
+            'when it refuses you. Only fall back to customerId when you have no job id at all ' +
+            '(a customer outside their view lists no jobs); the office narrows that to the one ' +
+            'unfinished job for you where it can. The same goes for `wants`: ask for the ' +
+            'record unless they actually need the figures or the calls and emails.',
           properties: {
             jobId: {
               type: 'string',

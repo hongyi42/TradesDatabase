@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Client as PgClient } from 'pg';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -10220,12 +10220,27 @@ describe('the access request flow', () => {
       "update technicians set telegram_user_id = '900900', sandbox_ref = 'sbx-mgr' where ref = 'mgr-test'",
     );
     mgr = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    // A SECOND technician, so "the manager named somebody else" is a real
+    // misdirection rather than a manager-tier refusal in disguise.
+    const other = await insertTechnician({ tenantId, ref: 'tech-other', displayName: 'Other Tech' });
+    await setTechnicianState(other.id, 'active');
+  });
+
+  // The office inbox is shared with every other suite in this file (mgr-test
+  // informs the planner in several of them), so the access lines are cleared
+  // around each test rather than counted against whatever else has run.
+  const clearInbox = () =>
+    pg.query("delete from office_messages where kind = 'inform' and from_ref = 'mgr-test'");
+
+  beforeEach(async () => {
+    await clearInbox();
   });
 
   afterEach(async () => {
     await pg.query('truncate table access_grants');
     await pg.query('truncate table person_pushes');
     await pg.query("delete from observations where kind = 'access_request'");
+    await clearInbox();
     await setTechnicianViewRule(tenantId, null, 'server.test');
   });
 
@@ -10237,6 +10252,7 @@ describe('the access request flow', () => {
     await pg.query(
       "update technicians set telegram_user_id = null, sandbox_ref = null where ref = 'mgr-test'",
     );
+    await pg.query("delete from technicians where ref = 'tech-other'");
     await setTechnicianViewRule(tenantId, { jobScope: 'whole_firm' }, 'server.test');
   });
 
@@ -10412,5 +10428,330 @@ describe('the access request flow', () => {
     expect(res.isError).toBe(false);
     expect(res.data.status).toBe('refused');
     expect((await pg.query('select 1 from person_pushes')).rows).toHaveLength(0);
+  });
+
+  // ── the ANSWER (phase 2) ───────────────────────────────────────────────────
+
+  // File a real request the way a technician does, and hand back its id.
+  async function fileRequest(name: string, wants: 'record' | 'notes' | 'money' = 'money') {
+    const { customer, job } = await outsideJob(name);
+    const asked = await call('ask_team_lead', {
+      question: 'the customer is asking me about it',
+      accessRequest: { jobId: job.id, wants },
+    });
+    expect(asked.data.status).toBe('asked_manager');
+    const row = await pg.query(
+      "select id from observations where kind = 'access_request' and status = 'open'",
+    );
+    expect(row.rows).toHaveLength(1);
+    await pg.query('truncate table person_pushes'); // the manager's own text, already counted
+    return { customer, job, requestId: row.rows[0].id as string };
+  }
+
+  test('grant_access { requestId } opens it, closes the request, texts them and tells the office', async () => {
+    const { job, requestId } = await fileRequest('Ansgrant Ng');
+
+    const granted = await mgr.callWith('grant_access', { requestId, reason: 'fair enough' });
+    expect(granted.isError).toBe(false);
+    // The request supplied who and what — the manager named neither.
+    expect(granted.data.granted.technician).toBe('Tech MCP');
+    expect(granted.data.granted.money).toBe(true); // wants:'money' carried through
+    expect(granted.data.granted.answeredRequest).toBe(true);
+
+    // The job really opens, figures included.
+    const seen = await call('get_job', { jobId: job.id });
+    expect(seen.data.inView).toBeUndefined();
+    expect(seen.data.price_cents).toBe(40000);
+
+    // The request is closed, and says who answered and how.
+    const req = await pg.query('select status, dismiss_reason from observations where id = $1', [requestId]);
+    expect(req.rows[0].status).toBe('dismissed');
+    expect(req.rows[0].dismiss_reason).toContain('opened by Manager Test');
+
+    // The technician is texted…
+    const pushes = await pg.query('select kind, body, technician_id from person_pushes');
+    expect(pushes.rows).toHaveLength(1);
+    expect(pushes.rows[0].technician_id).toBe(techMcpId);
+    expect(pushes.rows[0].kind).toBe('access');
+    expect(pushes.rows[0].body).toContain('Manager Test');
+    expect(pushes.rows[0].body).not.toContain(job.id);
+
+    // …and the office has one line about it.
+    const inbox = await pg.query(
+      "select kind, from_ref, to_ref, body from office_messages where kind = 'inform' and from_ref = 'mgr-test'",
+    );
+    expect(inbox.rows).toHaveLength(1);
+    expect(inbox.rows[0].to_ref).toBe(TEAM_LEAD_REF);
+    expect(inbox.rows[0].body).toContain('Tech MCP');
+    // The seat is told not to relay, because the technician already knows.
+    expect(granted.data.note).toContain('nothing to relay');
+  });
+
+  test('the FIRST answer wins: a second one is refused and writes no second grant', async () => {
+    const { requestId } = await fileRequest('Ansfirst Ng');
+    const first = await mgr.callWith('grant_access', { requestId, reason: 'yes' });
+    expect(first.isError).toBe(false);
+
+    const second = await mgr.callWith('grant_access', { requestId, reason: 'yes again' });
+    expect(second.isError).toBe(true);
+    expect(second.text).toContain('already answered');
+    expect(second.text).toContain('opened by Manager Test');
+    expect((await pg.query('select 1 from access_grants')).rows).toHaveLength(1);
+
+    const declined = await mgr.callWith('decline_access', { requestId, reason: 'changed my mind' });
+    expect(declined.isError).toBe(false);
+    expect(declined.data.declined).toBe(false);
+    expect(declined.data.note).toContain('already answered');
+  });
+
+  test('decline_access closes it with the reason, texts them, and opens nothing', async () => {
+    const { job, requestId } = await fileRequest('Ansno Ng');
+    const res = await mgr.callWith('decline_access', {
+      requestId,
+      reason: 'the customer asked us not to share figures',
+    });
+    expect(res.isError).toBe(false);
+    expect(res.data.declined).toBe(true);
+
+    const req = await pg.query('select status, dismiss_reason from observations where id = $1', [requestId]);
+    expect(req.rows[0].status).toBe('dismissed');
+    expect(req.rows[0].dismiss_reason).toContain('declined by Manager Test');
+    expect(req.rows[0].dismiss_reason).toContain('asked us not to share');
+
+    // Nothing opened.
+    expect((await pg.query('select 1 from access_grants')).rows).toHaveLength(0);
+    expect((await call('get_job', { jobId: job.id })).data.inView).toBe(false);
+
+    // THE REASON REACHES THE TECHNICIAN, in the manager's own words.
+    const pushes = await pg.query('select body, technician_id from person_pushes');
+    expect(pushes.rows).toHaveLength(1);
+    expect(pushes.rows[0].technician_id).toBe(techMcpId);
+    expect(pushes.rows[0].body).toContain('asked us not to share figures');
+  });
+
+  test('list_access shows what is waiting, and a lone request says a plain yes answers it', async () => {
+    const { requestId } = await fileRequest('Anslist Ng', 'notes');
+    const listed = await mgr.callWith('list_access', {});
+    expect(listed.isError).toBe(false);
+    expect(listed.data.openRequests).toHaveLength(1);
+    expect(listed.data.openRequests[0].id).toBe(requestId);
+    expect(listed.data.openRequests[0].technician).toBe('Tech MCP');
+    expect(listed.data.openRequests[0].wants).toBe('notes');
+    expect(listed.data.requestNote).toContain('plain "yes"');
+
+    // Answered requests leave the list.
+    await mgr.callWith('decline_access', { requestId, reason: 'no' });
+    expect((await mgr.callWith('list_access', {})).data.openRequests).toHaveLength(0);
+  });
+
+  test('a technician badge cannot decline, and cannot grant', async () => {
+    const { requestId } = await fileRequest('Anstech Ng');
+    const declined = await call('decline_access', { requestId, reason: 'letting myself off' });
+    expect(declined.isError).toBe(true);
+    expect(declined.text).toContain('manager badge');
+    const req = await pg.query('select status from observations where id = $1', [requestId]);
+    expect(req.rows[0].status).toBe('open');
+  });
+
+  test('a revoke tells the office too', async () => {
+    const { job } = await outsideJob('Ansrevoke Ng');
+    const granted = await mgr.callWith('grant_access', {
+      technician: 'tech-mcp', jobId: job.id, reason: 'covering',
+    });
+    await clearInbox();
+    const revoked = await mgr.callWith('revoke_access', {
+      grantId: granted.data.granted.id, reason: 'job reassigned',
+    });
+    expect(revoked.isError).toBe(false);
+    expect(revoked.data.revoked).toBe(true);
+    expect(revoked.data.stillOpen).toBe(false);
+    const inbox = await pg.query(
+      "select body from office_messages where kind = 'inform' and from_ref = 'mgr-test'",
+    );
+    expect(inbox.rows).toHaveLength(1);
+    expect(inbox.rows[0].body).toContain('Revoked');
+    expect(inbox.rows[0].body).toContain('job reassigned');
+  });
+
+  // ── the five fixes plan A's review left (phase 2) ─────────────────────────
+
+  test('revoking one of two overlapping grants says access is NOT closed', async () => {
+    const { customer, job } = await outsideJob('Anstwo Ng');
+    const first = await mgr.callWith('grant_access', {
+      technician: 'tech-mcp', jobId: job.id, reason: 'one',
+    });
+    await mgr.callWith('grant_access', {
+      technician: 'tech-mcp', customerId: customer.id, reason: 'two',
+    });
+    const revoked = await mgr.callWith('revoke_access', {
+      grantId: first.data.granted.id, reason: 'tidying up',
+    });
+    expect(revoked.data.revoked).toBe(true);
+    // THE SENTENCE A MANAGER ACTS ON must not claim a door is shut.
+    expect(revoked.data.stillOpen).toBe(true);
+    expect(revoked.data.note).toContain('still open it through another grant');
+    expect(revoked.data.note).not.toContain('can no longer open');
+    // …and it is true: she can still read the job.
+    expect((await call('get_job', { jobId: job.id })).data.inView).toBeUndefined();
+  });
+
+  test('revoking a money grant the FIRM RULE also opens says so', async () => {
+    const { job } = await outsideJob('Ansrule Ng');
+    const granted = await mgr.callWith('grant_access', {
+      technician: 'tech-mcp', jobId: job.id, money: true, reason: 'on site',
+    });
+    await mgr.callWith('set_technician_view', { jobScope: 'whole_firm', money: 'amounts' });
+    const revoked = await mgr.callWith('revoke_access', {
+      grantId: granted.data.granted.id, reason: 'no longer needed',
+    });
+    expect(revoked.data.stillOpen).toBe(true);
+    expect(revoked.data.note).toContain("firm's rule");
+    expect((await call('get_job', { jobId: job.id })).data.price_cents).toBe(40000);
+  });
+
+  test('an everywhere grant is standing by default, and standing:false is honoured', async () => {
+    const standing = await mgr.callWith('grant_access', {
+      technician: 'tech-mcp', everywhere: true, money: true, reason: 'trusted',
+    });
+    expect(standing.data.granted.until).toBe('until revoked');
+    await pg.query('truncate table access_grants');
+
+    const bounded = await mgr.callWith('grant_access', {
+      technician: 'tech-mcp', everywhere: true, money: true, standing: false, reason: 'for now',
+    });
+    // standing:false is an INSTRUCTION, not an absent argument.
+    expect(bounded.data.granted.until).not.toBe('until revoked');
+    const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
+    const inAWeek = new Date(Date.now() + 7 * 86_400_000).toISOString();
+    expect(bounded.data.granted.until).toBe(`until ${servedDayPhrase(localDateISO(inAWeek, tz))}`);
+  });
+
+  test('a no-op rule change is not reported as a change', async () => {
+    // 'status' IS the default, so storing it over a null changes the record but
+    // nothing a manager could read differently.
+    const res = await mgr.callWith('set_technician_view', { money: 'status' });
+    expect(res.isError).toBe(false);
+    expect(res.data.changes).toHaveLength(0);
+    expect(res.data.note).toContain('already how the firm is set');
+  });
+
+  test('an empty channel list reads as the strictest setting, never as blank', async () => {
+    await pg.query(
+      "insert into technician_view_rules (tenant_id, technician_channels, set_by) values ($1, '{}', 'test') " +
+        'on conflict (tenant_id) do update set technician_channels = \'{}\'',
+      [tenantId],
+    );
+    const listed = await mgr.callWith('list_access', {});
+    expect(listed.data.firmRule.technicianChannels).toContain('no kinds of note at all');
+    expect(listed.data.firmRule.technicianChannels).not.toBe('');
+  });
+
+  // ── what the phase-2 review caught ────────────────────────────────────────
+
+  test('a requestId answer refuses a DIFFERENT technician rather than misdirecting it', async () => {
+    const { job, requestId } = await fileRequest('Answrong Ng');
+    // Obeying this would open Sam's job for the manager's named person, text
+    // THEM about Sam's ask, and close Sam's request as answered — Sam never
+    // told, nothing opened for her, and no way to ask again.
+    const res = await mgr.callWith('grant_access', {
+      requestId,
+      technician: 'tech-other',
+      reason: 'yes',
+    });
+    expect(res.isError).toBe(true);
+    expect(res.text).toContain('answer it as it stands');
+    // Nothing happened: the request is still waiting and nothing was opened.
+    const req = await pg.query('select status from observations where id = $1', [requestId]);
+    expect(req.rows[0].status).toBe('open');
+    expect((await pg.query('select 1 from access_grants')).rows).toHaveLength(0);
+    expect((await call('get_job', { jobId: job.id })).data.inView).toBe(false);
+  });
+
+  test('the technician is texted what was GRANTED, not what she asked for', async () => {
+    const { customer, requestId } = await fileRequest('Ansnarrower Ng');
+    // She asked about one job with figures; the manager opens the whole
+    // customer WITHOUT figures. Telling her she got what she asked for would
+    // send her back to a page that is still half closed.
+    const granted = await mgr.callWith('grant_access', {
+      requestId,
+      customerId: customer.id,
+      money: false,
+      reason: 'the account, but not the numbers',
+    });
+    expect(granted.isError).toBe(false);
+    expect(granted.data.granted.money).toBe(false);
+    const push = await pg.query('select body from person_pushes');
+    expect(push.rows).toHaveLength(1);
+    expect(push.rows[0].body).toContain('every job of Ansnarrower Ng');
+    expect(push.rows[0].body).not.toContain('money figures');
+  });
+
+  test('revoking a CUSTOMER grant finds the job grant that still opens it', async () => {
+    const { customer, job } = await outsideJob('Ansboth Ng');
+    await mgr.callWith('grant_access', { technician: 'tech-mcp', jobId: job.id, reason: 'the job' });
+    const cust = await mgr.callWith('grant_access', {
+      technician: 'tech-mcp', customerId: customer.id, reason: 'the account',
+    });
+    const revoked = await mgr.callWith('revoke_access', {
+      grantId: cust.data.granted.id, reason: 'narrowing it',
+    });
+    expect(revoked.data.stillOpen).toBe(true);
+    // The remedy must be the one that works: revoke the other grant. Pointing
+    // at the firm's rule would send the manager somewhere that cannot fix it.
+    expect(revoked.data.note).toContain('another grant');
+    expect(revoked.data.note).not.toContain("firm's rule");
+  });
+
+  test('the overlapping grant\'s granter is named, never ref\'d', async () => {
+    const { customer, job } = await outsideJob('Ansname Ng');
+    await mgr.callWith('grant_access', { technician: 'tech-mcp', jobId: job.id, reason: 'one' });
+    const cust = await mgr.callWith('grant_access', {
+      technician: 'tech-mcp', customerId: customer.id, reason: 'two',
+    });
+    const revoked = await mgr.callWith('revoke_access', {
+      grantId: cust.data.granted.id, reason: 'tidying',
+    });
+    expect(revoked.data.note).toContain('Manager Test');
+    expect(revoked.data.note).not.toContain('mgr-test');
+  });
+
+  test('everywhere can answer a request, and naming two scopes is still refused', async () => {
+    const { requestId } = await fileRequest('Ansevery Ng');
+    // A request always carries a customerId, which must not collide with the
+    // manager's own choice of scope.
+    const res = await mgr.callWith('grant_access', {
+      requestId, everywhere: true, money: true, reason: 'she can see figures from now on',
+    });
+    expect(res.isError).toBe(false);
+    expect(res.data.granted.until).toBe('until revoked');
+    const req = await pg.query('select status from observations where id = $1', [requestId]);
+    expect(req.rows[0].status).toBe('dismissed');
+
+    const { job, customer } = await outsideJob('Ansboth2 Ng');
+    const both = await mgr.callWith('grant_access', {
+      technician: 'tech-mcp', jobId: job.id, customerId: customer.id, reason: 'which?',
+    });
+    expect(both.isError).toBe(true);
+    expect(both.text).toContain('exactly one');
+  });
+
+  test('a grant naming another firm\'s record is described as opening nothing', async () => {
+    const other = await createTenant('Other firm for grants', { technicianSeats: 1 });
+    const theirCustomer = await createCustomer({ tenantId: other.id, name: 'Theirs', phone: '555-9' });
+    // The writer does not refuse another firm's id — such a grant simply opens
+    // nothing, because technician_view_of re-checks the tenant on every join.
+    await insertAccessGrant({
+      tenantId,
+      technicianId: techMcpId,
+      customerId: theirCustomer.id,
+      opens: 'record',
+      grantedBy: 'mgr-test',
+      reason: 'a mistyped id',
+    });
+    const listed = await mgr.callWith('list_access', {});
+    const row = listed.data.grants.find((g: { reason: string }) => g.reason === 'a mistyped id');
+    expect(row.what).toContain('another firm');
+    expect(row.what).toContain('opens nothing');
+    expect(row.what).not.toContain('untitled');
   });
 });

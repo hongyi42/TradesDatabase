@@ -1310,6 +1310,19 @@ export function buildToolCases(): ToolCase[] {
   });
 
   one({
+    id: 'C15',
+    family: 'config',
+    title: 'decline_access on an unknown id answers in words, it does not crash',
+    tool: 'decline_access',
+    tenant: 'main',
+    badge: 'manager-sam',
+    // A random uuid: the refusal must be a sentence a seat can read out, not a
+    // database error — and it must write nothing (access plan B).
+    args: () => ({ requestId: '00000000-0000-4000-8000-000000000000', reason: 'not this one' }),
+    check: all(ok, mentions('no request')),
+  });
+
+  one({
     id: 'C10',
     family: 'config',
     title: 'set_firm_profile stores the firm identity',

@@ -335,41 +335,41 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L6788 · The build order, revised (2026-08-22) _(2026-08-22)_
 - L6843 · PR #163 deployed, fleet re-wired, and two recorded facts corrected (2026-08-22) _(2026-08-22)_
 - L6911 · Deploy does not migrate — and the pilot's migration ledger lies (2026-08-23) _(2026-08-23)_
-- L7014 · The Opus-5 date-scaffolding verdict — and what one night of evals cost (2026-08-23, overnight) _(2026-08-23)_
-- L7059 · openclaw message send — the ④b transport contract (probed 2026-08-23, s2, dead target) _(2026-08-23)_
-- L7075 · Nudge delivery v2 is LIVE — verbatim send, zero inference (④b Phase 4, 2026-08-23) _(2026-08-23)_
-- L7111 · ④b COMPLETE — and what the briefing probe taught (2026-08-23) _(2026-08-23)_
-- L7146 · ⑤ MEMORY ARCHITECTURE COMPLETE — the learning loop exists, dark (2026-08-23) _(2026-08-23)_
-- L7184 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L7207 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L7254 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L7268 · The live-state re-verification pass, and what had drifted (2026-08-24) _(2026-08-24)_
-- L7291 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L7309 · The ask shape — one message may cover several gaps, and the answer keeps its link (2026-08-25) _(2026-08-25)_
-- L7323 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L7328 · Every member row stores the FULL grouped message in question.
-- L7332 · The attribution stamp is an audit link, not a gate.
-- L7336 · The derived stamp requires a capture a badge-holder SPOKE
-- L7340 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L7346 · The follow-up loop has two halves and both had to be written down.
-- L7352 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L7426 · Batching works.
-- L7428 · The follow-up leg works, including the half that fails silently.
-- L7432 · Both attribution paths fired, each in its designed case.
-- L7436 · Escalation fired correctly
-- L7437 · The planner's group-aware pacing is the result worth keeping.
-- L7479 · The OpenRouter switch — the spine only (2026-08-28) _(2026-08-28)_
-- L7555 · resolve_date is a CONVENTION, not a crutch (measured 2026-08-28) _(2026-08-28)_
-- L7617 · The OpenRouter switch — the fleet (2026-09-05) _(2026-09-05)_
-- L7670 · Muse Spark latency, double texting, and the photo path (2026-09-05) _(2026-09-05)_
-- L7747 · Gemini 3.8 Flash becomes the primary; Muse Spark 1.3 the fallback (2026-09-05, evening) _(2026-09-05)_
+- L7044 · The Opus-5 date-scaffolding verdict — and what one night of evals cost (2026-08-23, overnight) _(2026-08-23)_
+- L7089 · openclaw message send — the ④b transport contract (probed 2026-08-23, s2, dead target) _(2026-08-23)_
+- L7105 · Nudge delivery v2 is LIVE — verbatim send, zero inference (④b Phase 4, 2026-08-23) _(2026-08-23)_
+- L7141 · ④b COMPLETE — and what the briefing probe taught (2026-08-23) _(2026-08-23)_
+- L7176 · ⑤ MEMORY ARCHITECTURE COMPLETE — the learning loop exists, dark (2026-08-23) _(2026-08-23)_
+- L7214 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L7237 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L7284 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L7298 · The live-state re-verification pass, and what had drifted (2026-08-24) _(2026-08-24)_
+- L7321 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L7339 · The ask shape — one message may cover several gaps, and the answer keeps its link (2026-08-25) _(2026-08-25)_
+- L7353 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L7358 · Every member row stores the FULL grouped message in question.
+- L7362 · The attribution stamp is an audit link, not a gate.
+- L7366 · The derived stamp requires a capture a badge-holder SPOKE
+- L7370 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L7376 · The follow-up loop has two halves and both had to be written down.
+- L7382 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L7456 · Batching works.
+- L7458 · The follow-up leg works, including the half that fails silently.
+- L7462 · Both attribution paths fired, each in its designed case.
+- L7466 · Escalation fired correctly
+- L7467 · The planner's group-aware pacing is the result worth keeping.
+- L7509 · The OpenRouter switch — the spine only (2026-08-28) _(2026-08-28)_
+- L7585 · resolve_date is a CONVENTION, not a crutch (measured 2026-08-28) _(2026-08-28)_
+- L7647 · The OpenRouter switch — the fleet (2026-09-05) _(2026-09-05)_
+- L7700 · Muse Spark latency, double texting, and the photo path (2026-09-05) _(2026-09-05)_
+- L7777 · Gemini 3.8 Flash becomes the primary; Muse Spark 1.3 the fallback (2026-09-05, evening) _(2026-09-05)_
 
 **7. Where the deep detail lives**
 
-- L7789 · Evals:
-- L7796 · Runbooks:
-- L7801 · Decision history with citations:
-- L7805 · This file
+- L7819 · Evals:
+- L7826 · Runbooks:
+- L7831 · Decision history with citations:
+- L7835 · This file
 
 <!-- INDEX:END -->
 
@@ -6941,6 +6941,36 @@ that was working perfectly.
 `decisions 2 · dropped 0 · applied 2 · recorded 2 · tenantErrors 0`, `byAction {"leave": 2}`, both
 carrying substantive reasons; `watchers.nudgesAutoClosed: 0`. `recorded: 2` is the proof the
 constraint took — pre-migration that number is 0 with a loud error and no other symptom.
+
+#### A LOWER-numbered migration merged later is silently skipped (2026-09-19)
+
+A third ledger trap, and the one that survives having distinct version numbers — so the usual
+check ("we picked different numbers, we are fine") does not catch it.
+
+`supabase migration up` applies what is missing **above the ledger's high-water mark**. It does not
+go back. So if branch B's `20260920120000` is applied to a stack first, branch A's
+`20260919170000` — a perfectly distinct, lower number — is never applied and never reported:
+the command exits saying there is nothing to do, because the mark is already past it.
+
+**How it presents, which is the expensive part.** Not as a migration error. As branch A's TESTS
+FAILING on branch B's machine, for no visible reason. Measured on 2026-09-19: the timestamp-brand
+worktree trial-merged access plan B and saw five failures, all of the shape
+`expected [] to have a length of 1` — because `person_pushes_kind_check` still read
+`('schedule','call','ops')` with no `'access'`, so no push could ever be written. Nothing points
+at the ledger; the natural reading is "the other branch is broken". Applying the missing SQL by
+hand and inserting the ledger row turned it green (3375 passed, 0 failed).
+
+**The rule this makes load-bearing.** When two branches each carry a migration, the one with the
+LOWER version number must reach a given database FIRST — on the pilot, on every scratch stack, and
+in whatever order the PRs merge. A fresh database is safe either way (it applies both in numeric
+order); only a stack that already took the higher one is affected, and it stays affected silently
+until somebody applies the lower one by hand.
+
+This is the same family as the same-number collision recorded in the 2026-09-19 access plan A
+handoff (two branches both wrote `20260919120000`, and whichever applied first made the other read
+as already applied). Same lesson stated once: **the ledger is a high-water mark keyed on a number,
+not a set of filenames it has seen.** Check the artefact — the CHECK constraint, the index — never
+`list_migrations`.
 
 #### It bit again — a 23-hour silent outage, and AUTO-DEPLOY is why (2026-09-04 → 09-05)
 

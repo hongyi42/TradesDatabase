@@ -1,14 +1,36 @@
 # /etc/systemd/system/office-runner.timer
-# Every 5 min, matching the badge and nudge pulls: a queued office message
-# reaches its agent within ~5 min of the planner's tick. Escape hatch:
-# `systemctl disable --now office-runner.timer` stops ALL injection instantly
-# (the spine keeps serving the rows; nothing is lost).
+# Every 30s. It was 5 min until 2026-09-20, chosen when this channel carried
+# only planner notes — "read at the office's next planning pass", where minutes
+# genuinely did not matter.
+#
+# ACCESS CHANGES MADE IT URGENT. A manager opening or ending a record writes a
+# to_agent note telling that technician's seat to re-read (access plan B's
+# staleness fix). Measured on the pilot that day: the seat DID re-read the
+# moment the note landed — but the notes arrived 1 to 6 minutes late, and in
+# that window the seat answered from context with no tool call at all, once
+# quoting billing figures whose grant had been revoked 40 seconds earlier. The
+# doctrine worked; the delivery defeated it.
+#
+# WHY 30s AND NOT 10s (the nudge leg's interval). An empty queue costs exactly
+# one HTTPS GET — office-runner.sh exits on `count -gt 0 || exit 0` before it
+# touches a sandbox — so the price of a shorter interval is request volume
+# against Render, not model calls. 10s would be ~8,600 GETs/day; 30s is ~2,900
+# for a worst case of 30 seconds instead of 5 minutes. The remaining lag is not
+# the timer anyway: injection is serial and blocking (630s timeout per message
+# in a while loop), so a burst of queued notes still arrives one at a time.
+#
+# Double-injection is NOT a risk at any interval: the runner writes
+# /var/lib/office-runner/sent-<id> after a successful turn and reports an
+# already-marked id as delivered without re-injecting.
+#
+# Escape hatch unchanged: `systemctl disable --now office-runner.timer` stops
+# ALL injection instantly (the spine keeps serving the rows; nothing is lost).
 [Unit]
-Description=Run the office-message injector every 5 minutes
+Description=Run the office-message injector every 30 seconds
 
 [Timer]
-OnBootSec=4min30s
-OnUnitActiveSec=5min
+OnBootSec=90s
+OnUnitActiveSec=30s
 Persistent=true
 
 [Install]

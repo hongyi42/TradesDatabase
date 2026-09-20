@@ -248,13 +248,14 @@ const SPINE_VIEW_CATALOG =
 const SPINE_DAY_RULES = GROUNDING_BARE
   ? // Bare keeps the SCHEMA facts (they are true of the data, not advice to a
     // weak model): local_day is the firm-local bucket, local_weekday exists.
-    'Group or filter dates on v_schedule.local_day, which is already the firm-local day — ' +
-    'starts_at is a timestamp and bucketing it by its UTC date puts evening visits on the ' +
-    'wrong day. local_weekday carries each date\'s weekday. '
+    'Group or filter dates on v_schedule.local_day, which is already the firm-local day — it is ' +
+    'the stored wall clock read back as a date, so it needs no timezone conversion and you must ' +
+    'not apply one. local_weekday carries each date\'s weekday. '
   : 'ALWAYS group or filter dates on v_schedule.local_day, which is already the firm-local day — ' +
-    'starts_at is a timestamp and bucketing it by its UTC date puts evening visits on the wrong ' +
-    'day. When you name one of those dates to a person, SELECT local_weekday and use it verbatim ' +
-    '("Tuesday the 4th") — never work out which day of the week a date falls on yourself. ';
+    'it is the stored wall clock read back as a date, so it needs no timezone conversion and you ' +
+    'must not apply one. When you name one of those dates to a person, SELECT local_weekday and ' +
+    'use it verbatim ("Tuesday the 4th") — never work out which day of the week a date falls on ' +
+    'yourself. ';
 
 // query_spine ONLY: the manager's agent has resolve_date on its surface, so the
 // fix for a relative period is "go call it". The team lead is handed its dates by

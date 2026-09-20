@@ -7785,6 +7785,17 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     // the day doctrine
     expect(desc).toContain('local_day, which is already the firm-local day');
     expect(desc).toContain('local_weekday');
+    // …and its REASON must stay true to the view. Until 20260917140000,
+    // v_schedule.local_day converted starts_at with the firm's timezone, so
+    // "bucketing starts_at by its UTC date puts evening visits on the wrong
+    // day" was a fact. That migration made local_day `(starts_at at time zone
+    // 'UTC')::date` — literally the UTC date of starts_at — and the two became
+    // the same value, but this description was not updated with it and told the
+    // model a false thing about its own data for three days. The view's
+    // semantics are pinned in scheduleViews.test.ts; this pins the sentence
+    // that describes them, so the pair cannot drift apart again silently.
+    expect(desc).toContain('the stored wall clock read back as a date');
+    expect(desc).not.toContain('puts evening visits on the');
     // the planner's own date rule — it is HANDED its dates, it does not derive them
     expect(desc).toContain('NEVER write a date into');
     expect(desc).toContain('your clock is UTC');

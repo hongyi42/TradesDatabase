@@ -10388,6 +10388,30 @@ describe('the access request flow', () => {
     }
   });
 
+  // DOCTRINE PINS, from a live run where both went wrong (2026-09-20). Prose,
+  // not behaviour — but prose the seat acts on, and prose that silently rots is
+  // how we got an over-wide grant and a promise nothing could keep.
+  test('the tool tells the seat to ask for the LEAST that answers the person', async () => {
+    const { client: c, callWith } = await clientFor({ tenantId, technicianRef: 'tech-mcp' });
+    try {
+      const listed = await c.listTools();
+      const ask = listed.tools.find((t) => t.name === 'ask_team_lead');
+      const req = (ask?.inputSchema as { properties?: Record<string, { description?: string }> })
+        ?.properties?.accessRequest as unknown as { description?: string; properties?: Record<string, { description?: string }> };
+      // A manager opens exactly what was asked for, so an over-wide ask is an
+      // over-wide grant — and the customer never agreed to that.
+      expect(req?.description).toContain('ASK FOR THE LEAST THAT ANSWERS THEM');
+      expect(req?.description).toContain('even if you looked the job up through the customer');
+      expect(req?.properties?.customerId?.description).toContain('EVERY job');
+      expect(req?.properties?.customerId?.description).toContain('never as a shortcut');
+      // …and it must not promise an opening the office cannot make.
+      expect(req?.description).toContain('ONLY A MANAGER CAN OPEN A RECORD');
+      void callWith;
+    } finally {
+      await c.close();
+    }
+  });
+
   test('a request with no reason, or a bad wants, is refused before anything is filed', async () => {
     const { job } = await outsideJob('Reqbad Ng');
     const noWhy = await call('ask_team_lead', { question: '   ', accessRequest: { jobId: job.id } });

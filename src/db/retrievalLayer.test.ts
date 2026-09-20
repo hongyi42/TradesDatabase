@@ -8,6 +8,7 @@ import { setTechnicianViewRule } from './technicianView.js';
 import { createTenant } from './tenants.js';
 import { createVisit, insertVisitNote } from './visits.js';
 import { appendRawCapture, type RawCapture } from './rawCaptures.js';
+import { nl } from './time.js';
 
 // The retrieval layer's core (migration 20260916120000_retrieval_layer_core.sql),
 // driven through the RPCs exactly as src/db/context.ts calls them. What these
@@ -205,7 +206,7 @@ describe('capture_membership — every attachment kind reaches the record', () =
       startsAt: null,
       endsAt: null,
       status: 'completed',
-      completedAt: '2026-08-16T13:00:00.000Z',
+      completedAt: nl('2026-08-16T13:00:00.000Z'),
     });
     // Attached to an already-booked trip: no source_capture_id anywhere, only the link.
     const onTrip = await techNote('pilot light relit, left running');

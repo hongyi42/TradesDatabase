@@ -4,6 +4,31 @@
 // the local calendar day this timestamp falls on? Day-level only — window-level
 // fit within a day is Plan 3.
 import { WEEK_DAYS, type DayKey, type WeeklyPattern } from '../db/technicians.js';
+import type { NaiveLocal } from '../db/time.js';
+
+// ---- THE DOOR: which species may be converted, and with which zone ---------
+//
+// These helpers turn A REAL MOMENT into the firm's local date/time. Hand one a
+// NAIVE-LOCAL value (src/db/time.ts) with a real timezone and it converts a
+// wall clock that is ALREADY local — shifting it a second time, seven hours for
+// a Pacific firm. That is exactly the defect v_schedule.local_day shipped with
+// from 2026-08-06 to 2026-09-16, in SQL where no type could object.
+//
+// Here a type can. Each helper takes a NaiveLocal ONLY with the literal
+// timezone 'UTC' — which makes the conversion a NO-OP that reads the stored
+// digits straight back, and is precisely why the three callers that legitimately
+// do this (booking.ts's availability check, fit.ts's two weekday lookups) are
+// correct. Any other zone with a NaiveLocal fails BOTH overloads and is a
+// compile error naming them.
+//
+// `NotNaive` is what makes the wide overload refuse a branded value: without it
+// a NaiveLocal would simply fall through to `iso: string` and the door would be
+// decorative. A `tz` widened to `string` also fails the narrow overload, so the
+// 'UTC' must be a LITERAL — that is the property that keeps this tight.
+//
+// Plain strings are unaffected: every ordinary caller passes a real instant and
+// compiles exactly as before, which is why this brand cost no propagation.
+type NotNaive<T extends string> = T & (T extends NaiveLocal ? never : unknown);
 
 // Every timestamp this codebase formats or compares carries a UTC offset, and
 // that is load-bearing rather than incidental. Two shapes flow through here:
@@ -36,6 +61,8 @@ export function parseAsUtc(stamp: string): number {
 // 'short' weekday in the target zone → 'mon'..'sun'. Intl owns the tz/DST math;
 // no offset arithmetic here (hand-rolled offsets are exactly what broke the
 // schedule_entries UTC-day read this module supersedes for new code).
+export function localDayOfWeek(iso: NaiveLocal, timezone: 'UTC'): DayKey;
+export function localDayOfWeek<T extends string>(iso: NotNaive<T>, timezone: string): DayKey;
 export function localDayOfWeek(isoTimestamp: string, timezone: string): DayKey {
   const weekday = new Intl.DateTimeFormat('en-US', {
     timeZone: timezone,
@@ -47,6 +74,8 @@ export function localDayOfWeek(isoTimestamp: string, timezone: string): DayKey {
 // The local calendar date (YYYY-MM-DD) the timestamp falls on in the zone —
 // what a date-ranged time-off row must be compared against. en-CA formats as
 // ISO YYYY-MM-DD.
+export function localDateISO(iso: NaiveLocal, timezone: 'UTC'): string;
+export function localDateISO<T extends string>(iso: NotNaive<T>, timezone: string): string;
 export function localDateISO(isoTimestamp: string, timezone: string): string {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: timezone,
@@ -59,6 +88,8 @@ export function localDateISO(isoTimestamp: string, timezone: string): string {
 // The local wall-clock HH:MM in the zone — the fit engine's day-0 "now" clamp
 // input. hourCycle 'h23' pins midnight to '00:00' (h24 renders '24:00', which
 // the schedule's HH:MM validation rejects).
+export function localTimeHHMM(iso: NaiveLocal, timezone: 'UTC'): string;
+export function localTimeHHMM<T extends string>(iso: NotNaive<T>, timezone: string): string;
 export function localTimeHHMM(isoTimestamp: string, timezone: string): string {
   return new Intl.DateTimeFormat('en-GB', {
     timeZone: timezone,
@@ -142,6 +173,18 @@ export function summarizeWeeklyPattern(pattern: WeeklyPattern | null): string | 
 
 // null pattern = availability never configured → NOT schedulable (fail closed:
 // the manager must set working days before the scheduler may book the person).
+export function isTechnicianAvailableOn(
+  iso: NaiveLocal,
+  pattern: WeeklyPattern | null,
+  timeOff: TimeOffRange[],
+  timezone: 'UTC',
+): boolean;
+export function isTechnicianAvailableOn<T extends string>(
+  iso: NotNaive<T>,
+  pattern: WeeklyPattern | null,
+  timeOff: TimeOffRange[],
+  timezone: string,
+): boolean;
 export function isTechnicianAvailableOn(
   isoTimestamp: string,
   pattern: WeeklyPattern | null,

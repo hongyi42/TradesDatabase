@@ -50,6 +50,7 @@ import { TEAM_LEAD_REF } from '../teamLead/identity.js';
 import { plannerCadenceDue, PLANNER_TICK_MINUTES } from '../teamLead/planner.js';
 import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
 import { naiveLocalISO } from '../schedule/booking.js';
+import type { NaiveLocal } from '../db/time.js';
 
 export const SIM_TZ = 'America/Los_Angeles';
 // The eval does NOT inherit production's fifteen-minute loop budget (build 1b).
@@ -92,7 +93,7 @@ export function atOffset(t0Ms: number, offset: Offset): string {
 
 /** Real-UTC instant → the firm's wall clock in the canonical naive-local
  *  storage form (the visit row's convention — watchers.ts's own helper, mirrored). */
-export function toNaiveLocal(iso: string, tz: string = SIM_TZ): string {
+export function toNaiveLocal(iso: string, tz: string = SIM_TZ): NaiveLocal {
   return naiveLocalISO(localDateISO(iso, tz), localTimeHHMM(iso, tz));
 }
 
@@ -228,8 +229,8 @@ export async function seedScenario(
 
   let visitId: string | null = null;
   let visitStartsAtRow: string | null = null;
-  let startsAtLocal: string | null = null;
-  let endsAtLocal: string | null = null;
+  let startsAtLocal: NaiveLocal | null = null;
+  let endsAtLocal: NaiveLocal | null = null;
   if (world.visit) {
     startsAtLocal = toNaiveLocal(atOffset(t0Ms, world.visit.startsAt), tz);
     endsAtLocal = toNaiveLocal(atOffset(t0Ms, world.visit.endsAt), tz);

@@ -20,6 +20,7 @@ import {
 } from '../db/index.js';
 import { formatAddress } from '../routes/deepLink.js';
 import { localDateISO } from './availability.js';
+import { dayEndNaive, dayStartNaive } from '../db/time.js';
 import { weekdayLabel } from './fit.js';
 import { clampToTechnicianHorizon, horizonDaysFor } from './policy.js';
 
@@ -163,8 +164,8 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
   // unscheduled tray (readLooseBucket) instead.
   const rows = await listVisitsWithRefsForTenant(
     tenantId,
-    `${from}T00:00:00.000Z`,
-    new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
+    dayStartNaive(from),
+    dayEndNaive(toDay),
     input.statuses ?? ['confirmed'],
   );
   // MEMBERSHIP, not a column match (rung 9c): a technician's own board must
@@ -368,7 +369,7 @@ export async function readLooseBucket(
   // recorded limitation that `proposed` unassigned rows are invisible to
   // BOTH halves — no production writer mints them today; Plan 3c/4b decides.)
   const [parked, jobsRead] = await Promise.all([
-    listUnassignedVisitsWithRefs(tenantId, '1970-01-01T00:00:00.000Z'),
+    listUnassignedVisitsWithRefs(tenantId, dayStartNaive('1970-01-01')),
     jobsPromise,
   ]);
   // Sorted after mapping, not by the SQL order. Dated rows (placed but with

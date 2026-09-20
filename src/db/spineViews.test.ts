@@ -6,6 +6,7 @@ import { createJob } from './jobs.js';
 import { createVisit, insertVisitNote } from './visits.js';
 import { createPendingNudge } from './nudges.js';
 import { upsertOpenReviewItem } from './reviewItems.js';
+import { nl } from './time.js';
 
 // ④'s views (plan 2026-08-23), as folded by plan 3 of the retrieval layer
 // (2026-09-15): v_captures, v_capture_links, v_nudges, v_review_items — asserted
@@ -88,7 +89,7 @@ beforeAll(async () => {
       startsAt: null,
       endsAt: null,
       status: 'completed',
-      completedAt: '2026-08-16T13:00:00.000Z',
+      completedAt: nl('2026-08-16T13:00:00.000Z'),
       sourceCaptureId: capUnstamped,
     })
   ).id;
@@ -110,7 +111,7 @@ beforeAll(async () => {
       startsAt: null,
       endsAt: null,
       status: 'completed',
-      completedAt: '2026-08-16T13:00:00.000Z',
+      completedAt: nl('2026-08-16T13:00:00.000Z'),
       sourceCaptureId: capB,
     })
   ).id;

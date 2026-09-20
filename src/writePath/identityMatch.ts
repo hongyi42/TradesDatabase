@@ -10,6 +10,7 @@ import {
   type ThreadIdentity,
 } from '../db/index.js';
 import { localDateISO } from '../schedule/availability.js';
+import { dayEndNaive, dayStartNaive } from '../db/time.js';
 import type { ExtractedFields } from './extract.js';
 
 // Identity matching is the hardcoded, deterministic core (overview §5): the model
@@ -221,8 +222,8 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
     const visits = (
       await listVisitsForTechnician(
         tech.id,
-        `${day}T00:00:00.000Z`,
-        new Date(Date.parse(`${day}T00:00:00.000Z`) + 86_400_000).toISOString(),
+        dayStartNaive(day),
+        dayEndNaive(day),
         // 'completed' too, since rung 9b: the technician's FIRST note of the day
         // marks that visit completed, so a confirmed-only read would leave their
         // second note of the same day with no schedule to match against.

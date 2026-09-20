@@ -154,13 +154,18 @@ describe('context spine schema', () => {
     // both the person and the times on one row.
     expect(cols.get('technician_id'), 'the person moved to visit_participants').toBeUndefined();
     // …and from the REPORT half, which used to live in a second table.
-    expect(cols.get('started_at')?.data_type).toBe('timestamp with time zone');
     expect(cols.get('completed_at')?.data_type).toBe('timestamp with time zone');
     expect(cols.get('labor_hours')?.data_type).toBe('numeric');
     expect(cols.get('attributes')?.data_type).toBe('jsonb');
-    // The old table's never-written column did NOT come along: a trip's time is
-    // starts_at, and nothing ever set scheduled_at.
+    // THE OLD TABLE'S NEVER-WRITTEN COLUMNS, both gone. `scheduled_at` was
+    // never carried over at all — a trip's time is starts_at. `started_at` WAS
+    // carried over by rung 9b, in the same commit that deleted its only writer
+    // (CreateVisitInput.startedAt), so it sat unwritten and undocumented for two
+    // weeks while completed_at beside it got a species comment; dropped
+    // 20260920120000 rather than left as an unbranded fourth timestamp in a
+    // table whose other three are now NaiveLocal.
     expect(cols.get('scheduled_at'), 'scheduled_at must not be resurrected').toBeUndefined();
+    expect(cols.get('started_at'), 'started_at must not be resurrected').toBeUndefined();
     // technician_name was free TEXT with no FK; the survivor has the real key.
     expect(cols.get('technician_name'), 'technician_name must be gone').toBeUndefined();
   });

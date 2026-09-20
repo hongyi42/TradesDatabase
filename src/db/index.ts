@@ -6,6 +6,7 @@ export * from './droppedAudit.js';
 export * from './customers.js';
 export * from './phone.js';
 export * from './jobs.js';
+export * from './time.js';
 export * from './visits.js';
 export * from './rawCaptures.js';
 export * from './captureMembership.js';

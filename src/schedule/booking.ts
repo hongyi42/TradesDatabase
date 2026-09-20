@@ -51,14 +51,16 @@ import {
   participantsOf,
 } from '../db/index.js';
 import { isTechnicianAvailableOn } from './availability.js';
+import { naiveLocalISO as buildNaiveLocal, type NaiveLocal } from '../db/time.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-// The naive-local storage form: local wall-clock written as if UTC.
-export function naiveLocalISO(date: string, hhmm: string): string {
-  return `${date}T${hhmm}:00.000Z`;
-}
+// The naive-local storage form now lives in src/db/time.ts, with the brand it
+// produces — the db layer needs a producer and must not import from schedule/.
+// Re-exported here so this module's importers (plannerSim, watchers, attachNote,
+// booking.test) are unchanged.
+export { naiveLocalISO } from '../db/time.js';
 
 // The day a visit belongs to, for replies and ledger events.
 //
@@ -166,10 +168,17 @@ function crewRefs(crew: Technician[]): ParticipantRef[] {
 // Day-level availability advisory (never blocks — the manager may deliberately
 // book outside the pattern; window-level fit is Plan 3). Naive timestamps →
 // timezone 'UTC' so the pattern day matches the stored wall-clock day.
+// `startISO` is NAIVE-LOCAL and the zone below is the literal 'UTC' — the
+// deliberate no-op that reads the stored wall clock straight back (see the door
+// note in availability.ts). Typing the parameter matters: as plain `string` it
+// WIDENED THE BRAND AWAY right here, one call before the converter, so a real
+// instant could reach isTechnicianAvailableOn and be read as a wall clock. That
+// is the seven-hour hole this whole brand exists to close, and it sat in the one
+// production path that carries a naive value into a converter.
 async function availabilityWarning(
   technician: Technician,
   date: string,
-  startISO: string,
+  startISO: NaiveLocal,
 ): Promise<string | undefined> {
   const timeOff = await listTimeOffForTechnician(technician.id, date, date);
   const available = isTechnicianAvailableOn(
@@ -282,8 +291,8 @@ interface ResolvedBooking {
   // PLACED: all four set. UNTIMED: all four null. There is no third shape.
   startTime: string | null;
   endTime: string | null;
-  startISO: string | null;
-  endISO: string | null;
+  startISO: NaiveLocal | null;
+  endISO: NaiveLocal | null;
   warning?: string;
 }
 
@@ -405,8 +414,8 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
     );
   }
   validateDayAndTimes(input.date, startTime, endTime);
-  const startISO = naiveLocalISO(input.date, startTime);
-  const endISO = naiveLocalISO(input.date, endTime);
+  const startISO = buildNaiveLocal(input.date, startTime);
+  const endISO = buildNaiveLocal(input.date, endTime);
 
   if (crew.length > 0) {
     // PER PERSON — one busy crew member refuses the whole trip, and the error
@@ -672,8 +681,8 @@ interface ResolvedMove {
   // which is what lets a pure time-move leave a two-person trip alone.
   crewGiven: boolean;
   endTime: string;
-  startISO: string;
-  endISO: string;
+  startISO: NaiveLocal;
+  endISO: NaiveLocal;
   warning?: string;
 }
 
@@ -731,8 +740,8 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
     }
   }
   validateDayAndTimes(input.date, input.startTime, endTime);
-  const startISO = naiveLocalISO(input.date, input.startTime);
-  const endISO = naiveLocalISO(input.date, endTime);
+  const startISO = buildNaiveLocal(input.date, input.startTime);
+  const endISO = buildNaiveLocal(input.date, endTime);
 
   // No target technician (a detach, or unassigned staying unassigned) →
   // nothing to clash with; the DB guard likewise ignores NULL rows. That
@@ -953,7 +962,11 @@ export interface UnscheduleVisitInput {
   // The visit's starts_at/ends_at exactly as the caller last read them (raw
   // column values). When given, the cancel applies only if the row still has
   // them — a staged confirmation approved THIS time, and a move keeps the id.
-  expectedTimes?: { startsAt: string | null; endsAt: string | null };
+  // Raw column values as the caller last read them. They round-trip through a
+  // JSONB review-item detail, so a caller reconstructing them from that blob
+  // must re-assert the species with asNaiveLocal; the live callers pass the row
+  // values straight through and are branded already.
+  expectedTimes?: { startsAt: NaiveLocal | null; endsAt: NaiveLocal | null };
 }
 
 export interface UnscheduleVisitPreview {

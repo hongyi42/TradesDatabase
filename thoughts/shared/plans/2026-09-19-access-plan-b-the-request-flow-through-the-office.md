@@ -27,7 +27,25 @@ rollout: a note that lands where the record did not expect it now says so to the
 - **Narrow = the customer's details and one job, the record only, for one day** (operator,
   2026-09-19). A customer ask becomes that customer's one unfinished job when there is exactly one
   and it is out of view. Money, every note, customer-wide and standing always go to a manager.
-- **The desk decides a narrow ask with one bounded model call; code does the write, by
+- **SUPERSEDED 2026-09-20 (operator ruling, during the live B-test): THE OFFICE OPENS NOTHING.**
+  "We shouldn't have the planner give access to narrow requests without the manager's consent
+  anymore. Because we promised to the customers that the technicians are only limited to their
+  jobs unless they've explicitly widened their view via firm-wide setting or grant access."
+
+  So the bullet below is withdrawn in full: `decideNarrow`, `accessDeskPrompt.ts` and the
+  `opened` status are deleted, and every request — narrow or not — is filed and texted to the
+  managers. What this buys beyond the promise: there is no longer ANY path in this flow where a
+  model's decision causes a write, and `insertAccessGrant` has exactly one caller, the
+  manager-only `grant_access`.
+
+  It was also failing in practice, which is how the ruling came up. Live on the pilot,
+  2026-09-20 18:29Z: a textbook open case by the prompt's own words — the technician standing at
+  the address, naming the exact job — was escalated anyway (the call succeeded, 805 in / 261 out,
+  so this was a decision, not a failure). Two likely causes, now moot: the prompt's tie-breaker
+  leaned toward escalation, and the "Booked on it: <someone else>" line added in phase 3's review
+  to support "covering for a colleague" reads just as easily as "this is not their job".
+
+- **WITHDRAWN — The desk decides a narrow ask with one bounded model call; code does the write, by
   construction** (my call). The call returns `open` or `ask_manager`; on `open`, code inserts a
   grant whose every field is fixed (that job, `record`, no money, 1 day). No model output reaches a
   grant field, so there is nothing for a ceiling to check. The call has a 20 s timeout and falls to

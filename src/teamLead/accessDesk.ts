@@ -7,12 +7,9 @@ import {
   getJob,
   getTechnicianView,
   getTenant,
-  insertAccessGrant,
   listManagersWithTelegram,
   listOpenJobsForCustomer,
-  listVisitsForJob,
   markOfficeMessagesRead,
-  participantsOf,
   openAccessRequest,
   queuePersonPush,
   requestKeyOf,
@@ -21,18 +18,10 @@ import {
   viewShowsMoney,
   type AccessWants,
 } from '../db/index.js';
-import { runForcedTool } from '../model/forcedTool.js';
 import { localDateISO } from '../schedule/availability.js';
 import { servedDayPhrase } from '../schedule/dateResolve.js';
 import { renderMemoryIndex } from './memory.js';
 import { TEAM_LEAD_REF } from './identity.js';
-import {
-  ACCESS_DECIDE_MAX_TOKENS,
-  ACCESS_DECIDE_REASONING,
-  ACCESS_DECIDE_SYSTEM,
-  ACCESS_DECIDE_TIMEOUT_MS,
-  ACCESS_DECIDE_TOOL,
-} from './accessDeskPrompt.js';
 
 // THE DESK AS THE FILTER (access plan B; operator, 2026-09-19: "the seat asks
 // the office, who is basically a filter before the message goes to the
@@ -73,10 +62,6 @@ import {
 // that can drift.
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const HOUR_MS = 3_600_000;
-// What the desk may open by itself, and the only shape it can: one job's
-// record, for one day. Not a default — a ceiling, and it is not an argument.
-const DESK_GRANT_HOURS = 24;
 
 export interface AccessRequestInput {
   tenantId: string;
@@ -96,22 +81,13 @@ export interface AccessRequestInput {
   wants: AccessWants;
 }
 
-export interface AccessDecision {
-  decision: 'open' | 'ask_manager';
-  reason: string;
-}
-
 export interface AccessDeskDeps {
-  /** The one model call. Injectable so every test here is hermetic. */
-  decide?: (input: { system: string; user: string; tenantId: string }) => Promise<AccessDecision>;
   now?: () => Date;
   memoryIndex?: typeof renderMemoryIndex;
   getJob?: typeof getJob;
   getCustomer?: typeof getCustomer;
   listOpenJobs?: typeof listOpenJobsForCustomer;
-  listJobVisits?: typeof listVisitsForJob;
   technicianView?: typeof getTechnicianView;
-  insertGrant?: typeof insertAccessGrant;
   listManagers?: typeof listManagersWithTelegram;
   queuePush?: typeof queuePersonPush;
   openRequest?: typeof openAccessRequest;
@@ -123,7 +99,8 @@ export interface AccessDeskDeps {
 }
 
 export type AccessDeskStatus =
-  | 'opened'
+  // 'opened' is GONE (operator, 2026-09-20): only a manager or the firm's own
+  // rule widens a view, so the desk can no longer answer by opening anything.
   | 'asked_manager'
   | 'already_open'
   | 'already_asked'
@@ -165,7 +142,7 @@ export async function answerAccessRequest(
   input: AccessRequestInput,
   deps: AccessDeskDeps = {},
 ): Promise<AccessDeskAnswer> {
-  const { tenantId, askerRef, askerTechnicianId, why, wants } = input;
+  const { tenantId, askerTechnicianId, wants } = input;
   const now = deps.now ?? (() => new Date());
   const readJob = deps.getJob ?? getJob;
   const readCustomer = deps.getCustomer ?? getCustomer;
@@ -333,136 +310,21 @@ export async function answerAccessRequest(
     }
   }
 
-  // 5. THE NARROW SHAPE — one job, the record only. The one case the desk may
-  // open itself, and the only one that reaches the model at all.
-  if (target.jobId && wants === 'record') {
-    const decision = await decideNarrow(input, target, deps);
-    if (decision.decision === 'open') {
-      const expiresAt = new Date(now().getTime() + DESK_GRANT_HOURS * HOUR_MS).toISOString();
-      await (deps.insertGrant ?? insertAccessGrant)({
-        tenantId,
-        technicianId: askerTechnicianId,
-        jobId: target.jobId,
-        opens: 'record',
-        opensMoney: false,
-        expiresAt,
-        requestedBy: askerRef,
-        grantedBy: TEAM_LEAD_REF,
-        // THE TECHNICIAN'S OWN WORDS, quoted by code. The model's reasoning
-        // goes to the desk transcript instead: `reason` is read back by
-        // list_access and v_access_grants, both of which are citable, and what
-        // belongs on the record is what the person actually asked for.
-        reason: `asked by ${input.askerName}: ${why}`,
-      });
-      const tz = await firmTz(tenantId, deps);
-      const until = servedDayPhrase(localDateISO(expiresAt, tz));
-      const answer =
-        `Opened for you until ${until}: ${jobWords(target)}, and that customer's details. Ask me ` +
-        'for it again now and it will be there. No prices, and no calls or emails on it.';
-      await recordPair(input, target, answer, decision.reason, deps);
-      return { status: 'opened', answer };
-    }
-    // ask_manager falls through to the manager path below, carrying nothing
-    // from the model except the decision itself.
-  }
-
-  // 6. TO THE MANAGERS. Everything sensitive, everything wide, and every narrow
-  // ask the desk would not open itself.
+  // 5. TO THE MANAGERS — EVERY REQUEST, WITHOUT EXCEPTION (operator ruling,
+  // 2026-09-20). The desk used to decide the narrow case itself, with one
+  // bounded model call, and open one job's record for a day. That is gone.
+  //
+  // THE REASON IS A PROMISE, NOT A PERFORMANCE PROBLEM. The firm tells its
+  // customers that a technician sees the work they are on and nothing else,
+  // unless the firm widens it deliberately — the firm-wide rule, or a manager's
+  // grant. An office that could open a record on its own judgment made that
+  // promise untrue, however narrow the opening and however good the judgment.
+  // It is the manager's consent that the promise is about.
+  //
+  // What this removes is worth stating plainly: there is now NO path anywhere
+  // in this flow where a model's decision causes a write. The desk reads, it
+  // files, it texts. Every widening of a view is a person's choice.
   return askTheManagers(input, target, requestKey, deps);
-}
-
-// ── the model call ───────────────────────────────────────────────────────────
-
-// One bounded call, and every failure mode lands on 'ask_manager'. A timeout is
-// a Promise.race rather than an abort: the forced-tool path has no cancellation
-// seam, and what matters is that the SEAT stops waiting — a late reply simply
-// has nobody listening.
-async function decideNarrow(
-  input: AccessRequestInput,
-  target: Target,
-  deps: AccessDeskDeps,
-): Promise<AccessDecision> {
-  const askManager = (reason: string): AccessDecision => ({ decision: 'ask_manager', reason });
-  try {
-    let index = '';
-    try {
-      index = await (deps.memoryIndex ?? renderMemoryIndex)(input.tenantId);
-    } catch (err) {
-      console.error(`[accessDesk] tenant ${input.tenantId}: memory read failed — deciding without`, err);
-    }
-    const job = await (deps.getJob ?? getJob)(target.jobId as string);
-    // WHO IS BOOKED ON IT. The strongest evidence for the two cases the system
-    // prompt asks the model to weigh — "covering for a colleague" and "no
-    // plausible connection to it" — so the decision is poorer without it.
-    // Best-effort: a failed read costs the model one input, never the answer.
-    let crew: string[] = [];
-    try {
-      const visits = await (deps.listJobVisits ?? listVisitsForJob)(target.jobId as string);
-      crew = [
-        ...new Set(
-          visits
-            .filter((v) => v.status !== 'cancelled')
-            .flatMap((v) => participantsOf(v, input.tenantId).map((p) => p.displayName)),
-        ),
-      ];
-    } catch (err) {
-      console.error(`[accessDesk] tenant ${input.tenantId}: the crew read failed — deciding without`, err);
-    }
-    const user = [
-      ...(index ? ["THE OFFICE'S OWN NOTES — the index:", index, ''] : []),
-      'THE REQUEST',
-      `  Who: ${input.askerName}${input.askerTier ? ` (${input.askerTier})` : ''}`,
-      `  What they want opened: ${jobWords(target)}, and that customer's details`,
-      `  Their reason, in their words: "${input.why}"`,
-      '',
-      'THE JOB',
-      `  Customer: ${target.customerName}`,
-      `  Job: ${target.jobTitle ?? '(untitled)'}`,
-      `  State of the work: ${job?.status ?? 'unknown'}`,
-      `  Booked on it: ${crew.length > 0 ? crew.join(', ') : 'nobody'}`,
-      '',
-      'Decide: open it for them for a day, or put it to a manager.',
-    ].join('\n');
-
-    const run =
-      deps.decide ??
-      (async (req: { system: string; user: string; tenantId: string }) => {
-        const args = await runForcedTool(
-          ACCESS_DECIDE_TOOL,
-          {
-            system: req.system,
-            user: req.user,
-            maxTokens: ACCESS_DECIDE_MAX_TOKENS,
-            label: 'accessDeskDecide',
-            reasoningEffort: ACCESS_DECIDE_REASONING,
-          },
-          { tenantId: req.tenantId, technicianRef: TEAM_LEAD_REF, lane: 'desk' },
-        );
-        return {
-          decision: args.decision === 'open' ? 'open' : 'ask_manager',
-          reason: typeof args.reason === 'string' ? args.reason : '',
-        } as AccessDecision;
-      });
-
-    const decided = await Promise.race([
-      run({ system: ACCESS_DECIDE_SYSTEM, user, tenantId: input.tenantId }),
-      new Promise<AccessDecision>((resolve) =>
-        setTimeout(
-          () => resolve(askManager('the desk took too long to decide, so a manager was asked')),
-          ACCESS_DECIDE_TIMEOUT_MS,
-        ).unref?.(),
-      ),
-    ]);
-    // Anything but a clean 'open' is a manager's call — an unrecognised word
-    // included, which is the deny-by-default posture the rest of the surface has.
-    if (decided.decision !== 'open') {
-      return askManager(decided.reason || 'the desk put it to a manager');
-    }
-    return decided;
-  } catch (err) {
-    console.error(`[accessDesk] tenant ${input.tenantId}: the decision call failed — asking a manager`, err);
-    return askManager('the desk could not decide, so a manager was asked');
-  }
 }
 
 // ── the manager path ─────────────────────────────────────────────────────────

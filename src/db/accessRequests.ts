@@ -27,13 +27,13 @@ import {
 // granted, declined, or lapsed). 'asked' is unused here but accepted wherever a
 // guard names the unsettled set, because the partial unique index covers both.
 //
-// IT IS NOT THE PLANNER'S QUEUE (operator ruling, 2026-09-19). The office is a
-// middleman for ONE inference: open this narrow ask, or put it to a manager.
-// After that it is done — it does not chase, does not remind, and has no
-// dismiss to make, because this is not an observation it curates. A request
-// nobody answers is simply GONE after a day. That is why nothing here runs on a
-// timer and nothing sweeps: the lapse is applied where it is read, and the row
-// stays as history.
+// IT IS NOT THE PLANNER'S QUEUE (operator ruling, 2026-09-19), AND THE OFFICE
+// CANNOT ANSWER ONE (2026-09-20). Every request goes to a manager: the office
+// files it, texts whoever it can reach, and is done — it does not chase, does
+// not remind, and has no dismiss to make, because this is not an observation it
+// curates. A request nobody answers is simply GONE after a day. That is why
+// nothing here runs on a timer and nothing sweeps: the lapse is applied where
+// it is read, and the row stays as history.
 
 export type AccessRequest = Observation;
 

@@ -10,10 +10,13 @@
 // revoke_access, list_access), the firm's own rule (set_technician_view), or by
 // saying no to a technician's request (decline_access, access plan B).
 //
-// ALL FIVE ARE ADMIN, and the planner holds none of them (operator, 2026-09-19):
-// the desk opens narrow asks in the moment (plan B), the planner only reads the
-// history (v_access_grants). A planner tool would also fire in shadow runs and
-// in the Calls-worker's focused passes, which share the team-lead schemas.
+// ALL FIVE ARE ADMIN, and NOTHING ELSE CAN WIDEN A VIEW (operator, 2026-09-19
+// and 2026-09-20). The planner holds none of them; the desk files a technician's
+// request and texts the managers, but cannot open anything itself — it briefly
+// could, for one narrow shape, and that was withdrawn because the firm promises
+// its customers that a technician sees their own work unless the firm widens it
+// deliberately. A planner tool would also fire in shadow runs and in the
+// Calls-worker's focused passes, which share the team-lead schemas.
 //
 // MONEY IS SENSITIVE BY DEFAULT (operator, 2026-09-15 and 2026-09-19): a
 // technician is told money as status words unless a manager opens the figures —

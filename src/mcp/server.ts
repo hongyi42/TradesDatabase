@@ -125,10 +125,10 @@ const TOOLS = [
           type: 'object',
           description:
             'ASK FOR ACCESS to something a tool answered "outside your view". Only ever after ' +
-            "your person has said yes, and `question` carries THEIR reason in their words. The " +
-            'office decides: a narrow ask may be opened on the spot, anything else is texted to ' +
-            'a manager and you are told which. Say what happened; never say they now have ' +
-            'access unless the answer says opened.',
+            "your person has said yes, and `question` carries THEIR reason in their words. " +
+            'ONLY A MANAGER CAN OPEN A RECORD: the office files the request and texts every ' +
+            'manager it can reach, and your person is texted when one answers. Say that you ' +
+            'asked; never say they now have access, and never promise a reply.',
           properties: {
             jobId: { type: 'string', description: 'The job they need, as the tool that refused it named it.' },
             customerId: { type: 'string', description: 'The customer they need. Use jobId instead when it is one job.' },

@@ -1,12 +1,10 @@
-import { describe, expect, test, vi } from 'vitest';
-import type { AccessGrant, Customer, Job, Observation, OfficeMessage, PersonPush, Technician } from '../db/index.js';
+import { describe, expect, test } from 'vitest';
+import type { Customer, Job, Observation, OfficeMessage, PersonPush, Technician } from '../db/index.js';
 import {
   answerAccessRequest,
-  type AccessDecision,
   type AccessDeskDeps,
   type AccessRequestInput,
 } from './accessDesk.js';
-import { TEAM_LEAD_REF } from './identity.js';
 
 // ── hermetic: every collaborator stubbed, no database and no model ──────────
 //
@@ -56,37 +54,23 @@ const emptyView = () => ({
 });
 
 interface Recorded {
-  grants: Parameters<NonNullable<AccessDeskDeps['insertGrant']>>[0][];
+  grants: never[];
   pushes: Parameters<NonNullable<AccessDeskDeps['queuePush']>>[0][];
   requests: Parameters<NonNullable<AccessDeskDeps['openRequest']>>[0][];
   messages: Record<string, unknown>[];
-  decideCalls: { user: string }[];
 }
 
-function stub(over: Partial<AccessDeskDeps> = {}, decision: AccessDecision | Error = { decision: 'open', reason: 'on his way there' }) {
-  const rec: Recorded = { grants: [], pushes: [], requests: [], messages: [], decideCalls: [] };
+function stub(over: Partial<AccessDeskDeps> = {}) {
+  const rec: Recorded = { grants: [], pushes: [], requests: [], messages: [] };
   const deps: AccessDeskDeps = {
     now: () => new Date('2026-09-19T17:00:00Z'),
     memoryIndex: async () => '- firm/pacing.md',
     getJob: async () => job(),
     getCustomer: async () => customer(),
     listOpenJobs: async () => [job()],
-    // Hermetic by DEFAULT: without this the crew read reaches the real
-    // database, which a try/catch then swallows — every test would still pass
-    // while quietly making a network call.
-    listJobVisits: async () => [],
     technicianView: async () => emptyView(),
     findRequest: async () => null,
     firmTenant: async () => ({ id: TENANT, timezone: 'America/Los_Angeles' }) as never,
-    decide: async (input) => {
-      rec.decideCalls.push({ user: input.user });
-      if (decision instanceof Error) throw decision;
-      return decision;
-    },
-    insertGrant: (async (g: Parameters<NonNullable<AccessDeskDeps['insertGrant']>>[0]) => {
-      rec.grants.push(g);
-      return { id: 'grant-1', ...g } as unknown as AccessGrant;
-    }) as NonNullable<AccessDeskDeps['insertGrant']>,
     listManagers: async () => [manager()],
     queuePush: (async (p: Parameters<NonNullable<AccessDeskDeps['queuePush']>>[0]) => {
       rec.pushes.push(p);
@@ -119,87 +103,63 @@ const ask = (over: Partial<AccessRequestInput> = {}): AccessRequestInput => ({
   ...over,
 });
 
-describe('the access desk — the narrow ask it may open itself', () => {
-  test('opens ONE job, record only, no money, for a day — every field fixed by code', async () => {
+// THE DESK CANNOT OPEN ANYTHING (operator ruling, 2026-09-20). It briefly
+// could, for one narrow shape — one job, the record, a day — decided by a
+// bounded model call. That was withdrawn: the firm promises its customers that
+// a technician sees their own work unless the firm widens it deliberately, and
+// an office opening a record on its own judgment makes that untrue however
+// narrow the opening. These tests pin the absence.
+describe('the access desk — it can no longer open anything itself', () => {
+  test('the narrow shape that USED to be opened now goes to a manager', async () => {
     const { deps, rec } = stub();
     const out = await answerAccessRequest(ask(), deps);
-
-    expect(out.status).toBe('opened');
-    expect(rec.grants).toHaveLength(1);
-    const g = rec.grants[0];
-    expect(g.jobId).toBe(JOB_ID);
-    expect(g.customerId).toBeUndefined();
-    expect(g.opens).toBe('record');
-    expect(g.opensMoney).toBe(false);
-    expect(g.grantedBy).toBe(TEAM_LEAD_REF);
-    expect(g.requestedBy).toBe('sam-teixeira');
-    // Exactly 24 hours from the injected clock.
-    expect(g.expiresAt).toBe(new Date('2026-09-20T17:00:00Z').toISOString());
-    // THE REASON IS THE TECHNICIAN'S WORDS, quoted by code — never the model's.
-    expect(g.reason).toBe('asked by Sam Teixeira: I am at the gate and need the code');
-    expect(g.reason).not.toContain('on his way there');
-    // Nothing was filed and nobody was texted: it is answered.
-    expect(rec.requests).toHaveLength(0);
-    expect(rec.pushes).toHaveLength(0);
-  });
-
-  test('the answer names the day and the job in words, and carries no ids', async () => {
-    const { deps } = stub();
-    const out = await answerAccessRequest(ask(), deps);
-    expect(out.answer).toContain('boiler swap');
-    expect(out.answer).toContain('Alice Byrne');
-    expect(out.answer).not.toContain(JOB_ID);
-    expect(out.answer).not.toContain(CUST_ID);
-    expect(out.answer).not.toContain('sam-teixeira');
-    // Firm-local: 17:00 UTC + 24h is still Sunday the 20th in Los Angeles.
-    expect(out.answer).toMatch(/Sunday/);
-  });
-
-  test('writes the desk pair the planner reads — the outcome leads, the reason rides behind', async () => {
-    const { deps, rec } = stub();
-    await answerAccessRequest(ask(), deps);
-    expect(rec.messages).toHaveLength(2);
-    expect(rec.messages[0]).toMatchObject({ kind: 'ask', fromRef: 'sam-teixeira', toRef: TEAM_LEAD_REF });
-    expect(rec.messages[1]).toMatchObject({ kind: 'desk', fromRef: TEAM_LEAD_REF, status: 'read' });
-    const body = rec.messages[1].body as string;
-    expect(body.startsWith('Opened for you until')).toBe(true);
-    expect(body).toContain('on his way there');
-  });
-
-  test('a customer ask with exactly one unfinished job she cannot open becomes that job', async () => {
-    const { deps, rec } = stub();
-    const out = await answerAccessRequest(ask({ jobId: undefined, customerId: CUST_ID }), deps);
-    expect(out.status).toBe('opened');
-    expect(rec.grants[0].jobId).toBe(JOB_ID);
-    expect(rec.grants[0].customerId).toBeUndefined();
-  });
-
-  // THE DEAD END THIS PREVENTS: get_customer_context offers `{ customerId }`
-  // exactly when the customer IS in view but has jobs that are not, and such a
-  // customer normally has one unfinished job — the one she has a trip on.
-  // Narrowing to it would answer "already open to you" to somebody asking for
-  // the history, file nothing and text nobody.
-  test('a customer ask is NOT narrowed to a job she can already open — it goes to a manager', async () => {
-    const { deps, rec } = stub({
-      technicianView: async () => ({ ...emptyView(), jobIds: new Set([JOB_ID]) }),
-    });
-    const out = await answerAccessRequest(ask({ jobId: undefined, customerId: CUST_ID }), deps);
     expect(out.status).toBe('asked_manager');
     expect(rec.grants).toHaveLength(0);
     expect(rec.requests).toHaveLength(1);
-    expect(rec.requests[0].context.jobId).toBeUndefined();
-    expect(rec.requests[0].context.requestKey).toBe(`${TECH_ID}:c:${CUST_ID}:record`);
     expect(rec.pushes).toHaveLength(1);
+  });
+
+  test('a customer ask with one unfinished job also goes to a manager', async () => {
+    const { deps, rec } = stub();
+    const out = await answerAccessRequest(ask({ jobId: undefined, customerId: CUST_ID }), deps);
+    expect(out.status).toBe('asked_manager');
+    expect(rec.grants).toHaveLength(0);
+    // …but it is still NARROWED to the one job, so the manager is asked to open
+    // the least that answers the question.
+    expect(rec.requests[0].context.jobId).toBe(JOB_ID);
+  });
+
+  test('NO REQUEST OF ANY SHAPE writes a grant', async () => {
+    for (const w of ['record', 'notes', 'money'] as const) {
+      const { deps, rec } = stub();
+      const out = await answerAccessRequest(ask({ wants: w }), deps);
+      expect(out.status).toBe('asked_manager');
+      expect(rec.grants).toHaveLength(0);
+    }
+  });
+
+  test('the answer never claims anything was opened', async () => {
+    const { deps } = stub();
+    const out = await answerAccessRequest(ask(), deps);
+    expect(out.answer).not.toMatch(/Opened for you/i);
+    expect(out.answer).toContain('Asked your manager');
+  });
+
+  test('the desk pair records the ask and the outcome for the planner', async () => {
+    const { deps, rec } = stub();
+    await answerAccessRequest(ask(), deps);
+    expect(rec.messages).toHaveLength(2);
+    expect(rec.messages[0]).toMatchObject({ kind: 'ask' });
+    expect(rec.messages[1]).toMatchObject({ kind: 'desk', status: 'read' });
   });
 });
 
 describe('the access desk — what always goes to a manager', () => {
-  test('money never reaches the model and is texted to every reachable manager', async () => {
+  test('a money ask is texted to every reachable manager', async () => {
     const { deps, rec } = stub();
     const out = await answerAccessRequest(ask({ wants: 'money' }), deps);
 
     expect(out.status).toBe('asked_manager');
-    expect(rec.decideCalls).toHaveLength(0); // sensitive asks skip the call entirely
     expect(rec.grants).toHaveLength(0);
     expect(rec.requests).toHaveLength(1);
     expect(rec.requests[0].context.wants).toBe('money');
@@ -218,11 +178,10 @@ describe('the access desk — what always goes to a manager', () => {
     expect(out.answer).toContain('ask me about this job again');
   });
 
-  test('every note also skips the model', async () => {
+  test('a notes ask goes the same way', async () => {
     const { deps, rec } = stub();
     const out = await answerAccessRequest(ask({ wants: 'notes' }), deps);
     expect(out.status).toBe('asked_manager');
-    expect(rec.decideCalls).toHaveLength(0);
     expect(rec.requests[0].context.wants).toBe('notes');
   });
 
@@ -232,45 +191,12 @@ describe('the access desk — what always goes to a manager', () => {
     });
     const out = await answerAccessRequest(ask({ jobId: undefined, customerId: CUST_ID }), deps);
     expect(out.status).toBe('asked_manager');
-    expect(rec.decideCalls).toHaveLength(0);
     expect(rec.requests[0].context.jobId).toBeUndefined();
     expect(rec.requests[0].context.requestKey).toBe(`${TECH_ID}:c:${CUST_ID}:record`);
   });
 
-  test('ask_manager from the model files the request and texts, and opens nothing', async () => {
-    const { deps, rec } = stub({}, { decision: 'ask_manager', reason: 'the reason does not fit the work' });
-    const out = await answerAccessRequest(ask(), deps);
-    expect(out.status).toBe('asked_manager');
-    expect(rec.decideCalls).toHaveLength(1);
-    expect(rec.grants).toHaveLength(0);
-    expect(rec.pushes).toHaveLength(1);
-  });
 
-  test('a model failure asks a manager — it never fails open', async () => {
-    const { deps, rec } = stub({}, new Error('provider 500'));
-    const out = await answerAccessRequest(ask(), deps);
-    expect(out.status).toBe('asked_manager');
-    expect(rec.grants).toHaveLength(0);
-    expect(rec.pushes).toHaveLength(1);
-  });
 
-  test('a timeout asks a manager', async () => {
-    vi.useFakeTimers();
-    try {
-      const { deps, rec } = stub({
-        // Never resolves: only the race's timer can settle this.
-        decide: () => new Promise<AccessDecision>(() => {}),
-      });
-      const pending = answerAccessRequest(ask(), deps);
-      await vi.advanceTimersByTimeAsync(21_000);
-      const out = await pending;
-      expect(out.status).toBe('asked_manager');
-      expect(rec.grants).toHaveLength(0);
-      expect(rec.pushes).toHaveLength(1);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 
   test('a manager with no sandbox is not named and not texted — the push leg would skip them', async () => {
     const { deps, rec } = stub({
@@ -324,7 +250,6 @@ describe('the access desk — what it answers without filing anything', () => {
     expect(rec.grants).toHaveLength(0);
     expect(rec.requests).toHaveLength(0);
     expect(rec.pushes).toHaveLength(0);
-    expect(rec.decideCalls).toHaveLength(0);
   });
 
   test('money the firm already opens, on a job she can open, is not asked for again', async () => {
@@ -482,77 +407,5 @@ describe('the access desk — who may ask, and for what', () => {
     const { deps } = stub();
     const out = await answerAccessRequest(ask({ customerId: CUST_ID }), deps);
     expect(out.status).toBe('refused');
-  });
-});
-
-describe('the access desk — what the model is shown', () => {
-  test('the decision call gets the ask, the reason and the job — and is not given the ids', async () => {
-    const { deps, rec } = stub();
-    await answerAccessRequest(ask(), deps);
-    const user = rec.decideCalls[0].user;
-    expect(user).toContain('Sam Teixeira');
-    expect(user).toContain('I am at the gate and need the code');
-    expect(user).toContain('boiler swap');
-    expect(user).toContain('Alice Byrne');
-  });
-
-  test('the model is told who is booked on the job — the plan\'s strongest evidence', async () => {
-    const { deps, rec } = stub({
-      listJobVisits: async () =>
-        [
-          {
-            id: 'v1',
-            tenant_id: TENANT,
-            status: 'confirmed',
-            visit_participants: [
-              { technician_id: 'x', tenant_id: TENANT, technicians: { ref: 'kim', display_name: 'Kim Ng', tenant_id: TENANT } },
-            ],
-          },
-          // A cancelled trip is not who is booked on it.
-          {
-            id: 'v2',
-            tenant_id: TENANT,
-            status: 'cancelled',
-            visit_participants: [
-              { technician_id: 'y', tenant_id: TENANT, technicians: { ref: 'gone', display_name: 'Gone Person', tenant_id: TENANT } },
-            ],
-          },
-        ] as never,
-    });
-    await answerAccessRequest(ask(), deps);
-    const user = rec.decideCalls[0].user;
-    expect(user).toContain('Booked on it: Kim Ng');
-    expect(user).not.toContain('Gone Person');
-  });
-
-  test('a failed crew read costs an input, never the decision', async () => {
-    const { deps, rec } = stub({
-      listJobVisits: async () => {
-        throw new Error('visits read failed');
-      },
-    });
-    const out = await answerAccessRequest(ask(), deps);
-    expect(out.status).toBe('opened');
-    expect(rec.decideCalls[0].user).toContain('Booked on it: nobody');
-  });
-
-  test('a grant that fails to write is not reported as opened', async () => {
-    const { deps } = stub({
-      insertGrant: (async () => {
-        throw new Error('insert failed');
-      }) as NonNullable<AccessDeskDeps['insertGrant']>,
-    });
-    await expect(answerAccessRequest(ask(), deps)).rejects.toThrow('insert failed');
-  });
-
-  test('a failed desk-pair write does not undo a grant that already landed', async () => {
-    const { deps, rec } = stub({
-      createMessage: (async () => {
-        throw new Error('office write failed');
-      }) as unknown as NonNullable<AccessDeskDeps['createMessage']>,
-    });
-    const out = await answerAccessRequest(ask(), deps);
-    expect(out.status).toBe('opened');
-    expect(rec.grants).toHaveLength(1);
   });
 });

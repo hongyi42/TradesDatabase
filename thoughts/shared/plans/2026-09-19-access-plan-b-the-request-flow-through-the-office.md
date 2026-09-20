@@ -2,7 +2,7 @@
 date: 2026-09-19
 task: Access plan B of 2 — the request flow; the seat asks, the desk filters, narrow asks are opened by the desk at once, the rest are texted to the managers, the answer goes back to the technician, and the planner sees the history
 research: thoughts/shared/research/2026-09-19-the-technician-access-request-flow.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -366,13 +366,30 @@ that landed where the record did not expect it; find out what happened (ask the 
 need to) and write it on the job's notes (`write_job_note`).
 
 ### Automated verification
-- [ ] Gates pass
-- [ ] `src/writePath/attachNote.test.ts` / `recordFieldNote.test.ts`: `offCrew` true for a step-2
-      visit crewed by someone else, false for step 1 and for a created trip; `assumed` carries the
-      created sentence, the off-crew sentence, and "marked that trip done" when the flip ran; no
-      `assumed` for an on-crew filing; in every case the note is recorded (never refused)
-- [ ] `server.test.ts`: a `tech-mcp` note on a job whose one trip is crewed by `mgr-test` returns
-      `recorded` with `assumed` on the confirm; an ordinary filing has no `assumed` key
+- [x] Gates pass (2026-09-19: 3360 passed, 9 skipped, 0 failed; lint, build and `bash -n` clean)
+- [x] `recordFieldNote.test.ts` (there is no `attachNote.test.ts`; the resolver is tested through
+      its caller): `offCrew` true for a step-2 visit crewed by someone else, false for step 1 and
+      for a created trip; `assumed` carries the created sentence, the off-crew sentence, and
+      "marked that trip done" when the flip ran; no `assumed` for an on-crew filing; in every case
+      the note is recorded (never refused). Plus two guard tests the review asked for, both
+      verified by removing the guard and watching them fail.
+- [x] `server.test.ts`: a `tech-mcp` note on a job whose one trip is crewed by `mgr-test` returns
+      `recorded` with `assumed` on the confirm; an ordinary filing has no `assumed` key; and a
+      MANAGER's filing has none either.
+
+### What phase 4 corrected in this plan's own wording
+- **The created-trip sentence in the plan is WRONG and was shipped corrected.** "A trip your own
+  note made does not open the rest of this customer's record to you" — it opens NOTHING, this job
+  included: `technician_view_of` drops any visit whose `source_capture_id` is a technician-channel
+  capture, so the minted trip contributes neither the job nor the customer. The old wording would
+  have had the seat tell her the job was readable and her next `get_job` refuse her. Recorded in
+  `docs/engineering-memory.md`, because the rule lives only in a SQL comment.
+- **"Technician channels only" was not enough: channel is not tier.** `record_field_note` is on
+  every badge, with technician channels, so a manager on the tools would have been told they are
+  off a crew on every note — always true, never news, and a planner item each time. Gated on the
+  filer's tier as well.
+- **"No trip was booked for you on this job" could be false**, since step 3 also fires when she is
+  on a trip for that job on another day and a second live visit exists. It says what MATCHED now.
 
 ## Phase 5: rollout and live run
 

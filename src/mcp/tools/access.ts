@@ -378,10 +378,12 @@ async function handleGrantAccess(toolCtx: ToolContext): Promise<unknown> {
       throw new Error('no request with that id on this firm: list_access shows the open ones');
     }
     if (request.status === 'dismissed') {
-      // WHO ANSWERED AND HOW — the dismissal reason is the whole record of it,
-      // and "already answered" alone would send the seat looking for a bug.
+      // WHAT BECAME OF IT — the dismissal reason is the whole record, and a
+      // bare "already answered" would send the seat looking for a bug. Not
+      // "answered", though: the office can set one aside too, and telling a
+      // manager somebody answered it when nobody did is worse than vague.
       throw new Error(
-        `that request was already answered: ${request.dismiss_reason ?? 'settled'}. Nothing changed.`,
+        `that request is no longer open: ${request.dismiss_reason ?? 'settled'}. Nothing changed.`,
       );
     }
   }
@@ -606,7 +608,7 @@ async function handleDeclineAccess(toolCtx: ToolContext): Promise<unknown> {
   if (request.status === 'dismissed') {
     return {
       declined: false,
-      note: `that request was already answered: ${request.dismiss_reason ?? 'settled'}. Nothing changed.`,
+      note: `that request is no longer open: ${request.dismiss_reason ?? 'settled'}. Nothing changed.`,
     };
   }
   const manager = toolCtx.caller?.display_name ?? identity.technicianRef;

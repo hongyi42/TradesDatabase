@@ -332,6 +332,12 @@ export async function listDismissedObservationIds(tenantId: string): Promise<str
 // write. `undefined` leaves a column alone; `null` CLEARS it (recover clears
 // the dismissal, a cleared hold clears not_before) — different instructions,
 // distinguished on purpose.
+// `excludeKinds` is the fifth argument and it is a CEILING, not a filter: a
+// kind named there can never be moved through this door, whatever status it is
+// in. Access requests use it (access plan B) so the planner's `recover` cannot
+// reopen one a manager has already answered — an answered request brought back
+// to `open` would sit in the planner's list forever, since the thing that
+// closes it is an answer that has already happened.
 export async function setObservationStatus(
   id: string,
   tenantId: string,
@@ -342,6 +348,7 @@ export async function setObservationStatus(
     notBefore?: string | null;
   },
   fromStatuses: ObservationStatus[],
+  excludeKinds?: ReviewKind[],
 ): Promise<Observation | null> {
   const set: {
     status?: ObservationStatus;
@@ -359,14 +366,18 @@ export async function setObservationStatus(
   if (fromStatuses.length === 0) {
     throw new Error('setObservationStatus: empty fromStatuses would match nothing');
   }
-  const { data, error } = await getClient()
+  let query = getClient()
     .from('observations')
     .update(set)
     .eq('id', id)
     .eq('tenant_id', tenantId)
-    .in('status', fromStatuses)
-    .select()
-    .maybeSingle();
+    .in('status', fromStatuses);
+  if (excludeKinds && excludeKinds.length > 0) {
+    // PostgREST's `not.in` takes a parenthesised list; the kinds are our own
+    // constants, never user text.
+    query = query.not('kind', 'in', `(${excludeKinds.join(',')})`);
+  }
+  const { data, error } = await query.select().maybeSingle();
   if (error) throw new Error(`setObservationStatus failed: ${error.message}`);
   return data as Observation | null;
 }

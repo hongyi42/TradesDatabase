@@ -10494,14 +10494,14 @@ describe('the access request flow', () => {
 
     const second = await mgr.callWith('grant_access', { requestId, reason: 'yes again' });
     expect(second.isError).toBe(true);
-    expect(second.text).toContain('already answered');
+    expect(second.text).toContain('no longer open');
     expect(second.text).toContain('opened by Manager Test');
     expect((await pg.query('select 1 from access_grants')).rows).toHaveLength(1);
 
     const declined = await mgr.callWith('decline_access', { requestId, reason: 'changed my mind' });
     expect(declined.isError).toBe(false);
     expect(declined.data.declined).toBe(false);
-    expect(declined.data.note).toContain('already answered');
+    expect(declined.data.note).toContain('no longer open');
   });
 
   test('decline_access closes it with the reason, texts them, and opens nothing', async () => {

@@ -163,7 +163,17 @@ firm-wide, for one person, or on one job. Same cache rule as rung 10b.2: every m
 needs `nemoclaw <s> gateway restart` after the deploy, or it keeps serving its cached list. The
 PLANNER holds none of these four (operator, 2026-09-19): it reads the history through
 `v_access_grants` in the spine_read catalog and nothing more, which also keeps a shadow tick and
-the Calls-worker's focused passes from ever writing a grant. The server both filters `tools/list`
+the Calls-worker's focused passes from ever writing a grant.
+**ACCESS PLAN B takes it to 44** with `decline_access`, and changes `ask_team_lead` for BOTH
+tiers — so every seat, technician and manager, needs the restart this time, not just the manager
+ones. A technician's seat that hits "outside your view" now offers to ask; on the person's yes it
+calls `ask_team_lead` with an `accessRequest`, and the OFFICE decides: one job's record it opens
+itself for a day, through one bounded model call whose every grant field is fixed by code;
+anything with money, with the notes, or wider than one job is filed as an `access_request`
+observation and texted to every reachable manager. A manager answers with
+`grant_access { requestId }` or `decline_access`, the technician is texted either way, and the
+request is closed under a status guard so the FIRST answer wins. The planner sees every step and
+chases what goes unanswered, but answers nothing itself. The server both filters `tools/list`
 by tier and re-gates every admin call at dispatch — a technician badge structurally has no
 admin surface. Seat caps (`tenants.manager_seats`/`technician_seats`) are DB-enforced; the
 agent cannot talk past them.

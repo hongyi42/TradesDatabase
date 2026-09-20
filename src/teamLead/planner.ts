@@ -864,6 +864,15 @@ const ctxList = (n: Nudge, k: string): string[] => {
   });
 };
 
+// A plain list of NAMES off the context — ctxList above reads job candidates
+// ({title, status}) and renders a bare string as "(unreadable)", which is
+// exactly what it should do there and exactly wrong here.
+const ctxNames = (n: Nudge, k: string): string[] => {
+  const raw = ((n.context ?? {}) as Record<string, unknown>)[k];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((e): e is string => typeof e === 'string' && e.trim() !== '');
+};
+
 function hoursBetween(fromIso: string, toMs: number): number {
   const ms = toMs - Date.parse(fromIso);
   return Number.isNaN(ms) ? 0 : Math.round((ms / 3_600_000) * 10) / 10;
@@ -1678,6 +1687,39 @@ export function buildGapView(
       // it needs; the age of the text is not.
       lines.push('  you have already texted a manager about this one');
     }
+  }
+  // ACCESS PLAN B — A TECHNICIAN ASKED TO OPEN SOMETHING. Not a hole in the
+  // record and not a question you asked: it is a person waiting on a manager,
+  // and a manager has already been texted once. You are here to chase it or to
+  // tell them it is still waiting — never to answer it.
+  //
+  // THE ELAPSED PHRASE IS THIS KIND'S ONLY DATE LABEL, and that is exactly why
+  // it may be printed. `dateLabels` is built from asked_at, endsAtLocal and
+  // elapsedLabel(asked_at ?? created_at); observationAsGapRow hardcodes
+  // asked_at: null, so for this kind the list is the one phrase below, byte for
+  // byte. Print anything else temporal here — a day name, a date, "yesterday" —
+  // and the rail drops the planner's WHOLE message as "a date it was not
+  // given". (The PINGED_KINDS block above omits its elapsed phrase for the
+  // opposite reason: its timestamp is marks.askedAt, which is NOT in
+  // dateLabels.)
+  if (n.kind === 'access_request') {
+    const ago = elapsedLabel(n.created_at, nowMs);
+    const wants = ctxStr(n, 'wants');
+    const wantWords =
+      wants === 'money'
+        ? 'the money figures'
+        : wants === 'notes'
+          ? 'every note on it'
+          : 'the record';
+    const texted = ctxNames(n, 'managersTexted');
+    lines.push(
+      `  ${ctxStr(n, 'technicianName') ?? 'a technician'} asked${ago ? ` ${ago}` : ''} to open ` +
+        `${ctxStr(n, 'targetName') ?? 'part of the record'} — they want ${wantWords}`,
+      `  in their words: "${flat(ctxStr(n, 'why') ?? '', QUESTION_SHOWN_CHARS)}"`,
+      texted.length > 0
+        ? `  texted to: ${texted.join(', ')} — a manager answers this, not you`
+        : '  texted to: nobody could be reached — a manager answers this, not you',
+    );
   }
   if (n.asked_at) {
     // WHETHER ANYTHING CAME BACK (build 6.5 Phase 5). The age alone made
@@ -3688,6 +3730,27 @@ async function applyDecision(
             'with as:"chat" and no countsAsTheAsk',
         };
       }
+      // AN ACCESS REQUEST CANNOT BE THE ASK (access plan B). It is closed by a
+      // MANAGER'S answer, not by anything a person says back to a message — so
+      // a send that marked it asked would outlive the answer: the row moves to
+      // `asked`, the manager's grant still closes it, and in between the
+      // planner is holding a question whose reply can never settle it (the
+      // `observe` hazard, a few cases above). EVERY MEMBER IS CHECKED, not just
+      // the lead: the group rule below never looks at kind, and apply marks
+      // every member asked — so one access request hidden in a group of four
+      // would slip through a lead-only test.
+      const askIds = d.nudgeIds && d.nudgeIds.length > 1 ? d.nudgeIds : [d.nudgeId];
+      if (d.countsAsTheAsk) {
+        const accessId = askIds.find((id) => (id ? getGap(id)?.kind : null) === 'access_request');
+        if (accessId) {
+          return {
+            outcome: 'refused',
+            detail:
+              'an access request is answered by a manager, not by a reply to you — send it ' +
+              'without countsAsTheAsk (you may remind a manager, or tell them it is still waiting)',
+          };
+        }
+      }
       // THE NOTE DIES WITH THE TEXT. Validate guaranteed the pair travels
       // together in one plan; this is the apply-time half, and it is what makes
       // the note BOUNDED. The text can still be refused here — a manager was
@@ -4069,6 +4132,13 @@ async function applyDecision(
           tenantId,
           { status: 'open', dismissReason: null, dismissedAt: null, notBefore: null },
           ['dismissed'],
+          // AN ANSWERED ACCESS REQUEST IS NOT RECOVERABLE (access plan B). A
+          // manager already said yes or no; reopening it would put a question
+          // back on the list that nothing can close, because the thing that
+          // closes it has already happened. The write simply matches no row,
+          // so recover falls through and reports the gap as unrecoverable —
+          // no special case anywhere in the verb itself.
+          ['access_request'],
         );
       } catch (err) {
         console.error(`[planner] ${gapId}: recover as an observation failed — trying it as a question`, err);

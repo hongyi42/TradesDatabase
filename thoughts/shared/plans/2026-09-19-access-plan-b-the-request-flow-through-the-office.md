@@ -246,12 +246,38 @@ same offer, naming `customerId` or `wants:'notes'`, in the hidden-jobs note
 a `decline_access` case on a random uuid (refused in words, not a crash).
 
 ### Automated verification
-- [ ] Gates pass; surface tests pass
-- [ ] New `server.test.ts` cases (same reset + truncate): a manager's `grant_access { requestId }`
+- [x] Gates pass; surface tests pass (2026-09-19: 3343 passed, 9 skipped, 0 failed; lint and
+      build clean). The eval coverage gate caught the missing `decline_access` tier-1 case itself.
+- [x] New `server.test.ts` cases (same reset + truncate): a manager's `grant_access { requestId }`
       opens the job for `tech-mcp`, closes the request, texts the technician and files one inbox
       line; a second answer is refused with no second grant row; `decline_access` closes with the
       reason and texts the technician; `list_access` lists open requests only; a technician badge
-      is refused `decline_access`; a revoke files an inbox line.
+      is refused `decline_access`; a revoke files an inbox line. (23 in the block.)
+
+### What phase 2 shipped beyond the list above
+The phase review found ten things; all are fixed and each behaviour has a test that fails
+without its fix (the two most serious were verified by reverting the fix and watching them fail):
+- **A `requestId` answer naming a DIFFERENT technician is refused, not obeyed.** Obeying it opened
+  the job for the named person, texted THEM about someone else's ask, and closed the requester's
+  request as answered — she is never told, nothing is opened for her, and the one channel she
+  could have re-asked through is now closed. This was the worst of the ten.
+- **The technician is texted what was GRANTED, not what she asked for** — a manager may answer a
+  customer-wide money ask with one job and no figures, and telling her she got what she asked for
+  sends her back to a page that is still half closed.
+- `technician` left `required` in the schema, which defeats the plain-yes path: `openRequests`
+  exposes a display name, never a ref, so a seat that filled it in from there would dead-end.
+- Revoking a CUSTOMER grant now finds the JOB grant that still opens that customer
+  (`technician_view_of` adds a job grant's customer to `customer_ids`). The old asymmetry sent the
+  manager to change the firm's rule — the one remedy that could not have closed it.
+- A person-wide money grant is attributed only to ANOTHER person-wide grant or the firm's rule; a
+  job-scoped money grant cannot produce `moneyAll` and must not be offered as the cause.
+- **The overlapping grant's granter is NAMED, not ref'd** — `granted_by` is a roster ref (or
+  `spine:team-lead`), and this phase's own rule forbids saying one to a person. The same fix was
+  applied to the already-revoked note, which had the bug before this plan.
+- `everywhere` can answer a request (a request always carries a customerId, which used to collide
+  with it); naming two scopes is still refused; context-supplied ids get the same shape check as
+  manager-supplied ones; and the post-revoke reads can no longer turn a committed revoke into an
+  error.
 
 ## Phase 3: the planner and the seats
 

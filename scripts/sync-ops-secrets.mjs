@@ -101,6 +101,22 @@ if (!seats.length) {
   process.exit(1);
 }
 
+// NEVER print a raw pg error from this file. Postgres puts the WHOLE failing
+// row in `detail` on a constraint violation -- verified against this table:
+//   detail: Failing row contains (trades-box-1, s3, @x, 8629..., 8629...:AA<token>, ...)
+// so one bad token would print every character of it to the terminal, and into
+// whatever scrollback, CI log or screen recording is watching. Code and message
+// are enough to act on; `detail` is the one field that can carry the secret.
+function dbErr(err) {
+  return `${err?.code ?? 'error'}: ${err?.message ?? String(err)}`;
+}
+
+// Same rule for network failures: the request URL contains the token, and some
+// error shapes carry the URL. Report the cause code, never the message chain.
+function netErr(err) {
+  return err?.cause?.code ?? err?.code ?? err?.name ?? 'request failed';
+}
+
 const db = new pg.Client({ connectionString: dburl, ssl: { rejectUnauthorized: false } });
 await db.connect();
 
@@ -113,7 +129,7 @@ for (const seat of seats.sort((a, b) => a.ref.localeCompare(b.ref))) {
     const r = await fetch(`https://api.telegram.org/bot${seat.token}/getMe`);
     me = await r.json();
   } catch (err) {
-    console.error(`  ${seat.ref}: getMe failed (${err.message}) -- skipped`);
+    console.error(`  ${seat.ref}: getMe failed (${netErr(err)}) -- skipped`);
     skipped++;
     continue;
   }
@@ -124,11 +140,18 @@ for (const seat of seats.sort((a, b) => a.ref.localeCompare(b.ref))) {
   }
   const botId = String(me.result.id);
   const handle = `@${me.result.username}`;
-  const cur = await db.query(
-    'select bot_id, bot_username, token from ops_secrets.bot_tokens where host = $1 and sandbox_ref = $2',
-    [HOST_NAME, seat.ref],
-  );
-  const row = cur.rows[0];
+  let row;
+  try {
+    const cur = await db.query(
+      'select bot_id, bot_username, token from ops_secrets.bot_tokens where host = $1 and sandbox_ref = $2',
+      [HOST_NAME, seat.ref],
+    );
+    row = cur.rows[0];
+  } catch (err) {
+    console.error(`  ${seat.ref}: read failed (${dbErr(err)}) -- skipped`);
+    skipped++;
+    continue;
+  }
   const unchanged = row && row.token === seat.token && row.bot_id === botId && row.bot_username === handle;
   if (unchanged) {
     console.log(`  ${seat.ref}  ${handle}  unchanged`);
@@ -140,7 +163,8 @@ for (const seat of seats.sort((a, b) => a.ref.localeCompare(b.ref))) {
     row ? updated++ : added++;
     continue;
   }
-  await db.query(
+  try {
+    await db.query(
     `insert into ops_secrets.bot_tokens (host, sandbox_ref, bot_username, bot_id, token, note, updated_at)
      values ($1, $2, $3, $4, $5, $6, now())
      on conflict (host, sandbox_ref) do update
@@ -149,8 +173,13 @@ for (const seat of seats.sort((a, b) => a.ref.localeCompare(b.ref))) {
            token        = excluded.token,
            note         = excluded.note,
            updated_at   = now()`,
-    [HOST_NAME, seat.ref, handle, botId, seat.token, 'synced from the gateway store by scripts/sync-ops-secrets.mjs'],
-  );
+      [HOST_NAME, seat.ref, handle, botId, seat.token, 'synced from the gateway store by scripts/sync-ops-secrets.mjs'],
+    );
+  } catch (err) {
+    console.error(`  ${seat.ref}: write failed (${dbErr(err)}) -- skipped`);
+    skipped++;
+    continue;
+  }
   console.log(`  ${seat.ref}  ${handle}  ${row ? 'updated' : 'added'}`);
   row ? updated++ : added++;
 }

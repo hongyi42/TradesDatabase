@@ -78,7 +78,9 @@ export const OUTSIDE_VIEW_NOTE =
   'guess what it holds. The office can ask a manager to open it for you: tell your person it ' +
   'is not open to them and offer to ask, and only if they say yes, call ask_team_lead with ' +
   'accessRequest (the id above) and their own reason as the question. Notes you wrote ' +
-  'yourself there stay readable: list_recent_captures shows them.';
+  'yourself there stay readable: list_recent_captures shows them. ' +
+  'THIS ANSWER CAN GO STALE: a manager can open it at any time, and you will be told when ' +
+  'one does. Never repeat this refusal from memory — call the tool again first.';
 
 // GROUNDING_BARE=1 (date-eval bare-clock arm, 2026-08-23): the model's ONLY
 // date help is the firm-local `now` rider. Read at module load — the flag

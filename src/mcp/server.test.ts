@@ -10025,6 +10025,11 @@ describe('the access tools', () => {
 
   afterEach(async () => {
     await pg.query('truncate table access_grants');
+    // A grant now texts the technician AND notes her seat, so this block leaves
+    // rows in two shared tables. Not truncating them leaked 6 pushes into the
+    // next describe, where they read as "every manager was texted six times".
+    await pg.query('truncate table person_pushes');
+    await pg.query("delete from office_messages where kind = 'inform'");
     await setTechnicianViewRule(tenantId, null, 'server.test');
   });
 
@@ -10062,7 +10067,7 @@ describe('the access tools', () => {
     expect(granted.data.granted.notes).toBe(false);
     expect(granted.data.granted.money).toBe(false);
     expect(granted.data.granted.what).toContain('Grantlee Ng');
-    expect(granted.data.note).toContain('not told automatically');
+    expect(granted.data.note).toContain('nothing to relay');
 
     const seen = await call('get_job', { jobId: open.id });
     expect(seen.data.title).toBe(`${customer.name} AC`);
@@ -10563,7 +10568,8 @@ describe('the access request flow', () => {
 
     // …and the office has one line about it.
     const inbox = await pg.query(
-      "select kind, from_ref, to_ref, body from office_messages where kind = 'inform' and from_ref = 'mgr-test'",
+      "select kind, from_ref, to_ref, body from office_messages " +
+        "where kind = 'inform' and from_ref = 'mgr-test' and direction = 'to_planner'",
     );
     expect(inbox.rows).toHaveLength(1);
     expect(inbox.rows[0].to_ref).toBe(TEAM_LEAD_REF);
@@ -10651,11 +10657,91 @@ describe('the access request flow', () => {
     expect(revoked.data.revoked).toBe(true);
     expect(revoked.data.stillOpen).toBe(false);
     const inbox = await pg.query(
-      "select body from office_messages where kind = 'inform' and from_ref = 'mgr-test'",
+      "select body from office_messages where kind = 'inform' and from_ref = 'mgr-test' " +
+        "and direction = 'to_planner'",
     );
     expect(inbox.rows).toHaveLength(1);
     expect(inbox.rows[0].body).toContain('Revoked');
     expect(inbox.rows[0].body).toContain('job reassigned');
+  });
+
+  // ── an access change reaches BOTH the person and her seat (2026-09-20) ────
+  //
+  // Found in live testing: a manager opened a record and the technician's seat
+  // went on saying "that is outside your view", truthfully as far as it knew,
+  // because nothing had told it otherwise. Two legs, two different jobs.
+
+  test('an UNPROMPTED grant texts her AND notes her seat', async () => {
+    const { job } = await outsideJob('Seatnote Ng');
+    const granted = await mgr.callWith('grant_access', {
+      technician: 'tech-mcp', jobId: job.id, reason: 'covering tomorrow',
+    });
+    expect(granted.isError).toBe(false);
+
+    // Leg A — her phone. This did not happen before: an unprompted grant told
+    // the manager "let them know" and reached her not at all.
+    const pushes = await pg.query('select kind, technician_id, body from person_pushes');
+    expect(pushes.rows).toHaveLength(1);
+    expect(pushes.rows[0].technician_id).toBe(techMcpId);
+    expect(pushes.rows[0].kind).toBe('access');
+
+    // Leg B — her SEAT's session, which is the staleness fix.
+    const seat = await pg.query(
+      "select from_ref, to_ref, technician_id, status, body from office_messages " +
+        "where direction = 'to_agent' and kind = 'inform'",
+    );
+    expect(seat.rows).toHaveLength(1);
+    expect(seat.rows[0].to_ref).toBe('tech-mcp');
+    expect(seat.rows[0].technician_id).toBe(techMcpId);
+    expect(seat.rows[0].status).toBe('queued');
+    // From the MANAGER, not the office: the office did not decide this, and
+    // wrapOfficeMessage renders a team-lead row as "OFFICE NOTE".
+    expect(seat.rows[0].from_ref).toBe('mgr-test');
+    // …and it tells the seat the thing that fixes the bug.
+    expect(seat.rows[0].body).toContain('check it again');
+    expect(seat.rows[0].body).not.toContain(job.id);
+
+    // The manager is no longer told to relay it themselves.
+    expect(granted.data.note).toContain('nothing to relay');
+    expect(granted.data.note).not.toContain('let them know');
+  });
+
+  test('a REVOKE notes her seat too — the asymmetry that promised access that was gone', async () => {
+    const { job } = await outsideJob('Seatrevoke Ng');
+    const granted = await mgr.callWith('grant_access', {
+      technician: 'tech-mcp', jobId: job.id, reason: 'covering',
+    });
+    await pg.query("delete from office_messages where direction = 'to_agent'");
+    await pg.query('truncate table person_pushes');
+
+    const revoked = await mgr.callWith('revoke_access', {
+      grantId: granted.data.granted.id, reason: 'job reassigned',
+    });
+    expect(revoked.data.revoked).toBe(true);
+
+    const seat = await pg.query(
+      "select to_ref, body from office_messages where direction = 'to_agent'",
+    );
+    expect(seat.rows).toHaveLength(1);
+    expect(seat.rows[0].to_ref).toBe('tech-mcp');
+    // NEUTRAL: a revoke may close nothing (another grant or the firm's rule can
+    // still open it), so it says access CHANGED, never that it ended.
+    expect(seat.rows[0].body).toContain('has changed');
+    expect(seat.rows[0].body).not.toContain('no longer');
+    // Her PHONE is deliberately not buzzed on a revoke.
+    expect((await pg.query('select 1 from person_pushes')).rows).toHaveLength(0);
+  });
+
+  test('a grant to a MANAGER notes no seat — they are never stale about their own view', async () => {
+    // Managers see everything, so grant_access refuses them outright; this pins
+    // that the seat-note path cannot fire for one.
+    const { job } = await outsideJob('Seatmgr Ng');
+    const res = await mgr.callWith('grant_access', {
+      technician: 'mgr-test', jobId: job.id, reason: 'me',
+    });
+    expect(res.isError).toBe(true);
+    expect((await pg.query("select 1 from office_messages where direction = 'to_agent'")).rows)
+      .toHaveLength(0);
   });
 
   // ── the five fixes plan A's review left (phase 2) ─────────────────────────

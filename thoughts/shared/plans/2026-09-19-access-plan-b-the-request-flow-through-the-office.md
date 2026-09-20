@@ -158,17 +158,42 @@ same offer, naming `customerId` or `wants:'notes'`, in the hidden-jobs note
 `toContain('outside your view')` (`server.test.ts:10165`, `:10172-10177`).
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass; `desk.test.ts` unchanged and green
-- [ ] New `src/teamLead/accessDesk.test.ts` (everything stubbed): narrow + `open` → one grant row
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass; `desk.test.ts` unchanged and green
+      (2026-09-19: 3326 passed, 9 skipped, 0 failed; `npm run build` clean)
+- [x] New `src/teamLead/accessDesk.test.ts` (everything stubbed): narrow + `open` → one grant row
       (1 day, `record`, no money, reason = the technician's words), no request, no push, one desk
       pair; `ask_manager`, a timeout, `wants:'money'`, `wants:'notes'`, a customer with two open
       jobs → one open request and one push per reachable manager, and no model call on the
       sensitive ones; a second identical ask → `already_asked`; an in-view job → `already_open`;
-      a manager asker refused; a malformed id refused without a database error.
-- [ ] `server.test.ts`, in a block that sets the firm rule to default and truncates
+      a manager asker refused; a malformed id refused without a database error. (32 tests.)
+- [x] `server.test.ts`, in a block that sets the firm rule to default and truncates
       `access_grants` (the seed firm runs `whole_firm`): `ask_team_lead` with `accessRequest
       { wants:'money' }` from `tech-mcp` → `asked_manager` and an `access` push for `mgr-test`
-      (given a `telegram_user_id`); `deps.accessDesk` is stubbed for any narrow case.
+      (given a `telegram_user_id`); `deps.accessDesk` is stubbed for any narrow case. (6 tests —
+      and the narrow case stubs only the DECISION, so the grant, the view change and the
+      expiry are exercised for real.)
+
+### What phase 1 actually shipped, where it differs from the plan above
+- The migration is **`20260919170000`**, not `20260919130000`: `20260919160000` had already landed
+  and the ledger keys on the version number, so the plan's number would have applied out of order
+  (the same-version trap from plan A's handoff, one step removed). **Phase 5's pilot command must
+  use the real name.**
+- A `customerId` ask is narrowed to a single unfinished job **only when she cannot already open
+  it** — the plan said so and the first cut dropped it. Without the test, the commonest ask of all
+  dead-ends: `get_customer_context` offers `{ customerId }` exactly when the customer IS in view
+  but has hidden jobs, and such a customer usually has one unfinished job (the one she is on).
+- `wants:'money'` is only answered "already open" when she can open the TARGET too. A firm rule of
+  `money: 'amounts'` opens the figures on a page that may still be outside her view, and
+  "ask again and they will be in the answer" would be false.
+- Ids are shape-checked (`UUID_SHAPE`) before any read. The regex is local to `accessDesk.ts`
+  rather than imported from `src/mcp/tools/shared.ts`: `src/teamLead` does not import the MCP
+  surface, and that boundary is worth more than one shared regex.
+- `get_customer_context`'s `restrictedCount` copy also lost its "a manager can open them" (it
+  contradicted the new runtime note); the plan named only two of the three copies.
+- KNOWN AND ACCEPTED: `managersTexted` is written before the pushes, so a queue-write failure
+  (logged, never fatal) can leave the context naming a manager who was not in fact texted. Filing
+  first is what stops a duplicate ask double-texting, which is the worse failure. Phase 3 renders
+  this list — say "texted" there, not "read it".
 
 ## Phase 2: the answer
 

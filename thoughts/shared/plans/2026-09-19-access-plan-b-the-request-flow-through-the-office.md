@@ -423,22 +423,21 @@ need to) and write it on the job's notes (`write_job_note`).
 **The migration is `20260919170000_access_requests.sql`, NOT the `20260919130000` this plan first
 named** — `20260919160000` had already landed, and a lower number would have applied out of order.
 
-**EXPECT THE CLI TO REFUSE IT, and that is correct.** PR #267 (the timestamp brand) merges FIRST by
-the operators' agreement, and its migration is `20260920120000` — a HIGHER number. So once that one
-is on the pilot, `supabase migration up` will stop on ours with:
+**THE PILOT IS NOT MIGRATED WITH THE CLI, so there is no refusal to expect.** Measured
+2026-09-20: the pilot's ledger holds `20260919220340 drop_review_queue_page` and
+`20260919220243 person_wide_money_grant` — versions that match no filename, because
+`apply_migration` (the Supabase MCP tool) stamps its OWN timestamp. That is the recorded
+`ledger versions ≠ filenames` trap, and it means the pilot is migrated statement-by-statement
+through that tool, which has no ordering check at all. Apply ours whenever; numbering does not
+matter there.
 
-```
-Found local migration files to be inserted before the last migration on remote database.
-Rerun the command with --include-all flag to apply these migrations:
-supabase/migrations/20260919170000_access_requests.sql
-```
+(The `--include-all` refusal an earlier draft of this section warned about is real, but it is a
+LOCAL-STACK condition — the CLI enforces ordering, `apply_migration` does not. `db push` against
+the pilot stays forbidden for the same ledger reason.)
 
-Exit 1, nothing applied. **Nothing is wrong.** Re-run with `--include-all`, which is safe here and
-only here: the two migrations touch different tables (`visits.started_at` vs
-`observations` / `person_pushes`), so applying ours after theirs is a reorder with no dependency
-between them — the one case `docs/engineering-memory.md` records as harmless. Never make
-`--include-all` a habit: it converts that loud refusal into a silent reorder for migrations that
-DO depend on each other.
+**Both migrations were still owed on the pilot as of 2026-09-20 03:40Z**, verified by artefact:
+`uq_open_access_request` absent, `person_pushes_kind_check` still `('schedule','call','ops')`, and
+`visits.started_at` still present (#267's drop also unapplied).
 
 Then verify the artefact rather than the ledger, per the same entry:
 
@@ -448,12 +447,25 @@ select pg_get_constraintdef(oid) from pg_constraint where conname = 'person_push
 -- must contain 'access'
 ```
 
-Then: `NOTIFY pgrst`; merge (Calls-worker deploys itself and picks up the planner guards); deploy
-`lifecycle-heart` and confirm Calls-worker is on the new build **before** triggering
-`TradesDatabase` — the web service starts creating requests the moment it is live, and a planner
-without the guards could make one "the ask" or recover it (read `autoDeploy` from `list_services`);
-re-run the bootstrap wire on trades-box-1 and `nemoclaw <s> gateway restart` on **every** seat
-(`ask_team_lead` changed for both tiers), s2 first.
+Then `NOTIFY pgrst`, and deploy in THIS order (service ids read 2026-09-20):
+
+1. **`lifecycle-heart`** (`crn-d93iq7a8qa3s73ap6260`, autoDeploy **no**, runs every 5 min) —
+   the planner. **Before** the web service, and the reason CHANGED with the operator's ruling:
+   the new planner FILTERS `access_request` out of its gap list, so an OLD planner meeting a new
+   request has no filter, no doctrine and every verb — it would see one as an ordinary
+   observation and could send about it, dismiss it or recover it.
+2. **`Calls-worker`** (`srv-d9qelh710e5c739hb8vg`, autoDeploy **yes**) — deploys itself on the
+   merge commit; just CONFIRM it is on the new build. Its focused pass shares the planner's
+   schemas, so it has the same exposure.
+3. **`TradesDatabase`** (`srv-d8uqmdegvqtc73bfn83g`, autoDeploy **no**) — the web service the
+   seats call. The moment it is live, a seat can file a request, which is why it goes last.
+
+`Board_Worker` and `Calls-purge` need nothing.
+
+Then re-run the bootstrap wire on trades-box-1 and `nemoclaw <s> gateway restart` on **every**
+seat (`ask_team_lead` changed for BOTH tiers — s5 is the only technician seat and it needs one
+too), s2 first. Then md5 every deployed `bootstrap-box.sh` copy against the repo (the
+seven-copies trap).
 
 ### Live verification
 - Prerequisites: `supabase-test`, `render` MCPs, `ssh tradesbox`, `.env` with `GATEWAY_IDENTITY_SECRET`.

@@ -64,7 +64,20 @@ describe('getCustomerContents', () => {
     expect(block.noteCount).toBe(1); // the visit-linked note, via the membership view
     expect(block.newest?.captureId).toBe(techNote.id);
     expect(block.newest?.snippet).toBe('tech said this');
-    expect(block.lastVisitAt).not.toBeNull();
+    // BOTH timestamps leave as ONE firm-local wall-clock shape, "YYYY-MM-DD HH:MM".
+    //
+    // They arrive as different species: last_visit_at is max(visits.completed_at),
+    // NAIVE-LOCAL (the firm's wall clock stamped as if UTC), while last_capture_at
+    // is max(raw_captures.captured_at), a REAL UTC INSTANT. Until 2026-09-19 both
+    // went to the model raw, side by side, each carrying '+00:00' — so whichever
+    // way a reader treated them, one of the two was wrong by the firm's offset.
+    // These assertions pin the rendering, because the older ones here and in
+    // server.test.ts / retractions.test.ts use toContain('2026-08-16'), which a
+    // raw ISO string satisfies just as happily.
+    expect(block.lastVisitAt).toBe('2026-08-16 13:00'); // stored 13:00 → said as 13:00
+    expect(block.lastVisitAt).not.toContain('T'); // never an ISO instant to a model
+    expect(block.lastVisitAt).not.toContain('+00');
+    expect(block.lastCaptureAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
     expect(contents.customerLevel.noteCount).toBe(1); // the call: no job on any arm
     expect(contents.customerLevel.newest?.captureId).toBe(call.id);
     expect(contents.jobsTotal).toBe(1);

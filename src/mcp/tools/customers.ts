@@ -110,7 +110,9 @@ const BASE_TOOLS = [
       'noteCount (notes you may read), restrictedCount (notes on file here that you may not read — the office can ask a manager to open them for your person), ' +
       'retractedCount (managers: notes retracted as recorded in error — ' +
       'list_recent_captures(jobId, includeRetracted: true) shows each with its reason), ' +
-      "lastCaptureAt, lastVisitAt and `newest` — the newest note's first 200 characters with its " +
+      'lastCaptureAt (newest note) and lastVisitAt (newest completed trip), both already the ' +
+      "FIRM's own clock as \"2026-09-18 14:00\" — say them as they stand, never convert a " +
+      'timezone; and `newest` — the newest note\'s first 200 characters with its ' +
       'captureId; olderJobs says how many more (finished) jobs are on file but not shown — it is a ' +
       'COUNT, and nothing here hands you their ids, so say there are more rather than offering to ' +
       'open one (a manager can list them with query_spine). get_job(jobId) reads any job you DO ' +

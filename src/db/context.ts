@@ -19,8 +19,35 @@ import { listUpcomingVisitsForCustomer, participantIdsOf, participantsOf } from 
 import { foldRetractedFacts } from './standingFacts.js';
 import { summarizeMoney, type MoneyEvent, type MoneySummary } from './moneyEvents.js';
 import type { CaptureChannel } from './rawCaptures.js';
-import { localDateISO } from '../schedule/availability.js';
+import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
 import { spineNowIso } from '../evalClock.js';
+
+// ---- The two timestamp species, rendered into ONE shape ---------------------
+//
+// `lastCaptureAt` and `lastVisitAt` sit side by side on every job block and go
+// out to a MODEL, and underneath they are DIFFERENT SPECIES:
+//
+//   last_capture_at = max(raw_captures.captured_at)  — a REAL UTC INSTANT
+//   last_visit_at   = max(visits.completed_at)       — NAIVE-LOCAL (the firm's
+//                                                      wall clock stamped as if
+//                                                      UTC; the +00 is a lie)
+//
+// Served raw, as they were until 2026-09-19, one of them is ALWAYS wrong to a
+// reader who treats them alike: slice the capture's digits and you report a UTC
+// hour as the firm's, convert the visit's digits and a 2 PM job becomes 7 AM.
+// Both renderings looked equally plausible because both strings carried '+00:00'.
+//
+// So both are rendered HERE into one firm-local wall-clock form,
+// "2026-09-18 14:00" — the same shape booking.ts's wallClock() has served for
+// every other model-facing visit time since the 2026-07-22 incident, where an
+// agent read the offset off a visit and invented a "9 AM Pacific" conversion for
+// a manager. The fix then was to withhold the offset rather than explain it;
+// this is that fix, applied to the path it never reached.
+const naiveWallClock = (ts: string | null): string | null =>
+  ts ? `${ts.slice(0, 10)} ${ts.slice(11, 16)}` : null;
+
+const instantWallClock = (ts: string | null, timezone: string): string | null =>
+  ts ? `${localDateISO(ts, timezone)} ${localTimeHHMM(ts, timezone)}` : null;
 
 // Full weekday name, matching resolve_date's phrase convention ("Monday
 // 2026-08-03") — the label the agent is told to say verbatim. fit.ts's
@@ -95,8 +122,10 @@ export type JobContents = Job & {
   // Notes on this job retracted as recorded-in-error. Managers and the planner
   // only (0 for a technician): the count says there is an audit trail to open.
   retractedCount: number;
+  /** Firm-local wall clock, "2026-09-18 14:00" — NOT an ISO instant (species note, top of file). */
   lastCaptureAt: string | null;
   newest: CaptureSnippet | null;
+  /** Firm-local wall clock, "2026-09-18 14:00" — NOT an ISO instant (species note, top of file). */
   lastVisitAt: string | null;
   money: MoneySummary | null;
   /** May the caller be told this job's money FIGURES (see view_money_open)? */
@@ -196,9 +225,14 @@ export async function getCustomerContents(
   // The technician's roster id: without it a technician sees nothing (plan 2).
   technicianId: string | null = null,
 ): Promise<CustomerContents | OutsideView | null> {
+  // The timezone is read HERE, not inside readUpcoming, because both readers
+  // need it now: the upcoming split is firm-local, and so is the rendering of
+  // `lastCaptureAt` (a real instant) into the firm's wall clock. Same three
+  // round trips the header promises — one of them just moved up a level.
+  const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
   const [raw, upcoming] = await Promise.all([
     readContents(tenantId, customerId, tier, technicianId),
-    readUpcoming(tenantId, customerId),
+    readUpcoming(tenantId, customerId, tz),
   ]);
   // Wrong tenant or unknown id: the database returned nothing, and the
   // upcoming read (tenant-filtered) is discarded with it.
@@ -227,9 +261,11 @@ export async function getCustomerContents(
     noteCount: block.note_count,
     restrictedCount: block.restricted_count,
     retractedCount: block.retracted_count,
-    lastCaptureAt: block.last_capture_at,
+    // Both firm-local wall clock, "2026-09-18 14:00" — see the species note at
+    // the top of this file. They arrive as different species and leave as one.
+    lastCaptureAt: instantWallClock(block.last_capture_at, tz),
     newest: snippetOf(block.newest),
-    lastVisitAt: block.last_visit_at,
+    lastVisitAt: naiveWallClock(block.last_visit_at),
     // Absence = "no money recorded here" (a zero summary on an untracked job
     // would read as "fully paid"). Every row counts — money never folds with a
     // retraction (operator 2026-09-15) — so this agrees with get_job.
@@ -514,8 +550,11 @@ async function readContents(
 // rejects cross-tenant customers wholesale). "Today" is the firm's local date.
 // Booked work stands regardless of note retractions — an assignment dies via
 // its own status, never via retract_capture — so these rows never fold.
-async function readUpcoming(tenantId: string, customerId: string): Promise<UpcomingVisit[]> {
-  const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
+async function readUpcoming(
+  tenantId: string,
+  customerId: string,
+  tz: string,
+): Promise<UpcomingVisit[]> {
   // Real clock unless EVAL_FAKE_NOW anchors THIS tenant (date-eval only):
   // the upcoming/recent split must agree with the anchored resolve_date, or
   // an anchored run charges the model for the harness's own inconsistency.

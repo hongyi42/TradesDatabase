@@ -178,10 +178,14 @@ visit whose `source_capture_id` is a technician-channel capture (see §4's view 
 **ACCESS PLAN B takes it to 44** with `decline_access`, and changes `ask_team_lead` for BOTH
 tiers — so every seat, technician and manager, needs the restart this time, not just the manager
 ones. A technician's seat that hits "outside your view" now offers to ask; on the person's yes it
-calls `ask_team_lead` with an `accessRequest`, and the OFFICE decides: one job's record it opens
-itself for a day, through one bounded model call whose every grant field is fixed by code;
-anything with money, with the notes, or wider than one job is filed as an `access_request`
-observation and texted to every reachable manager. A manager answers with
+calls `ask_team_lead` with an `accessRequest`. EVERY request is filed as an `access_request`
+observation and texted to every reachable manager — **the office opens nothing itself**. It
+briefly could, for one narrow shape (one job, the record, a day) decided by a bounded model call;
+that was withdrawn on 2026-09-20 because the firm promises its customers that a technician sees
+their own work unless the firm widens it deliberately, and an office opening a record on its own
+judgment makes that untrue however narrow the opening. The consequence worth knowing: there is
+now no path anywhere in this flow where a model's decision causes a write, and `insertAccessGrant`
+has exactly ONE caller — the manager-only `grant_access`. A manager answers with
 `grant_access { requestId }` or `decline_access`, the technician is texted either way, and the
 request is closed under a status guard so the FIRST answer wins. THE OFFICE IS A MIDDLEMAN FOR
 ONE INFERENCE AND NOTHING MORE (operator ruling, 2026-09-19): it decides once — open it, or put

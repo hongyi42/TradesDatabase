@@ -63,7 +63,6 @@ import {
 } from '../db/nudges.js';
 import { localDateISO } from '../schedule/availability.js';
 import { TEAM_LEAD_REF, TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
-import { answerAccessRequest } from '../teamLead/accessDesk.js';
 import { MEMORY_FILE_MAX } from '../teamLead/memory.js';
 import { JOB_NOTE_MAX } from '../teamLead/jobNotes.js';
 import { nl } from '../db/time.js';
@@ -10328,63 +10327,33 @@ describe('the access request flow', () => {
     expect((await pg.query('select 1 from person_pushes')).rows).toHaveLength(1);
   });
 
-  test('a narrow ask the desk opens really does open the job, and only that job', async () => {
-    const { customer, job } = await outsideJob('Reqnarrow Ng');
-    const other = await createJob({ tenantId, customerId: customer.id, title: 'Reqnarrow heater' });
+  test('a narrow ask is NOT opened by the office — it goes to a manager like everything else', async () => {
+    const { job } = await outsideJob('Reqnarrow Ng');
     expect((await call('get_job', { jobId: job.id })).data.inView).toBe(false);
 
-    // THE ONE THING STUBBED IS THE DECISION. Everything below it is real: the
-    // grant is written by the live code path, and what proves it worked is that
-    // the technician's own get_job answers differently afterwards.
-    const { client: c, callWith } = await clientFor(
-      { tenantId, technicianRef: 'tech-mcp' },
-      {
-        accessDesk: ((input: Parameters<typeof answerAccessRequest>[0]) =>
-          answerAccessRequest(input, {
-            decide: async () => ({ decision: 'open' as const, reason: 'he is on site now' }),
-          })) as unknown as ServerDeps['accessDesk'],
-      },
-    );
-    try {
-      const res = await callWith('ask_team_lead', {
-        question: 'I am at the gate and need the code',
-        accessRequest: { jobId: job.id },
-      });
-      expect(res.isError).toBe(false);
-      expect(res.data.status).toBe('opened');
-      expect(res.data.answer).not.toContain(job.id);
-    } finally {
-      await c.close();
-    }
+    // THE WHOLE PATH IS REAL — no stub anywhere, because there is no model call
+    // left to stub. The office cannot open a record (operator, 2026-09-20): the
+    // firm promises its customers that a technician sees their own work unless
+    // the firm widens it deliberately, so consent is a manager's to give.
+    const res = await call('ask_team_lead', {
+      question: 'I am at the gate and need the code',
+      accessRequest: { jobId: job.id },
+    });
+    expect(res.isError).toBe(false);
+    expect(res.data.status).toBe('asked_manager');
 
-    // The job is now readable — title and all — and NOTHING else of that
-    // customer's opened with it.
-    const seen = await call('get_job', { jobId: job.id });
-    expect(seen.data.inView).toBeUndefined();
-    expect(seen.data.title).toBe('Reqnarrow Ng AC');
-    expect(seen.data.price_cents).toBeUndefined(); // record only: no figures
-    expect((await call('get_job', { jobId: other.id })).data.inView).toBe(false);
+    // NOTHING WAS OPENED, and the job reads exactly as it did before.
+    expect((await pg.query('select 1 from access_grants')).rows).toHaveLength(0);
+    expect((await call('get_job', { jobId: job.id })).data.inView).toBe(false);
 
-    // One grant, written by the office and reading back as the desk's shape.
-    const grants = await pg.query(
-      'select job_id, opens, opens_money, granted_by, requested_by, reason, expires_at from access_grants',
+    // It became a request a manager can answer, and they were texted.
+    const reqs = await pg.query(
+      "select context->>'wants' as wants from observations where kind = 'access_request' and status = 'open'",
     );
-    expect(grants.rows).toHaveLength(1);
-    expect(grants.rows[0].job_id).toBe(job.id);
-    expect(grants.rows[0].opens).toBe('record');
-    expect(grants.rows[0].opens_money).toBe(false);
-    expect(grants.rows[0].granted_by).toBe(TEAM_LEAD_REF);
-    expect(grants.rows[0].requested_by).toBe('tech-mcp');
-    expect(grants.rows[0].reason).toContain('I am at the gate');
-    // A DAY, not the manager's week.
-    const hours = (Date.parse(grants.rows[0].expires_at) - Date.now()) / 3_600_000;
-    expect(hours).toBeGreaterThan(23);
-    expect(hours).toBeLessThan(25);
-    // Nothing was filed and nobody was texted: the desk answered it.
-    expect((await pg.query("select 1 from observations where kind = 'access_request'")).rows).toHaveLength(0);
-    expect((await pg.query('select 1 from person_pushes')).rows).toHaveLength(0);
+    expect(reqs.rows).toHaveLength(1);
+    expect(reqs.rows[0].wants).toBe('record');
+    expect((await pg.query("select 1 from person_pushes where kind = 'access'")).rows).toHaveLength(1);
   });
-
   test('the desk is reached with the caller identity, and its answer is relayed verbatim', async () => {
     const { job } = await outsideJob('Reqthread Ng');
     const accessDesk = vi.fn(async () => ({ status: 'opened' as const, answer: 'Opened for you until Sunday.' }));

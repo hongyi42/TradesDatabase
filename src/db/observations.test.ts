@@ -718,3 +718,48 @@ describe('things only a manager can settle', () => {
     expect(byId.get(planner!.id)?.status).toBe('open'); // a planner row is the planner's
   });
 });
+
+// ── the recover ceiling (access plan B, phase 3) ───────────────────────────
+//
+// AGAINST A REAL DATABASE, deliberately. `recover` passes excludeKinds on
+// EVERY call, and a malformed PostgREST filter would throw, be swallowed by
+// the planner's try/catch, and silently make every observation kind
+// unrecoverable — with the planner tests all green, because they stub this
+// writer. Only a real query can say the filter is well formed.
+describe('setObservationStatus — excludeKinds', () => {
+  test('a named kind cannot be moved; every other kind still can', async () => {
+    const dismissed = { status: 'dismissed' as const, dismissReason: 'set aside', dismissedAt: new Date().toISOString() };
+
+    const request = await createObservation({
+      tenantId,
+      kind: 'access_request',
+      subjectRef: `${subject()}-access`,
+      technicianId: null,
+      author: 'planner',
+      context: { requestKey: `${subject()}-key` },
+    });
+    createdIds.push(request!.id);
+    const ordinary = await createObservation({
+      tenantId,
+      kind: 'planner_observation',
+      subjectRef: `${subject()}-obs`,
+      technicianId: null,
+      author: 'planner',
+    });
+    createdIds.push(ordinary!.id);
+    await setObservationStatus(request!.id, tenantId, dismissed, ['open']);
+    await setObservationStatus(ordinary!.id, tenantId, dismissed, ['open']);
+
+    const reopen = { status: 'open' as const, dismissReason: null, dismissedAt: null, notBefore: null };
+    // The excluded kind matches nothing — the answer a caller reads as "it did
+    // not move", with no error to swallow.
+    expect(await setObservationStatus(request!.id, tenantId, reopen, ['dismissed'], ['access_request'])).toBeNull();
+    // …and the SAME call with the ceiling in place still moves every other kind.
+    expect(
+      (await setObservationStatus(ordinary!.id, tenantId, reopen, ['dismissed'], ['access_request']))?.status,
+    ).toBe('open');
+    // Without the ceiling the request would have come back — so the filter, not
+    // the row's state, is what refused it.
+    expect((await setObservationStatus(request!.id, tenantId, reopen, ['dismissed']))?.status).toBe('open');
+  });
+});

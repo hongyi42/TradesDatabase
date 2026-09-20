@@ -163,7 +163,33 @@ firm-wide, for one person, or on one job. Same cache rule as rung 10b.2: every m
 needs `nemoclaw <s> gateway restart` after the deploy, or it keeps serving its cached list. The
 PLANNER holds none of these four (operator, 2026-09-19): it reads the history through
 `v_access_grants` in the spine_read catalog and nothing more, which also keeps a shadow tick and
-the Calls-worker's focused passes from ever writing a grant. The server both filters `tools/list`
+the Calls-worker's focused passes from ever writing a grant.
+**THE NOTE NOW SAYS WHAT IT ASSUMED (access plan B phase 4).** A recorded note can come back
+with `assumed`: plain sentences saying what the record had to guess to file it — that it went on
+a colleague's trip, or on a new trip because none matched. NOTHING IS REFUSED OR RE-ROUTED by
+this (operator doctrine, 2026-09-19: contradictions are raised at points of inference and code
+never restricts a filing); the note lands exactly where it always did. The seat asks its person
+once what happened, passes the answer on with `inform_team_lead`, and offers the access ask if
+they need to read the job. Technician filers only — a manager on the tools is not told they are
+off a crew, because they never are. Worth knowing when writing that copy: a trip a technician's
+own note MINTED opens nothing at all, not even its own job — `technician_view_of` excludes any
+visit whose `source_capture_id` is a technician-channel capture (see §4's view rule below).
+
+**ACCESS PLAN B takes it to 44** with `decline_access`, and changes `ask_team_lead` for BOTH
+tiers — so every seat, technician and manager, needs the restart this time, not just the manager
+ones. A technician's seat that hits "outside your view" now offers to ask; on the person's yes it
+calls `ask_team_lead` with an `accessRequest`, and the OFFICE decides: one job's record it opens
+itself for a day, through one bounded model call whose every grant field is fixed by code;
+anything with money, with the notes, or wider than one job is filed as an `access_request`
+observation and texted to every reachable manager. A manager answers with
+`grant_access { requestId }` or `decline_access`, the technician is texted either way, and the
+request is closed under a status guard so the FIRST answer wins. THE OFFICE IS A MIDDLEMAN FOR
+ONE INFERENCE AND NOTHING MORE (operator ruling, 2026-09-19): it decides once — open it, or put
+it to a manager — and then it is done. It does not chase, does not remind, and has no dismissal
+to make; an unanswered request simply lapses after 24 hours, with nothing running on a timer, and
+the technician can ask again. So the kind never enters the planner's gap list at all. What the
+planner hears is what HAPPENED: a manager's grant, decline or revoke as one inbox line, plus
+v_access_grants for the history. The server both filters `tools/list`
 by tier and re-gates every admin call at dispatch — a technician badge structurally has no
 admin surface. Seat caps (`tenants.manager_seats`/`technician_seats`) are DB-enforced; the
 agent cannot talk past them.

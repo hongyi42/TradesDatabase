@@ -4069,6 +4069,13 @@ async function applyDecision(
           tenantId,
           { status: 'open', dismissReason: null, dismissedAt: null, notBefore: null },
           ['dismissed'],
+          // AN ANSWERED ACCESS REQUEST IS NOT RECOVERABLE (access plan B). A
+          // manager already said yes or no; reopening it would put a question
+          // back on the list that nothing can close, because the thing that
+          // closes it has already happened. The write simply matches no row,
+          // so recover falls through and reports the gap as unrecoverable —
+          // no special case anywhere in the verb itself.
+          ['access_request'],
         );
       } catch (err) {
         console.error(`[planner] ${gapId}: recover as an observation failed — trying it as a question`, err);
@@ -4353,7 +4360,7 @@ export async function runPlanner(
       // — worn as gap rows in state 'noticed'. Merged oldest-first so the
       // prompt reads as one list. The DISMISSED set rides along to validate
       // `recover`, and the stage map keys each decision row to its table.
-      const [openNudges, openObs, unreadMessages] = await Promise.all([
+      const [openNudges, openObsAll, unreadMessages] = await Promise.all([
         listNudges(tenantId, [...OPEN_NUDGE_STATUSES]),
         listObservations(tenantId, ['open']),
         // The planner's inbox (build 5.5): unread seat informs, read in the
@@ -4378,6 +4385,17 @@ export async function runPlanner(
           throw err;
         }),
       ]);
+      // ACCESS REQUESTS ARE NOT THE PLANNER'S WORK (operator ruling,
+      // 2026-09-19). The office is a middleman for ONE inference — open this
+      // narrow ask, or put it to a manager — and after that it is done: it does
+      // not chase, does not remind, and has no dismissal to make, because this
+      // is not an observation it curates. An unanswered one is simply gone after
+      // a day (REQUEST_LAPSE_MS). Dropped HERE, at the one read, so no verb
+      // needs a special case and none of the gap machinery can reach the kind.
+      // What the planner still hears about access is what HAPPENED: a manager's
+      // grant, decline or revoke arrives as an inform in its inbox, and
+      // v_access_grants holds the whole history.
+      const openObs = openObsAll.filter((o) => o.kind !== 'access_request');
       // OBSERVATIONS FIRST so the nudge label wins a same-id collision — the
       // stage map must agree with the F7 view rule below, or decisions on the
       // live ask get recorded under the observation FK (code-review).

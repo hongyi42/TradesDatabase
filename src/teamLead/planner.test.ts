@@ -7890,3 +7890,95 @@ describe('retrieval layer 3 — a technician is never told an amount (doctrine)'
     expect(DESK_NARROW_DISCLOSURE).toContain('invoiced, not yet paid');
   });
 });
+
+// ── access requests and the planner (access plan B, phase 3, re-cut on the
+// operator's ruling of 2026-09-19) ─────────────────────────────────────────
+//
+// THE PLANNER HAS NO PART IN THESE. The office is a middleman for ONE
+// inference — open this narrow ask, or put it to a manager — and is then done.
+// So the tests are about ABSENCE: the kind never becomes a gap, nothing in the
+// doctrine tells the planner to work one, and the one door that could still
+// reach a settled request (recover, via the dismissed-ids list) is shut.
+describe('access requests and the planner', () => {
+  const NOW = '2026-08-15T18:00:00.000Z';
+  const request = (over: Partial<Nudge> = {}): Nudge =>
+    nudge({
+      id: 'a1',
+      kind: 'access_request',
+      status: 'open',
+      subject_ref: 'access:11111111-1111-4111-8111-111111111111',
+      question: null,
+      created_at: '2026-08-15T14:00:00.000Z',
+      asked_at: null,
+      context: {
+        requestKey: 'tech-1:j9:money',
+        technicianRef: 'ben-shelton',
+        technicianName: 'Ben Shelton',
+        jobId: 'j9',
+        customerId: 'c9',
+        targetName: 'the money figures on the "boiler swap" job for Alice Byrne',
+        wants: 'money',
+        why: 'the customer keeps asking me what they still owe',
+        managersTexted: ['Dana Reed'],
+      },
+      ...over,
+    } as never);
+
+  test('an open request never reaches the planner as a gap', async () => {
+    const recorded: Record<string, unknown>[] = [];
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => [],
+      // The reader returns it; the planner drops it.
+      listObservations: async () => [request()] as unknown as Observation[],
+      recordDecisions: async (rs) => { recorded.push(...(rs as unknown as Record<string, unknown>[])); return rs.length; },
+      runLoop: loopReturning([]),
+    }));
+    // Nothing to plan for: the one open row was not the planner's work, so the
+    // tick skips the firm entirely rather than showing it something to do.
+    expect(summary.planned).toBe(0);
+    expect(recorded).toHaveLength(0);
+  });
+
+  test('a decision naming one is dropped — it is not in the plan at all', async () => {
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => [nudge({ status: 'pending', asked_at: null, question: null })],
+      listObservations: async () => [request()] as unknown as Observation[],
+      runLoop: loopReturning([
+        { nudgeId: 'a1', action: 'dismiss', confidence: 'high', reason: 'no longer matters' },
+      ]),
+    }));
+    expect(summary.applied).toBe(0);
+    expect(summary.dropped).toBeGreaterThan(0);
+  });
+
+  test('recover still cannot reopen a settled request — the ceiling rides the write', async () => {
+    const calls: Array<{ id: string; excluded?: string[] }> = [];
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => [nudge()],
+      listObservations: async () => [],
+      // A settled request IS dismissed, so its id is offered to recover.
+      listDismissedIds: async () => ['a-settled'],
+      setObservation: async (id, _t, _patch, _from, excludeKinds) => {
+        calls.push({ id, excluded: excludeKinds as string[] | undefined });
+        return null;
+      },
+      recoverGap: async () => null,
+      runLoop: loopReturning([
+        { nudgeId: 'a-settled', action: 'recover', confidence: 'high', reason: 'bringing it back' },
+      ]),
+    }));
+    expect(summary.applied).toBe(0);
+    expect(calls.find((c) => c.id === 'a-settled')?.excluded).toContain('access_request');
+  });
+
+  test('the doctrine says the office does not chase one, and never mentions dismissing it', () => {
+    expect(PLANNER_SYSTEM).toContain('ACCESS.');
+    expect(PLANNER_SYSTEM).toContain('It never reaches this list');
+    expect(PLANNER_SYSTEM).toContain('gone within a day');
+    // The verbs the earlier cut handed it, all withdrawn.
+    expect(PLANNER_SYSTEM).not.toContain('remind a manager');
+    expect(PLANNER_SYSTEM).not.toContain('still waiting');
+    // …and the standing money rule is untouched by any of this.
+    expect(PLANNER_SYSTEM).toContain('never told an AMOUNT');
+  });
+});

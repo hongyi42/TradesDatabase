@@ -23,6 +23,8 @@ import {
   stageOf,
   appendScheduleEvent,
   getTechnician,
+  listTeam,
+  participantIdsOf,
   getTenant,
   TERMINAL_JOB_STATUSES,
   type CaptureChannel,
@@ -31,6 +33,7 @@ import {
   type Json,
   type Visit,
 } from '../db/index.js';
+import type { VisitWithParticipants } from '../db/index.js';
 import { defaultExtractor, type Extractor, type ExtractedFields } from './extract.js';
 import { matchIdentity, type MatchResult, type ScheduledCustomerDraft } from './identityMatch.js';
 import { resolveVisitForNote } from './attachNote.js';
@@ -138,6 +141,21 @@ export interface RecordFieldNoteResult {
    * index converges to the FIRST row rather than a second ask).
    */
   observationId?: string;
+  /**
+   * WHAT THE RECORD ASSUMED to file this note, in plain sentences for the SEAT
+   * to ask about — never ids, never a figure (access plan B phase 4; operator
+   * doctrine 2026-09-19: "contradictions are raised at points of inference",
+   * and "the seat agent should be responsible").
+   *
+   * NOTHING HERE REFUSES OR CHANGES A FILING. The note is recorded exactly as
+   * it always was; this says what had to be guessed to do it, so the seat can
+   * ask the person what actually happened and tell the office. A technician
+   * being on somebody else's job is ordinary — the hard-coded detector this
+   * replaces was withdrawn for exactly that reason.
+   *
+   * Absent when nothing was assumed, which is the common case.
+   */
+  assumed?: string[];
 }
 
 // Terminal job states (no outgoing transitions) — never reused for a new note.
@@ -734,6 +752,10 @@ export async function recordFieldNote(
   // WITH its crew (the attach rule needs it), but from here on the writes below
   // return plain rows and nothing in this function asks who was on the trip.
   let visit: Visit | null = resolved.visit;
+  // Did this note flip a confirmed trip to done? Only true once the write has
+  // actually landed, so the sentence the seat reads can never claim a change
+  // that failed (the flip is advisory and swallows its own errors).
+  let markedDone = false;
 
   // (iii) RUNG 10 — A COMMITMENT WITH NO TRIP ASKS, AND IT ASKS FIRST.
   //
@@ -863,6 +885,7 @@ export async function recordFieldNote(
       // into "note NOT recorded" and invite the technician to file it twice.
       try {
         visit = await updateVisitStatus(visit.id, 'completed', null, resolved.noteLocal);
+        markedDone = true;
         // Plain-text kind, no push — the 'job_cancelled' precedent. The manager
         // does not need a notification that work they already know about is done.
         await appendScheduleEvent({
@@ -913,6 +936,54 @@ export async function recordFieldNote(
   // silent difference nobody asked for.
   if (asked) return asked;
 
+  // WHAT WAS ASSUMED, in the technician's own terms. Built last, because only
+  // here is every fact settled — including whether the trip flip landed.
+  // TECHNICIAN CHANNELS ONLY: an email or a call has no seat to ask, and a
+  // sentence addressed to "you" would be nonsense on one.
+  //
+  // TECHNICIAN CHANNELS **AND** A TECHNICIAN FILER. The channel is not the
+  // tier: record_field_note is on every badge's surface, and its channels are
+  // the technician ones, so a manager on the tools would otherwise be told
+  // "you are not on that trip's crew" about a technician's trip — which is
+  // true, ordinary, and not news. Each one would cost the seat a question and
+  // the planner an item, every time.
+  const assumed: string[] = [];
+  if (isTechnicianChannel && technician?.tier !== 'manager') {
+    if (resolved.created) {
+      assumed.push(
+        // NOT "no trip was booked for you": step 3 also fires when she IS on a
+        // trip for this job on another day and a second live visit exists, so
+        // the honest statement is about what MATCHED, not about what exists.
+        'No trip on this job matched this note, so it was recorded on a new finished trip. ' +
+          // AND IT OPENS NOTHING — not "the rest". technician_view_of drops any
+          // visit whose source capture is a technician channel, so a trip her
+          // own note made contributes neither the job nor the customer. Saying
+          // "the rest" would have the seat tell her the job itself is readable,
+          // and her next get_job would answer "outside your view" — the exact
+          // told-one-thing-refused-another loop this phase exists to end.
+          'A trip your own note made does not open this job or this customer to you: if you ' +
+          'need to read them, ask.',
+      );
+    } else if (resolved.offCrew) {
+      // The names, not the ids. A failed roster read costs the names, never the
+      // sentence — "somebody else's trip" is still the thing worth asking about.
+      let whose = "somebody else's";
+      try {
+        const crewIds = new Set(participantIdsOf(resolved.visit as VisitWithParticipants, tenantId));
+        const names = (await listTeam(tenantId))
+          .filter((t) => crewIds.has(t.id))
+          .map((t) => t.display_name);
+        if (names.length > 0) whose = `${names.join(' and ')}'s`;
+      } catch (err) {
+        console.error(`recordFieldNote: could not name the crew on visit ${resolved.visit?.id}`, err);
+      }
+      assumed.push(
+        `Your note went on ${whose} trip; you are not on that trip's crew.` +
+          (markedDone ? ' It also marked that trip done.' : ''),
+      );
+    }
+  }
+
   return {
     status: 'matched',
     captureId,
@@ -924,6 +995,7 @@ export async function recordFieldNote(
       : bookedVisitId
         ? { visitId: bookedVisitId }
         : {}),
+    ...(assumed.length > 0 ? { assumed } : {}),
   };
 }
 

@@ -2,7 +2,7 @@
 date: 2026-09-19
 task: Access plan B of 2 — the request flow; the seat asks, the desk filters, narrow asks are opened by the desk at once, the rest are texted to the managers, the answer goes back to the technician, and the planner sees the history
 research: thoughts/shared/research/2026-09-19-the-technician-access-request-flow.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -43,6 +43,31 @@ rollout: a note that lands where the record did not expect it now says so to the
   300 characters, so the desk row leads with "Opened <what> for <tech> until <day>"), every
   manager grant, decline and revoke as one inbox row from that manager, and `v_access_grants` as
   the complete record (the appendix can drop pairs in a burst; the view cannot).
+- **SUPERSEDED 2026-09-19 (operator ruling, at the final review): THE OFFICE DOES NOT FOLLOW UP.**
+  "The planner is the middleman here, and we only ever needed the planner in between for
+  inference on narrow cases. The ask for access should go to the planner exactly once, and then
+  the planner either gives the access itself or passes through the manager. If the manager does
+  not respond, then the item is automatically gone. When the technician asks, the only decision
+  that the planner makes is to give access or send to the manager. After that, it is not the
+  planner's job to follow up. This is different from the observations that the planner has been
+  working with so the verb 'dismiss' doesn't really make sense here."
+
+  What this overturned in the two bullets below, and in phase 3 as first built: the request does
+  NOT stay on the planner's list, the planner does NOT chase a manager or tell the technician it
+  is still waiting, and there is no dismissal to make. The kind is filtered out of the planner's
+  one observation read, so no verb needs a special case; the gap-view branch and the
+  `countsAsTheAsk` guard were deleted as unreachable. The `recover` ceiling STAYS — a settled
+  request is dismissed, so its id still reaches the planner through the dismissed-ids list.
+  An unanswered request LAPSES after 24 hours (operator's choice at the same moment), applied
+  where it is read rather than by a sweep: `findOpenAccessRequest` + `hasLapsed` closes the stale
+  row on the next ask and files a fresh one, and both answer doors refuse a lapsed id. Nothing
+  runs on a timer.
+
+  And because nothing chases, the desk stopped promising a reply: "you'll get a message here when
+  they answer" became "if they open it you'll get a message here; if you hear nothing, ask me
+  about this job again". A manager's yes or no still texts her; silence does not. The operator
+  chose this over adding a sweep to text her on the lapse.
+
 - **A forwarded request is an observation** (kind `access_request`, author `planner`, a fresh-uuid
   `subject_ref`, a `requestKey` in `context`). It stays in the planner's list until answered
   (operator accepted), so the planner can chase the manager or tell the technician. A partial
@@ -158,17 +183,42 @@ same offer, naming `customerId` or `wants:'notes'`, in the hidden-jobs note
 `toContain('outside your view')` (`server.test.ts:10165`, `:10172-10177`).
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass; `desk.test.ts` unchanged and green
-- [ ] New `src/teamLead/accessDesk.test.ts` (everything stubbed): narrow + `open` → one grant row
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass; `desk.test.ts` unchanged and green
+      (2026-09-19: 3326 passed, 9 skipped, 0 failed; `npm run build` clean)
+- [x] New `src/teamLead/accessDesk.test.ts` (everything stubbed): narrow + `open` → one grant row
       (1 day, `record`, no money, reason = the technician's words), no request, no push, one desk
       pair; `ask_manager`, a timeout, `wants:'money'`, `wants:'notes'`, a customer with two open
       jobs → one open request and one push per reachable manager, and no model call on the
       sensitive ones; a second identical ask → `already_asked`; an in-view job → `already_open`;
-      a manager asker refused; a malformed id refused without a database error.
-- [ ] `server.test.ts`, in a block that sets the firm rule to default and truncates
+      a manager asker refused; a malformed id refused without a database error. (32 tests.)
+- [x] `server.test.ts`, in a block that sets the firm rule to default and truncates
       `access_grants` (the seed firm runs `whole_firm`): `ask_team_lead` with `accessRequest
       { wants:'money' }` from `tech-mcp` → `asked_manager` and an `access` push for `mgr-test`
-      (given a `telegram_user_id`); `deps.accessDesk` is stubbed for any narrow case.
+      (given a `telegram_user_id`); `deps.accessDesk` is stubbed for any narrow case. (6 tests —
+      and the narrow case stubs only the DECISION, so the grant, the view change and the
+      expiry are exercised for real.)
+
+### What phase 1 actually shipped, where it differs from the plan above
+- The migration is **`20260919170000`**, not `20260919130000`: `20260919160000` had already landed
+  and the ledger keys on the version number, so the plan's number would have applied out of order
+  (the same-version trap from plan A's handoff, one step removed). **Phase 5's pilot command must
+  use the real name.**
+- A `customerId` ask is narrowed to a single unfinished job **only when she cannot already open
+  it** — the plan said so and the first cut dropped it. Without the test, the commonest ask of all
+  dead-ends: `get_customer_context` offers `{ customerId }` exactly when the customer IS in view
+  but has hidden jobs, and such a customer usually has one unfinished job (the one she is on).
+- `wants:'money'` is only answered "already open" when she can open the TARGET too. A firm rule of
+  `money: 'amounts'` opens the figures on a page that may still be outside her view, and
+  "ask again and they will be in the answer" would be false.
+- Ids are shape-checked (`UUID_SHAPE`) before any read. The regex is local to `accessDesk.ts`
+  rather than imported from `src/mcp/tools/shared.ts`: `src/teamLead` does not import the MCP
+  surface, and that boundary is worth more than one shared regex.
+- `get_customer_context`'s `restrictedCount` copy also lost its "a manager can open them" (it
+  contradicted the new runtime note); the plan named only two of the three copies.
+- KNOWN AND ACCEPTED: `managersTexted` is written before the pushes, so a queue-write failure
+  (logged, never fatal) can leave the context naming a manager who was not in fact texted. Filing
+  first is what stops a duplicate ask double-texting, which is the worse failure. Phase 3 renders
+  this list — say "texted" there, not "read it".
 
 ## Phase 2: the answer
 
@@ -221,12 +271,38 @@ same offer, naming `customerId` or `wants:'notes'`, in the hidden-jobs note
 a `decline_access` case on a random uuid (refused in words, not a crash).
 
 ### Automated verification
-- [ ] Gates pass; surface tests pass
-- [ ] New `server.test.ts` cases (same reset + truncate): a manager's `grant_access { requestId }`
+- [x] Gates pass; surface tests pass (2026-09-19: 3343 passed, 9 skipped, 0 failed; lint and
+      build clean). The eval coverage gate caught the missing `decline_access` tier-1 case itself.
+- [x] New `server.test.ts` cases (same reset + truncate): a manager's `grant_access { requestId }`
       opens the job for `tech-mcp`, closes the request, texts the technician and files one inbox
       line; a second answer is refused with no second grant row; `decline_access` closes with the
       reason and texts the technician; `list_access` lists open requests only; a technician badge
-      is refused `decline_access`; a revoke files an inbox line.
+      is refused `decline_access`; a revoke files an inbox line. (23 in the block.)
+
+### What phase 2 shipped beyond the list above
+The phase review found ten things; all are fixed and each behaviour has a test that fails
+without its fix (the two most serious were verified by reverting the fix and watching them fail):
+- **A `requestId` answer naming a DIFFERENT technician is refused, not obeyed.** Obeying it opened
+  the job for the named person, texted THEM about someone else's ask, and closed the requester's
+  request as answered — she is never told, nothing is opened for her, and the one channel she
+  could have re-asked through is now closed. This was the worst of the ten.
+- **The technician is texted what was GRANTED, not what she asked for** — a manager may answer a
+  customer-wide money ask with one job and no figures, and telling her she got what she asked for
+  sends her back to a page that is still half closed.
+- `technician` left `required` in the schema, which defeats the plain-yes path: `openRequests`
+  exposes a display name, never a ref, so a seat that filled it in from there would dead-end.
+- Revoking a CUSTOMER grant now finds the JOB grant that still opens that customer
+  (`technician_view_of` adds a job grant's customer to `customer_ids`). The old asymmetry sent the
+  manager to change the firm's rule — the one remedy that could not have closed it.
+- A person-wide money grant is attributed only to ANOTHER person-wide grant or the firm's rule; a
+  job-scoped money grant cannot produce `moneyAll` and must not be offered as the cause.
+- **The overlapping grant's granter is NAMED, not ref'd** — `granted_by` is a roster ref (or
+  `spine:team-lead`), and this phase's own rule forbids saying one to a person. The same fix was
+  applied to the already-revoked note, which had the bug before this plan.
+- `everywhere` can answer a request (a request always carries a customerId, which used to collide
+  with it); naming two scopes is still refused; context-supplied ids get the same shape check as
+  manager-supplied ones; and the post-revoke reads can no longer turn a committed revoke into an
+  error.
 
 ## Phase 3: the planner and the seats
 
@@ -259,12 +335,35 @@ more than one = ask which.
 and the manager count.
 
 ### Automated verification
-- [ ] Gates pass; `planner.test.ts`: the gap view renders an `access_request` in words with no date
-      and no figure; `send countsAsTheAsk` is refused with one as the lead AND as a group member;
+- [x] Gates pass (2026-09-19: 3351 passed, 9 skipped, 0 failed; lint and build clean);
+      `planner.test.ts`: the gap view renders an `access_request` in words with no figure;
+      `send countsAsTheAsk` is refused with one as the lead AND as a group member;
       `recover` on one changes nothing (the existing recover tests stay green); the prompt carries the
-      ACCESS paragraph; "NEVER A MONEY AMOUNT" still pinned (`planner.test.ts:7886-7890`)
-- [ ] `bash -n Box_Setup_Stuff/bootstrap-box.sh`; md5 of every deployed copy matches the repo after
-      the re-wire (the seven-copies trap, `docs/engineering-memory.md`)
+      ACCESS paragraph; "NEVER A MONEY AMOUNT" still pinned
+- [x] `bash -n Box_Setup_Stuff/bootstrap-box.sh` passes.
+      **Still owed at rollout:** md5 of every deployed copy against the repo after the re-wire
+      (the seven-copies trap, `docs/engineering-memory.md`) — that is a phase 5 step, on the box.
+
+### What phase 3 shipped beyond the list above, and one correction worth keeping
+- **The date-rail wording in the plan was imprecise and the first implementation's comment was
+  simply wrong.** The elapsed phrase IS this kind's only `dateLabel` — `dateLabels` is built from
+  `asked_at`, `endsAtLocal` and `elapsedLabel(asked_at ?? created_at)`, and `observationAsGapRow`
+  hardcodes `asked_at: null` — so "asked 3 days ago" is safe to print *because* it is in the list,
+  not despite it. Anything else temporal (a weekday, a date, "yesterday") still drops the
+  planner's whole message. The comment in `planner.ts` now says this; the reviewer measured both
+  the kept and the dropped case.
+- **The group-member half of the `countsAsTheAsk` refusal is LIVE CODE, not a dormant layer.** The
+  first cut assumed an earlier rail blocked it (a group member must be `pending` or `noticed`) —
+  but an observation renders `noticed`, so a real group of two observations on the same person and
+  job reaches the member check. The test builds that shape and fails when the member half is
+  removed.
+- `setObservationStatus`'s new `excludeKinds` has a test against a REAL database, because `recover`
+  passes it on every call: a malformed PostgREST filter would throw, be swallowed by the planner's
+  catch, and make every observation kind unrecoverable with the planner suite still green (it
+  stubs that writer).
+- A request the PLANNER set aside is no longer reported to a manager as "already answered" — it is
+  "no longer open", with the reason. The ACCESS doctrine also now says a dismissal here is final,
+  which is true for this kind and for no other.
 
 ## Phase 4: the note says what it assumed
 
@@ -292,19 +391,64 @@ that landed where the record did not expect it; find out what happened (ask the 
 need to) and write it on the job's notes (`write_job_note`).
 
 ### Automated verification
-- [ ] Gates pass
-- [ ] `src/writePath/attachNote.test.ts` / `recordFieldNote.test.ts`: `offCrew` true for a step-2
-      visit crewed by someone else, false for step 1 and for a created trip; `assumed` carries the
-      created sentence, the off-crew sentence, and "marked that trip done" when the flip ran; no
-      `assumed` for an on-crew filing; in every case the note is recorded (never refused)
-- [ ] `server.test.ts`: a `tech-mcp` note on a job whose one trip is crewed by `mgr-test` returns
-      `recorded` with `assumed` on the confirm; an ordinary filing has no `assumed` key
+- [x] Gates pass (2026-09-19: 3360 passed, 9 skipped, 0 failed; lint, build and `bash -n` clean)
+- [x] `recordFieldNote.test.ts` (there is no `attachNote.test.ts`; the resolver is tested through
+      its caller): `offCrew` true for a step-2 visit crewed by someone else, false for step 1 and
+      for a created trip; `assumed` carries the created sentence, the off-crew sentence, and
+      "marked that trip done" when the flip ran; no `assumed` for an on-crew filing; in every case
+      the note is recorded (never refused). Plus two guard tests the review asked for, both
+      verified by removing the guard and watching them fail.
+- [x] `server.test.ts`: a `tech-mcp` note on a job whose one trip is crewed by `mgr-test` returns
+      `recorded` with `assumed` on the confirm; an ordinary filing has no `assumed` key; and a
+      MANAGER's filing has none either.
+
+### What phase 4 corrected in this plan's own wording
+- **The created-trip sentence in the plan is WRONG and was shipped corrected.** "A trip your own
+  note made does not open the rest of this customer's record to you" — it opens NOTHING, this job
+  included: `technician_view_of` drops any visit whose `source_capture_id` is a technician-channel
+  capture, so the minted trip contributes neither the job nor the customer. The old wording would
+  have had the seat tell her the job was readable and her next `get_job` refuse her. Recorded in
+  `docs/engineering-memory.md`, because the rule lives only in a SQL comment.
+- **"Technician channels only" was not enough: channel is not tier.** `record_field_note` is on
+  every badge, with technician channels, so a manager on the tools would have been told they are
+  off a crew on every note — always true, never news, and a planner item each time. Gated on the
+  filer's tier as well.
+- **"No trip was booked for you on this job" could be false**, since step 3 also fires when she is
+  on a trip for that job on another day and a second live visit exists. It says what MATCHED now.
 
 ## Phase 5: rollout and live run
 
 ### Changes required
-After plan A is live: the **operator** applies `20260919130000` to the pilot (`supabase-test`),
-`NOTIFY pgrst`; merge (Calls-worker deploys itself and picks up the planner guards); deploy
+
+**The migration is `20260919170000_access_requests.sql`, NOT the `20260919130000` this plan first
+named** — `20260919160000` had already landed, and a lower number would have applied out of order.
+
+**EXPECT THE CLI TO REFUSE IT, and that is correct.** PR #267 (the timestamp brand) merges FIRST by
+the operators' agreement, and its migration is `20260920120000` — a HIGHER number. So once that one
+is on the pilot, `supabase migration up` will stop on ours with:
+
+```
+Found local migration files to be inserted before the last migration on remote database.
+Rerun the command with --include-all flag to apply these migrations:
+supabase/migrations/20260919170000_access_requests.sql
+```
+
+Exit 1, nothing applied. **Nothing is wrong.** Re-run with `--include-all`, which is safe here and
+only here: the two migrations touch different tables (`visits.started_at` vs
+`observations` / `person_pushes`), so applying ours after theirs is a reorder with no dependency
+between them — the one case `docs/engineering-memory.md` records as harmless. Never make
+`--include-all` a habit: it converts that loud refusal into a silent reorder for migrations that
+DO depend on each other.
+
+Then verify the artefact rather than the ledger, per the same entry:
+
+```sql
+select count(*) from pg_indexes where indexname = 'uq_open_access_request';           -- 1
+select pg_get_constraintdef(oid) from pg_constraint where conname = 'person_pushes_kind_check';
+-- must contain 'access'
+```
+
+Then: `NOTIFY pgrst`; merge (Calls-worker deploys itself and picks up the planner guards); deploy
 `lifecycle-heart` and confirm Calls-worker is on the new build **before** triggering
 `TradesDatabase` — the web service starts creating requests the moment it is live, and a planner
 without the guards could make one "the ask" or recover it (read `autoDeploy` from `list_services`);

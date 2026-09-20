@@ -98,6 +98,13 @@ export type Database = {
             foreignKeyName: "access_grants_customer_id_fkey"
             columns: ["customer_id"]
             isOneToOne: false
+            referencedRelation: "v_access_grants"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "access_grants_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
             referencedRelation: "v_cancelled_visits"
             referencedColumns: ["customer_id"]
           },
@@ -509,6 +516,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "customers"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "customer_captures_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_access_grants"
+            referencedColumns: ["customer_id"]
           },
           {
             foreignKeyName: "customer_captures_customer_id_fkey"
@@ -1081,6 +1095,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "customers"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "jobs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_access_grants"
+            referencedColumns: ["customer_id"]
           },
           {
             foreignKeyName: "jobs_customer_id_fkey"
@@ -1954,6 +1975,13 @@ export type Database = {
             foreignKeyName: "raw_captures_customer_id_fkey"
             columns: ["customer_id"]
             isOneToOne: false
+            referencedRelation: "v_access_grants"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "raw_captures_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
             referencedRelation: "v_cancelled_visits"
             referencedColumns: ["customer_id"]
           },
@@ -2291,6 +2319,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "customers"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "schedule_entries_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_access_grants"
+            referencedColumns: ["customer_id"]
           },
           {
             foreignKeyName: "schedule_entries_customer_id_fkey"

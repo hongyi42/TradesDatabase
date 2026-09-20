@@ -97,7 +97,17 @@ export type ReviewKind =
   // It REPLACES the `unlinked_call` review the Calls-worker used to open, which
   // no tool could act on. That kind and its rows are kept (the `flagNudgeGap`
   // precedent below) — only the writer is gone.
-  | 'inbound_unmatched';
+  | 'inbound_unmatched'
+  // ACCESS PLAN B — a technician asked to open part of the record she cannot
+  // see, and the desk would not open it itself (money, every note, or wider
+  // than one job). An OBSERVATION kind only, never a review item or a nudge:
+  // author 'planner' (the desk files it wearing the office's name), subject_ref
+  // a fresh uuid, and `context.requestKey` the real dedup — see the partial
+  // unique index in migration 20260919170000. It stays in the planner's open
+  // set until a manager answers, so the planner can chase or tell the
+  // technician it is still waiting; NOT in PINGED_KINDS, because the managers
+  // are already texted the moment it is filed.
+  | 'access_request';
 
 export interface UpsertOpenReviewItemInput {
   tenantId: string;

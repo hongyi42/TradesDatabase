@@ -7,7 +7,10 @@ import type { Technician } from './technicians.js';
 // import LEAF: nothing here reaches up into src/telegram/ or src/control/.
 
 export type PersonPush = Database['public']['Tables']['person_pushes']['Row'];
-export type PersonPushKind = 'schedule' | 'call' | 'ops';
+// 'access' (plan B, migration 20260919170000): a technician asked to open part
+// of the record, or a manager answered. Both legs of that conversation are owed
+// for the same reason, so they share one kind.
+export type PersonPushKind = 'schedule' | 'call' | 'ops' | 'access';
 export type PersonPushStatus = 'queued' | 'delivered' | 'failed';
 
 // The DB CHECK's twin, applied by the writer too: an over-long body is CUT,

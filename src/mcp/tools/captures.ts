@@ -107,7 +107,14 @@ const BASE_TOOLS = [
       'It is YOUR question: never say it came from the office or anyone else, never mention a ' +
       'queue or a list, and never repeat the "(re: …)" line the text may end with. RECORD their ' +
       'reply with record_field_note, passing confirmed:{customerId} from the answer you just ' +
-      'recorded so it lands on the same record. If they do not engage, drop it.',
+      'recorded so it lands on the same record. If they do not engage, drop it. ' +
+      'A recorded answer may also come back with `assumed` — what the record had to GUESS to ' +
+      'file the note (it went on somebody else\'s trip, or on a new trip because none was ' +
+      'booked for them). The note IS recorded; nothing is wrong and nothing is refused. Say ' +
+      'what happened in your own words, ask them ONCE what the situation was, and pass their ' +
+      'answer to the office with inform_team_lead. If they need to see the record it landed on ' +
+      'and it is outside their view, offer the access ask. Never re-file the note, and never ' +
+      'tell them it did not go through.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -733,7 +740,9 @@ async function handleListRecentCaptures(toolCtx: ToolContext): Promise<unknown> 
             // Restricted = on a record she may open, closed to her by its content
             // (channel, manager_only, a hidden tag). "Outside your view" is kept
             // for a job or customer she may not open at all (OUTSIDE_VIEW_NOTE).
-            ? `no notes you may read here — ${page.restrictedCount} on file are closed to you (a manager can open them)`
+            ? `no notes you may read here — ${page.restrictedCount} on file are closed to you. If ` +
+              'your person needs them, offer to ask the office, and only on their yes call ' +
+              'ask_team_lead with accessRequest { wants: "notes" } and their reason'
             : 'no notes on file here yet'
           : page.hasMore
             // No remaining count: totalVisible is the whole scope, not what is

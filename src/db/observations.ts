@@ -39,10 +39,16 @@ export interface CreateObservationInput {
 // Insert-catch-23505 (the createPendingNudge idiom): uq_observations_subject_ever
 // IS the dedup, so a concurrent tick converges to null instead of a second row.
 //
-// THE 23505 PATH IS DETECTOR-ONLY since build 7. The index is partial on
-// author='detector', so a planner row cannot collide and this function always
-// returns a row for one (or throws). A null return therefore means exactly one
-// thing to a caller: "the detector had already noticed this subject".
+// A NULL RETURN MEANS "SOMETHING UNIQUE ALREADY EXISTS", and which rule caught
+// it depends on the kind. uq_observations_subject_ever is partial on
+// author='detector', so for a detector row null means "this subject was already
+// noticed, ever". Since access plan B (migration 20260919170000) there is a
+// second, narrower rule that DOES apply to a planner row:
+// uq_open_access_request makes one OPEN access_request per (tenant,
+// context->>'requestKey'), so null there means "this person already has this
+// exact ask waiting". Callers translate their own case into words —
+// openAccessRequest (src/db/accessRequests.ts) says "already asked".
+// Every other planner row is still collision-free and always returns a row.
 export async function createObservation(
   input: CreateObservationInput,
 ): Promise<Observation | null> {
@@ -326,6 +332,12 @@ export async function listDismissedObservationIds(tenantId: string): Promise<str
 // write. `undefined` leaves a column alone; `null` CLEARS it (recover clears
 // the dismissal, a cleared hold clears not_before) — different instructions,
 // distinguished on purpose.
+// `excludeKinds` is the fifth argument and it is a CEILING, not a filter: a
+// kind named there can never be moved through this door, whatever status it is
+// in. Access requests use it (access plan B) so the planner's `recover` cannot
+// reopen one a manager has already answered — an answered request brought back
+// to `open` would sit in the planner's list forever, since the thing that
+// closes it is an answer that has already happened.
 export async function setObservationStatus(
   id: string,
   tenantId: string,
@@ -336,6 +348,7 @@ export async function setObservationStatus(
     notBefore?: string | null;
   },
   fromStatuses: ObservationStatus[],
+  excludeKinds?: ReviewKind[],
 ): Promise<Observation | null> {
   const set: {
     status?: ObservationStatus;
@@ -353,14 +366,18 @@ export async function setObservationStatus(
   if (fromStatuses.length === 0) {
     throw new Error('setObservationStatus: empty fromStatuses would match nothing');
   }
-  const { data, error } = await getClient()
+  let query = getClient()
     .from('observations')
     .update(set)
     .eq('id', id)
     .eq('tenant_id', tenantId)
-    .in('status', fromStatuses)
-    .select()
-    .maybeSingle();
+    .in('status', fromStatuses);
+  if (excludeKinds && excludeKinds.length > 0) {
+    // PostgREST's `not.in` takes a parenthesised list; the kinds are our own
+    // constants, never user text.
+    query = query.not('kind', 'in', `(${excludeKinds.join(',')})`);
+  }
+  const { data, error } = await query.select().maybeSingle();
   if (error) throw new Error(`setObservationStatus failed: ${error.message}`);
   return data as Observation | null;
 }

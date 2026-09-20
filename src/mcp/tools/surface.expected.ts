@@ -51,6 +51,7 @@ export const MANAGER_ONLY_TOOLS = [
   'book_visit',
   'cancel_job', // the terminal verb (2026-07-25)
   'deactivate_technician_seat',
+  'decline_access', // access plan B (2026-09-19): say no to a technician's request
   'find_slots',
   'get_availability', // the read half of set_availability (2026-08-04)
   'get_team_schedule',

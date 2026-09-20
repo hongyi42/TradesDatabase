@@ -178,9 +178,10 @@ const ADMIN_TOOLS = [
     description:
       "Say NO to a technician's request to open part of the record (manager only), by the id " +
       'list_access shows under openRequests. They are texted your reason in your own words, so ' +
-      'write it for them to read. Use this rather than ignoring a request: an unanswered one ' +
-      'keeps waiting and the office keeps chasing it. The id is for your own next call — never ' +
-      'say an id or a roster ref to your person.',
+      'write it for them to read. Use this rather than ignoring one: an unanswered request ' +
+      'lapses after a day and the technician is never told, so a "no" they can read beats ' +
+      'silence. The id is for your own next call — never say an id or a roster ref to your ' +
+      'person.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -334,11 +335,13 @@ async function actorWords(tenantId: string, ref: string | null): Promise<string>
   }
 }
 
-// THE PLANNER HEARS EVERY ANSWER. One inform per grant, decline and revoke, in
-// words — the planner grants nothing itself (operator, 2026-09-19) but it is
-// the thing that chases what goes unanswered, and it cannot chase what it never
-// saw. Best-effort: the access decision is already committed, and a failed
-// office write must never turn it into an error the manager's seat reports.
+// THE PLANNER HEARS EVERY ANSWER, as NEWS rather than as work. One inform per
+// grant, decline and revoke, in words. It grants nothing itself and does not
+// chase a request (operator, 2026-09-19 — the office decides once and is
+// done); what it needs is to know what the firm has opened, because that
+// changes what it can safely say to whom. Best-effort: the access decision is
+// already committed, and a failed office write must never turn it into an
+// error the manager's seat reports.
 async function tellThePlanner(tenantId: string, managerRef: string, body: string): Promise<void> {
   try {
     await createOfficeMessage({

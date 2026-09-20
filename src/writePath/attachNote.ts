@@ -41,6 +41,7 @@ import {
 } from '../db/visits.js';
 import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
 import { naiveLocalISO } from '../schedule/booking.js';
+import type { NaiveLocal } from '../db/time.js';
 import type { Json } from '../db/database.types.js';
 
 export interface ResolveVisitForNoteInput {
@@ -74,7 +75,7 @@ export interface ResolvedVisitForNote {
    */
   offCrew: boolean;
   /** The note's time in the SAME convention the visit's times use. */
-  noteLocal: string;
+  noteLocal: NaiveLocal;
 }
 
 // THE CONVENTION TRAP, and the reason this is computed in one place: visit times
@@ -82,7 +83,7 @@ export interface ResolvedVisitForNote {
 // real UTC instant. Comparing them raw makes an 08:00 note look like it came
 // after a 09:00 visit in America/Los_Angeles, so a note filed before a trip
 // would mark it as happened. identityMatch.ts:73-85 documents the same trap.
-export function noteLocalOf(capturedAt: string, timezone: string): string {
+export function noteLocalOf(capturedAt: string, timezone: string): NaiveLocal {
   return naiveLocalISO(localDateISO(capturedAt, timezone), localTimeHHMM(capturedAt, timezone));
 }
 

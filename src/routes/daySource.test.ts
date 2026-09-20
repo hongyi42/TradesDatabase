@@ -7,6 +7,7 @@ import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
 import { createVisit, updateVisitStatus } from '../db/visits.js';
 import { listDayStops } from './daySource.js';
+import { nl, type NaiveLocal } from '../db/time.js';
 
 // Integration against the LOCAL stack, self-cleaning (pattern:
 // scheduling.test.ts — truncate both ways, restore seed seats; `cascade`
@@ -61,7 +62,7 @@ beforeAll(async () => {
   const jobEarly = await createJob({ tenantId, customerId: early.id, title: 'E' });
   const jobB = await createJob({ tenantId, customerId: cust.id, title: 'B' });
   const jobC = await createJob({ tenantId, customerId: noAddr.id, title: 'C' });
-  const confirmed = (jobId: string, startISO: string, endISO: string) =>
+  const confirmed = (jobId: string, startISO: NaiveLocal, endISO: NaiveLocal) =>
     createVisit({
       tenantId,
       jobId,
@@ -70,15 +71,15 @@ beforeAll(async () => {
       endsAt: endISO,
       status: 'confirmed',
     });
-  await confirmed(jobA.id, `${D1}T18:00:00.000Z`, `${D1}T20:00:00.000Z`); // late, inserted first
-  await confirmed(jobEarly.id, `${D1}T15:00:00.000Z`, `${D1}T17:00:00.000Z`);
-  await confirmed(jobC.id, `${D3}T15:00:00.000Z`, `${D3}T17:00:00.000Z`);
+  await confirmed(jobA.id, nl(`${D1}T18:00:00.000Z`), nl(`${D1}T20:00:00.000Z`)); // late, inserted first
+  await confirmed(jobEarly.id, nl(`${D1}T15:00:00.000Z`), nl(`${D1}T17:00:00.000Z`));
+  await confirmed(jobC.id, nl(`${D3}T15:00:00.000Z`), nl(`${D3}T17:00:00.000Z`));
   const toCancel = await createVisit({
     tenantId,
     jobId: jobB.id,
     technicianId: tech.id,
-    startsAt: `${D2}T16:00:00.000Z`,
-    endsAt: `${D2}T18:00:00.000Z`,
+    startsAt: nl(`${D2}T16:00:00.000Z`),
+    endsAt: nl(`${D2}T18:00:00.000Z`),
   });
   await updateVisitStatus(toCancel.id, 'cancelled', 'test');
   // Overnight booking STARTING the day before D1 but ending inside it — the
@@ -87,8 +88,8 @@ beforeAll(async () => {
     tenantId,
     jobId: jobB.id,
     technicianId: tech.id,
-    startsAt: '2026-08-09T23:00:00.000Z',
-    endsAt: `${D1}T01:00:00.000Z`,
+    startsAt: nl('2026-08-09T23:00:00.000Z'),
+    endsAt: nl(`${D1}T01:00:00.000Z`),
     status: 'confirmed',
   });
 });

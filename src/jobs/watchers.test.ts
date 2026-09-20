@@ -55,7 +55,15 @@ function crewOf(technicianId: string, createdAt = '2026-08-01T00:00:00.000Z') {
   };
 }
 
-function visit(over: Partial<PlacedVisitWithParticipants>): PlacedVisitWithParticipants {
+// Row fixtures: callers write plain ISO strings and the factory brands them,
+// the same shape src/db/visits.ts casts real PostgREST rows into.
+function visit(
+  over: Partial<Omit<PlacedVisitWithParticipants, 'starts_at' | 'ends_at' | 'completed_at'>> & {
+    starts_at?: string;
+    ends_at?: string;
+    completed_at?: string | null;
+  },
+): PlacedVisitWithParticipants {
   return {
     id: 'a1',
     tenant_id: 't1',
@@ -120,7 +128,7 @@ function baseDeps(over: Partial<WatcherDeps> = {}): WatcherDeps {
     // global constants — so every existing expectation below keeps its original
     // expected value.
     getSettings: async () => ({ settings: resolveSettings(null), tableMissing: false }),
-    ...over,
+    ...(over as Partial<PlacedVisitWithParticipants>),
   };
 }
 

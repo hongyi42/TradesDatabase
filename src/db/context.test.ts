@@ -7,6 +7,7 @@ import { createTenant } from './tenants.js';
 import { createVisit, insertVisitNote } from './visits.js';
 import { appendRawCapture, listRawCapturesForCustomer } from './rawCaptures.js';
 import { getCustomerContents, type CustomerContents } from './context.js';
+import { nl } from './time.js';
 
 const pg = new Client({ connectionString: process.env.DATABASE_URL });
 let tenantId: string;
@@ -44,7 +45,7 @@ describe('getCustomerContents', () => {
       startsAt: null,
       endsAt: null,
       status: 'completed',
-      completedAt: '2026-08-16T13:00:00.000Z',
+      completedAt: nl('2026-08-16T13:00:00.000Z'),
       sourceCaptureId: techNote.id,
     });
     await insertVisitNote({ tenantId, visitId: visit.id, captureId: techNote.id });
@@ -96,8 +97,8 @@ describe('getCustomerContents', () => {
       tenantId,
       jobId: job.id,
       technicianId: null,
-      startsAt: '2027-03-05T08:30:00Z',
-      endsAt: '2027-03-05T10:00:00Z',
+      startsAt: nl('2027-03-05T08:30:00Z'),
+      endsAt: nl('2027-03-05T10:00:00Z'),
       status: 'confirmed',
     });
     // Unplaced (time-TBD) visit holding only a scheduling window.
@@ -114,16 +115,16 @@ describe('getCustomerContents', () => {
       tenantId,
       jobId: job.id,
       technicianId: null,
-      startsAt: '2027-03-06T08:00:00Z',
-      endsAt: '2027-03-06T09:00:00Z',
+      startsAt: nl('2027-03-06T08:00:00Z'),
+      endsAt: nl('2027-03-06T09:00:00Z'),
       status: 'cancelled',
     });
     await createVisit({
       tenantId,
       jobId: job.id,
       technicianId: null,
-      startsAt: '2020-01-01T08:00:00Z',
-      endsAt: '2020-01-01T09:00:00Z',
+      startsAt: nl('2020-01-01T08:00:00Z'),
+      endsAt: nl('2020-01-01T09:00:00Z'),
       status: 'confirmed',
     });
 
@@ -170,16 +171,16 @@ describe('getCustomerContents', () => {
       tenantId,
       jobId: myJob.id,
       technicianId: null,
-      startsAt: '2027-04-01T09:00:00Z',
-      endsAt: '2027-04-01T10:00:00Z',
+      startsAt: nl('2027-04-01T09:00:00Z'),
+      endsAt: nl('2027-04-01T10:00:00Z'),
       status: 'confirmed',
     });
     const theirRow = await createVisit({
       tenantId: other.id,
       jobId: theirJob.id,
       technicianId: null,
-      startsAt: '2027-04-01T09:00:00Z',
-      endsAt: '2027-04-01T10:00:00Z',
+      startsAt: nl('2027-04-01T09:00:00Z'),
+      endsAt: nl('2027-04-01T10:00:00Z'),
       status: 'confirmed',
     });
 

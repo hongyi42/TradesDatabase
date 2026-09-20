@@ -1,11 +1,34 @@
 import type { Database, Json } from './database.types.js';
+import { dayStartNaive, type NaiveLocal } from './time.js';
 import { getClient } from './client.js';
 import { hitRowCap } from './rowCap.js';
 import type { Job, JobCustomerAddress } from './jobs.js';
 import type { Customer } from './customers.js';
 import type { Technician } from './technicians.js';
 
-export type Visit = Database['public']['Tables']['visits']['Row'];
+// The generated Row, overridden so the three NAIVE-LOCAL columns carry their
+// species (src/db/time.ts). The override lives HERE, in hand-written code,
+// because `npm run gen:types:local` rewrites database.types.ts wholesale — a
+// brand written there dies on the next regeneration. Same idiom as PlacedVisit
+// below: a type, not a comment, so the property is compiler-checked.
+//
+// Reads are unaffected (a NaiveLocal IS a string, so every .slice() stands) and
+// so are writes (it satisfies the generated Insert's `string`). What stops
+// compiling is a real instant assigned into one of these three.
+//
+// The cost is nine `as unknown as Visit` casts, at each point a row crosses the
+// PostgREST boundary — the client returns the GENERATED Row, and this is where
+// we take responsibility for the claim that its three time columns hold the
+// firm's wall clock. That claim rests on there being exactly one way in
+// (naiveLocalISO and the day-bound producers, now the input types too), which is
+// what the rest of this brand enforces. The embedded-select readers below
+// already carried such a cast for the same reason.
+type VisitRow = Database['public']['Tables']['visits']['Row'];
+export type Visit = Omit<VisitRow, 'starts_at' | 'ends_at' | 'completed_at'> & {
+  starts_at: NaiveLocal | null;
+  ends_at: NaiveLocal | null;
+  completed_at: NaiveLocal | null;
+};
 export type VisitStatus = Database['public']['Enums']['visit_status'];
 export type VisitParticipant = Database['public']['Tables']['visit_participants']['Row'];
 
@@ -238,8 +261,8 @@ export interface CreateVisitInput {
   // A visit HAS A TIME OR IT DOES NOT (rung 9a). Both timestamps together, or
   // both null for an untimed visit — the stored date range is gone, so there is
   // no third shape to police.
-  startsAt: string | null; // ISO timestamptz (naive-local convention)
-  endsAt: string | null; // ISO timestamptz, exclusive
+  startsAt: NaiveLocal | null; // naive-local: the firm's wall clock (src/db/time.ts)
+  endsAt: NaiveLocal | null; // naive-local, exclusive
   status?: VisitStatus;
   sourceCaptureId?: string | null;
   // The happened-stage fields, absorbed from the old per-note `visits` table
@@ -247,7 +270,7 @@ export interface CreateVisitInput {
   // status:'completed' with completedAt set and no times — that is the whole
   // "walk-in / emergency" shape, and it needs no separate table.
   // NAIVE-LOCAL, like startsAt/endsAt: firm wall clock stamped as if UTC.
-  completedAt?: string | null;
+  completedAt?: NaiveLocal | null;
   laborHours?: number | null;
   attributes?: Json; // L3
 }
@@ -307,7 +330,7 @@ export async function createVisit(input: CreateVisitInput): Promise<Visit> {
       throw err;
     }
   }
-  return data;
+  return data as unknown as Visit;
 }
 
 async function getVisit(id: string): Promise<Visit | null> {
@@ -317,7 +340,7 @@ async function getVisit(id: string): Promise<Visit | null> {
     .eq('id', id)
     .maybeSingle();
   if (error) throw new Error(`getVisit failed: ${error.message}`);
-  return data;
+  return data as unknown as Visit;
 }
 
 // Walk one legal transition. Guarded on the status we validated against
@@ -332,11 +355,11 @@ export async function updateVisitStatus(
   // Naive-local, like every other time on this row. Optional on purpose: the
   // caller that COMPLETES a visit often knows only that it finished (the
   // cancel_job cascade, the status walk) — a note is what usually knows when.
-  completedAt?: string | null,
+  completedAt?: NaiveLocal | null,
   // Apply only if the row still has these starts_at/ends_at (raw column values,
   // null = untimed). A staged cancel approved a TIME, and a move keeps the id,
   // so the time is part of the compare-and-set, not a read before it.
-  expectedTimes?: { startsAt: string | null; endsAt: string | null },
+  expectedTimes?: { startsAt: NaiveLocal | null; endsAt: NaiveLocal | null },
 ): Promise<Visit> {
   const current = await getVisit(id);
   if (!current) throw new Error(`updateVisitStatus: visit ${id} not found`);
@@ -371,7 +394,7 @@ export async function updateVisitStatus(
       `updateVisitStatus: visit ${id} changed concurrently (was '${current.status}'); transition not applied`,
     );
   }
-  return data;
+  return data as unknown as Visit;
 }
 
 // SQLSTATE 23P01 = exclusion_violation — the no_confirmed_overlap guard fired,
@@ -389,8 +412,8 @@ export function isOverlapViolation(err: unknown): boolean {
 }
 
 export interface MoveVisitRowInput {
-  startsAt: string;
-  endsAt: string;
+  startsAt: NaiveLocal;
+  endsAt: NaiveLocal;
   // WHO GOES, after the move. Omit BOTH = keep the crew exactly as it is.
   // `technicianIds: []` or `technicianId: null` = DETACH everybody (park it).
   // A list REPLACES the crew — it is not additive (user, 2026-09-06).
@@ -513,7 +536,7 @@ export async function moveVisitRow(id: string, input: MoveVisitRowInput): Promis
       throw Object.assign(err as Error, { stage: 'joiner', visit: data, technicianIds: wanted });
     }
   }
-  return data;
+  return data as unknown as Visit;
 }
 
 // undefined = "leave the crew alone"; an array = REPLACE it with exactly these
@@ -556,7 +579,7 @@ export async function untimeVisitRow(id: string, reason: string): Promise<Visit>
         `${old.starts_at ?? 'no time'}); not applied`,
     );
   }
-  return data;
+  return data as unknown as Visit;
 }
 
 function crewChangeOf(input: {
@@ -631,7 +654,7 @@ export async function attachVisitParticipants(
       throw Object.assign(err as Error, { stage: 'joiner', visit: data, technicianIds: wanted });
     }
   }
-  return data;
+  return data as unknown as Visit;
 }
 
 // Fold a field note's findings ONTO a trip that already exists. Attaching, not
@@ -665,7 +688,7 @@ export async function recordVisitReport(
     .maybeSingle();
   if (error) throw new Error(`recordVisitReport failed: ${error.message}`);
   if (!data) throw new Error(`recordVisitReport: visit ${id} vanished`);
-  return data;
+  return data as unknown as Visit;
 }
 
 // The lifecycle as ONE WORD, mirroring the `stage` case in v_schedule
@@ -698,7 +721,7 @@ export async function getVisitForTenant(
     .eq('tenant_id', tenantId)
     .maybeSingle();
   if (error) throw new Error(`getVisitForTenant failed: ${error.message}`);
-  return data;
+  return data as unknown as Visit;
 }
 
 // THE INFERRED CLOSE (rung 10). A visit booked for this customer AFTER the
@@ -782,7 +805,7 @@ export async function listVisitsByIds(
         .order('id', { ascending: true }) // deterministic paging tiebreak
         .range(from, from + PAGE - 1);
       if (error) throw new Error(`listVisitsByIds failed: ${error.message}`);
-      out.push(...(data ?? []));
+      out.push(...((data ?? []) as unknown as Visit[]));
       if (!data || data.length < PAGE) break;
     }
   }
@@ -1134,7 +1157,7 @@ export async function listUpcomingVisitsForCustomer(
     // A visit with no time set has no day to compare against and no way to go
     // stale (rung 9a deleted the stored range), so every live untimed visit is
     // upcoming. Timed rows first in time order, then untimed oldest-first.
-    .or(`starts_at.gte.${todayLocal}T00:00:00.000Z,starts_at.is.null`)
+    .or(`starts_at.gte.${dayStartNaive(todayLocal)},starts_at.is.null`)
     .order('starts_at', { ascending: true, nullsFirst: false })
     .order('created_at', { ascending: true });
   if (error) throw new Error(`listUpcomingVisitsForCustomer failed: ${error.message}`);

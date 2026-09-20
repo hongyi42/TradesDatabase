@@ -12,6 +12,7 @@ import { localDateISO } from '../schedule/availability.js';
 import { NOTE_SIGNAL_TRANSITIONS, recordFieldNote } from './recordFieldNote.js';
 import { ALLOWED_TRANSITIONS, type JobStatus } from '../db/jobs.js';
 import type { Extractor, ExtractedFields } from './extract.js';
+import { nl } from '../db/time.js';
 
 // Integration test against the TEST project with a STUBBED extractor (no live
 // model), exercising the full L1 → extract → match → L2/L3 write-path.
@@ -110,7 +111,7 @@ describe('a field note attaches to its trip (rung 9b)', () => {
   let DAY: string;
   let TOMORROW: string;
   let YESTERDAY: string;
-  const naive = (hhmm: string, day?: string) => `${day ?? DAY}T${hhmm}:00.000Z`;
+  const naive = (hhmm: string, day?: string) => nl(`${day ?? DAY}T${hhmm}:00.000Z`);
 
   let phoneSeq = 7000;
   let techSeq = 0;
@@ -779,8 +780,8 @@ describe('recordFieldNote', () => {
       tenantId,
       jobId: schedJob.id,
       technicianId: roster.id,
-      startsAt: `${day}T12:00:00.000Z`,
-      endsAt: `${day}T14:00:00.000Z`,
+      startsAt: nl(`${day}T12:00:00.000Z`),
+      endsAt: nl(`${day}T14:00:00.000Z`),
       status: 'confirmed',
     });
 
@@ -1167,7 +1168,7 @@ describe('rung 10 — inbound asks before it creates', () => {
   const TZ = 'America/Los_Angeles';
   let DAY: string;
   let phoneSeq = 9100;
-  const naive = (hhmm: string, day?: string) => `${day ?? DAY}T${hhmm}:00.000Z`;
+  const naive = (hhmm: string, day?: string) => nl(`${day ?? DAY}T${hhmm}:00.000Z`);
 
   const inbound = (
     channel: 'email' | 'phone_call',
@@ -1807,8 +1808,8 @@ describe('rung 10 — inbound asks before it creates', () => {
       tenantId,
       jobId: tap.id,
       technicianId: null,
-      startsAt: `${DAY}T10:00:00.000Z`,
-      endsAt: `${DAY}T12:00:00.000Z`,
+      startsAt: nl(`${DAY}T10:00:00.000Z`),
+      endsAt: nl(`${DAY}T12:00:00.000Z`),
       status: 'confirmed',
     });
     const r = await recordFieldNote(

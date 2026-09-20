@@ -1,0 +1,29 @@
+-- visits.started_at: a column nothing has written since 2026-09-06.
+--
+-- Born 2026-06-20 on the ORIGINAL visits table (20260620005307_context_spine.sql:81),
+-- where CreateVisitInput.startedAt really did set it. Rung 9b
+-- (20260906140000_the_visit_is_one_object.sql, PR #206) dropped that table,
+-- renamed `assignments` to `visits`, and re-added the happened-stage columns —
+-- started_at, completed_at, labor_hours, attributes — while the SAME COMMIT
+-- deleted the only writer:
+--
+--     - startedAt?: string | null;
+--     - started_at: input.startedAt ?? null,
+--
+-- So it came across with the old table's column list and arrived stillborn. The
+-- tell is in that migration itself: completed_at got a `comment on column`
+-- declaring its species ("NAIVE-LOCAL … the +00 is a lie"), and started_at got
+-- nothing — there was nothing left to describe. Its sibling dead column,
+-- scheduled_at, was deliberately NOT carried over, and schema.test.ts has pinned
+-- that absence ever since. This closes the inconsistency between the two.
+--
+-- Why now, rather than leaving a harmless unused column: the visit row's three
+-- real timestamps are branded NAIVE-LOCAL in TypeScript as of this change
+-- (src/db/time.ts), and an unbranded, undocumented fourth timestamp sitting in
+-- the same table is precisely the thing a future reader reaches for and fills.
+--
+-- Safe to drop without `cascade`: no view, rule or constraint references it
+-- (checked against pg_depend), and no code reads it — the only mention in src/
+-- is the schema test asserting its type, which this change flips to asserting
+-- its absence.
+alter table visits drop column if exists started_at;

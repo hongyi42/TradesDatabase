@@ -19,6 +19,7 @@ import {
 } from './visits.js';
 import { appendRawCapture } from './rawCaptures.js';
 import { listJobActivitySince } from './captureMembership.js';
+import { nl } from './time.js';
 
 // Writes go through the app's own path (supabase-js / PostgREST). A direct pg
 // connection is used as an INDEPENDENT channel for cross-channel read-back
@@ -72,7 +73,7 @@ describe('context spine data-access layer', () => {
       startsAt: null,
       endsAt: null,
       status: 'completed',
-      completedAt: '2026-08-16T13:00:00.000Z',
+      completedAt: nl('2026-08-16T13:00:00.000Z'),
     });
 
     // The tech's on-site note (L1), linked to all three entities.
@@ -151,7 +152,7 @@ describe('context spine data-access layer', () => {
           startsAt: null,
           endsAt: null,
           status: 'completed',
-          completedAt: '2026-08-16T13:00:00.000Z',
+          completedAt: nl('2026-08-16T13:00:00.000Z'),
         }),
       ),
     );
@@ -242,7 +243,7 @@ describe('watcher activity probe', () => {
       startsAt: null,
       endsAt: null,
       status: 'completed',
-      completedAt: '2026-08-16T13:00:00.000Z',
+      completedAt: nl('2026-08-16T13:00:00.000Z'),
     });
     await insertVisitNote({ tenantId, visitId: visit.id, captureId: linkedOnly.id });
 
@@ -275,7 +276,7 @@ describe('watcher activity probe', () => {
       startsAt: null,
       endsAt: null,
       status: 'completed',
-      completedAt: '2026-08-16T13:00:00.000Z',
+      completedAt: nl('2026-08-16T13:00:00.000Z'),
     });
     await insertVisitNote({ tenantId: tenantB, visitId: bVisit.id, captureId: bNote.id });
 

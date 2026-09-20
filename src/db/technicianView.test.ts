@@ -27,6 +27,7 @@ import {
   setTechnicianViewRule,
   viewShowsMoney,
 } from './technicianView.js';
+import { nl } from './time.js';
 
 // The technician limited view (migration 20260917120000_technician_view.sql;
 // plan 2026-09-15-the-retrieval-layer-2-the-technician-limited-view), driven
@@ -94,8 +95,8 @@ beforeAll(async () => {
   await createVisit({
     tenantId,
     jobId: leeOther.id,
-    startsAt: `${days(3)}T10:00:00.000Z`,
-    endsAt: `${days(3)}T11:00:00.000Z`,
+    startsAt: nl(`${days(3)}T10:00:00.000Z`),
+    endsAt: nl(`${days(3)}T11:00:00.000Z`),
     status: 'confirmed',
   });
   leeNote = await appendRawCapture({
@@ -140,7 +141,7 @@ beforeAll(async () => {
     startsAt: null,
     endsAt: null,
     status: 'completed',
-    completedAt: '2026-01-10T12:00:00.000Z',
+    completedAt: nl('2026-01-10T12:00:00.000Z'),
   });
 
   cal = await createCustomer({ tenantId, name: 'Cancel Cal' });
@@ -697,7 +698,7 @@ describe('a trip her own note minted is not a trip (operator, 2026-09-15)', () =
       startsAt: null,
       endsAt: null,
       status: 'completed',
-      completedAt: '2026-09-14T15:00:00.000Z',
+      completedAt: nl('2026-09-14T15:00:00.000Z'),
       sourceCaptureId: note.id,
     });
     const v = await getTechnicianView(tenantId, jane);

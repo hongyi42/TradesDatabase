@@ -15,6 +15,7 @@ import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
 import { createVisit } from '../db/visits.js';
 import { assembleFitContext, findDisplacementCandidates, generateCandidates } from './fit.js';
+import { nl, type NaiveLocal } from '../db/time.js';
 
 // Integration for the fit engine's DB-composing wrapper (Plan 3b Phase 1) —
 // local stack, scheduling.test.ts truncate discipline. The PURE engine is
@@ -87,8 +88,8 @@ const ctx = (over: Partial<Parameters<typeof assembleFitContext>[0]> = {}) =>
 async function makeVisit(opts: {
   technicianId?: string | null;
   technicianIds?: string[];
-  startsAt: string;
-  endsAt: string;
+  startsAt: NaiveLocal;
+  endsAt: NaiveLocal;
   city?: string;
   status?: 'proposed' | 'confirmed';
 }) {
@@ -186,8 +187,8 @@ describe('assembleFitContext — assignment rows become day context', () => {
     });
     const placedWed = await makeVisit({
       technicianId: sparky.id,
-      startsAt: '2026-08-05T09:00:00.000Z',
-      endsAt: '2026-08-05T10:00:00.000Z',
+      startsAt: nl('2026-08-05T09:00:00.000Z'),
+      endsAt: nl('2026-08-05T10:00:00.000Z'),
     });
     try {
       const c = await ctx({ technicianRef: sparky.ref });
@@ -215,20 +216,20 @@ describe('assembleFitContext — assignment rows become day context', () => {
   test('confirmed rows only; unassigned rows block nobody; city rides lowercased; excludeVisitId frees the subject', async () => {
     const mine = await makeVisit({
       technicianId: plumber.id,
-      startsAt: '2026-08-03T09:00:00.000Z',
-      endsAt: '2026-08-03T11:00:00.000Z',
+      startsAt: nl('2026-08-03T09:00:00.000Z'),
+      endsAt: nl('2026-08-03T11:00:00.000Z'),
       city: ' Springfield ',
     });
     await makeVisit({
       technicianId: plumber.id,
-      startsAt: '2026-08-03T13:00:00.000Z',
-      endsAt: '2026-08-03T14:00:00.000Z',
+      startsAt: nl('2026-08-03T13:00:00.000Z'),
+      endsAt: nl('2026-08-03T14:00:00.000Z'),
       status: 'proposed', // not confirmed → invisible to the fit context
     });
     await makeVisit({
       technicianId: null, // parked visit — must not appear in ANY tech's day
-      startsAt: '2026-08-03T15:00:00.000Z',
-      endsAt: '2026-08-03T16:00:00.000Z',
+      startsAt: nl('2026-08-03T15:00:00.000Z'),
+      endsAt: nl('2026-08-03T16:00:00.000Z'),
     });
 
     const c = await ctx({ technicianRef: plumber.ref });
@@ -250,8 +251,8 @@ describe('assembleFitContext — assignment rows become day context', () => {
     // misclassified (Phase-1 review finding).
     await makeVisit({
       technicianId: blank.id,
-      startsAt: '2026-08-05T22:00:00.000Z',
-      endsAt: '2026-08-06T00:00:00.000Z',
+      startsAt: nl('2026-08-05T22:00:00.000Z'),
+      endsAt: nl('2026-08-06T00:00:00.000Z'),
     });
     const c = await ctx({ technicianRef: blank.ref });
     const b = c.technicians[0];
@@ -264,13 +265,13 @@ describe('findDisplacementCandidates', () => {
   test('displacement candidates order EARLIEST FIRST and never include the asker', async () => {
     const earlier = await makeVisit({
       technicianId: sparky.id,
-      startsAt: '2026-08-04T08:00:00.000Z',
-      endsAt: '2026-08-04T10:00:00.000Z',
+      startsAt: nl('2026-08-04T08:00:00.000Z'),
+      endsAt: nl('2026-08-04T10:00:00.000Z'),
     });
     const later = await makeVisit({
       technicianId: sparky.id,
-      startsAt: '2026-08-06T08:00:00.000Z',
-      endsAt: '2026-08-06T10:00:00.000Z',
+      startsAt: nl('2026-08-06T08:00:00.000Z'),
+      endsAt: nl('2026-08-06T10:00:00.000Z'),
     });
 
     // Rung 9a: the promise-graded tiebreak is gone, so start time is the whole
@@ -306,8 +307,8 @@ describe('a crew visit occupies both days (rung 9c)', () => {
       // FRIDAY, untouched by every other fixture in this file: the two of them
       // must be free, or the exclusion constraint refuses the crew booking and
       // the test fails for a fixture reason rather than a real one.
-      startsAt: '2026-08-07T09:00:00.000Z',
-      endsAt: '2026-08-07T11:00:00.000Z',
+      startsAt: nl('2026-08-07T09:00:00.000Z'),
+      endsAt: nl('2026-08-07T11:00:00.000Z'),
       city: 'Clovis',
     });
     const out = await ctx({ earliest: '2026-08-07', latest: '2026-08-07' });

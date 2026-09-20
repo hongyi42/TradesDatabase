@@ -66,6 +66,7 @@ import { TEAM_LEAD_REF, TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
 import { answerAccessRequest } from '../teamLead/accessDesk.js';
 import { MEMORY_FILE_MAX } from '../teamLead/memory.js';
 import { JOB_NOTE_MAX } from '../teamLead/jobNotes.js';
+import { nl } from '../db/time.js';
 
 // Drive the MCP server over the SDK's in-memory transport (no network/stdio).
 // The extractor is stubbed so record_field_note never calls the live model.
@@ -436,8 +437,8 @@ describe('MCP server', () => {
       tenantId,
       jobId: mcpJob.id,
       technicianId: techMcpId,
-      startsAt: `${day}T12:00:00.000Z`,
-      endsAt: `${day}T13:00:00.000Z`,
+      startsAt: nl(`${day}T12:00:00.000Z`),
+      endsAt: nl(`${day}T13:00:00.000Z`),
       status: 'confirmed',
     });
 
@@ -1757,7 +1758,7 @@ describe('retract_capture + retraction folding', () => {
       startsAt: null,
       endsAt: null,
       status: 'completed',
-      completedAt: '2026-08-16T13:00:00.000Z',
+      completedAt: nl('2026-08-16T13:00:00.000Z'),
       sourceCaptureId: cap.id,
     });
     await insertVisitNote({ tenantId, visitId: visit.id, captureId: cap.id });
@@ -1847,7 +1848,7 @@ describe('retract_capture + retraction folding', () => {
       startsAt: null,
       endsAt: null,
       status: 'completed',
-      completedAt: '2026-08-16T13:00:00.000Z',
+      completedAt: nl('2026-08-16T13:00:00.000Z'),
     });
     const cap = await appendRawCapture({
       tenantId,
@@ -3001,8 +3002,8 @@ describe('get_schedule', () => {
         tenantId,
         jobId: job.id,
         technicianId: techMcpId,
-        startsAt: startISO,
-        endsAt: new Date(Date.parse(startISO) + 60 * 60_000).toISOString(),
+        startsAt: nl(startISO),
+        endsAt: nl(new Date(Date.parse(startISO) + 60 * 60_000).toISOString()),
         status: 'confirmed',
       });
       gAssignmentIds.push(row.id);
@@ -4921,8 +4922,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         const v = await createVisit({
           tenantId,
           jobId: job.id,
-          startsAt: `${day}T${hh}:${mm}:00Z`,
-          endsAt: `${day}T${hh}:${mm === '00' ? '20' : '50'}:00Z`,
+          startsAt: nl(`${day}T${hh}:${mm}:00Z`),
+          endsAt: nl(`${day}T${hh}:${mm === '00' ? '20' : '50'}:00Z`),
           status: 'confirmed',
         });
         tripIds.push(v.id);
@@ -4932,15 +4933,15 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         tenantId,
         jobId: job.id,
         technicianIds: [first.id, second.id],
-        startsAt: `${day}T21:00:00Z`,
-        endsAt: `${day}T22:00:00Z`,
+        startsAt: nl(`${day}T21:00:00Z`),
+        endsAt: nl(`${day}T22:00:00Z`),
         status: 'confirmed',
       });
       await createVisit({
         tenantId,
         jobId: job.id,
-        startsAt: `${day}T23:00:00Z`,
-        endsAt: `${day}T23:30:00Z`,
+        startsAt: nl(`${day}T23:00:00Z`),
+        endsAt: nl(`${day}T23:30:00Z`),
         status: 'completed',
       });
 
@@ -4988,8 +4989,8 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       const overdue = await createVisit({
         tenantId,
         jobId: job.id,
-        startsAt: '2026-01-05T09:00:00Z',
-        endsAt: '2026-01-05T10:00:00Z',
+        startsAt: nl('2026-01-05T09:00:00Z'),
+        endsAt: nl('2026-01-05T10:00:00Z'),
         status: 'confirmed',
       });
       const recalled = await recallAll(callWith, 'visits');
@@ -5781,8 +5782,8 @@ describe('find_slots (Plan 3b)', () => {
       tenantId,
       jobId: job.id,
       technicianId: opts.technicianId,
-      startsAt: opts.startsAt,
-      endsAt: opts.endsAt,
+      startsAt: nl(opts.startsAt),
+      endsAt: nl(opts.endsAt),
       status: 'confirmed',
     });
   }
@@ -6104,13 +6105,13 @@ describe('find_slots (Plan 3b)', () => {
     // the tool runs on the live clock, so the near-day variant lives there.)
     await bookedVisit({
       technicianId: bob.id,
-      startsAt: '2027-03-08T09:00:00.000Z',
-      endsAt: '2027-03-08T10:00:00.000Z',
+      startsAt: nl('2027-03-08T09:00:00.000Z'),
+      endsAt: nl('2027-03-08T10:00:00.000Z'),
     });
     await bookedVisit({
       technicianId: bob.id,
-      startsAt: '2027-03-08T11:00:00.000Z',
-      endsAt: '2027-03-08T13:00:00.000Z',
+      startsAt: nl('2027-03-08T11:00:00.000Z'),
+      endsAt: nl('2027-03-08T13:00:00.000Z'),
     });
 
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
@@ -6200,8 +6201,8 @@ describe('find_slots (Plan 3b)', () => {
       // An UNASSIGNED parked visit is a valid subject; its booked length rides.
       const parked = await bookedVisit({
         technicianId: null,
-        startsAt: '2027-03-15T09:00:00.000Z',
-        endsAt: '2027-03-15T11:00:00.000Z',
+        startsAt: nl('2027-03-15T09:00:00.000Z'),
+        endsAt: nl('2027-03-15T11:00:00.000Z'),
       });
       const who = await callWith('find_slots', {
         visitId: parked.id,
@@ -6217,8 +6218,8 @@ describe('find_slots (Plan 3b)', () => {
       // fills his whole Monday, yet re-placing THAT visit finds the day free.
       const whole = await bookedVisit({
         technicianId: bob.id,
-        startsAt: '2027-03-22T08:00:00.000Z',
-        endsAt: '2027-03-22T17:00:00.000Z',
+        startsAt: nl('2027-03-22T08:00:00.000Z'),
+        endsAt: nl('2027-03-22T17:00:00.000Z'),
       });
       const rehome = await callWith('find_slots', {
         visitId: whole.id,
@@ -6233,8 +6234,8 @@ describe('find_slots (Plan 3b)', () => {
       // Terminal subjects are history, not schedulable.
       const dead = await bookedVisit({
         technicianId: bob.id,
-        startsAt: '2027-03-29T09:00:00.000Z',
-        endsAt: '2027-03-29T10:00:00.000Z',
+        startsAt: nl('2027-03-29T09:00:00.000Z'),
+        endsAt: nl('2027-03-29T10:00:00.000Z'),
       });
       await updateVisitStatus(dead.id, 'cancelled');
       const refused = await callWith('find_slots', { visitId: dead.id });
@@ -6267,8 +6268,8 @@ describe('find_slots (Plan 3b)', () => {
       // searched with its own visit context (the next free working day).
       await bookedVisit({
         technicianId: bob.id,
-        startsAt: '2027-04-19T08:00:00.000Z',
-        endsAt: '2027-04-19T17:00:00.000Z',
+        startsAt: nl('2027-04-19T08:00:00.000Z'),
+        endsAt: nl('2027-04-19T17:00:00.000Z'),
       });
       const fullDay = await callWith('find_slots', {
         customerId: henderson.id,
@@ -6312,14 +6313,14 @@ describe('find_slots (Plan 3b)', () => {
   test('drive wiring: a 2-stop day measures the with-route through the injected seam', { timeout: 30_000 }, async () => {
     await bookedVisit({
       technicianId: bob.id,
-      startsAt: '2027-04-05T09:00:00.000Z',
-      endsAt: '2027-04-05T10:00:00.000Z',
+      startsAt: nl('2027-04-05T09:00:00.000Z'),
+      endsAt: nl('2027-04-05T10:00:00.000Z'),
       addressed: true,
     });
     await bookedVisit({
       technicianId: bob.id,
-      startsAt: '2027-04-05T11:00:00.000Z',
-      endsAt: '2027-04-05T12:00:00.000Z',
+      startsAt: nl('2027-04-05T11:00:00.000Z'),
+      endsAt: nl('2027-04-05T12:00:00.000Z'),
       addressed: true,
     });
     const computeRoutes = vi.fn(async (body: unknown) => {
@@ -6393,8 +6394,8 @@ describe('find_slots (Plan 3b)', () => {
       tenantId,
       jobId: subjJob.id,
       technicianId: bob.id,
-      startsAt: '2027-04-12T09:00:00.000Z',
-      endsAt: '2027-04-12T10:00:00.000Z',
+      startsAt: nl('2027-04-12T09:00:00.000Z'),
+      endsAt: nl('2027-04-12T10:00:00.000Z'),
       status: 'confirmed',
     });
     for (const [tech, s, e] of [
@@ -6405,8 +6406,8 @@ describe('find_slots (Plan 3b)', () => {
     ] as const) {
       await bookedVisit({
         technicianId: tech,
-        startsAt: `2027-04-12T${s}:00.000Z`,
-        endsAt: `2027-04-12T${e}:00.000Z`,
+        startsAt: nl(`2027-04-12T${s}:00.000Z`),
+        endsAt: nl(`2027-04-12T${e}:00.000Z`),
         addressed: true,
       });
     }
@@ -6485,8 +6486,8 @@ describe('find_slots (Plan 3b)', () => {
       tenantId,
       jobId: subjJob.id,
       technicianId: bob.id,
-      startsAt: '2027-04-12T09:00:00.000Z', // same instant as bob's CONFIRMED visit
-      endsAt: '2027-04-12T10:00:00.000Z',
+      startsAt: nl('2027-04-12T09:00:00.000Z'), // same instant as bob's CONFIRMED visit
+      endsAt: nl('2027-04-12T10:00:00.000Z'),
     });
     const propFake = mkFake();
     const { client: c3, callWith: propCall } = await clientFor(
@@ -9986,8 +9987,8 @@ describe('the technician limited view', () => {
     await createVisit({
       tenantId,
       jobId: other.id,
-      startsAt: `${relDay(4)}T10:00:00.000Z`,
-      endsAt: `${relDay(4)}T11:00:00.000Z`,
+      startsAt: nl(`${relDay(4)}T10:00:00.000Z`),
+      endsAt: nl(`${relDay(4)}T11:00:00.000Z`),
       status: 'confirmed',
     });
     const served = await call('get_customer_context', { customerId: cust.id });

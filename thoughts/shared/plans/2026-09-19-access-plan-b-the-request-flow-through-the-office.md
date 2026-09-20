@@ -310,12 +310,35 @@ more than one = ask which.
 and the manager count.
 
 ### Automated verification
-- [ ] Gates pass; `planner.test.ts`: the gap view renders an `access_request` in words with no date
-      and no figure; `send countsAsTheAsk` is refused with one as the lead AND as a group member;
+- [x] Gates pass (2026-09-19: 3351 passed, 9 skipped, 0 failed; lint and build clean);
+      `planner.test.ts`: the gap view renders an `access_request` in words with no figure;
+      `send countsAsTheAsk` is refused with one as the lead AND as a group member;
       `recover` on one changes nothing (the existing recover tests stay green); the prompt carries the
-      ACCESS paragraph; "NEVER A MONEY AMOUNT" still pinned (`planner.test.ts:7886-7890`)
-- [ ] `bash -n Box_Setup_Stuff/bootstrap-box.sh`; md5 of every deployed copy matches the repo after
-      the re-wire (the seven-copies trap, `docs/engineering-memory.md`)
+      ACCESS paragraph; "NEVER A MONEY AMOUNT" still pinned
+- [x] `bash -n Box_Setup_Stuff/bootstrap-box.sh` passes.
+      **Still owed at rollout:** md5 of every deployed copy against the repo after the re-wire
+      (the seven-copies trap, `docs/engineering-memory.md`) — that is a phase 5 step, on the box.
+
+### What phase 3 shipped beyond the list above, and one correction worth keeping
+- **The date-rail wording in the plan was imprecise and the first implementation's comment was
+  simply wrong.** The elapsed phrase IS this kind's only `dateLabel` — `dateLabels` is built from
+  `asked_at`, `endsAtLocal` and `elapsedLabel(asked_at ?? created_at)`, and `observationAsGapRow`
+  hardcodes `asked_at: null` — so "asked 3 days ago" is safe to print *because* it is in the list,
+  not despite it. Anything else temporal (a weekday, a date, "yesterday") still drops the
+  planner's whole message. The comment in `planner.ts` now says this; the reviewer measured both
+  the kept and the dropped case.
+- **The group-member half of the `countsAsTheAsk` refusal is LIVE CODE, not a dormant layer.** The
+  first cut assumed an earlier rail blocked it (a group member must be `pending` or `noticed`) —
+  but an observation renders `noticed`, so a real group of two observations on the same person and
+  job reaches the member check. The test builds that shape and fails when the member half is
+  removed.
+- `setObservationStatus`'s new `excludeKinds` has a test against a REAL database, because `recover`
+  passes it on every call: a malformed PostgREST filter would throw, be swallowed by the planner's
+  catch, and make every observation kind unrecoverable with the planner suite still green (it
+  stubs that writer).
+- A request the PLANNER set aside is no longer reported to a manager as "already answered" — it is
+  "no longer open", with the reason. The ACCESS doctrine also now says a dismissal here is final,
+  which is true for this kind and for no other.
 
 ## Phase 4: the note says what it assumed
 

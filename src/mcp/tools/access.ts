@@ -369,6 +369,58 @@ async function textTheTechnician(tenantId: string, technicianId: string, body: s
   }
 }
 
+// AND SO DOES HER SEAT, which is a different problem with a different fix
+// (operator, 2026-09-20, from live testing: "Ben's seat agent's context
+// regarding Ben's access can sometimes be stale, leading to incorrect answers
+// even after the manager updated his access level").
+//
+// THE TWO LEGS DO DIFFERENT JOBS AND NEITHER SUBSTITUTES FOR THE OTHER. The
+// push above is Leg A — verbatim to her PHONE, ~10s, so the person learns. This
+// is Leg B — an injected turn into her SEAT's session (office-runner, every 5
+// min), so the ASSISTANT learns. Without it a seat that has already answered
+// "that is outside your view" holds that sentence in context and repeats it,
+// truthfully as far as it knows, after the record has changed underneath it.
+//
+// `fromRef` is the MANAGER, not TEAM_LEAD_REF. The office did not decide this
+// and must not appear to have: wrapOfficeMessage renders a team-lead row as an
+// "OFFICE NOTE" and anything else as "NOTE FROM <name>'s assistant", which is
+// what actually happened. The re-read instruction therefore rides in the BODY
+// rather than borrowing the office framing's tail.
+//
+// Best-effort, like its two siblings: the access decision is already committed.
+async function tellHerSeat(
+  tenantId: string,
+  manager: string,
+  tech: { id: string; ref: string; tier: string },
+  body: string,
+): Promise<void> {
+  // A manager's own seat needs no note about its own person's access, and a
+  // seat-less row (no sandbox) has nothing to inject into.
+  if (tech.tier === 'manager') return;
+  try {
+    await createOfficeMessage({
+      tenantId,
+      direction: 'to_agent',
+      kind: 'inform',
+      fromRef: manager,
+      toRef: tech.ref,
+      technicianId: tech.id,
+      tier: 'manager',
+      body,
+      status: 'queued',
+    });
+  } catch (err) {
+    console.error("access: the technician's seat was not told the access changed", err);
+  }
+}
+
+// The sentence that fixes the staleness, in the seat's own terms. It does NOT
+// tell the seat what to say to its person — that is the seat's judgment — only
+// that what it last said may no longer be true.
+const reReadNote = (what: string): string =>
+  `If you told your person anything about ${what} being closed or open to them, check it again ` +
+  'with your tools before you answer about it next — your earlier answer may be out of date.';
+
 // ── handlers ─────────────────────────────────────────────────────────────────
 
 async function handleGrantAccess(toolCtx: ToolContext): Promise<unknown> {
@@ -596,21 +648,26 @@ async function handleGrantAccess(toolCtx: ToolContext): Promise<unknown> {
       (request ? ` — they had asked: "${reqCtx.why ?? ''}"` : '') +
       `. Why: ${reason}`,
   );
-  if (request) {
-    // WHAT WAS GRANTED, not what was asked — the manager may have opened
-    // something narrower (one job of the customer she named, or the record
-    // without the figures). Telling her she has what she asked for would send
-    // her back to a page that is still half closed, with the request now
-    // closed behind her.
-    await textTheTechnician(
-      tenantId,
-      // The request's own person: `tech` is the same row (a mismatched
-      // `technician` was refused above), and saying so here keeps it true if
-      // that guard is ever loosened.
-      request.technician_id ?? tech.id,
-      `${manager} opened ${what} for you ${until}. Ask me again and I'll read it.`,
-    );
-  }
+  // TOLD EVERY TIME, not only when answering a request (operator, 2026-09-20).
+  // Before this, a manager who opened something unprompted was handed "let them
+  // know" and nothing reached the technician at all — so she learned by
+  // accident, or never. WHAT WAS GRANTED, not what was asked: the manager may
+  // have opened something narrower than the request, and telling her she has
+  // what she asked for would send her back to a page still half closed.
+  await textTheTechnician(
+    tenantId,
+    // The request's own person when there is one — `tech` is the same row (a
+    // mismatched `technician` was refused above), and saying so keeps it true
+    // if that guard is ever loosened.
+    request?.technician_id ?? tech.id,
+    `${manager} opened ${what} for you ${until}. Ask me again and I'll read it.`,
+  );
+  await tellHerSeat(
+    tenantId,
+    identity.technicianRef,
+    { id: tech.id, ref: tech.ref, tier: tech.tier },
+    `${manager} has opened ${what} for ${tech.display_name} ${until}. ${reReadNote(what)}`,
+  );
 
   return {
     granted: {
@@ -625,9 +682,7 @@ async function handleGrantAccess(toolCtx: ToolContext): Promise<unknown> {
     ...(g ? {} : { note2: 'The grant is recorded; list_access will show it.' }),
     note:
       `${tech.display_name} can now open ${what}${grantDetail(opens, money)}, ${until}. ` +
-      (request
-        ? 'They have been texted, so there is nothing to relay.'
-        : 'They are not told automatically yet: let them know.'),
+      'They have been texted and their assistant has been told, so there is nothing to relay.',
   };
 }
 
@@ -848,6 +903,26 @@ async function handleRevokeAccess(toolCtx: ToolContext): Promise<unknown> {
     `Revoked ${name}'s access to ${what}. Why: ${reason}` +
       (stillOpen ? ' (they can still open it another way).' : '.'),
   );
+  // THE SEAT HEARS A REVOKE TOO, and leaving this out was the asymmetry: a seat
+  // that had been told "you can see this" keeps saying so after the grant ends,
+  // which is the staleness bug pointing the other way and the worse direction —
+  // it promises a person a record the door will refuse them.
+  //
+  // DELIBERATELY NEUTRAL WORDING. The revoke may have closed nothing (another
+  // grant or the firm's rule can still open it — `stillOpen` above), so this
+  // says the access CHANGED and to re-check, never that it ended.
+  if (g.technicians) {
+    await tellHerSeat(
+      tenantId,
+      identity.technicianRef,
+      { id: g.technician_id, ref: g.technicians.ref, tier: 'technician' },
+      `Access to ${what} has changed for ${name}. ${reReadNote(what)}`,
+    );
+  }
+  // The PERSON is not texted on a revoke, deliberately: a grant is news she can
+  // act on, a revoke is a door quietly closing, and a text saying "you have
+  // lost access to X" invites a conversation the manager may not want to have
+  // by SMS. The manager's reply still says they are not told (below).
   return {
     revoked: true,
     stillOpen: stillOpen !== null,

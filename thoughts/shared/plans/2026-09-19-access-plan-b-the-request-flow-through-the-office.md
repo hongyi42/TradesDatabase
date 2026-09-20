@@ -419,8 +419,36 @@ need to) and write it on the job's notes (`write_job_note`).
 ## Phase 5: rollout and live run
 
 ### Changes required
-After plan A is live: the **operator** applies `20260919130000` to the pilot (`supabase-test`),
-`NOTIFY pgrst`; merge (Calls-worker deploys itself and picks up the planner guards); deploy
+
+**The migration is `20260919170000_access_requests.sql`, NOT the `20260919130000` this plan first
+named** — `20260919160000` had already landed, and a lower number would have applied out of order.
+
+**EXPECT THE CLI TO REFUSE IT, and that is correct.** PR #267 (the timestamp brand) merges FIRST by
+the operators' agreement, and its migration is `20260920120000` — a HIGHER number. So once that one
+is on the pilot, `supabase migration up` will stop on ours with:
+
+```
+Found local migration files to be inserted before the last migration on remote database.
+Rerun the command with --include-all flag to apply these migrations:
+supabase/migrations/20260919170000_access_requests.sql
+```
+
+Exit 1, nothing applied. **Nothing is wrong.** Re-run with `--include-all`, which is safe here and
+only here: the two migrations touch different tables (`visits.started_at` vs
+`observations` / `person_pushes`), so applying ours after theirs is a reorder with no dependency
+between them — the one case `docs/engineering-memory.md` records as harmless. Never make
+`--include-all` a habit: it converts that loud refusal into a silent reorder for migrations that
+DO depend on each other.
+
+Then verify the artefact rather than the ledger, per the same entry:
+
+```sql
+select count(*) from pg_indexes where indexname = 'uq_open_access_request';           -- 1
+select pg_get_constraintdef(oid) from pg_constraint where conname = 'person_pushes_kind_check';
+-- must contain 'access'
+```
+
+Then: `NOTIFY pgrst`; merge (Calls-worker deploys itself and picks up the planner guards); deploy
 `lifecycle-heart` and confirm Calls-worker is on the new build **before** triggering
 `TradesDatabase` — the web service starts creating requests the moment it is live, and a planner
 without the guards could make one "the ask" or recover it (read `autoDeploy` from `list_services`);

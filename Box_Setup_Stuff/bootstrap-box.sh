@@ -341,6 +341,20 @@ SEATEOF
     echo "    ! /usr/local/sbin/seat-sync.sh not installed — this seat has no console button until it is"
   fi
 
+  # The one thing this machine CANNOT do for itself. ops_secrets.bot_tokens is
+  # the operator's way back to a token without a BotFather trip, and neither end
+  # of the box<->server pipe may write it: the box holds no database credential
+  # (badge-pull.env is PULL_URL + HOST_PULL_TOKEN, and there is no psql here),
+  # and Render is deliberately walled out of that schema by PostgREST's exposed
+  # schemas. Both are load-bearing, so the copy is made from an operator laptop,
+  # which has SSH and DATABASE_URL and holds neither standing. Say so HERE,
+  # because the moment a seat is provisioned is the only moment anyone is
+  # looking — five seats once sat unwired for five days on the belief their
+  # tokens were gone (2026-09-12).
+  echo
+  echo "    NOTE: this token is on the box only. To copy it into ops_secrets, run"
+  echo "          from a laptop:  node -r dotenv/config scripts/sync-ops-secrets.mjs"
+
   cat <<EOF
 
 provision ${agent}: ALL ASSERTIONS PASSED.

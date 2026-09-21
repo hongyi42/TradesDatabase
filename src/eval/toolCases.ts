@@ -1351,7 +1351,46 @@ export function buildToolCases(): ToolCase[] {
     ),
   });
 
+  one({
+    id: 'C16',
+    family: 'config',
+    title: 'set_timezone stores a canonical IANA zone',
+    tool: 'set_timezone',
+    tenant: 'main',
+    badge: 'manager-sam',
+    // Idempotent, and it restores nothing: every other case that reads a date
+    // goes through resolve_date, which reads whatever this leaves behind. Pick
+    // the tenant's own default so the corpus order cannot matter.
+    args: () => ({ timezone: 'America/Los_Angeles' }),
+    check: all(
+      ok,
+      dbCheck(
+        'the zone must land on the tenant row',
+        (ctx) => ({ text: 'select timezone from tenants where id = $1', params: [ctx.tenant.id] }),
+        (rows) => rows[0]?.timezone === 'America/Los_Angeles',
+      ),
+    ),
+  });
+
   // ── graceful failure ────────────────────────────────────────────────────────
+  one({
+    id: 'F06',
+    family: 'failure',
+    title: 'set_timezone refuses an abbreviation instead of freezing DST',
+    tool: 'set_timezone',
+    tenant: 'main',
+    badge: 'manager-sam',
+    // 'EST' is a REAL zone Intl accepts, and it never observes daylight saving
+    // — a New York firm set to it reads an hour wrong all summer with nothing
+    // failing. The refusal has to explain itself, because the seat reads it out.
+    args: () => ({ timezone: 'EST' }),
+    check: all(refused(/not a timezone I recognise/), dbCheck(
+      'and it must have written nothing',
+      (ctx) => ({ text: 'select timezone from tenants where id = $1', params: [ctx.tenant.id] }),
+      (rows) => rows[0]?.timezone !== 'EST',
+    )),
+  });
+
   one({
     id: 'F03',
     family: 'failure',

@@ -1,5 +1,12 @@
 # Technician agent runbook (NemoClaw + Telegram)
 
+> **DIRECTION 2026-09-21 — this stack is being RETIRED.** The seats move to the OpenRouter Agent
+> SDK on a Render background worker; openclaw, the per-seat sandboxes and the Lightsail box go with
+> the six-item plan recorded in `docs/engineering-memory.md` §2 ("Manager seats become
+> Claude-Cowork-like agents…") and
+> `thoughts/shared/research/2026-09-21-seat-runtime-direction-openrouter-agent-sdk.md`. Use this
+> runbook to OPERATE the existing seats until the cut-over lands; do not extend it.
+
 How to wire a per-technician agent to the spine. The agent is the **channel + collector**;
 our MCP server ([src/mcp/server.ts](../src/mcp/server.ts)) is the **only thing that touches the
 spine** and the only thing that holds the Supabase / Anthropic keys. The agent never sees those

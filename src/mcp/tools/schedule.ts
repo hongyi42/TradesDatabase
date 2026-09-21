@@ -34,6 +34,7 @@ import {
   getTenant,
   getVisitForTenant,
   isValidDuration,
+  isValidTimezone,
   latestScheduleVersion,
   listJobTypeDurations,
   listOpenJobsForCustomer,
@@ -45,6 +46,7 @@ import {
   rowCapNote,
   setTechnicianAvailability,
   setTechnicianHorizonDays,
+  setTenantTimezone,
   stageOf,
   unwrapAttributes,
   upsertJobTypeDuration,
@@ -592,6 +594,31 @@ const ADMIN_TOOLS = [
         },
       },
       required: ['weeks'],
+    },
+  },
+  {
+    name: 'set_timezone',
+    description:
+      "Set the firm's timezone (manager only). Done immediately in ONE call — echo old → new. " +
+      'Takes an IANA name like "America/Chicago"; abbreviations ("CST", "Central") are REFUSED ' +
+      'because they cannot say whether the firm observes daylight saving. DO NOT ASK THE ' +
+      'MANAGER FOR A TIMEZONE — ask where they are based (you need the city for the firm ' +
+      'profile anyway) and derive it. Texas, Florida, Indiana, Arizona, Kentucky, Tennessee, ' +
+      'the Dakotas, Nebraska, Kansas, Idaho, Oregon and Michigan span two zones or skip DST, ' +
+      'so for those ask what time it is there right now and derive from that instead of ' +
+      'guessing. The result carries localTime — READ IT BACK to the manager ("it\'s 3:42pm for ' +
+      "you\") rather than the zone name: nobody can check \"America/Chicago\", everybody can " +
+      'check a clock. Every date in the system is read in this zone, and a wrong one is ' +
+      'silent — nothing errors, the dates are just wrong.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        timezone: {
+          type: 'string',
+          description: 'IANA timezone name, e.g. "America/Chicago".',
+        },
+      },
+      required: ['timezone'],
     },
   },
 ];
@@ -1727,6 +1754,49 @@ async function handleSetTechnicianHorizon(toolCtx: ToolContext): Promise<unknown
       };
 }
 
+async function handleSetTimezone(toolCtx: ToolContext): Promise<unknown> {
+  const { args, tenantId } = toolCtx;
+      // Non-string args are REJECTED, never coerced-to-absent (the find_slots
+      // precedent — the SDK does not validate args, and a coerced-away timezone
+      // would read as "not supplied" on a required field).
+      if (typeof args.timezone !== 'string') {
+        throw new Error('timezone must be a string');
+      }
+      const timezone = args.timezone;
+      if (!isValidTimezone(timezone)) {
+        throw new Error(
+          `not a timezone I recognise: ${JSON.stringify(timezone)}. Use a full IANA name such ` +
+            'as "America/Chicago", "America/New_York", "America/Denver", "America/Phoenix" or ' +
+            '"America/Los_Angeles" (case matters). A plain city name is not a zone, and an ' +
+            'abbreviation like "CST" or "EST" is refused on purpose — several of those never ' +
+            'observe daylight saving, so they would read an hour wrong for half the year ' +
+            'without anything failing.',
+        );
+      }
+      // Old value read before the write so the echo is old → new (the
+      // set_technician_horizon / update_job idiom).
+      const before = (await getTenant(tenantId))?.timezone ?? null;
+      const updated = await setTenantTimezone(tenantId, timezone);
+      // The clock is what the manager can actually verify. spineNowIso keeps
+      // the date-eval's EVAL_FAKE_NOW anchoring working here too, so a probe
+      // run does not read the wall clock.
+      const localTime = new Intl.DateTimeFormat('en-US', {
+        timeZone: updated.timezone,
+        hour: 'numeric',
+        minute: '2-digit',
+        timeZoneName: 'short',
+      }).format(new Date(spineNowIso(tenantId)));
+      return {
+        status: 'ok',
+        changes: { timezone: { from: before, to: updated.timezone } },
+        localTime,
+        note:
+          `the firm's timezone is now ${updated.timezone} (was ${before ?? 'unset'}); ` +
+          `it is ${localTime} there right now. Read the TIME back to the manager and ask if ` +
+          'that is right — do not ask them to confirm the zone name.',
+      };
+}
+
 async function handleFindSlots(toolCtx: ToolContext): Promise<unknown> {
   const { args, deps, tenantId, str } = toolCtx;
       // Non-string args are REJECTED, never coerced-to-absent: str() maps
@@ -2250,6 +2320,7 @@ export const scheduleTools = {
     remove_time_off: handleRemoveTimeOff,
     set_job_duration: handleSetJobDuration,
     set_technician_horizon: handleSetTechnicianHorizon,
+    set_timezone: handleSetTimezone,
     find_slots: handleFindSlots,
   },
 } satisfies DomainTools;

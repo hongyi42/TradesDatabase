@@ -123,6 +123,61 @@ export async function setTechnicianHorizonDays(
   return data;
 }
 
+// The firm's IANA timezone. Until this existed there was NO writer for the
+// column at all — it was set once by createTenant's default
+// ('America/Los_Angeles') and never again, so every firm outside that zone read
+// every date an hour or more wrong with nothing erroring. Plain update, no CAS,
+// for the same reason as the two neighbours: a settings row is effectively
+// single-writer.
+//
+// VALIDATION LIVES AT THE TOOL, NOT HERE, but the column has no CHECK to
+// backstop it (unlike technician_horizon_days 7-84), so an unvalidated caller
+// can still write nonsense. isValidTimezone below is the shared guard; call it
+// before this.
+export async function setTenantTimezone(tenantId: string, timezone: string): Promise<Tenant> {
+  const { data, error } = await getClient()
+    .from('tenants')
+    .update({ timezone })
+    .eq('id', tenantId)
+    .select()
+    .single();
+  if (error || !data) {
+    throw new Error(`setTenantTimezone failed: ${error?.message ?? 'no row returned'}`);
+  }
+  return data;
+}
+
+// The CANONICAL IANA zones, and nothing else — 418 of them on Node 24.
+//
+// A try/catch around `new Intl.DateTimeFormat({timeZone})` is the obvious check
+// and it is WRONG HERE. Measured 2026-09-20, Node 24.16: it accepts 'CST',
+// 'EST', 'MST', 'HST', 'PST', 'US/Central', 'CST6CDT', 'Etc/GMT+6' and
+// lowercase 'america/chicago'. Three of those are a silent hour of error half
+// the year, because they are FIXED-OFFSET zones that never observe DST:
+//
+//   'EST' formats as EST in September, when New York is on EDT.
+//   'MST' and 'HST' likewise.
+//   ('CST' and 'PST' happen to be DST-observing aliases — so the abbreviation
+//    family cannot even be reasoned about as a group. Refuse all of it.)
+//
+// `Intl.supportedValuesOf('timeZone')` returns canonical ids only, which
+// excludes every abbreviation, every legacy alias and the whole Etc/* family.
+// That is exactly the bar we want, and it is also the safest string to hand
+// POSTGRES: `working_hours_between(from, to, tz)` passes this value into
+// `at time zone tz`, where 'CST' resolves via pg_timezone_abbrevs and means
+// something different from what Node did with it.
+//
+// Deliberately strict about two more: comparison is CASE-SENSITIVE (Intl would
+// take 'america/chicago'), and 'UTC' is refused — no trades firm is in UTC, and
+// admitting it reopens the argument for 'EST'. Read-side fallbacks elsewhere in
+// the codebase still default to 'UTC' for a missing tenant; that is a different
+// thing from a manager choosing it.
+const CANONICAL_TIMEZONES: ReadonlySet<string> = new Set(Intl.supportedValuesOf('timeZone'));
+
+export function isValidTimezone(value: string): boolean {
+  return CANONICAL_TIMEZONES.has(value);
+}
+
 // Purchased seat capacity per tier (the DB seat-cap trigger reads these).
 export async function setTenantSeats(
   tenantId: string,

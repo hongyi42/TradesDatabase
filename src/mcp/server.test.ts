@@ -6921,6 +6921,67 @@ describe('set_technician_horizon (the visibility-horizon dial)', () => {
   });
 });
 
+describe('set_timezone (the firm zone — no writer existed before it)', () => {
+  test('gates, refuses abbreviations, echoes old→new with a clock, SQL read-back; resolve_date consumes it', { timeout: 30_000 }, async () => {
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    const { client: techClient, callWith: techCall } = await clientFor({
+      tenantId,
+      technicianRef: 'tech-mcp',
+    });
+    const before = (
+      await pg.query<{ timezone: string }>('select timezone from tenants where id = $1', [tenantId])
+    ).rows[0].timezone;
+    try {
+      // Technician badge → refused (admin dispatch gate).
+      const gated = await techCall('set_timezone', { timezone: 'America/Chicago' });
+      expect(gated.isError).toBe(true);
+
+      // A non-string is REJECTED, never coerced-to-absent: a coerced-away value
+      // on a required field would read as "not supplied" (find_slots precedent).
+      const coerced = await callWith('set_timezone', { timezone: 5 });
+      expect(coerced.isError).toBe(true);
+      expect(coerced.text).toContain('must be a string');
+
+      // The guard that matters. An abbreviation cannot express whether the firm
+      // observes DST, and a city name is not a zone — both must fail loudly
+      // rather than storing something nothing can interpret.
+      for (const bad of ['CST', 'Central', 'Austin', 'America/Chicgo', '', ' America/Chicago']) {
+        const refused = await callWith('set_timezone', { timezone: bad });
+        expect(refused.isError, bad).toBe(true);
+        expect(refused.text, bad).toContain('not a timezone I recognise');
+      }
+
+      // Set it: old→new echo, a clock the manager can actually verify, and a
+      // read-back through psql rather than the tool's own return value.
+      const set = await callWith('set_timezone', { timezone: 'America/Chicago' });
+      expect(set.isError).toBe(false);
+      expect(set.data.changes.timezone).toEqual({ from: before, to: 'America/Chicago' });
+      expect(set.data.localTime).toMatch(/\d{1,2}:\d{2}/);
+      expect(set.data.note).toContain('America/Chicago');
+      const row = await pg.query<{ timezone: string }>(
+        'select timezone from tenants where id = $1',
+        [tenantId],
+      );
+      expect(row.rows[0].timezone).toBe('America/Chicago');
+
+      // The consumer proof: the zone is not decorative, it is what every date
+      // read is interpreted in.
+      const resolved = await callWith('resolve_date', { phrase: 'today' });
+      expect(resolved.data.timezone).toBe('America/Chicago');
+
+      // Phoenix vs Denver — both valid, an hour apart for half the year. The
+      // tool cannot tell them apart, which is exactly why its result carries a
+      // clock for the manager to check.
+      const phoenix = await callWith('set_timezone', { timezone: 'America/Phoenix' });
+      expect(phoenix.data.changes.timezone).toEqual({ from: 'America/Chicago', to: 'America/Phoenix' });
+    } finally {
+      await pg.query('update tenants set timezone = $2 where id = $1', [tenantId, before]);
+      await mgrClient.close();
+      await techClient.close();
+    }
+  });
+});
+
 describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
   test('never one-shots, confirm cascades, job leaves the recall view', { timeout: 30_000 }, async () => {
     const denied = await call('cancel_job', { jobId: 'x', reason: 'nope' });

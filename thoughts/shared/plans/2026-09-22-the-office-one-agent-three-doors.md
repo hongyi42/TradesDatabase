@@ -224,7 +224,8 @@ Update the comments naming the desk at `officeMessages.ts:136`, `querySpine.test
    reachable manager. Body = code headline (`${askerName} asks to open ${whatWords(target, wants)} —
    they say: "${why}".`) + `managerMessage` + the width menu (`accessDesk.ts:405-410`).
    `queuePersonPush` per manager, failure-isolated; `recordPair` with a TITLE-FREE ask body (customer
-   name + width + job id), so `askerHistory` never echoes a title.
+   name + width + job id), so `askerHistory` never echoes a title. Return statuses keep today's
+   vocabulary (`asked_manager | already_open | already_asked | refused`) — seat doctrine keys on them.
 5. `args` null, a throw in 3 or 4 → today's path: file (or converge on a live row) and text every
    reachable manager with the code template. A request is never lost.
 

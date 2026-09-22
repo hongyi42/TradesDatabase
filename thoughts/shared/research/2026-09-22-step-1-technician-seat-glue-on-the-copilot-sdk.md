@@ -605,7 +605,10 @@ surfaced in this research.
 - **The real doorman → Render hop** under the engine's MCP client: step 0's wiring ran locally.
   Also whether the engine's MCP client sends an `Accept` header the stateless server accepts. The
   SDK server requires both `application/json` and `text/event-stream`, else 406.
-- **Ben's traffic.** The gate is "a week of Ben's traffic". Memory `ben-shelton-device-e2e` records
+- **Ben's traffic.** *Answered 2026-09-22 by the operator: there is none — "we're in a testing
+  environment. There's no canary week. Ben is just a name and unless manual testing happen, there's
+  no regular usage on that account." The gate must be a driven test.* Original question: the gate is
+  "a week of Ben's traffic". Memory `ben-shelton-device-e2e` records
   device tests still owed on Ben's phone, and his roster state was `invited`. Whether s5 carries real
   technician traffic, or is driven by the operator, decides what a week of it proves. Volumes are
   not derivable from the pilot box (memory `never-size-from-the-pilot-box`).

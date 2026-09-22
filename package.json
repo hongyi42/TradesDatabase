@@ -35,6 +35,8 @@
     "work": "node scripts/work.mjs",
     "board": "node scripts/work.mjs board",
     "ticks": "npm run build && node -r dotenv/config scripts/ticks/report.mjs",
+    "planner-eval:notes": "npm run build && node scripts/planner-eval/notes-run.mjs",
+    "planner-eval:notes:report": "node scripts/planner-eval/notes-analyze.mjs",
     "metrics:planner": "node -r dotenv/config scripts/planner-metrics/report.mjs",
     "memory:planner": "node -r dotenv/config scripts/planner-metrics/memory.mjs"
   },

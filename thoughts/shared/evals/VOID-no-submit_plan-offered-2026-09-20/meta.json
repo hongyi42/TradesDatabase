@@ -1,0 +1,10 @@
+{
+  "model": "z-ai/glm-5.3",
+  "baseUrl": "https://openrouter.ai/api/v1",
+  "now": "2026-09-20T17:00:00.000Z",
+  "tz": "America/Los_Angeles",
+  "runs": 1,
+  "totalIn": 262145,
+  "totalOut": 4822,
+  "totalCached": 245504
+}

@@ -2,16 +2,25 @@
 date: 2026-09-21
 branch: worktree-deny-openclaw-dev-toolkit-on-the-seats
 commit: fc40c65
-topic: The seat-runtime direction — manager seats become Claude-Cowork-like agents with the firm's data, on the OpenRouter Agent SDK running on our own Render worker; openclaw, the per-seat sandboxes and the Lightsail box are retired. What was compared, what was verified from vendor packages and docs (URLs inline), the six-item retirement plan, and the three decisions still open.
+topic: The seat-runtime direction — manager seats become Claude-Cowork-like agents with the firm's data. Records the whole 2026-09-21 brainstorm with every vendor fact and citation: the morning's choice (OpenRouter Agent SDK on a Render worker, box retired), dropped that night; the evening's direction (a BOUGHT harness on the Lightsail box, GitHub Copilot SDK first to test, sandboxes from a vendor for managers, technicians thin, Render stays the spine, Telegram stays the UI), of which only step 0, the two-hour test, is decided.
 supersedes: nothing
 ---
 
-**Read this before touching the seat stack.** It records an operator decision (2026-09-20/21) and
-the evidence behind it, so the next session does not re-derive a day of vendor research or build
-on the stack that is being retired. The live half of this work is the board: task
-`20260920-thin-technician-seat-on-render-beside-s5` (spawned 2026-09-21 into
-`.claude/worktrees/thin-technician-seat-on-render-beside-s5`, branch
-`work/thin-technician-seat-on-render-beside-s5`, from origin/main 4d66b1d).
+**Read this before touching the seat stack.** It records a day of operator decisions
+(2026-09-20/21) and the evidence behind them, so the next session does not re-derive the vendor
+research or build on the stack that is being replaced. The live half of this work is the board:
+task `20260922-step-0-two-hour-test-of-the-github-copil` (parked 2026-09-21, not yet spawned). The
+morning's task for a Render-hosted seat was dropped and archived the same night, its worktree and
+branch removed.
+
+> **REVISED THE SAME DAY.** Sections 2, 5 and 6 below record a direction chosen on the morning of
+> 2026-09-21 (seats on a Render worker via the OpenRouter Agent SDK, box decommissioned) and
+> **dropped that night** by the operator ("get rid of the openrouter sdk tasks and it's related
+> memory"). The current direction is in §8: the box stays as the agents' home, Render stays the
+> spine, the harness is BOUGHT (GitHub Copilot SDK, first to test), sandboxes come from a vendor on
+> demand for managers, technicians stay thin, Telegram stays the UI. Only step 0 (the two-hour
+> test, task `20260922-step-0-two-hour-test-of-the-github-copil`) is decided. Sections 3 (OpenRouter
+> Agent SDK facts) and 4 (Render facts) remain correct as reference.
 
 ## 1. The goal, in the operator's words
 
@@ -208,3 +217,68 @@ models are temporarily rate-limited" becomes moot at F.
   Vertex streamed steadily. Never the API-key door for production.
 - The deny-openclaw-dev-toolkit change (this branch's original purpose) is moot once seats move;
   the census behind it (exec 131 uses, sessions_* 0) stands.
+
+## 8. Verified 2026-09-21 evening: the bought-harness direction
+
+**Operator's priorities, in order:** "keep the code lean and keep the model freedom, while having
+the cowork like experience. I don't want to build the cowork harness since more people before me
+has done that, with a higher level of professionality. Now the maintenance of the harness being on
+the long-lived box is fine with me." Then: technicians thin, managers get the Cowork long tail,
+sandboxes for managers from a vendor on demand (not on the box), Telegram stays the UI.
+
+**GitHub Copilot SDK** (`@github/copilot-sdk` 1.0.14, published 2026-09-21, MIT, "generally
+available and follows semantic versioning"; github.com/github/copilot-sdk): a thin JSON-RPC client
+around the Copilot CLI engine, bundled per platform (`@github/copilot-sdk-linux-x64` etc.);
+sessions persist as files under the engine's home; `onPermissionRequest` gates every tool call;
+MCP and skills supported. Multi-tenant guidance
+(docs.github.com/en/copilot/how-tos/copilot-sdk/setup/multi-tenancy): "Always start the client or
+runtime in `mode: "empty"`", unique session ids with ownership in your database, explicit tool
+allowlists; "Do not use the default `mode: "copilot-cli"` for shared servers… can expose ambient
+host filesystem capabilities"; isolated processes per user only for the strongest boundary. BYOK
+(github.com/github/copilot-sdk/blob/main/docs/auth/byok.md): `provider: {type: "openai" | "azure" |
+"anthropic", baseUrl, apiKey | bearerToken, wireApi: "completions" | "responses"}`, "Other
+OpenAI-compatible: vLLM, LiteLLM, etc."; `model` required and a free string; per session; "A
+GitHub Copilot subscription is required… unless you are using BYOK". Read from the package types
+(`dist/types.d.ts:2791`, `dist/session.d.ts:296`): `MessageOptions.mode?: "enqueue" | "immediate"`
+("immediate steering messages… folded into the running turn"), `agentMode?: "interactive" | "plan"
+| "autopilot" | "shell"`, `session.abort(): Promise<void>`. Open issues that shape the test:
+#2061 (2026-07): after a tool call the replayed assistant message carries `"refusal": null`, strict
+OpenAI-compatible providers (Gemini's own endpoint) 400, retries swallow it; #2571 (2026-09-20):
+`gemini-3.8-flash` absent from `listModels()` on the hosted catalog and silently run as
+`claude-sonnet-5`. OpenRouter fit: `baseUrl: https://openrouter.ai/api/v1`, `wireApi:
+"completions"` (the responses wire relies on server-side state OpenRouter rejects with 400),
+`model: "@preset/…"` for the fallback; unverified until step 0.
+
+**GitHub Copilot plans, for inference** (docs.github.com/en/billing/concepts/product-billing/github-copilot-licenses,
+docs.github.com/en/copilot/concepts/billing/usage-based-billing-for-organizations-and-enterprises,
+docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing; changelog 2026-06-01):
+Business $19/user/month with 1,900 AI credits, 1 credit = $0.01, "pooled at the billing entity
+level"; "Each token is priced based on the model used, and the total is converted into AI
+credits"; Gemini 3.8 Flash $0.75 in / $0.075 cached / $3.75 out per million — identical to
+OpenRouter's rates; "Copilot licenses are required for each user who uses Copilot. A seat is a
+license for one user." Conclusion: no inference saving, and a license per end user we cannot
+give; the seats stay on the OpenRouter key.
+
+**Sandbox vendors with a plain run-this door** (for our proxied tools): Google Agent Runtime Code
+Execution (docs.cloud.google.com/gemini-enterprise-agent-platform/scale/sandbox/code-execution-quickstart:
+create sandbox, then `execute_code` with files in and `outputs` chunks with `file_name` back, up to
+100 MB per call, Python or JavaScript, 2 vCPU/1.5 GB default, TTL reset on each call; usable
+without deploying an agent to Agent Runtime; idle between turns not billed); Vercel Sandbox (GA,
+$0.128/CPU-hr + $0.0212/GB-hr, sessions up to 24 h and resumable); E2B (not checked today).
+OpenRouter's shell does NOT fit this shape: it runs only inside a model call as a server tool.
+Mastra Cloud's workspace exists only for agents deployed on Mastra Cloud.
+
+**Rejected the same evening, with why:** Claude Agent SDK via OpenRouter's Anthropic-format
+endpoint (openrouter.ai/docs/cookbook/coding-agents/claude-code-integration: "only guaranteed to
+work with the Anthropic first-party provider… may not work correctly with other providers");
+Ori (openrouter.ai/docs/guides/ori/harness: terminal only); CopilotKit (React front door; Copilot
+SDK not a listed backend; Channels SDK ships Slack/Teams, not Telegram); Mastra and the OpenRouter
+Agent SDK on a Render worker (frameworks: we would assemble the harness); Google ADK + Agent
+Runtime (Python-only deploy; identity on the wire kept); Google Managed Agents API
+(docs.cloud.google.com/gemini-enterprise-agent-platform/build/managed-agents: Pre-GA, models
+unstated). Other messaging apps as the UI: WhatsApp is the only real alternative (templates for
+business-initiated messages; per-message billing including service replies from 2026-10-01 beyond
+1,000 free per number per month); iMessage needs an approved messaging provider; Signal has no API.
+
+**The seven-step sequence** a GO unlocks is in memory `openclaw-retirement-plan` and will be
+copied into this document when step 0 reports.

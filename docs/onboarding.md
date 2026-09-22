@@ -18,12 +18,12 @@ file and link instead; a guide that restates other docs goes stale silently.
 3. [engineering-memory.md](engineering-memory.md) — everything that isn't in the code (long; skim, then return)
 4. The runbooks: [doorman-runbook.md](doorman-runbook.md), [control-plane.md](control-plane.md), [nemoclaw-tech-agent.md](nemoclaw-tech-agent.md), and `Box_Setup_Stuff/`
    > **Direction, 2026-09-21:** the seat stack those runbooks describe (openclaw sandboxes on
-   > trades-box-1) is being **retired** for the OpenRouter Agent SDK on a Render worker, so that
-   > manager seats can become Claude-Cowork-like agents with the firm's data. Read
-   > [engineering-memory.md](engineering-memory.md) §2 "Manager seats become Claude-Cowork-like
-   > agents…" and
+   > trades-box-1) is being **replaced on the same box** by a bought harness (GitHub Copilot SDK,
+   > under test) with sandboxes from a vendor, so that manager seats can become Claude-Cowork-like
+   > agents with the firm's data. Read [engineering-memory.md](engineering-memory.md) §2 "Manager
+   > seats become Claude-Cowork-like agents on a BOUGHT harness…" and
    > [the 2026-09-21 research](../thoughts/shared/research/2026-09-21-seat-runtime-direction-openrouter-agent-sdk.md)
-   > before building on the box.
+   > before building on openclaw.
 5. [observability-gaps.md](observability-gaps.md) — a running list of malfunctions the system
    knows about and tells nobody. Short by design; add to it rather than fixing in passing.
 

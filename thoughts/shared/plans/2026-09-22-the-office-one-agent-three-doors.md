@@ -30,7 +30,8 @@ cron) keeps `PLANNER_SYSTEM`. What a technician-facing office can SEE is bounded
   No box change.
 - **Copilot SDK seat timeout = dependency.** The step-1 plan sets `mcpServers.spine.timeout: 60_000`
   (its plan, `sessionConfig`); it must be ≥ `OFFICE_WAITING_BUDGET_MS` + 30s (so 300_000). Phase 4
-  records this on that task; this plan does not edit its worktree.
+  records this on that task; this plan does not edit its worktree. Verified in `@github/copilot-sdk` 1.0.14's
+  bundle (`sdk/index.js`, `callTool`: `timeoutMs ?? qa`, `qa=6e4`): an unset timeout is ALSO 60s.
 - **Technician-facing tools = office knowledge only (operator).** Notes (`read_memory`,
   `read_job_note`, `write_memory`, `write_job_note`) + two new in-process tools: `catalog_lookup`
   (identifiers only) and `asker_history` (this person's business with the office). No record reads —

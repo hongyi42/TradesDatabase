@@ -84,23 +84,19 @@ cron) keeps `PLANNER_SYSTEM`. What a technician-facing office can SEE is bounded
 
 **Phase 1 — the office exists.** We write the office's own instructions and one function that runs
 it, plus two new lookup tools that can only ever show a technician-facing office the index of the firm
-(names and ids) and that person's own dealings with the office. Nothing calls it yet; tests prove the
-tools never return a job title or another person's messages.
+(names and ids) and that person's own dealings with the office. Tests prove the tools never return a job
+title or another person's messages.
 
 **Phase 2 — questions go to the office.** When a seat asks something, the office answers instead of
-the desk, with up to four minutes and the tools that fit the asker. You'd notice it working because a
-technician's question like "is the office waiting on me?" gets an answer built from the office's own
-notes and history, not the desk's pasted list.
+the desk, with up to four minutes and the tools that fit the asker.
 
 **Phase 3 — access asks go to the office.** The office reads the request, her recent requests
 (including a manager's "no"), the team list, and the catalog, then decides whom to ask and what to
 say. Code files the request, names the job in the manager's text, adds the yes/no menu, and falls back
-to every manager if the office names nobody valid. The Ben/Sam case: the office sees Sam's decline and
-goes back to Sam.
+to every manager if the office names nobody valid. If Ben hangs up, the office stops.
 
 **Phase 4 — calls go to the office, and the old desks are gone.** The inbound-call pass runs on the
-office's instructions. The desk and access-desk files are deleted, stale comments fixed, docs
-updated, and the Copilot SDK task told to set a 5-minute tool-call timeout.
+office's instructions. The old desk files are gone and the Copilot SDK task is told to set a 5-minute timeout.
 
 ## Secrets & env preflight
 
@@ -240,6 +236,14 @@ MANAGER CAN OPEN A RECORD", "the office narrows that", "ASK FOR THE LEAST THAT A
 per test, so no test reaches a live model; "same request twice → one row, one text" holds by the
 live-row rule in 4.
 
+**Cancel when the seat hangs up** (operator, 2026-09-22). `httpServer.ts:985-988`: an
+`AbortController` aborted on `res` `'close'` before `res.writableFinished`, passed as
+`createServer({identity, signal})` → `ServerDeps.signal` → both doors' `deps.signal`. `runToolLoop`
+gains optional `signal` (combined with its budget signal via `AbortSignal.any`; checked before each
+turn). The access door checks `signal.aborted` once more right before step 4's first write; aborted
+→ no file, no text, no fallback (the seat is gone). Known hole: a hang-up after that check leaves the
+request standing. The step-1 glue exempts `ask_team_lead` from "Stop waits for the tool".
+
 **Delete `accessDesk.ts`, `accessDesk.test.ts`** after porting: target resolution, tenant refusals,
 key-on-asked, lapse-then-file, collision → converge, menu per width, one manager's queue failure
 isolated, transcript pair.
@@ -250,6 +254,8 @@ isolated, transcript pair.
   manager; a foreign or malformed `jobId` → the asked target; a DECLINED request appears in the user
   message with its reason; body = headline with title + office words + menu; a live row + same
   manager → no new text; `args` null and a throwing apply both still file and text.
+- [ ] an aborted `signal` stops the loop before its next turn and, on the access door, files and
+  texts nothing; `httpServer` aborts the signal when the client closes before the reply.
 
 ### Live verification (agent-executable)
 - Prerequisites: this worktree's stack (`second-stack.sh`) + `npm run seed:local`; `npm run build`;
@@ -261,6 +267,8 @@ isolated, transcript pair.
   `context.jobId` is that job; pushes exist.
 - [ ] A manager declines via `decline_access`; Ben re-asks → the push goes to that manager only and
   mentions the earlier no; evidence: `person_pushes` + the office's `reason`.
+- [ ] a scripted client drops an access call mid-office → no request row, no push (then repeat on
+  Render with the step-1 glue's Stop, once deployed, to confirm the proxy passes the hang-up).
 - [ ] Ben asks "what's on <that job>?" → the `desk` row names no title or detail.
 
 ---

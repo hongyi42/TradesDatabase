@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 281 documents · 268 live · 13 superseded.
+Regenerate with `npm run decisions:index`. 282 documents · 269 live · 13 superseded.
 
 ## Superseded — do not build on these
 
@@ -54,6 +54,7 @@ Regenerate with `npm run decisions:index`. 281 documents · 268 live · 13 super
 
 - `2026-09-22` `finding` [2026-09-22-step-0-two-hour-test-of-the-github-copil](shared/findings/2026-09-22-step-0-two-hour-test-of-the-github-copil.md) — Step 0: two-hour test of the GitHub Copilot SDK on trades-box-1 with OpenRouter BYOK, the go/no-go for the bo…
 - `2026-09-22` `plan` [2026-09-22-rung-10c-a-seats-message-wakes-the-office](shared/plans/2026-09-22-rung-10c-a-seats-message-wakes-the-office.md) `describes 1 deleted file` · _draft_ — rung 10c — a seat's message wakes the office within seconds, the way an inbound call already does
+- `2026-09-22` `plan` [2026-09-22-step-1-technician-seat-on-the-copilot-sdk](shared/plans/2026-09-22-step-1-technician-seat-on-the-copilot-sdk.md) `describes 15 deleted files` · _draft_ — Step 1 — Ben's technician seat (s5) moves from its openclaw sandbox to one Copilot SDK engine plus our glue o…
 - `2026-09-22` `research` [2026-09-22-step-1-technician-seat-glue-on-the-copilot-sdk](shared/research/2026-09-22-step-1-technician-seat-glue-on-the-copilot-sdk.md) `landed` — Step 1 of the openclaw retirement — what a technician seat (s5, Ben) is made of today on trades-box-1, and ev…
 - `2026-09-21` `research` [2026-09-21-seat-runtime-direction-openrouter-agent-sdk](shared/research/2026-09-21-seat-runtime-direction-openrouter-agent-sdk.md) `not landed` — The seat-runtime direction — manager seats become Claude-Cowork-like agents with the firm's data. Records the…
 - `2026-09-20` `plan` [2026-09-20-the-onboarding-questionnaire](shared/plans/2026-09-20-the-onboarding-questionnaire.md) · _not started_ — The onboarding questionnaire — a `set_timezone` tool, skills turned on for the seats, and a once-per-firm que…

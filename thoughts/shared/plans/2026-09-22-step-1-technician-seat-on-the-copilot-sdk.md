@@ -66,6 +66,8 @@ Implementation choices (mine; flip at review):
   - Add two lines: tools appear as `spine-<name>`; never set `blobPath`.
   - Hole: two copies of the doctrine while other seats stay on openclaw.
 - **Cut-over removes s5's bot token instead of just stopping the container.** Two box jobs restart stopped containers by themselves: `gateway-heal.sh:52-60` starts every exited `openshell-` container, and `sandbox-token-medic.mjs:91-96` runs `docker restart` on renewal. A revived openclaw would poll Ben's bot alongside the glue, and Telegram allows one poller per bot. The glue exits loudly on a 409 so this shows in the journal.
+- **Stop waits for an in-flight tool** (Phase 1 review, round 3): a Stop while a spine tool is pending aborts only once that tool completes, so a note is never filed while the model believes it was interrupted — the same rule double texts follow.
+- **Known hole: stale-idle accounting is a count, not a match.** The SDK's `session.idle` carries only `aborted?`, nothing tying it to the loop it ended, so a dying loop's idle arriving later than a whole new reply, or an engine-initiated abort while one of ours is owed, can misroute one double text. Worst case is a second reply, never a duplicate note (tools still gate aborts).
 - **What code decides:**
   - Guards: the allowlist, the permission handler, the path guard.
   - Plumbing: the turn policy, Stop/`/new`, transcription, retention, cost fetch.
@@ -153,7 +155,7 @@ Pure modules in `src/seatGlue/` with unit tests. No SDK, no network; `fetch` is 
 - `selfContained.test.ts` reads every non-test `src/seatGlue/*.ts` and allows only `node:*`, `./*` and the SDK specifier (the box's `package.json` holds nothing else).
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, and `npm test` all pass; all new `src/seatGlue` tests pass.
+- [x] `npm run typecheck`, `npm run lint`, and `npm test` all pass; all new `src/seatGlue` tests pass.
 
 ### Live verification (agent-executable)
 None; phase 2 covers it. **Manual verification:** none.

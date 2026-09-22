@@ -247,7 +247,10 @@ OpenAI-compatible providers (Gemini's own endpoint) 400, retries swallow it; #25
 `gemini-3.8-flash` absent from `listModels()` on the hosted catalog and silently run as
 `claude-sonnet-5`. OpenRouter fit: `baseUrl: https://openrouter.ai/api/v1`, `wireApi:
 "completions"` (the responses wire relies on server-side state OpenRouter rejects with 400),
-`model: "@preset/…"` for the fallback; unverified until step 0.
+`model: "@preset/…"` for the fallback; unverified until step 0. **Corrected by step 0 (measured
+2026-09-21):** the responses wire WORKS against OpenRouter and is the one to use — the completions
+wire drops Gemini's reasoning details after a tool call and 400s ~1 in 10 tool turns; #2061 did not
+reproduce. Numbers in engineering-memory §2, "Step 0 measured".
 
 **GitHub Copilot plans, for inference** (docs.github.com/en/billing/concepts/product-billing/github-copilot-licenses,
 docs.github.com/en/copilot/concepts/billing/usage-based-billing-for-organizations-and-enterprises,

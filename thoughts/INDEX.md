@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 276 documents · 263 live · 13 superseded.
+Regenerate with `npm run decisions:index`. 277 documents · 264 live · 13 superseded.
 
 ## Superseded — do not build on these
 
@@ -52,6 +52,7 @@ Regenerate with `npm run decisions:index`. 276 documents · 263 live · 13 super
 
 ## Live
 
+- `2026-09-22` `finding` [2026-09-22-step-0-two-hour-test-of-the-github-copil](shared/findings/2026-09-22-step-0-two-hour-test-of-the-github-copil.md) — Step 0: two-hour test of the GitHub Copilot SDK on trades-box-1 with OpenRouter BYOK, the go/no-go for the bo…
 - `2026-09-21` `research` [2026-09-21-seat-runtime-direction-openrouter-agent-sdk](shared/research/2026-09-21-seat-runtime-direction-openrouter-agent-sdk.md) `not landed` — The seat-runtime direction — manager seats become Claude-Cowork-like agents with the firm's data. Records the…
 - `2026-09-20` `plan` [2026-09-20-the-onboarding-questionnaire](shared/plans/2026-09-20-the-onboarding-questionnaire.md) · _not started_ — The onboarding questionnaire — a `set_timezone` tool, skills turned on for the seats, and a once-per-firm que…
 - `2026-09-20` `research` [2026-09-20-the-onboarding-flow](shared/research/2026-09-20-the-onboarding-flow.md) `landed` — The onboarding flow end to end — who creates the Telegram bots and why the cap decides it, the structural boo…

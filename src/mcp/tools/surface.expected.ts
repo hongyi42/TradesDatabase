@@ -71,6 +71,7 @@ export const MANAGER_ONLY_TOOLS = [
   'set_technician_horizon',
   'set_technician_skills',
   'set_technician_view', // access plan A: the firm's own rule
+  'set_timezone', // the firm's IANA zone (2026-09-20) — no writer existed before it
   'unschedule_visit',
   'update_job',
 ] as const;

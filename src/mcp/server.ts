@@ -128,10 +128,26 @@ const TOOLS = [
             "your person has said yes, and `question` carries THEIR reason in their words. " +
             'ONLY A MANAGER CAN OPEN A RECORD: the office files the request and texts every ' +
             'manager it can reach, and your person is texted when one answers. Say that you ' +
-            'asked; never say they now have access, and never promise a reply.',
+            'asked; never say they now have access, and never promise a reply. ' +
+            'ASK FOR THE LEAST THAT ANSWERS THEM. A manager opens what you asked for, so pass ' +
+            'jobId whenever a tool has given you one — get_job answers with the job id even ' +
+            'when it refuses you. Only fall back to customerId when you have no job id at all ' +
+            '(a customer outside their view lists no jobs); the office narrows that to the one ' +
+            'unfinished job for you where it can. The same goes for `wants`: ask for the ' +
+            'record unless they actually need the figures or the calls and emails.',
           properties: {
-            jobId: { type: 'string', description: 'The job they need, as the tool that refused it named it.' },
-            customerId: { type: 'string', description: 'The customer they need. Use jobId instead when it is one job.' },
+            jobId: {
+              type: 'string',
+              description:
+                'The ONE job they need — prefer this. Use the id the tool that refused it gave ' +
+                'you, or the one get_customer_context lists.',
+            },
+            customerId: {
+              type: 'string',
+              description:
+                'Opens EVERY job of that customer, finished ones too. Only when they need the ' +
+                'whole account — never as a shortcut when they named one job.',
+            },
             wants: {
               type: 'string',
               enum: ['record', 'notes', 'money'],

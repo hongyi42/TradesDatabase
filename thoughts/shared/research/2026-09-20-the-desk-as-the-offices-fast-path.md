@@ -6,6 +6,20 @@ topic: The desk as the office's fast path — what the Q&A desk is today, what t
 supersedes: nothing (it does not overturn a document; it re-grounds the SHAPE of rung 10c, whose premise — "a seat's inform wakes the PLANNER" — lives in the task record and docs/engineering-memory.md, not in a research doc)
 ---
 
+*Line numbers re-pinned 2026-09-22 against main at the merge of `0e10054` — `accessDesk.ts` (now 509 lines) and `server.ts` both moved; every quoted ruling survived verbatim.*
+
+> **READ WITH THE OPERATOR'S CORRECTIONS (2026-09-21/22) — this document's FRAMING is superseded,
+> its facts are not.** (1) The planner and the desk/office are ONE team-lead agent split only by
+> TRIGGER: pinged = the office (operations, timely L2 writes including creation, may write memory);
+> the 30-minute cron = the planner (no job forgotten; developing knowledge of the firm). So the
+> "three components" in the Summary are two code paths of one agent plus the cron, and the
+> difference between the two paths is only whether someone is WAITING. (2) C1 and C2 below do NOT
+> point against the proposal: "answering is not waking" scoped the desk's TRIGGER, and accessDesk's
+> ruling is about who may SEE a record, not about L2 bookkeeping. (3) The "escalate to the planner"
+> hop is gone — the office sends through the same guarded path (the double-text guard is a DB
+> stamp). (4) The office gets real write tools. Rulings recorded in docs/engineering-memory.md
+> (rung 10c section) and the 10c task record. D1-D5 below were resolved by those rulings.
+
 ## Summary
 
 The **office** — the thing a technician's assistant talks to — is not one component. It is
@@ -32,8 +46,8 @@ be reconciled with them rather than assumed compatible (see Constraints §C1, §
 | Where | What begins there |
 |---|---|
 | `src/mcp/server.ts:109` | the `ask_team_lead` tool definition handed to seats |
-| `src/mcp/server.ts:731` | `case 'ask_team_lead'` — the only caller of the desk |
-| `src/mcp/server.ts:775` | the access branch, routing to `answerAccessRequest` |
+| `src/mcp/server.ts:747` | `case 'ask_team_lead'` — the only caller of the desk |
+| `src/mcp/server.ts:791` | the access branch, routing to `answerAccessRequest` |
 | `src/teamLead/desk.ts:141` | `answerDeskQuestion` — the general read-only desk |
 | `src/teamLead/accessDesk.ts:141` | `answerAccessRequest` — the fast path that acts |
 | `src/calls/observationPing.ts:38` | `drainOneObservationPing` — the wake that exists today |
@@ -48,8 +62,8 @@ be reconciled with them rather than assumed compatible (see Constraints §C1, §
   bounds: `DESK_MAX_TOKENS = 2048` (`:38`), `DESK_REASONING = 'low'` (`:41`),
   `DESK_BUDGET_MS = 40_000` (`:50`), `DESK_MAX_TURNS = 4` (`:56`), `DESK_QUESTION_MAX = 500`
   (`:58`).
-- **`src/teamLead/accessDesk.ts`** (487 lines) — the access path. `answerAccessRequest`,
-  `askTheManagers` (`:332`), `recordPair` (`:436`). The template for a fast path that acts.
+- **`src/teamLead/accessDesk.ts`** (509 lines) — the access path. `answerAccessRequest`,
+  `askTheManagers` (`:354`), `recordPair` (`:458`). The template for a fast path that acts.
 - **`src/db/personPushes.ts`** — `queuePersonPush`, kinds `schedule | call | ops | access`
   (`:13`). A direct-to-person text queue that does **not** pass through the planner.
 - **`src/calls/observationPing.ts` / `src/calls/runWorker.ts`** — the existing wake and its loop.
@@ -63,7 +77,7 @@ be reconciled with them rather than assumed compatible (see Constraints §C1, §
 
 ```
 seat calls ask_team_lead (inside the technician's own chat turn)
-   │  server.ts:731 — identity from the VERIFIED header; caller decides `managerDesk`
+   │  server.ts:747 — identity from the VERIFIED header; caller decides `managerDesk`
    ▼
 answerDeskQuestion (desk.ts:141)
    │
@@ -88,13 +102,13 @@ returns { answer, askId } to the waiting seat
 ask_team_lead + accessRequest  →  answerAccessRequest (accessDesk.ts:141)
    │
    ├─ refuses a manager (already sees all) / a roster-less badge      (:157-172)
-   ├─ resolves ONE target, tenant-checked on every read               (:193-241)
-   ├─ "already open?" against the technician's view                   (:248-273)
-   ├─ "already asked?" — one open request per person/thing/width      (:283-298)
-   └─ askTheManagers (:332)
-         ├─ openAccessRequest — files the row                        (:349-363)
-         ├─ queuePersonPush per reachable manager, kind 'access'      (:390-403)
-         └─ recordPair — ask + desk transcript for the planner        (:416, :436-479)
+   ├─ resolves ONE target, tenant-checked on every read               (:193-263)
+   ├─ "already open?" against the technician's view                   (:265-295)
+   ├─ "already asked?" — one open request per person/thing/width      (:297-320)
+   └─ askTheManagers (:354)
+         ├─ openAccessRequest — files the row                        (:371-385)
+         ├─ queuePersonPush per reachable manager, kind 'access'      (:412-425)
+         └─ recordPair — ask + desk transcript for the planner        (:438, :458-501)
 ```
 
 Note what this flow does **not** touch: none of the planner's send rails. It reaches a human
@@ -128,16 +142,16 @@ hours, `PLANNER_TICK_MINUTES_OFF_HOURS = 120` (`:575`) outside them.
 reverses.** `deskPrompt.ts:7-10`, verbatim: *"'Answering is not waking' (user ruling, the explicit
 carve-out from wake-on-event): waking to ACT stays ruled out — the desk never acts, and everything
 it says lands in the bucket so the DECIDING planner sees what was said in its name on the next
-tick."* Restated at `server.ts:733-735`. The proposal's premise is that the desk *is* woken and
+tick."* Restated at `server.ts:749-751`. The proposal's premise is that the desk *is* woken and
 *does* act.
 
 **C2. The operator removed the desk's only write TODAY (2026-09-20, commit `8c4e4b6`).**
 `accessDesk.ts:101-107`: *"'opened' is GONE (operator, 2026-09-20): only a manager or the firm's
-own rule widens a view, so the desk can no longer answer by opening anything."* And `:324-326`:
+own rule widens a view, so the desk can no longer answer by opening anything."* And `:346-348`:
 *"there is now **NO path anywhere in this flow where a model's decision causes a write**. The desk
 reads, it files, it texts. Every widening of a view is a person's choice."* The stated reason is
 scoped to a promise about *views*: *"The firm tells its customers that a technician sees the work
-they are on and nothing else… It is the manager's consent that the promise is about"* (`:317-322`).
+they are on and nothing else… It is the manager's consent that the promise is about"* (`:339-344`).
 Whether that reasoning extends to L2 operational writes (a job's status, a visit's completion) is
 not settled by the text — it argues about access, not about record-keeping.
 
@@ -160,7 +174,7 @@ header.** The obvious substitute is not available either — `office_messages.ti
 `service_role`. `accessDesk.ts` re-checks `tenant_id` on every resolved row (`:199`, `:203`,
 `:217`) rather than trusting an id it was handed.
 
-**C7. The model must not fail open.** `accessDesk.ts:49-51`: *"THE FALLBACK ALWAYS MOVES TOWARDS A
+**C7. The model must not fail open.** `accessDesk.ts:50-51`: *"THE FALLBACK ALWAYS MOVES TOWARDS A
 HUMAN. A timeout, a model error, a malformed decision — all of them ask a manager. Nothing here
 fails open."*
 
@@ -201,7 +215,7 @@ unlike the `tier` column, which is explicitly not authority).
 **D2. Whether a model decision may cause an L2 write, given C2.** `accessDesk.ts` currently
 resolves this by having the model decide *nothing* that reaches a field: "CODE DOES THE WRITE, BY
 CONSTRUCTION… every field of the grant is fixed here… and the grant's `reason` is the technician's
-own words quoted by code, never the model's" (`:42-47`, describing the now-removed narrow path).
+own words quoted by code, never the model's" (`:44-48`, describing the now-removed narrow path).
 The same construction is available for L2 writes — the model classifies, code writes fixed fields —
 or the desk could be given genuine write tools, which is the thing C2's wording most directly
 resists.
@@ -214,10 +228,10 @@ depending on whether the desk marks the row claimed.
 **D4. How the desk reaches a human.** Two mechanisms already exist and they are not the same
 thing: escalate to a focused planner pass (`runFocusedObservationPass`, which carries the ask
 marker, the once-ever rail, the date rail and the citation rail), or push directly
-(`queuePersonPush`, as `accessDesk.ts:390-403` does, which carries none of them and is not subject
+(`queuePersonPush`, as `accessDesk.ts:412-425` does, which carries none of them and is not subject
 to them).
 
-**D5. Whether a widened desk stays one component.** `server.ts:753-756` records the precedent for
+**D5. Whether a widened desk stays one component.** `server.ts:765-767` records the precedent for
 the opposite: the access branch is *"a different call, not a wider desk: the general desk loop
 stays read-only, and the request path never reaches it."*
 

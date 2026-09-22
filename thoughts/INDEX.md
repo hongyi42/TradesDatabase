@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 278 documents · 265 live · 13 superseded.
+Regenerate with `npm run decisions:index`. 279 documents · 266 live · 13 superseded.
 
 ## Superseded — do not build on these
 
@@ -52,6 +52,7 @@ Regenerate with `npm run decisions:index`. 278 documents · 265 live · 13 super
 
 ## Live
 
+- `2026-09-22` `plan` [2026-09-22-rung-10c-a-seats-message-wakes-the-office](shared/plans/2026-09-22-rung-10c-a-seats-message-wakes-the-office.md) `describes 1 deleted file` · _draft_ — rung 10c — a seat's message wakes the office within seconds, the way an inbound call already does
 - `2026-09-21` `research` [2026-09-21-seat-runtime-direction-openrouter-agent-sdk](shared/research/2026-09-21-seat-runtime-direction-openrouter-agent-sdk.md) `not landed` — The seat-runtime direction — manager seats become Claude-Cowork-like agents with the firm's data. Records the…
 - `2026-09-20` `plan` [2026-09-20-the-onboarding-questionnaire](shared/plans/2026-09-20-the-onboarding-questionnaire.md) · _not started_ — The onboarding questionnaire — a `set_timezone` tool, skills turned on for the seats, and a once-per-firm que…
 - `2026-09-20` `research` [2026-09-20-the-desk-as-the-offices-fast-path](shared/research/2026-09-20-the-desk-as-the-offices-fast-path.md) `landed` — The desk as the office's fast path — what the Q&A desk is today, what the access desk already does that the p…

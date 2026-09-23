@@ -67,7 +67,9 @@ export const PORTED_BLOCKS: string[] = [
  * drift test keeps its meaning. From the desk→office merge
  * (thoughts/shared/plans/2026-09-22-the-office-one-agent-three-doors.md): only a
  * manager opens anything (true since 2026-09-20); ask_team_lead becomes the whole
- * office, which may take minutes and keeps a question it has not answered yet;
+ * office, which may take minutes and keeps a plain question it has not answered
+ * yet — but an access ask whose call timed out may not have been filed (the office
+ * treats a closed call as a hang-up and files nothing), so the seat offers to ask again;
  * an access ask goes to the manager who looks after the person. The openclaw
  * copy in bootstrap-box.sh keeps the old wording (openclaw is retiring).
  * doctrine.test.ts fails if a `from` stops matching exactly once.
@@ -79,7 +81,7 @@ export const DOCTRINE_UPDATES: ReadonlyArray<readonly [from: string, to: string]
   ],
   [
     '`ask_team_lead` — a question answered NOW, in the same call:',
-    '`ask_team_lead` — a question the office answers in the same call. It can take a few minutes;\n     if the call times out, the office is STILL working on it and has kept your question, so do NOT\n     call it again (a second call starts a second office run). For example:',
+    '`ask_team_lead` — a question the office answers in the same call. It can take a few minutes.\n     If the call times out, a plain QUESTION is kept for the office\'s next pass, so do NOT ask it\n     again (a second call starts a second office run). An ACCESS ask may not have gone through:\n     tell your person, and offer to ask again. For example:',
   ],
   [
     '"asked_manager" means managers were texted: say so,',

@@ -27,10 +27,20 @@ import { randomUUID } from 'node:crypto';
 //    glue awaits the abort's idle (beginAbort) before sending.
 export type Route = 'send' | 'steer' | 'abort-then-send';
 
+// Tools a Stop or /new may interrupt mid-call. ask_team_lead is the office,
+// which can take minutes and stops itself when the caller hangs up (desk→office
+// merge, thoughts/shared/plans/2026-09-22-the-office-one-agent-three-doors.md).
+// Everything else — above all record_field_note — is never aborted mid-call.
+// Double texts still STEER during any tool: they never abort one.
+export const ABORT_SAFE_TOOLS = new Set(['ask_team_lead']);
+const bareName = (tool?: string): string => (tool ?? '').replace(/^spine-/, '');
+
 export class TurnPolicy {
   private busy = false;
-  private readonly pendingIds = new Set<string>();
-  private anonymousPending = 0;
+  /** Pending spine tools by call id, with the tool's name. */
+  private readonly pendingIds = new Map<string, string>();
+  /** Id-less pending tools, by name. */
+  private anonymousPending: string[] = [];
   private replyId: string | null = null;
   private nextId: string | null = null;
   private abortWaiters: Array<() => void> = [];
@@ -43,7 +53,13 @@ export class TurnPolicy {
   }
 
   get toolPending(): boolean {
-    return this.pendingIds.size + this.anonymousPending > 0;
+    return this.pendingIds.size + this.anonymousPending.length > 0;
+  }
+
+  /** A tool is pending and every pending tool is one a Stop may interrupt. */
+  get onlyAbortSafePending(): boolean {
+    const names = [...this.pendingIds.values(), ...this.anonymousPending];
+    return names.length > 0 && names.every((n) => ABORT_SAFE_TOOLS.has(bareName(n)));
   }
 
   route(): Route {
@@ -69,9 +85,9 @@ export class TurnPolicy {
   }
 
   /** From the permission handler, before the MCP call goes out. */
-  onToolPending(toolCallId?: string): void {
-    if (toolCallId) this.pendingIds.add(toolCallId);
-    else this.anonymousPending += 1;
+  onToolPending(toolCallId?: string, toolName?: string): void {
+    if (toolCallId) this.pendingIds.set(toolCallId, toolName ?? '');
+    else this.anonymousPending.push(toolName ?? '');
   }
 
   /** From tool.execution_complete. */
@@ -82,7 +98,7 @@ export class TurnPolicy {
     }
     // Only an id-less completion may settle an id-less pending tool: an unknown
     // id must never make a running tool look finished (unsure → steer, the safe side).
-    if (this.anonymousPending > 0) this.anonymousPending -= 1;
+    this.anonymousPending.shift();
   }
 
   /**
@@ -104,6 +120,20 @@ export class TurnPolicy {
   }
 
   /**
+   * The abort's idle never came (the glue's wait timed out) or the abort call
+   * itself failed. Drop the waiters — left behind, they would swallow the NEXT
+   * reply's real end-of-reply idle and keep the seat busy forever. When the
+   * abort was actually sent, its idle may still arrive: count it as owed.
+   */
+  cancelAbort(abortWasSent: boolean): void {
+    if (!this.abortWaiters.length) return;
+    const waiters = this.abortWaiters;
+    this.abortWaiters = [];
+    for (const w of waiters) w();
+    if (abortWasSent) this.staleAbortIdles += 1;
+  }
+
+  /**
    * From session.idle, with its `data.aborted`. Returns:
    * - 'abort': the idle released an abort we are waiting on (policy stays busy);
    * - 'stale': a late aborted idle from an abort that the loop's own finish beat
@@ -119,7 +149,7 @@ export class TurnPolicy {
       return 'stale';
     }
     this.pendingIds.clear();
-    this.anonymousPending = 0;
+    this.anonymousPending = [];
     if (this.abortWaiters.length) {
       // A NORMAL idle while we wait means the loop finished by itself just as we
       // aborted. Release the waiter anyway (waiting for an aborted idle that may

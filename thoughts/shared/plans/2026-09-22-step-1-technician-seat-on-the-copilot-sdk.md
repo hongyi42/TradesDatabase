@@ -221,22 +221,22 @@ Wires the real engine, adds the doctrine and the seat loop, and proves a whole s
 **`src/seatGlue/seat.test.ts`** (a fake session emits scripted events): a steer during a tool; abort-then-send while generating, sending only the new text; empty trailing messages dropped; two non-empty messages sent as two texts; Stop; `/new` persisting a new id; a photo prompt and attachment containing no `stateDir` path; the voice-failure reply; `session.error` mid-reply → the fallback text; a failed call's id reaches the cost log once; `replyId` carried into cost calls.
 
 ### Automated verification
-- [ ] typecheck, lint and test pass; `seat.test.ts` passes.
-- [ ] `stage.sh /tmp/sg && (cd /tmp/sg && npm ci && node app/main.js --selfcheck)` exits 0 on the laptop (darwin engine).
+- [x] typecheck, lint and test pass; `seat.test.ts` passes (3518 tests, 2026-09-22).
+- [x] `stage.sh /tmp/sg && (cd /tmp/sg && npm ci && node app/main.js --selfcheck)` exits 0 on the laptop (darwin engine).
 
 ### Live verification (agent-executable, LOCAL stack only)
 Run by a fresh subagent that did not write the code.
 - Prerequisites: the local stack is up and `npm run seed:local` has run; `OPENROUTER_API_KEY` is set; `GATEWAY_IDENTITY_SECRET=<test> MCP_HTTP_PORT=<port> node --env-file=.env.test dist/mcp/httpServer.js` (it loads no dotenv itself); the driver runs from the STAGED copy, because the SDK is not in the root `node_modules`: `stage.sh <scratch>/sg && cd <scratch>/sg && npm ci && node app/drive.js …`, as `tech-jane` in the seed tenant with `SPINE_MCP_URL=http://127.0.0.1:<port>/`; record OpenRouter's `GET /api/v1/key` usage before the run; a voice fixture from `say -o /tmp/note.wav --file-format=WAVE --data-format=LEI16@16000 "…"`, and any JPEG.
 - Checks:
-  - [ ] "What's on my schedule tomorrow?" → a reply quoting a `resolve_date`-style weekday date; the cost log gains ≥1 line with `model` starting `google/gemini`.
-  - [ ] A note ("Finished the Jane Doe fan swap, parts $180") is filed. Read back independently: `psql` on the local stack shows one new `raw_captures` row with `technician_ref='tech-jane'` and `blob_path IS NULL`.
-  - [ ] A double text during a tool call gives ONE reply. A double text 1 s into a plain answer gives ONE reply and the log shows an abort. Neither creates a second capture (psql count).
-  - [ ] Stop mid-answer → "Stopped.", and the next question still sees the history.
-  - [ ] The photo is described correctly. If not, switch to the describe-call fallback from Decisions and re-run.
-  - [ ] The voice note is answered from its transcript; the log has a `kind:"transcribe"` line.
-  - [ ] Kill and restart the driver on the same state dir → "what did I tell you about the fan?" is recalled.
-  - [ ] **The $0.02 check:** `node app/costReport.js <log>` → `avgPerReply ≤ 0.02`. Report the numbers either way, plus `fallbackCalls`. **Cross-check:** the log's total is within a few cents of the rise in `GET /api/v1/key` usage across the run (the key is shared, so run when nothing else is busy); a bigger gap means calls are being missed.
-  - [ ] The journal shows the first permission request's `serverName`; record the value in engineering-memory (it decides `SPINE_NAMES`).
+  - [x] "What's on my schedule tomorrow?" → a reply quoting a `resolve_date`-style weekday date; the cost log gains ≥1 line with `model` starting `google/gemini`.
+  - [x] A note ("Finished the Jane Doe fan swap, parts $180") is filed. Read back independently: `psql` on the local stack shows one new `raw_captures` row with `technician_ref='tech-jane'` and `blob_path IS NULL`.
+  - [~] A double text during a tool call gives ONE reply (NOT TRIGGERED live: local spine tools finish in ms, so no timed script landed inside one; unit-tested). The mid-answer case PASSED with the abort logged, and no second capture. A double text 1 s into a plain answer gives ONE reply and the log shows an abort. Neither creates a second capture (psql count).
+  - [x] Stop mid-answer → "Stopped.", and the next question still sees the history.
+  - [x] The photo is described correctly (serial 7Q4-88213 read back; no fallback needed). If not, switch to the describe-call fallback from Decisions and re-run.
+  - [x] The voice note is answered from its transcript; the log has a `kind:"transcribe"` line.
+  - [x] Kill and restart the driver on the same state dir → "what did I tell you about the fan?" is recalled.
+  - [~] **The $0.02 check (MIXED — operator to rule):** 16 replies avg $0.013 PASS; a 3-reply cold-cache run avg $0.028 FAIL; aborted calls are not logged (key usage rose ~30% more than the log on the abort-heavy run). `node app/costReport.js <log>` → `avgPerReply ≤ 0.02`. Report the numbers either way, plus `fallbackCalls`. **Cross-check:** the log's total is within a few cents of the rise in `GET /api/v1/key` usage across the run (the key is shared, so run when nothing else is busy); a bigger gap means calls are being missed.
+  - [x] The journal shows the first permission request's `serverName` (= "spine", the config key); record the value in engineering-memory (it decides `SPINE_NAMES`).
 
 **Manual verification:** none.
 

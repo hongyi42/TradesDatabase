@@ -122,6 +122,30 @@ describe('TurnPolicy', () => {
     expect(p.route()).toBe('steer');
   });
 
+  it('cancelAbort drops a waiter whose idle never came, so the next reply can end', async () => {
+    const p = new TurnPolicy(ids());
+    p.onSend();
+    const a = p.beginAbort();
+    p.cancelAbort(true); // timed out: the abort was sent, its idle is owed
+    await a.done;
+    p.onSend();
+    expect(p.onIdle(true)).toBe('stale'); // the owed idle, late
+    expect(p.onIdle(false)).toBe('idle'); // the reply's real end
+    expect(p.isBusy).toBe(false);
+  });
+
+  it('knows when every pending tool is one a Stop may interrupt', () => {
+    const p = new TurnPolicy(ids());
+    p.onSend();
+    p.onToolPending('a', 'spine-ask_team_lead');
+    expect(p.onlyAbortSafePending).toBe(true);
+    p.onToolPending('b', 'spine-record_field_note');
+    expect(p.onlyAbortSafePending).toBe(false);
+    p.onToolComplete('b');
+    expect(p.onlyAbortSafePending).toBe(true);
+    expect(p.route()).toBe('steer'); // a double text still never aborts it
+  });
+
   it('treats an aborted idle with nothing waiting as the end of the reply', () => {
     const p = new TurnPolicy(ids());
     p.onSend();

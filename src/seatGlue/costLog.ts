@@ -58,6 +58,7 @@ export const DEFAULT_DELAYS_MS = [2_000, 5_000, 10_000, 30_000, 60_000];
 
 export class CostLog {
   private readonly seen = new Set<string>();
+  private readonly inFlight = new Set<Promise<CostLine | null>>();
   private readonly fetchImpl: FetchLike;
   private readonly wait: (ms: number) => Promise<void>;
   private readonly now: () => Date;
@@ -78,9 +79,21 @@ export class CostLog {
    * an id is logged once however many events carry it. Never throws: cost
    * accounting must not break a reply.
    */
-  async record(ref: CallRef): Promise<CostLine | null> {
-    if (!ref.generationId || this.seen.has(ref.generationId)) return null;
+  record(ref: CallRef): Promise<CostLine | null> {
+    if (!ref.generationId || this.seen.has(ref.generationId)) return Promise.resolve(null);
     this.seen.add(ref.generationId);
+    const p = this.write(ref);
+    this.inFlight.add(p);
+    void p.finally(() => this.inFlight.delete(p));
+    return p;
+  }
+
+  /** Wait for every cost line still being resolved (the local driver calls it before exiting). */
+  async flush(): Promise<void> {
+    while (this.inFlight.size) await Promise.all([...this.inFlight]);
+  }
+
+  private async write(ref: CallRef): Promise<CostLine | null> {
     try {
       const data = await this.fetchGeneration(ref.generationId);
       const line: CostLine = data

@@ -1,3 +1,4 @@
+import { toTelegramHtml } from './format.js';
 import { defaultFetch, type FetchLike } from './http.js';
 
 // The Telegram Bot API calls the glue makes (core.telegram.org/bots/api). Long
@@ -78,9 +79,24 @@ export class TelegramClient implements TelegramApi {
     return Array.isArray(result) ? (result as TgUpdate[]) : [];
   }
 
+  /**
+   * One reply, as Telegram HTML (see format.ts) so links are tappable and bold
+   * is bold. Split on the Markdown first — Telegram's 4096 limit counts the
+   * text after parsing, so tags do not count against it. A chunk Telegram
+   * rejects as HTML goes again as plain text: a reply is never lost to markup.
+   */
   async send(chatId: number, text: string): Promise<void> {
     for (const chunk of splitText(text)) {
-      await this.call('sendMessage', { chat_id: chatId, text: chunk, reply_markup: KEYBOARD });
+      try {
+        await this.call('sendMessage', {
+          chat_id: chatId,
+          text: toTelegramHtml(chunk),
+          parse_mode: 'HTML',
+          reply_markup: KEYBOARD,
+        });
+      } catch {
+        await this.call('sendMessage', { chat_id: chatId, text: chunk, reply_markup: KEYBOARD });
+      }
     }
   }
 

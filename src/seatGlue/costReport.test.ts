@@ -43,10 +43,11 @@ describe('summarize', () => {
     expect(summarize([], 0.02).pass).toBe(false);
   });
 
-  it('reports unresolved lines separately and leaves them out of the averages', () => {
+  it('reports unresolved lines separately and cannot pass while any remain', () => {
     const s = summarize([line({}), line({ status: 'unresolved', totalCost: undefined })], 0.02);
     expect(s.unresolved).toBe(1);
     expect(s.calls).toBe(1);
+    expect(s.pass).toBe(false);
   });
 });
 

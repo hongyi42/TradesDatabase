@@ -48,16 +48,26 @@ describe('TelegramClient', () => {
     });
   });
 
-  it('sends plain text with the persistent Stop keyboard on every chunk', async () => {
+  it('sends Telegram HTML with the persistent Stop keyboard on every chunk', async () => {
     const { f, calls } = fakeFetch(() => ({ json: { ok: true, result: {} } }));
     await new TelegramClient('TOKEN', f).send(42, 'x'.repeat(9000));
     expect(calls).toHaveLength(3);
     for (const c of calls) {
       const b = body(c);
       expect(b.chat_id).toBe(42);
-      expect(b.parse_mode).toBeUndefined();
+      expect(b.parse_mode).toBe('HTML');
       expect(b.reply_markup).toEqual({ keyboard: [[{ text: 'Stop' }]], is_persistent: true, resize_keyboard: true });
     }
+  });
+
+  it('resends a chunk as plain text when Telegram rejects the HTML', async () => {
+    const { f, calls } = fakeFetch((c) =>
+      body(c).parse_mode === 'HTML' ? { status: 400, json: { ok: false } } : { json: { ok: true, result: {} } },
+    );
+    await new TelegramClient('TOKEN', f).send(1, '**Tom** at 16:00');
+    expect(calls).toHaveLength(2);
+    expect(body(calls[1]).parse_mode).toBeUndefined();
+    expect(body(calls[1]).text).toBe('**Tom** at 16:00');
   });
 
   it('downloads a file through getFile and refuses one over 20 MB', async () => {

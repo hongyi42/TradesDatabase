@@ -28,7 +28,8 @@ SEAT="${1:?usage: install.sh <seat>  (with SEAT_TENANT_ID SEAT_TECHNICIAN_REF SE
 here="$(cd "$(dirname "$0")" && pwd)"
 NODE=/usr/local/bin/node
 PREFIX=/opt/seat-glue
-TOOLS="$PREFIX/.tools"
+NEXT="${PREFIX}.next"                   # built and self-checked here, then swapped in
+TOOLS=/opt/seat-glue-tools              # outside PREFIX so the swap keeps it
 log() { printf '== %s\n' "$*"; }
 
 # 1. The service user and its state root (StateDirectory= makes the per-seat dir).
@@ -51,13 +52,15 @@ if [ ! -x "$npmdir/npm" ]; then
 fi
 log "npm $("$npmdir/npm" -v) from ${tarball}"
 
-# 3. The code and its one dependency (the SDK, with the linux-x64 engine).
-install -d -m 0755 "$PREFIX" "$PREFIX/app"
-rm -f "$PREFIX"/app/*.js
-cp "$here"/app/*.js "$PREFIX/app/"
-cp "$here/package.json" "$here/package-lock.json" "$PREFIX/"
-(cd "$PREFIX" && PATH="$npmdir:$PATH" npm ci --omit=dev --no-audit --no-fund >/dev/null)
-log "code in $PREFIX ($(ls "$PREFIX"/app | wc -l | tr -d ' ') modules)"
+# 3. The code and its one dependency (the SDK, with the linux-x64 engine), built
+#    in $NEXT. The running copy in $PREFIX is not touched until step 5 proves
+#    the new one starts — a failed upgrade leaves the seat on its old code.
+rm -rf "$NEXT"
+install -d -m 0755 "$NEXT" "$NEXT/app"
+cp "$here"/app/*.js "$NEXT/app/"
+cp "$here/package.json" "$here/package-lock.json" "$NEXT/"
+(cd "$NEXT" && PATH="$npmdir:$PATH" npm ci --omit=dev --no-audit --no-fund >/dev/null)
+log "new code built in $NEXT ($(ls "$NEXT"/app | wc -l | tr -d ' ') modules)"
 
 # 4. The seat's env file, assembled from files already on the box. Values go
 #    through variables only — never onto a command line, never to the terminal.
@@ -92,10 +95,15 @@ chmod 600 "/etc/seat-glue/${SEAT}.env"
 unset bot secret orkey
 log "/etc/seat-glue/${SEAT}.env written (root, 0600)"
 
-# 5. The unit, then prove the engine starts under the service user.
+# 5. Prove the NEW engine starts under the service user, then swap it in.
+runuser -u seatglue -- env HOME=/var/lib/seat-glue "$NODE" "$NEXT/app/main.js" --selfcheck
+rm -rf "${PREFIX}.old"
+if [ -d "$PREFIX" ]; then mv "$PREFIX" "${PREFIX}.old"; fi
+mv "$NEXT" "$PREFIX"
+rm -rf "${PREFIX}.old"
+log "code in $PREFIX"
 install -m 0644 "$here/seat-glue@.service" /etc/systemd/system/seat-glue@.service
 systemctl daemon-reload
-runuser -u seatglue -- env HOME=/var/lib/seat-glue "$NODE" "$PREFIX/app/main.js" --selfcheck
 # An upgrade: a running glue keeps the old code until it restarts.
 if systemctl is-active --quiet "seat-glue@${SEAT}"; then
   systemctl restart "seat-glue@${SEAT}"

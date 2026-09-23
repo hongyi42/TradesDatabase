@@ -438,6 +438,59 @@ describe('Seat', () => {
     expect(t.session().sends).toEqual([{ prompt: 'hello again' }]);
   });
 
+  it('moves the offset past an update BEFORE handing it to the engine — never twice after a crash', async () => {
+    const order: string[] = [];
+    const t = setup({ writeState: async (s) => void order.push(`state:${s.offset}`) });
+    await t.seat.start();
+    const s = t.session();
+    const send = s.send.bind(s);
+    s.send = async (o) => {
+      order.push('send');
+      return send(o);
+    };
+    const u = upd({ text: 'file a note: replaced the capacitor' });
+    await t.seat.handleUpdate(u);
+    expect(order.slice(-2)).toEqual([`state:${u.update_id + 1}`, 'send']);
+  });
+
+  it('answers when a photo cannot be downloaded, instead of going silent', async () => {
+    const t = setup();
+    await t.seat.start();
+    t.telegram.download = async () => {
+      throw new Error('telegram: file over 20 MB');
+    };
+    await t.seat.handleUpdate(upd({ photo: [{ file_id: 'big', width: 1, height: 1 }] }));
+    await t.seat.whenIdle(1);
+    expect(t.telegram.sent).toEqual([TEXT.replyFailed]);
+  });
+
+  it('still delivers a photo when the box copy cannot be kept', async () => {
+    const t = setup({
+      saveMedia: async () => {
+        throw new Error('ENOSPC');
+      },
+    });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ photo: [{ file_id: 'p', width: 1, height: 1 }], caption: 'after' }));
+    expect(t.session().sends[0].prompt).toBe('after');
+  });
+
+  it('frees the seat when the send after an abort fails', async () => {
+    const t = setup();
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'first' }));
+    const s = t.session();
+    const send = s.send.bind(s);
+    s.send = async (o) => {
+      if (o.prompt === 'second') throw new Error('engine rpc blip');
+      return send(o);
+    };
+    await t.seat.handleUpdate(upd({ text: 'second' })); // abort, then the send fails
+    expect(t.policy.isBusy).toBe(false);
+    await t.seat.whenIdle(1);
+    expect(t.telegram.sent).toEqual([TEXT.replyFailed]);
+  });
+
   it('stops polling on a 409 — another poller owns the bot', async () => {
     const t = setup();
     t.telegram.getUpdates = async () => {

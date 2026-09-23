@@ -20,7 +20,6 @@ describe('loadConfig', () => {
     expect(c.model).toBe('@preset/trades-seats');
     expect(c.stateDir).toBe('/var/lib/seat-glue');
     expect(c.mediaRetentionDays).toBe(7);
-    expect(c.costCheckUsd).toBe(0.02);
   });
 
   it.each(Object.keys(FULL))('fails closed when %s is missing, naming it without any value', (key) => {

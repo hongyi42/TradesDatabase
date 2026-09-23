@@ -21,7 +21,6 @@ export interface SeatConfig {
   model: string;
   stateDir: string;
   mediaRetentionDays: number;
-  costCheckUsd: number;
 }
 
 const REQUIRED = [
@@ -83,7 +82,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): SeatConfig {
     model: env.SEAT_MODEL?.trim() || '@preset/trades-seats',
     stateDir: env.SEAT_STATE_DIR?.trim() || '/var/lib/seat-glue',
     mediaRetentionDays: positive(env.MEDIA_RETENTION_DAYS, 7, 'MEDIA_RETENTION_DAYS'),
-    costCheckUsd: positive(env.COST_CHECK_USD, 0.02, 'COST_CHECK_USD'),
   };
 }
 

@@ -76,10 +76,18 @@ async function main(argv: string[]): Promise<void> {
 
   const cfg = loadConfig(process.env);
   const client = await startEngine({ baseDirectory: join(cfg.stateDir, 'engine'), tz: cfg.tz });
-  const seat = new Seat(seatDeps(cfg, client, new TelegramClient(cfg.botToken), new TurnPolicy()));
+  const deps = seatDeps(cfg, client, new TelegramClient(cfg.botToken), new TurnPolicy());
+  const seat = new Seat(deps);
 
+  // A restart (an upgrade, systemd) must not drop the last reply's cost lines:
+  // each waits up to ~2 min for OpenRouter's generation record. Bounded well
+  // inside systemd's default 90 s stop timeout.
+  let stopping = false;
   const shutdown = async (code: number) => {
+    if (stopping) return;
+    stopping = true;
     seat.stop();
+    await Promise.race([deps.costLog.flush(), new Promise((r) => setTimeout(r, 20_000))]);
     await client.stop().catch(() => []);
     process.exit(code);
   };

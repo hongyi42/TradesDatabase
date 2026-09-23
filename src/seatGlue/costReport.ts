@@ -41,7 +41,9 @@ export function summarize(lines: CostLine[], thresholdUsd: number): CostSummary 
     maxPerReply: values.length ? Math.max(...values) : 0,
     fallbackCalls,
     thresholdUsd,
-    pass: values.length > 0 && avgPerReply <= thresholdUsd,
+    // An unresolved line is a call we could not price: the average would read
+    // low, so the check cannot pass until every line is resolved.
+    pass: values.length > 0 && avgPerReply <= thresholdUsd && lines.length === ok.length,
   };
 }
 

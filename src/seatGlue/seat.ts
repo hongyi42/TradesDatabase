@@ -126,18 +126,25 @@ export class Seat {
     if (this.sweepTimer) clearInterval(this.sweepTimer);
   }
 
-  /** Handle one update, then move the offset past it — even if handling failed (no poison loops). */
+  /**
+   * Move the offset past an update BEFORE handling it, then handle it. At most
+   * once, on purpose: a crash mid-handling loses that one message, where saving
+   * after would re-send it on restart — and a re-sent "file a note" can land a
+   * duplicate in L1, which has no delete. A failed update is never retried
+   * (no poison loops).
+   */
   async handleUpdate(update: TgUpdate): Promise<void> {
     this.processing += 1;
     try {
+      this.state = { ...this.state, offset: update.update_id + 1 };
+      await this.deps.writeState(this.state);
       await this.handle(classify(update, this.deps.allowedUserId));
     } catch (err) {
       this.log(`update ${update.update_id} failed: ${errText(err)}`);
+      await this.say(TEXT.replyFailed);
     } finally {
       this.processing -= 1;
     }
-    this.state = { ...this.state, offset: update.update_id + 1 };
-    await this.deps.writeState(this.state);
   }
 
   /**
@@ -164,7 +171,7 @@ export class Seat {
         return this.deliver(msg.text);
       case 'photo': {
         const buf = await this.deps.telegram.download(msg.fileId);
-        await this.deps.saveMedia(buf, 'jpg');
+        await this.keepCopy(buf, 'jpg');
         // Bytes only. The saved path never goes near the model: L1 is permanent
         // and the file is deleted in a week.
         const photo: BlobAttachment = { type: 'blob', data: buf.toString('base64'), mimeType: 'image/jpeg', displayName: 'photo.jpg' };
@@ -172,7 +179,7 @@ export class Seat {
       }
       case 'voice': {
         const buf = await this.deps.telegram.download(msg.fileId);
-        await this.deps.saveMedia(buf, msg.mimeType.includes('wav') ? 'wav' : 'ogg');
+        await this.keepCopy(buf, msg.mimeType.includes('wav') ? 'wav' : 'ogg');
         let transcript: { text: string; generationId: string | null };
         try {
           transcript = await this.deps.transcribe(buf, msg.mimeType);
@@ -236,7 +243,9 @@ export class Seat {
       if (route === 'steer') this.log('double text mid-tool: steered into the running reply');
     } catch (err) {
       this.log(`send failed: ${errText(err)}`);
-      if (freshTurn) {
+      // Nothing is running unless this was a steer into a live reply: a fresh
+      // turn never started, and after abort-then-send the old loop is dead.
+      if (route !== 'steer') {
         policy.finish();
         this.stopTyping();
       }
@@ -394,6 +403,15 @@ export class Seat {
         }
         return;
       }
+    }
+  }
+
+  /** The 7-day box copy is a convenience: failing to keep it must never lose the message. */
+  private async keepCopy(buf: Buffer, ext: string): Promise<void> {
+    try {
+      await this.deps.saveMedia(buf, ext);
+    } catch (err) {
+      this.log(`could not keep a copy of the ${ext} (${errText(err)}) — carrying on`);
     }
   }
 

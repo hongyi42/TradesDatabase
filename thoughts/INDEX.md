@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 286 documents · 272 live · 14 superseded.
+Regenerate with `npm run decisions:index`. 287 documents · 273 live · 14 superseded.
 
 ## Superseded — do not build on these
 
@@ -53,6 +53,7 @@ Regenerate with `npm run decisions:index`. 286 documents · 272 live · 14 super
 
 ## Live
 
+- `2026-09-23` `research` [2026-09-23-step-4-seat-identity-doorman-badges-sandbox-pool](shared/research/2026-09-23-step-4-seat-identity-doorman-badges-sandbox-pool.md) `landed` — Step 4 — how a seat proves who it is to the spine today (doorman, badges, HMAC headers, sandbox_pool, hosts),…
 - `2026-09-22` `finding` [2026-09-22-merge-the-desk-into-the-office-one-agent](shared/findings/2026-09-22-merge-the-desk-into-the-office-one-agent.md) `describes 3 deleted files` — Merge the desk into the office — one agent, two budgets, keeping the tier gate; access asks pass to the offic…
 - `2026-09-22` `finding` [2026-09-22-step-0-two-hour-test-of-the-github-copil](shared/findings/2026-09-22-step-0-two-hour-test-of-the-github-copil.md) — Step 0: two-hour test of the GitHub Copilot SDK on trades-box-1 with OpenRouter BYOK, the go/no-go for the bo…
 - `2026-09-22` `finding` [2026-09-22-step-1-technician-seat-on-the-copilot-sd](shared/findings/2026-09-22-step-1-technician-seat-on-the-copilot-sd.md) `drift 37` — Step 1: technician seat on the Copilot SDK engine on trades-box-1, s5 canary — the glue (Telegram long pollin…

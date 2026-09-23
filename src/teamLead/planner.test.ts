@@ -8220,6 +8220,60 @@ describe('rung 10c — the message pass, the tick claim, and fix A', () => {
     });
   });
 
+  describe("the heartbeat's fallback when the message loop is down", () => {
+    // 09:45 is off the cadence grid (see rung 10's OFF_CADENCE).
+    const OFF = '2026-08-16T09:45:00.000Z';
+    const fresh = { created_at: '2026-08-16T09:40:00.000Z' };
+
+    test('an unclaimed inform sent since the last run makes an off-cadence firm due', async () => {
+      const summary = await runPlanner(OFF, 'shadow', baseDeps({
+        lastRunAt: async () => '2026-08-16T09:00:00.000Z',
+        listOfficeMessages: async () => [msg(fresh)],
+      }));
+      expect(summary.planned).toBe(1);
+      expect(summary.skippedCadence).toBe(0);
+      expect(summary.pingedByMessage).toBe(1);
+    });
+
+    test('a reply, an ask, news, a claimed inform, or an older one ⇒ still off-cadence', async () => {
+      const cases: Array<[string, Partial<OfficeMessage>]> = [
+        ['a reply rides the tick with its gap', { ...fresh, kind: 'reply' }],
+        ['an ask is the question door\'s', { ...fresh, kind: 'ask' }],
+        ['news is an access decision', { ...fresh, kind: 'news' }],
+        ['the loop claimed it (lapsed claim)', { ...fresh, pinged_at: '2026-08-16T09:30:00.000Z' }],
+        ['the loop claimed it (live claim)', { ...fresh, pinged_at: '2026-08-16T09:44:00.000Z' }],
+        ['it predates the last run', { created_at: '2026-08-16T08:00:00.000Z' }],
+      ];
+      for (const [why, over] of cases) {
+        const summary = await runPlanner(OFF, 'shadow', baseDeps({
+          lastRunAt: async () => '2026-08-16T09:00:00.000Z',
+          listOfficeMessages: async () => [msg(over)],
+        }));
+        expect(summary.skippedCadence, why).toBe(1);
+        expect(summary.planned, why).toBe(0);
+        expect(summary.pingedByMessage, why).toBeUndefined();
+      }
+    });
+
+    test('a FAILED last-run read is "not pinged", and a message pass is never "pinged"', async () => {
+      const failed = await runPlanner(OFF, 'shadow', baseDeps({
+        lastRunAt: async () => {
+          throw new Error('db down');
+        },
+        listOfficeMessages: async () => [msg(fresh)],
+      }));
+      expect(failed.skippedCadence).toBe(1);
+      expect(failed.pingedByMessage).toBeUndefined();
+      const focused = await runPlanner(OFF, 'shadow', baseDeps({
+        focus: { messageId: 'm1', budgetMs: 180_000 },
+        listNudges: async () => [],
+        listOfficeMessages: async () => [msg(fresh)],
+      }));
+      expect(focused.planned).toBe(1);
+      expect(focused.pingedByMessage).toBeUndefined();
+    });
+  });
+
   describe('fix A: what the office already read', () => {
     const handled = msg({
       id: 'm-read',

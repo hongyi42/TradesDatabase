@@ -432,8 +432,8 @@ included. The comment at `:54` becomes THREE.
   `if (!focus && !pinged && !messagePinged && !plannerCadenceDue(…))`.
 
 ### Automated verification
-- [ ] typecheck, lint and test pass
-- [ ] `src/calls/messagePing.test.ts` mirrors all seven cases in `observationPing.test.ts`:
+- [x] typecheck, lint and test pass
+- [x] `src/calls/messagePing.test.ts` mirrors all seven cases in `observationPing.test.ts`:
   - idle;
   - claim, then pass the CLAIMED row;
   - summary printed;
@@ -443,9 +443,9 @@ included. The comment at `:54` becomes THREE.
   - a failing read is swallowed.
 
   Plus: the reader is called with `(PINGED_MESSAGE_KINDS, 1)`.
-- [ ] `lifecycle.test.ts`: off-cadence with only a fresh unclaimed message → the planner runs; both
+- [x] `lifecycle.test.ts`: off-cadence with only a fresh unclaimed message → the planner runs; both
       probes false → skipped, with the new text
-- [ ] `planner.test.ts`: an off-cadence firm with a fresh unpinged `inform` → planned, with
+- [x] `planner.test.ts`: an off-cadence firm with a fresh unpinged `inform` → planned, with
       `pingedByMessage: 1`. The same with a `reply`, an `ask`, or a pinged `inform` → skipped
       `off_cadence`.
 
@@ -463,16 +463,28 @@ included. The comment at `:54` becomes THREE.
     - `INFERENCE_API_KEY`, set to the `OPENROUTER_API_KEY` value;
     - `PLANNER_MODE=shadow`.
   - **Never source `.env`**: its `SUPABASE_URL` is the pilot.
-- [ ] Insert, via `psql` on `.env.test`'s `DATABASE_URL`, a `to_planner` `inform`, a `reply` and an
+- [x] Insert, via `psql` on `.env.test`'s `DATABASE_URL`, a `to_planner` `inform`, a `reply` and an
       `ask` for that firm.
-- [ ] Run the worker until the log line `[calls:message-ping] focused pass <inform id>` appears,
+- [x] Run the worker until the log line `[calls:message-ping] focused pass <inform id>` appears,
       and wait for it rather than for a fixed time.
-- [ ] Read back:
+- [x] Read back:
   - the inform has `pinged_at` set and `status='read'`;
   - the reply and the ask are untouched;
   - the pass ran on the message door's prompt (the loop's `label` / cost row).
 
   Cost ≈ $0.02–0.08.
+
+  **Result (2026-09-23, local stack, GLM 5.3, shadow):** seeded an inform, a reply and an ask
+  (tenant `0168d6ba…`) at 19:05:41Z; the worker logged `[calls:message-ping] focused pass
+  a7a3a75d… {"focused":true,"focusMessageId":"a7a3a75d…","planned":1,…}`. Read back over pg: the
+  inform `pinged_at` 19:06:10.432Z, `status='read'`, `read_at` 19:06:10.451Z (29s after the
+  insert, inside the worker's startup plus its 10s idle poll); the reply and the ask still
+  `unread`, `pinged_at` null. Cost rows: lane `planner`, 2 model calls, 30,347 input tokens
+  (~15K per call, the full message-door prompt plus tools, vs ~5K for a waiting door). **What
+  the office did:** read its notes, submitted an empty plan, and did NOT file the standing
+  instruction — in a local world with an empty memory index and no Harbor jobs. An earlier
+  attempt of the same check (evidence lost to cleanup) wrote to its notes twice. One live run is
+  not a rate; the notes eval (30/30) is the measurement. Rows deleted afterwards.
 
 ### Manual verification
 - none

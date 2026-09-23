@@ -1,5 +1,6 @@
 import { processNextCall } from './worker.js';
 import { drainOneObservationPing } from './observationPing.js';
+import { drainOneMessagePing } from './messagePing.js';
 
 // Long-running drain loop for the call_ingest queue (`npm run calls:worker`).
 // Durable queue → safe across stateless replicas and restarts: each iteration
@@ -51,14 +52,32 @@ async function pingLoop(): Promise<void> {
   }
 }
 
-// TWO INDEPENDENT LOOPS, each with its own backoff — never one loop doing both.
-// A single loop would make a three-minute focused pass block the call drain
-// behind it, and an empty call queue's 5s sleep would pace the pings. Neither
-// promise resolves, so `Promise.all` here is "run both forever"; if either
-// throws out of its own `for(;;)` the process exits non-zero and Render
-// restarts it, which is the intended failure mode.
+// A SEAT'S MESSAGE (rung 10c): the same shape, on its own loop. Busy backoff
+// ONLY after a pass actually ran — an 'error' backs off at the idle rate, so a
+// read that keeps failing (the column not migrated yet, say) polls every ~10s
+// rather than every half second.
+async function messagePingLoop(): Promise<void> {
+  for (;;) {
+    let outcome: 'idle' | 'pinged' | 'error';
+    try {
+      outcome = await drainOneMessagePing();
+    } catch (err) {
+      console.error('[calls:message-ping] loop error', err);
+      outcome = 'error';
+    }
+    await delay(outcome === 'pinged' ? PING_BUSY_BACKOFF_MS : PING_IDLE_BACKOFF_MS);
+  }
+}
+
+// THREE INDEPENDENT LOOPS, each with its own backoff — never one loop doing two
+// things. A single loop would make a three-minute focused pass block the call
+// drain behind it, an empty call queue's 5s sleep would pace the pings, and a
+// message pass would hold a call's. None of the promises resolves, so
+// `Promise.all` here is "run all three forever"; if any throws out of its own
+// `for(;;)` the process exits non-zero and Render restarts it, which is the
+// intended failure mode.
 async function main(): Promise<void> {
-  await Promise.all([callLoop(), pingLoop()]);
+  await Promise.all([callLoop(), pingLoop(), messagePingLoop()]);
 }
 
 main().catch((err) => {

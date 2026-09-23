@@ -16,6 +16,7 @@ import {
   listObservationsByStatus,
   createOfficeMessage,
   claimOfficeMessagesForTick,
+  PINGED_MESSAGE_KINDS,
   listDeskTranscriptsSince,
   listOfficeReadSince,
   listOfficeMessagesByIds,
@@ -535,6 +536,9 @@ export interface PlannerSummary {
   // Firms the HEARTBEAT ran early for because an unclaimed inbound observation
   // was waiting — the fallback path, when the ping loop never got to it.
   pingedByObservation?: number;
+  // Firms it ran early for because an unclaimed seat inform was waiting (rung
+  // 10c) — the message loop's fallback, the same shape.
+  pingedByMessage?: number;
   // tenant_settings has not been migrated to this database yet, so every firm ran
   // at the full rate. Present ONLY when true, and it does NOT make the tick
   // unhealthy — the same contract as WatchersSummary.settingsTableMissing, and
@@ -4557,10 +4561,24 @@ export async function runPlanner(
             (Number.isNaN(lastMs) || Date.parse(o.noticed_at) > lastMs),
         );
       if (pinged) summary.pingedByObservation = (summary.pingedByObservation ?? 0) + 1;
+      // THE SAME FALLBACK FOR A SEAT'S MESSAGE (rung 10c): an inform the message
+      // loop has not claimed, sent since this firm last planned, makes the firm
+      // due — the Calls worker is down or behind. The loop's own predicate
+      // (kind, unclaimed); `unreadMessages` already holds only unread rows.
+      const messagePinged =
+        !focus &&
+        lastRunReadOk &&
+        unreadMessages.some(
+          (m) =>
+            (PINGED_MESSAGE_KINDS as string[]).includes(m.kind) &&
+            !m.pinged_at &&
+            (Number.isNaN(lastMs) || Date.parse(m.created_at) > lastMs),
+        );
+      if (messagePinged) summary.pingedByMessage = (summary.pingedByMessage ?? 0) + 1;
 
       // A FOCUSED PASS IS ALWAYS DUE: the worker already decided this firm has
       // something worth a call, seconds ago.
-      if (!focus && !pinged && !plannerCadenceDue(nowIso, everyMinutes)) {
+      if (!focus && !pinged && !messagePinged && !plannerCadenceDue(nowIso, everyMinutes)) {
         summary.skippedCadence += 1;
         // `open.length`, not 0: this firm HAS work waiting — it is simply not due
         // this tick, and conflating the two is exactly the distinction this

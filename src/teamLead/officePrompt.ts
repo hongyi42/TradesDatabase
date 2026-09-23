@@ -28,10 +28,18 @@ import {
 // the record) is written ONCE, in plannerPrompt.ts, and composed here in the
 // planner's own order.
 //
-// Three doors reach the office, and each ends differently:
+// Four doors reach the office, and each ends differently:
 //   * a seat's QUESTION   → the `answer` tool (the words go back to the seat)
 //   * a seat's ACCESS ask → the `route_access` tool (code files it and texts)
 //   * an INBOUND CALL     → `submit_plan`, the planner's verbs and rails, unchanged
+//   * a seat's MESSAGE    → `submit_plan`, like a call (rung 10c)
+//
+// EACH DOOR LOADS ONLY WHAT IT USES (operator, 2026-09-23). One doctrine, one
+// agent — but a person waiting on a question never uses the call doctrine
+// (states, closing, verbs, silence, sending), and carrying it cost about 6K
+// tokens a question. The two WAITING doors get the office's own sections plus
+// the notes, the record and how to write; the call and message doors get the
+// whole set. See officeSystemFor.
 //
 // Enforcement lives in code, never here: what a technician-facing office can SEE
 // is bounded by the tools it is handed (src/teamLead/office.ts). What it SAYS is
@@ -51,14 +59,22 @@ const OFFICE_OPENING: readonly string[] = [
 ];
 
 const OFFICE_DOORS: readonly string[] = [
-  'THREE THINGS BRING YOU HERE, and each one ends its own way:',
+  'FOUR THINGS BRING YOU HERE, and each one ends its own way:',
   '  A QUESTION from a seat — end by calling `answer` with what the seat should hear. Say the',
   '    useful thing first, in a few sentences. If you genuinely cannot answer, say so plainly:',
   '    the question is kept, and "the office will look at this" is an honest close.',
   '  AN ACCESS ASK from a seat — end by calling `route_access`. See ACCESS below.',
   '  A CALL OR AN EMAIL that just came in — you are shown that one item as a gap, and you end by',
-  '    calling `submit_plan`, exactly as the review does. Everything below about gaps, verbs,',
-  '    sending and closing is how you handle it.',
+  '    calling `submit_plan`, exactly as the review does.',
+  '  A MESSAGE a seat sent you — you are shown that one message under OFFICE MESSAGES, and you',
+  '    end by calling `submit_plan`, like a call.',
+  '',
+];
+
+// Only where the call doctrine rides: a waiting door is not shown it, so the
+// pointer would point at nothing.
+const OFFICE_DOCTRINE_POINTER: readonly string[] = [
+  'Everything below about gaps, verbs, sending and closing is how you handle a call or a message.',
   '',
 ];
 
@@ -111,22 +127,52 @@ const OFFICE_ACCESS: readonly string[] = [
   '',
 ];
 
-// The shared sections above were written for the review and speak in its terms:
-// they end on submit_plan and name tools a door may not have (review, phase 1).
-// The LAST thing the model reads has to put that back in its door's terms.
-const OFFICE_CLOSING: readonly string[] = [
-  '',
-  'THAT LAST LINE IS THE CALL DOOR. A question ends with `answer`, an access ask with',
-  '`route_access`. Any tool a section above names that you were not handed belongs to another',
-  'door — work with the tools you have.',
-];
+export type OfficeDoor = 'question' | 'access' | 'call' | 'message';
 
-// The planner's own sections that the office needs to handle a call — which is
-// all of them except its opening, the detectors' list, pacing, the handover
-// paragraph and the planner's view of access. PLANNER_SYSTEM's ORDER, kept.
-export const OFFICE_SYSTEM = [
+// The shared sections above were written for the review and speak in its terms:
+// they end on submit_plan and name tools a door may not have (review, phase 1) —
+// and the waiting doors still carry WRITING and CONTEXT, which name `send` and
+// `spine_read`. The LAST thing the model reads has to put that back in its
+// door's terms, and it ends on the door's own terminal tool.
+const OTHER_DOORS_TOOLS =
+  'Any tool a section above names that you were not handed belongs to another door — work with the tools you have.';
+
+const OFFICE_CLOSING: Readonly<Record<OfficeDoor, readonly string[]>> = {
+  question: ['', OTHER_DOORS_TOOLS, 'THIS IS A QUESTION: when you know what to say, end by calling `answer`.'],
+  access: ['', OTHER_DOORS_TOOLS, 'THIS IS AN ACCESS ASK: when you have decided, end by calling `route_access`.'],
+  call: [
+    '',
+    'A question ends with `answer`, an access ask with `route_access`. ' + OTHER_DOORS_TOOLS,
+    'THIS IS A CALL OR A MESSAGE: it ends, as above, with `submit_plan`.',
+  ],
+  message: [
+    '',
+    'A question ends with `answer`, an access ask with `route_access`. ' + OTHER_DOORS_TOOLS,
+    'THIS IS A CALL OR A MESSAGE: it ends, as above, with `submit_plan`.',
+  ],
+};
+
+// The WAITING doors: the office's own sections, plus the three shared ones an
+// answer uses — how to write, the notes, and reading the record. ACCESS rides
+// the question door too, because a question can end in "ask for access".
+const WAITING_DOOR = [
   ...OFFICE_OPENING,
   ...OFFICE_DOORS,
+  ...OFFICE_AUDIENCE,
+  ...OFFICE_ACCESS,
+  ...WRITING,
+  ...NOTES,
+  ...CONTEXT,
+];
+
+// The CALL and MESSAGE doors: every planner section the office needs to handle
+// a gap with submit_plan — all of them except its opening, the detectors' list,
+// pacing, the handover paragraph and the planner's view of access.
+// PLANNER_SYSTEM's ORDER, kept.
+const ACTING_DOOR = [
+  ...OFFICE_OPENING,
+  ...OFFICE_DOORS,
+  ...OFFICE_DOCTRINE_POINTER,
   ...OFFICE_AUDIENCE,
   ...OFFICE_ACCESS,
   ...GAP_IS,
@@ -145,8 +191,16 @@ export const OFFICE_SYSTEM = [
   ...NOTES,
   ...CONTEXT,
   ...SUBMIT_ONCE,
-  ...OFFICE_CLOSING,
-].join('\n');
+];
+
+export function officeSystemFor(door: OfficeDoor): string {
+  const body = door === 'question' || door === 'access' ? WAITING_DOOR : ACTING_DOOR;
+  return [...body, ...OFFICE_CLOSING[door]].join('\n');
+}
+
+// The call door's prompt, under its old name, so every existing import keeps
+// its meaning.
+export const OFFICE_SYSTEM = officeSystemFor('call');
 
 // The QUESTION door's terminal tool: calling it IS the answer, and it ends the loop.
 export const ANSWER_TOOL: ForcedToolSpec = {

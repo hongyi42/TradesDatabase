@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { focusedPassBlockedBy, runFocusedObservationPass, runPlannerPass } from './plannerPass.js';
-import type { PlannerDeps, PlannerSummary } from '../teamLead/planner.js';
-import type { Observation } from '../db/index.js';
+import {
+  FOCUSED_PASS_BUDGET_MS,
+  focusedPassBlockedBy,
+  runFocusedMessagePass,
+  runFocusedObservationPass,
+  runPlannerPass,
+} from './plannerPass.js';
+import { OFFICE_CLAIM_LEASE_MS, type PlannerDeps, type PlannerSummary } from '../teamLead/planner.js';
+import type { Observation, OfficeMessage } from '../db/index.js';
 
 // This module decides TWO things nothing else can: whether a focused pass may
 // run at all (the ping loop claims a row on the strength of that answer, and
@@ -161,6 +167,71 @@ describe('runFocusedObservationPass', () => {
     const seen: { deps?: PlannerDeps } = {};
     await runFocusedObservationPass(obs(), spyImpl(seen));
     expect(seen.deps?.focus?.budgetMs).toBe(180_000);
+  });
+});
+
+// RUNG 10C: the message pass — the call pass's mirror image.
+const msg = (over: Partial<OfficeMessage> = {}): OfficeMessage =>
+  ({
+    id: 'msg-1',
+    tenant_id: 'tenant-1',
+    direction: 'to_planner',
+    kind: 'inform',
+    from_ref: 'ben-shelton',
+    to_ref: 'spine:team-lead',
+    body: 'route all job messages to Sam',
+    status: 'unread',
+    pinged_at: '2026-09-23T10:00:00.000Z',
+    created_at: '2026-09-23T10:00:00.000Z',
+    ...over,
+  }) as unknown as OfficeMessage;
+
+describe('runFocusedMessagePass', () => {
+  const saved = { ...process.env };
+  beforeEach(() => {
+    process.env.PLANNER_MODE = 'live';
+    process.env.INFERENCE_API_KEY = 'test-key';
+    delete process.env.INFERENCE_MODEL;
+  });
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+
+  test('a blocked worker runs NOTHING and says why', async () => {
+    process.env.PLANNER_MODE = 'off';
+    const seen: { deps?: PlannerDeps } = {};
+    const out = await runFocusedMessagePass(msg(), spyImpl(seen));
+    expect(out).toEqual({ skipped: "PLANNER_MODE 'off'" });
+    expect(seen.deps).toBeUndefined();
+  });
+
+  test('the pass is scoped to ONE message and no gaps — inverted from the call pass', async () => {
+    const seen: { deps?: PlannerDeps; mode?: string } = {};
+    const row = msg();
+    await runFocusedMessagePass(row, spyImpl(seen));
+    const deps = seen.deps as PlannerDeps;
+    expect(seen.mode).toBe('live');
+    expect(deps.focus).toEqual({ messageId: 'msg-1', budgetMs: FOCUSED_PASS_BUDGET_MS });
+    expect(await deps.listOfficeMessages?.('tenant-1', 'to_planner', ['unread'])).toEqual([row]);
+    expect(await deps.listObservations?.('tenant-1', ['open'])).toEqual([]);
+    expect(await deps.listNudges?.('tenant-1', [])).toEqual([]);
+    expect(await deps.listDeskTranscripts?.('tenant-1', '')).toEqual([]);
+    expect(await deps.listOfficeRead?.('tenant-1', '', 30)).toEqual([]);
+    expect(await deps.listDismissedIds?.('tenant-1')).toEqual([]);
+    expect(await deps.listDismissedNudges?.('tenant-1')).toEqual([]);
+    expect((deps.tools ?? []).length).toBeGreaterThan(0);
+    expect(typeof deps.execute).toBe('function');
+    expect(deps.plannerRun).toBeUndefined();
+  });
+
+  test('an INELIGIBLE firm yields no tenants', async () => {
+    const seen: { deps?: PlannerDeps } = {};
+    await runFocusedMessagePass(msg({ tenant_id: 'no-binding' }), spyImpl(seen));
+    expect(await seen.deps?.listTenants?.()).toEqual([]);
+  });
+
+  test('the claim lease outlasts a focused pass, so a tick never takes a live pass s message', () => {
+    expect(OFFICE_CLAIM_LEASE_MS).toBeGreaterThan(FOCUSED_PASS_BUDGET_MS);
   });
 });
 

@@ -14,7 +14,10 @@ export type OfficeMessage = Database['public']['Tables']['office_messages']['Row
 // queued/delivered/failed — one column, two halves, split by direction.
 export type OfficeMessageStatus = 'unread' | 'read' | 'queued' | 'delivered' | 'failed';
 export type OfficeMessageDirection = 'to_planner' | 'to_agent';
-export type OfficeMessageKind = 'ask' | 'inform' | 'reply' | 'desk';
+// 'news' (rung 10c): an access decision told to the office. Its writer knows
+// the category for certain, so it never rides as an 'inform' a model must read
+// twice — and it never wakes the office.
+export type OfficeMessageKind = 'ask' | 'inform' | 'reply' | 'desk' | 'news';
 
 // The DB CHECK's twin, applied by the writer too: an over-long body is CUT,
 // never refused — by the time some callers get here (a desk transcript, a
@@ -399,6 +402,126 @@ export async function setOfficeMessageDelivery(
     .maybeSingle();
   if (error) throw new Error(`setOfficeMessageDelivery failed: ${error.message}`);
   return data as OfficeMessage | null;
+}
+
+// ── Rung 10c: a seat's message wakes the office ──────────────────────────────
+// The observations ping-loop twins (observations.ts). `pinged_at` is a CLAIM
+// with a lease, never a read marker: a pass that claims and then crashes leaves
+// the row unread, and a tick takes it back once the claim is older than
+// OFFICE_CLAIM_LEASE_MS.
+
+// The kinds that wake the office. Only 'inform'. A 'reply' answers a gap and
+// must reach the tick beside that gap (fix A); an 'ask' is answered by the
+// question door while the seat waits; 'desk' rows are born read; 'news' is an
+// access decision with nothing to act on.
+export const PINGED_MESSAGE_KINDS: OfficeMessageKind[] = ['inform'];
+
+// The ping loop's read: unread seat messages of these kinds nobody has claimed,
+// oldest first. FLEET-WIDE — the worker polls every firm at once, which is why
+// idx_office_messages_unpinged has no leading tenant column.
+export async function listUnpingedOfficeMessages(
+  kinds: OfficeMessageKind[],
+  limit: number,
+): Promise<OfficeMessage[]> {
+  if (kinds.length === 0) return []; // PostgREST `in.()` with zero values errors
+  const { data, error } = await getClient()
+    .from('office_messages')
+    .select()
+    .eq('direction', 'to_planner')
+    .eq('status', 'unread')
+    .in('kind', kinds)
+    .is('pinged_at', null)
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true })
+    .limit(limit);
+  if (error) throw new Error(`listUnpingedOfficeMessages failed: ${error.message}`);
+  return (data ?? []) as OfficeMessage[];
+}
+
+// CLAIM one message for a focused pass. Guarded on `pinged_at is null` AND
+// still unread, so two workers racing converge and a row the tick already read
+// is never claimed. Null means exactly "someone else has it, or it was read".
+export async function claimOfficeMessagePing(id: string): Promise<OfficeMessage | null> {
+  const { data, error } = await getClient()
+    .from('office_messages')
+    .update({ pinged_at: new Date().toISOString() })
+    .eq('id', id)
+    .is('pinged_at', null)
+    .eq('status', 'unread')
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`claimOfficeMessagePing failed: ${error.message}`);
+  return data as OfficeMessage | null;
+}
+
+// THE HEARTBEAT'S CHEAP PROBE (the hasFreshUnpingedObservation twin): is there
+// a message the ping loop has not got to? Bounded by age on purpose — one still
+// unclaimed means the Calls worker is down, and the window keeps a row nothing
+// can ping from forcing the planner to run on every heartbeat forever.
+export async function hasFreshUnpingedOfficeMessage(
+  kinds: OfficeMessageKind[],
+  sinceIso: string,
+): Promise<boolean> {
+  if (kinds.length === 0) return false; // PostgREST `in.()` with zero values errors
+  const { data, error } = await getClient()
+    .from('office_messages')
+    .select('id')
+    .eq('direction', 'to_planner')
+    .eq('status', 'unread')
+    .in('kind', kinds)
+    .is('pinged_at', null)
+    .gte('created_at', sinceIso)
+    .limit(1);
+  if (error) throw new Error(`hasFreshUnpingedOfficeMessage failed: ${error.message}`);
+  return (data ?? []).length > 0;
+}
+
+// THE TICK CLAIMS WHAT IT SHOWS. Tenant-scoped, and it takes a row that is
+// unclaimed OR whose claim is older than the lease — a live claim belongs to a
+// running focused pass and is left alone. Returns the ids it actually moved;
+// the caller shows only those, so a message is never handled by two passes.
+// Concurrency-safe despite the OR: Postgres re-checks an UPDATE's qualification
+// after taking the row lock (the markObservationAsked note).
+export async function claimOfficeMessagesForTick(
+  tenantId: string,
+  ids: string[],
+  staleBeforeIso: string,
+): Promise<string[]> {
+  if (ids.length === 0) return []; // PostgREST `in.()` with zero values errors
+  const { data, error } = await getClient()
+    .from('office_messages')
+    .update({ pinged_at: new Date().toISOString() })
+    .eq('tenant_id', tenantId)
+    .in('id', ids)
+    .eq('status', 'unread')
+    .or(`pinged_at.is.null,pinged_at.lt.${staleBeforeIso}`)
+    .select('id');
+  if (error) throw new Error(`claimOfficeMessagesForTick failed: ${error.message}`);
+  return (data ?? []).map((r) => r.id);
+}
+
+// FIX A: what the office already read since the planner's last look. A message
+// pass marks its message read, and the tick only reads unread — so without this
+// an inform that happens to answer a gap would never sit beside that gap, and a
+// close could not quote it. Newest first, capped by the caller.
+export async function listOfficeReadSince(
+  tenantId: string,
+  sinceIso: string,
+  limit: number,
+): Promise<OfficeMessage[]> {
+  const { data, error } = await getClient()
+    .from('office_messages')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('direction', 'to_planner')
+    .eq('status', 'read')
+    .in('kind', ['inform', 'reply'])
+    .gte('read_at', sinceIso)
+    .order('read_at', { ascending: false })
+    .order('id', { ascending: true })
+    .limit(limit);
+  if (error) throw new Error(`listOfficeReadSince failed: ${error.message}`);
+  return (data ?? []) as OfficeMessage[];
 }
 
 // Literal SETs for the transport's two counters, queued-guarded (the

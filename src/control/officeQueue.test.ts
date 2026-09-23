@@ -33,6 +33,7 @@ function queuedRow(over: Partial<QueuedOfficeMessageForHost> = {}): QueuedOffice
     updated_at: '2026-08-16T10:00:00.000Z',
     read_at: null,
     delivered_at: null,
+    pinged_at: null,
     technicians: {
       id: 'tech-1',
       ref: 'ben-shelton',

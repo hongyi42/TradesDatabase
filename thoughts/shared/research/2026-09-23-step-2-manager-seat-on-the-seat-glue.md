@@ -304,8 +304,10 @@ preset's Muse fallback is sticky and silent (2 of 4 sessions, 3–10× price); a
 
 ## Decision Points
 
-1. **Sandbox vendor.** The gate is "an invoice job that outlives the sandbox's idle sleep", and the
-   three differ on what survives:
+1. **Sandbox vendor.** *(Superseded the same day by
+   `2026-09-23-sandbox-vendors-in-depth.md`: these three were never the operator's shortlist; the
+   full field, including "no vendor", is there.)* The gate is "an invoice job that outlives the
+   sandbox's idle sleep", and the three differ on what survives:
    - *Google Code Execution* — no idle sleep at all (TTL up to 14 days, reset per call), memory kept
      between calls; but Python/JS snippets only, fixed libraries (openpyxl/reportlab are there), no
      network, no exit codes or background jobs, billed while it exists, Preview, no Node SDK (REST

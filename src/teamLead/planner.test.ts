@@ -36,7 +36,8 @@ import {
   type PlannerDeps,
 } from './planner.js';
 import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
-import { DESK_NARROW_DISCLOSURE } from './deskPrompt.js';
+import { OFFICE_SYSTEM } from './officePrompt.js';
+import { OFFICE_NARROW_REMINDER } from './office.js';
 import { ORPHAN_FOOTER_PREFIX } from './memory.js';
 
 import { ToolLoopLimitError, type ToolLoopCall, type ToolLoopResult } from '../model/toolLoop.js';
@@ -7883,11 +7884,13 @@ describe('retrieval layer 3 — a technician is never told an amount (doctrine)'
     expect(PLANNER_SYSTEM).toContain('nothing downstream checks it');
   });
 
-  test('the DESK is told too — the third way the planner speaks to a technician', () => {
-    // A technician's ask_team_lead is answered in the planner's name, from the
-    // planner's own notes, and that text passes no rail at all.
-    expect(DESK_NARROW_DISCLOSURE).toContain('NEVER A MONEY AMOUNT');
-    expect(DESK_NARROW_DISCLOSURE).toContain('invoiced, not yet paid');
+  test('the OFFICE is told too — the third way the planner speaks to a technician', () => {
+    // A technician's ask_team_lead is answered by the office, from the team
+    // lead's own notes, and that text passes no rail at all (was the desk).
+    expect(OFFICE_SYSTEM).toContain('NEVER A MONEY AMOUNT');
+    expect(OFFICE_SYSTEM).toContain('invoiced, not yet paid');
+    // …and restated beside every non-manager's question.
+    expect(OFFICE_NARROW_REMINDER).toContain('never a money amount');
   });
 });
 

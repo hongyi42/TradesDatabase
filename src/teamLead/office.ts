@@ -1,12 +1,15 @@
 import type { ForcedToolSpec } from '../model/forcedTool.js';
 import { runToolLoop } from '../model/toolLoop.js';
 import {
+  createOfficeMessage,
   getCustomer,
   getTechnicianView,
   listJobsForCustomer,
   listNudgesByStatus,
   listOfficeMessagesForRef,
   listRecentAccessRequestsFor,
+  markOfficeMessagesRead,
+  OFFICE_MESSAGE_BODY_MAX,
   OPEN_NUDGE_STATUSES,
   searchCustomers,
   viewHasJob,
@@ -17,7 +20,7 @@ import {
 import { renderMemoryIndex } from './memory.js';
 import { TEAM_LEAD_REF } from './identity.js';
 import { PLANNER_MAX_TOKENS, PLANNER_REASONING } from './planner.js';
-import { OFFICE_SYSTEM } from './officePrompt.js';
+import { ANSWER_TOOL, OFFICE_SYSTEM } from './officePrompt.js';
 
 // THE OFFICE (plan 2026-09-22, "the office: one agent, three doors").
 //
@@ -380,4 +383,147 @@ export async function runOfficeDoor(
     { tenantId, technicianRef: TEAM_LEAD_REF, lane: input.lane },
   );
   return { args: captured, text: result.text };
+}
+
+// ── door 1: a seat's question ─────────────────────────────────────────────────
+
+// The degrade note, one copy: the ask row is already in the bucket unread, so
+// this sentence is TRUE the moment it is returned.
+export const OFFICE_FALLBACK_NOTE =
+  'the office could not answer right now — it will see your question at its next planning pass';
+
+// RESTATED beside the question for a non-manager, not left to the system prompt
+// alone (the desk's lesson, 2026-09-01: description-only wording was too weak for
+// the live model, and this is the one rule that changes per asker). USE THE NOTES
+// comes first — "do not read your notes" reads as "do not consult them".
+export const OFFICE_NARROW_REMINDER = [
+  'THIS PERSON IS NOT A MANAGER. Read your notes as usual; what is narrowed is only what may',
+  'leave this call: their own work, never a note quoted, never what your notes say about',
+  'someone else, never your judgment of them, never a money amount, never a job or customer',
+  'outside their view beyond its name.',
+].join('\n');
+
+export interface OfficeQuestionInput {
+  tenantId: string;
+  /** The asker's roster ref — becomes from_ref. The VERIFIED caller, never chat text. */
+  askerRef: string;
+  /** The asker's tier — METADATA on the ask row; the capability is `managerDesk`. */
+  askerTier: string | null;
+  /** The repo's one active-manager predicate, decided by the caller (an invited
+   *  manager's pre-minted badge is manager-TIER but not yet a manager here). */
+  managerDesk: boolean;
+  /** The asker's roster uuid; null for a badge with no roster row. */
+  askerTechnicianId: string | null;
+  question: string;
+}
+
+export interface OfficeWaitingDeps extends OfficeDoorDeps {
+  /** The team-lead schemas + the door they dispatch through, handed IN by the
+   *  MCP server — office.ts must not import src/mcp/server.ts (import cycle). */
+  toolSchemas?: ReadonlyArray<ForcedToolSpec>;
+  dispatch?: OfficeDispatch;
+  createMessage?: typeof createOfficeMessage;
+  markRead?: typeof markOfficeMessagesRead;
+  listNudges?: typeof listNudgesByStatus;
+}
+
+export interface OfficeAnswer {
+  answer: string | null;
+  /** Present only when answer is null — the honest degrade. */
+  note?: string;
+  /** The ask row's id — unread when the office failed, read when it answered. */
+  askId: string;
+}
+
+const facingFor = (
+  managerDesk: boolean,
+  askerRef: string,
+  askerTechnicianId: string | null,
+): Facing =>
+  managerDesk
+    ? { kind: 'manager' }
+    : { kind: 'technician', technicianId: askerTechnicianId, ref: askerRef };
+
+export async function answerAsOffice(
+  input: OfficeQuestionInput,
+  deps: OfficeWaitingDeps = {},
+): Promise<OfficeAnswer> {
+  const { tenantId, askerRef, askerTier, askerTechnicianId, managerDesk, question } = input;
+  const createMessage = deps.createMessage ?? createOfficeMessage;
+  const markRead = deps.markRead ?? markOfficeMessagesRead;
+
+  // THE ASK ROW FIRST, born unread: a crash anywhere below leaves the question in
+  // the bucket for the next review — "the office will see it", never swallowed.
+  const ask = await createMessage({
+    tenantId,
+    direction: 'to_planner',
+    kind: 'ask',
+    fromRef: askerRef,
+    toRef: TEAM_LEAD_REF,
+    tier: askerTier,
+    body: question,
+  });
+
+  try {
+    const facing = facingFor(managerDesk, askerRef, askerTechnicianId);
+    const who = `${askerRef}${askerTier ? ` (${askerTier})` : ''}`;
+    const lines = ['THIS IS A QUESTION from a seat that is waiting — end with `answer`.'];
+    if (facing.kind === 'manager') {
+      lines.push(`THE PERSON ASKING is a MANAGER: ${who}.`);
+    } else {
+      // Their own open questions, inlined — the commonest question is "am I
+      // square with the office?", and it should not cost a tool call.
+      const open = await (deps.listNudges ?? listNudgesByStatus)(tenantId, [...OPEN_NUDGE_STATUSES]);
+      lines.push(`THE PERSON ASKING is NOT a manager: ${who}.`, '', renderAskerState(open, askerTechnicianId));
+      lines.push('', OFFICE_NARROW_REMINDER);
+    }
+    lines.push('', `QUESTION: ${question}`);
+
+    const res = await runOfficeDoor(
+      {
+        tenantId,
+        facing,
+        userMessage: lines.join('\n'),
+        terminal: ANSWER_TOOL,
+        schemas: deps.toolSchemas ?? [],
+        dispatch: deps.dispatch,
+        lane: 'office-question',
+      },
+      deps,
+    );
+    // The terminal tool is the answer; a plain-text ending is used as one.
+    // Capped at the transcript's own limit, so the asker and the auditor read
+    // the same text.
+    // A PRESENT-but-malformed `answer` is a failure, not a cue to fall back on
+    // the text: on a terminal turn that text is the model's preamble ("let me
+    // check…"), and it would reach the seat as the office's answer.
+    if (res.args !== null && typeof res.args.text !== 'string') {
+      throw new Error('the office called answer without text');
+    }
+    const raw = res.args !== null ? (res.args.text as string) : res.text;
+    const answer = raw.trim().slice(0, OFFICE_MESSAGE_BODY_MAX);
+    if (!answer) throw new Error('the office returned no answer');
+
+    // Transcript: the answer, born READ — a record of what was said in the
+    // office's name, not queue work. in_reply_to ties the pair for the review.
+    await createMessage({
+      tenantId,
+      direction: 'to_planner',
+      kind: 'desk',
+      fromRef: TEAM_LEAD_REF,
+      toRef: askerRef,
+      body: answer,
+      inReplyTo: ask.id,
+      status: 'read',
+    });
+    try {
+      await markRead(tenantId, [ask.id], new Date().toISOString());
+    } catch (err) {
+      console.error(`[office] tenant ${tenantId}: marking the answered ask read failed`, err);
+    }
+    return { answer, askId: ask.id };
+  } catch (err) {
+    console.error(`[office] tenant ${tenantId}: could not answer — the ask stays queued`, err);
+    return { answer: null, note: OFFICE_FALLBACK_NOTE, askId: ask.id };
+  }
 }

@@ -133,7 +133,7 @@ export async function listRecentOutboundMessages(
  * Which of those were replied to.
  *
  * ONLY AN ASSISTANT CAN REPLY THIS WAY. `in_reply_to` has two writers —
- * `inform_team_lead`'s reply branch and the Q&A desk (teamLead/desk.ts) — but
+ * `inform_team_lead`'s reply branch and the office's question door (teamLead/office.ts) — but
  * only the first can ever point at a `to_agent` row: the desk answers a
  * `to_planner` ask it created moments earlier, so a desk row's `in_reply_to`
  * is never one of the ids passed here. (An earlier draft of this comment said

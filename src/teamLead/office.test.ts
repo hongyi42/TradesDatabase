@@ -1,4 +1,11 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
+import { Client } from 'pg';
+import { getClient } from '../db/client.js';
+import { insertTechnician } from '../db/technicians.js';
+import { createPendingNudge } from '../db/nudges.js';
+import { OFFICE_MESSAGE_BODY_MAX } from '../db/officeMessages.js';
+import { hasModelCredentials } from '../model/forcedTool.js';
+import { dispatchForIdentity, TEAM_LEAD_TOOL_SCHEMAS } from '../mcp/server.js';
 import type { ForcedToolSpec } from '../model/forcedTool.js';
 import type { ToolLoopResult } from '../model/toolLoop.js';
 import type {
@@ -10,15 +17,21 @@ import type {
   TechnicianView,
 } from '../db/index.js';
 import {
+  answerAsOffice,
   askerHistory,
   ASKER_HISTORY_TOOL,
   CATALOG_TOOL,
   catalogLookup,
+  MANAGER_FACING_TOOLS,
+  OFFICE_FALLBACK_NOTE,
+  OFFICE_NARROW_REMINDER,
   officeToolsFor,
+  renderAskerState,
   runOfficeDoor,
   type OfficeDoorDeps,
+  type OfficeWaitingDeps,
 } from './office.js';
-import { ANSWER_TOOL } from './officePrompt.js';
+import { ANSWER_TOOL, OFFICE_SYSTEM } from './officePrompt.js';
 import { TEAM_LEAD_REF } from './identity.js';
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
@@ -316,4 +329,261 @@ describe('runOfficeDoor', () => {
     expect(String(err)).toContain('not a tool this door was given');
     expect(input.dispatch).not.toHaveBeenCalled();
   });
+});
+
+// ── door 1: a seat's question (ported from the desk's tests) ─────────────────
+
+type SeenQ = { req?: { system: string; user: string }; tools?: ForcedToolSpec[] };
+
+function askRow(over: Partial<OfficeMessage> = {}): OfficeMessage {
+  return { id: 'ask-1', tenant_id: T, direction: 'to_planner', kind: 'ask', status: 'unread', ...over } as unknown as OfficeMessage;
+}
+
+function questionDeps(over: Partial<OfficeWaitingDeps> = {}, seen: SeenQ = {}) {
+  const created: unknown[] = [];
+  const markRead = vi.fn<(tenantId: string, ids: string[], nowIso: string) => Promise<number>>(async () => 1);
+  const deps: OfficeWaitingDeps & { created: unknown[] } = {
+    toolSchemas: SCHEMAS,
+    dispatch: vi.fn(async () => ({})),
+    memoryIndex: async () => '- firm/pacing.md — how patient to be',
+    runLoop: (async (
+      req: { system: string; user: string },
+      tools: ForcedToolSpec[],
+      exec: Exec,
+    ): Promise<ToolLoopResult> => {
+      seen.req = req;
+      seen.tools = tools;
+      await exec('answer', { text: 'the office has nothing open for you' });
+      return { text: '', turns: 1, calls: [], stalledWarnings: 0 };
+    }) as unknown as NonNullable<OfficeWaitingDeps['runLoop']>,
+    createMessage: (async (input: unknown) => {
+      created.push(input);
+      return askRow();
+    }) as unknown as NonNullable<OfficeWaitingDeps['createMessage']>,
+    markRead,
+    listNudges: async () => [],
+    created,
+    ...over,
+  };
+  return deps;
+}
+
+const q = {
+  tenantId: T,
+  askerRef: 'ben-shelton',
+  askerTier: 'technician' as string | null,
+  managerDesk: false,
+  askerTechnicianId: 'tech-1' as string | null,
+  question: 'am I square with the office?',
+};
+
+describe('answerAsOffice — who is facing it decides the tools', () => {
+  test('a technician gets the technician set, their own open questions inlined, and the reminder', async () => {
+    const seen: SeenQ = {};
+    const listNudges = vi.fn(async () =>
+      [
+        { technician_id: 'tech-1', kind: 'overdue_visit_gap', status: 'asked', question: 'How did the marina visit go?' },
+        { technician_id: 'tech-OTHER', kind: 'job_cost_gap', status: 'asked', question: 'SECRET other-person question' },
+      ] as unknown as Nudge[],
+    );
+    const res = await answerAsOffice(q, questionDeps({ listNudges }, seen));
+    expect(res.answer).toBe('the office has nothing open for you');
+    expect(seen.req!.system).toBe(OFFICE_SYSTEM);
+    expect(seen.tools!.map((t) => t.name)).toEqual([
+      'read_memory',
+      'write_memory',
+      'read_job_note',
+      'write_job_note',
+      'catalog_lookup',
+      'asker_history',
+      'answer',
+    ]);
+    expect(seen.req!.user).toContain('How did the marina visit go?');
+    expect(seen.req!.user).not.toContain('SECRET other-person question');
+    expect(seen.req!.user).toContain(OFFICE_NARROW_REMINDER);
+    // The reminder sits AFTER the notes, next to the question it governs.
+    expect(seen.req!.user.indexOf(OFFICE_NARROW_REMINDER)).toBeGreaterThan(
+      seen.req!.user.indexOf("THE OFFICE'S OWN NOTES"),
+    );
+  });
+
+  test('a roster-less asker, and a manager-TIER badge without the capability, are technician-facing', async () => {
+    for (const over of [
+      { askerTier: null, askerTechnicianId: null },
+      { askerTier: 'manager', managerDesk: false },
+    ]) {
+      const seen: SeenQ = {};
+      await answerAsOffice({ ...q, ...over }, questionDeps({}, seen));
+      expect(seen.tools!.map((t) => t.name)).toEqual([
+        'read_memory',
+        'write_memory',
+        'read_job_note',
+        'write_job_note',
+        'catalog_lookup',
+        'asker_history',
+        'answer',
+      ]);
+      expect(seen.req!.user).toContain(OFFICE_NARROW_REMINDER);
+    }
+  });
+
+  test('an active manager gets the reads and notes, and no reminder', async () => {
+    const seen: SeenQ = {};
+    await answerAsOffice({ ...q, askerTier: 'manager', managerDesk: true }, questionDeps({}, seen));
+    expect(seen.tools!.map((t) => t.name)).toEqual([...MANAGER_FACING_TOOLS, 'answer']);
+    expect(seen.req!.user).not.toContain(OFFICE_NARROW_REMINDER);
+  });
+});
+
+describe('answerAsOffice — transcript and degrade', () => {
+  test('writes the ask, then the answer (in_reply_to, born read), then marks the ask read', async () => {
+    const deps = questionDeps();
+    const res = await answerAsOffice(q, deps);
+    expect(res.answer).toBeTruthy();
+    expect(deps.created).toHaveLength(2);
+    expect(deps.created[0]).toMatchObject({ direction: 'to_planner', kind: 'ask', fromRef: 'ben-shelton', tier: 'technician', body: q.question });
+    expect(deps.created[1]).toMatchObject({ kind: 'desk', fromRef: TEAM_LEAD_REF, toRef: 'ben-shelton', inReplyTo: 'ask-1', status: 'read' });
+    expect(deps.markRead).toHaveBeenCalledWith(T, ['ask-1'], expect.any(String));
+  });
+
+  test('an answer call without text is a failure, never the preamble', async () => {
+    const deps = questionDeps({
+      runLoop: (async (_r: unknown, _t: unknown, exec: Exec): Promise<ToolLoopResult> => {
+        await exec('answer', {});
+        return { text: 'let me check…', turns: 1, calls: [], stalledWarnings: 0 };
+      }) as unknown as NonNullable<OfficeWaitingDeps['runLoop']>,
+    });
+    const res = await answerAsOffice(q, deps);
+    expect(res.answer).toBeNull();
+    expect(res.note).toBe(OFFICE_FALLBACK_NOTE);
+  });
+
+  test('renderAskerState is honest about nothing, and the reminder puts USE THE NOTES first', () => {
+    expect(renderAskerState([], 'tech-1')).toContain('nothing');
+    expect(renderAskerState([], null)).toContain('nothing');
+    // The desk's 2026-09-01 lesson: "do not read your notes" reads as "do not
+    // consult them", so the permission precedes the narrowing.
+    expect(OFFICE_NARROW_REMINDER.indexOf('Read your notes as usual')).toBeGreaterThanOrEqual(0);
+    expect(OFFICE_NARROW_REMINDER.indexOf('Read your notes as usual')).toBeLessThan(
+      OFFICE_NARROW_REMINDER.indexOf('never a note quoted'),
+    );
+  });
+
+  test('a plain-text ending is used as the answer', async () => {
+    const deps = questionDeps({
+      runLoop: (async (): Promise<ToolLoopResult> => ({ text: 'you are square', turns: 1, calls: [], stalledWarnings: 0 })) as unknown as NonNullable<OfficeWaitingDeps['runLoop']>,
+    });
+    expect((await answerAsOffice(q, deps)).answer).toBe('you are square');
+  });
+
+  test('a loop failure keeps the ask UNREAD and returns the honest degrade', async () => {
+    const deps = questionDeps({
+      runLoop: (async () => {
+        throw new Error('provider down');
+      }) as unknown as NonNullable<OfficeWaitingDeps['runLoop']>,
+    });
+    const res = await answerAsOffice(q, deps);
+    expect(res).toMatchObject({ answer: null, note: OFFICE_FALLBACK_NOTE });
+    expect(deps.created).toHaveLength(1);
+    expect(deps.markRead).not.toHaveBeenCalled();
+  });
+
+  test('an empty answer is a failure, not an answer', async () => {
+    const deps = questionDeps({
+      runLoop: (async (): Promise<ToolLoopResult> => ({ text: '   ', turns: 1, calls: [], stalledWarnings: 0 })) as unknown as NonNullable<OfficeWaitingDeps['runLoop']>,
+    });
+    expect((await answerAsOffice(q, deps)).answer).toBeNull();
+    expect(deps.markRead).not.toHaveBeenCalled();
+  });
+
+  test('an over-long answer is cut to the transcript cap', async () => {
+    const deps = questionDeps({
+      runLoop: (async (_r: unknown, _t: unknown, exec: Exec): Promise<ToolLoopResult> => {
+        await exec('answer', { text: 'x'.repeat(OFFICE_MESSAGE_BODY_MAX + 100) });
+        return { text: '', turns: 1, calls: [], stalledWarnings: 0 };
+      }) as unknown as NonNullable<OfficeWaitingDeps['runLoop']>,
+    });
+    expect((await answerAsOffice(q, deps)).answer).toHaveLength(OFFICE_MESSAGE_BODY_MAX);
+  });
+
+  test('the notes ride every question; a failed read answers without them', async () => {
+    const seen: SeenQ = {};
+    await answerAsOffice(q, questionDeps({}, seen));
+    expect(seen.req!.user).toContain('- firm/pacing.md — how patient to be');
+    await answerAsOffice(
+      q,
+      questionDeps(
+        {
+          memoryIndex: async () => {
+            throw new Error('db hiccup');
+          },
+        },
+        seen,
+      ),
+    );
+    expect(seen.req!.user).not.toContain("THE OFFICE'S OWN NOTES");
+  });
+});
+
+// ── key-gated live smoke (the desk's, carried over): a REAL office answer over
+// the local stack, transcript verified by independent pg read-back ──────────
+
+describe.skipIf(!hasModelCredentials())('the office question door (live model, local stack)', () => {
+  const pg = new Client({ connectionString: process.env.DATABASE_URL });
+  let tenantId: string;
+  let techId: string;
+  const RUN = `office-live-${Date.now()}`;
+  const nudgeIds: string[] = [];
+
+  beforeAll(async () => {
+    await pg.connect();
+    const { data, error } = await getClient().from('tenants').select('id').eq('name', 'Default Tenant').single();
+    if (error || !data) throw new Error(`could not load seed tenant: ${error?.message ?? 'none'}`);
+    tenantId = data.id;
+    techId = (await insertTechnician({ tenantId, ref: `${RUN}-tech`, displayName: 'Office Live Tech', seatExempt: true })).id;
+    const n = await createPendingNudge({
+      tenantId,
+      kind: 'overdue_visit_gap',
+      subjectRef: `${RUN}-subject`,
+      technicianId: techId,
+      context: { jobTitle: 'Marina boiler check', customerName: 'Harborside' },
+    });
+    if (n) nudgeIds.push(n.id);
+  });
+
+  afterAll(async () => {
+    await pg.query('delete from office_messages where tenant_id = $1 and (from_ref = $2 or to_ref = $2)', [tenantId, `${RUN}-tech`]);
+    if (nudgeIds.length > 0) await pg.query('delete from nudges where id = any($1::uuid[])', [nudgeIds]);
+    await pg.query('delete from technicians where id = $1', [techId]);
+    await pg.end();
+  });
+
+  test('answers a technician "am I square" and writes the transcript pair', async () => {
+    const res = await answerAsOffice({
+      tenantId,
+      askerRef: `${RUN}-tech`,
+      askerTier: 'technician',
+      managerDesk: false,
+      askerTechnicianId: techId,
+      question: 'Is the office waiting on anything from me right now?',
+    }, {
+      // The real team-lead surface and door, as the MCP server hands them in.
+      toolSchemas: TEAM_LEAD_TOOL_SCHEMAS as readonly ForcedToolSpec[],
+      dispatch: (n, a, id) => dispatchForIdentity(n, a, id),
+    });
+    console.log('[office live] answer:', res.answer ?? `(degraded: ${res.note})`);
+    const { rows } = await pg.query(
+      'select kind, status, in_reply_to from office_messages where tenant_id = $1 and (from_ref = $2 or to_ref = $2) order by created_at',
+      [tenantId, `${RUN}-tech`],
+    );
+    if (res.answer) {
+      expect(rows.map((r) => r.kind)).toEqual(['ask', 'desk']);
+      expect(rows[0].status).toBe('read'); // answered — left the unread queue
+      expect(rows[1].status).toBe('read'); // transcript, born read
+      expect(rows[1].in_reply_to).not.toBeNull();
+    } else {
+      expect(rows.map((r) => r.kind)).toEqual(['ask']);
+      expect(rows[0].status).toBe('unread');
+    }
+  }, 300_000);
 });

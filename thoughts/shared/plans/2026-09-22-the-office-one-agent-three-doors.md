@@ -194,8 +194,8 @@ become the same assertions on `OFFICE_SYSTEM`.
 Update the comments naming the desk at `officeMessages.ts:136`, `querySpine.test.ts:393`.
 
 ### Automated verification
-- [ ] typecheck, lint, test; `server.test.ts:7462-7535` pass with the retyped seam.
-- [ ] `office.test.ts`: technician vs manager tool lists; a throwing loop leaves the ask unread and
+- [x] typecheck, lint, test; `server.test.ts:7462-7535` pass with the retyped seam.
+- [x] `office.test.ts`: technician vs manager tool lists; a throwing loop leaves the ask unread and
   returns the fallback; a text-only ending is used as the answer; `desk.in_reply_to` = ask id.
 
 ---

@@ -36,6 +36,10 @@ import {
   requestSandboxRetirement,
 } from '../db/sandboxPool.js';
 import { setTenantSeats } from '../db/tenants.js';
+import { createSeat } from '../db/seats.js';
+import { fetchWhoami } from '../seatGlue/whoami.js';
+import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 // Integration: the /control/badges pull route against the TEST project — real
 // HTTP server on an ephemeral port, real DB rows, self-cleaning. The MCP and
@@ -1057,5 +1061,188 @@ describe('hangUpSignal (plan 2026-09-22, the office)', () => {
     const signal = hangUpSignal(res);
     res.emit('close');
     expect(signal.aborted).toBe(false);
+  });
+});
+
+// Step 4 (plan 2026-09-23-step-4-per-seat-tokens): the box mints a seat's token
+// with its HOST token; the seat then proves itself with that token alone — to
+// /seat/whoami and to /mcp itself, through the real MCP client.
+describe('seat tokens: POST /control/seat-token, GET /seat/whoami, /mcp', () => {
+  let seatTechId: string;
+  let otherHostToken: string;
+
+  beforeAll(async () => {
+    await pg.query("delete from hosts where name = 'test-host-seat-other'");
+    // Two more people than the suite's cap of 2 (afterAll restores the default).
+    await setTenantSeats(tenantId, { managerSeats: 1, technicianSeats: 4 });
+    const hostId = (
+      await pg.query<{ id: string }>('select id from hosts where name = $1', [HOST_NAME])
+    ).rows[0].id;
+    const tech = await insertTechnician({ tenantId, ref: 'seat-probe', displayName: 'Seat Probe' });
+    seatTechId = tech.id;
+    await updateTechnician(tech.id, {
+      host_id: hostId,
+      sandbox_ref: 'g_probe001',
+      state: 'active',
+      telegram_user_id: '5801703167',
+    });
+    await createSeat({ tenantId, technicianId: tech.id, hostId, seatRef: 'g_probe001', botRef: null });
+    // A second box with its own seat: the first box must never mint for it.
+    const other = mintBadge();
+    otherHostToken = other.badge;
+    const otherHost = await createHost('test-host-seat-other', other.hash);
+    const otherTech = await insertTechnician({ tenantId, ref: 'seat-other', displayName: 'Other' });
+    await updateTechnician(otherTech.id, { state: 'active' });
+    await createSeat({
+      tenantId,
+      technicianId: otherTech.id,
+      hostId: otherHost.id,
+      seatRef: 'g_other001',
+      botRef: null,
+    });
+  });
+  afterAll(async () => {
+    // Cascades take the other box's seat with it (seats.host_id on delete cascade).
+    await pg.query("delete from hosts where name = 'test-host-seat-other'");
+  });
+
+  const mint = (token: string, seatRef: string) =>
+    fetch(`${base}/control/seat-token`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ seatRef }),
+    });
+  const mcpList = (token: string) =>
+    fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+  const whoami = (token: string) =>
+    fetch(`${base}/seat/whoami`, { headers: { authorization: `Bearer ${token}` } });
+
+  test('mint: bare 401 without a valid host token; 400 on a bad ref', async () => {
+    expect((await mint('nope', 'g_probe001')).status).toBe(401);
+    const noAuth = await fetch(`${base}/control/seat-token`, { method: 'POST', body: '{}' });
+    expect(noAuth.status).toBe(401);
+    expect(await noAuth.text()).toBe('');
+    expect((await mint(hostToken, '../etc')).status).toBe(400);
+  });
+
+  test("mint is host-scoped: a box cannot mint for another box's seat", async () => {
+    expect((await mint(hostToken, 'g_other001')).status).toBe(404);
+    expect((await mint(otherHostToken, 'g_probe001')).status).toBe(404);
+  });
+
+  test('mint returns the token once, stores only its fingerprint, and rotation kills the old one', async () => {
+    const first = await mint(hostToken, 'g_probe001');
+    expect(first.status).toBe(200);
+    expect(first.headers.get('cache-control')).toBe('no-store');
+    const a = (await first.json()) as { token: string; technicianRef: string; tenantId: string };
+    expect(a.token).toMatch(/^st_[0-9a-f]{64}$/);
+    expect(a).toMatchObject({ technicianRef: 'seat-probe', tenantId });
+    const row = await pg.query('select token_hash from seats where technician_id = $1', [seatTechId]);
+    expect(row.rows[0].token_hash).toBe(sha256hex(a.token));
+
+    expect((await whoami(a.token)).status).toBe(200);
+    const b = (await (await mint(hostToken, 'g_probe001')).json()) as { token: string };
+    expect(b.token).not.toBe(a.token);
+    expect((await whoami(a.token)).status).toBe(401);
+    expect((await mcpList(a.token)).status).toBe(401);
+    expect((await whoami(b.token)).status).toBe(200);
+  });
+
+  test("whoami: the seat's person, Telegram id and the firm's timezone; HMAC headers are refused", async () => {
+    const { token } = (await (await mint(hostToken, 'g_probe001')).json()) as { token: string };
+    const res = await whoami(token);
+    const tz = (await pg.query('select timezone from tenants where id = $1', [tenantId])).rows[0]
+      .timezone;
+    expect(await res.json()).toEqual({
+      seatRef: 'g_probe001',
+      tenantId,
+      technicianRef: 'seat-probe',
+      telegramUserId: '5801703167',
+      timezone: tz,
+    });
+    const hmac = await fetch(`${base}/seat/whoami`, {
+      headers: {
+        'x-tenant-id': tenantId,
+        'x-technician-ref': 'seat-probe',
+        'x-identity-signature': 'a'.repeat(64),
+      },
+    });
+    expect(hmac.status).toBe(401);
+  });
+
+  test("the glue's own fetchWhoami against Render's own route", async () => {
+    const { token } = (await (await mint(hostToken, 'g_probe001')).json()) as { token: string };
+    const tz = (await pg.query('select timezone from tenants where id = $1', [tenantId])).rows[0]
+      .timezone;
+    expect(await fetchWhoami(`${base}/`, token)).toEqual({
+      seatRef: 'g_probe001',
+      tenantId,
+      technicianRef: 'seat-probe',
+      telegramUserId: 5801703167,
+      tz,
+    });
+  });
+
+  test('a deactivated person: mint 409, whoami 403, /mcp refused', async () => {
+    const { token } = (await (await mint(hostToken, 'g_probe001')).json()) as { token: string };
+    await updateTechnician(seatTechId, { state: 'offboarded' });
+    try {
+      expect((await mint(hostToken, 'g_probe001')).status).toBe(409);
+      expect((await whoami(token)).status).toBe(403);
+      // The token still names the seat, but dispatch's roster check refuses
+      // every tool call for an inactive person (server.ts, same as HMAC).
+      const client = new McpClient({ name: 'seat-token-probe', version: '0' });
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+        }),
+      );
+      try {
+        const out = await client
+          .callTool({ name: 'get_schedule', arguments: {} })
+          .then((r) => JSON.stringify(r))
+          .catch((e: unknown) => String(e));
+        expect(out).toMatch(/deactivated|inactive/i);
+      } finally {
+        await client.close();
+      }
+    } finally {
+      await updateTechnician(seatTechId, { state: 'active' });
+    }
+  });
+
+  test('/mcp: the real MCP client lists the technician tools with only the seat token', async () => {
+    const { token } = (await (await mint(hostToken, 'g_probe001')).json()) as { token: string };
+    const client = new McpClient({ name: 'seat-token-probe', version: '0' });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
+        requestInit: { headers: { authorization: `Bearer ${token}` } },
+      }),
+    );
+    try {
+      const { tools } = await client.listTools();
+      expect(tools.length).toBeGreaterThan(5);
+      expect(tools.map((t) => t.name)).toContain('get_schedule');
+    } finally {
+      await client.close();
+    }
+    const bad = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer st_${'0'.repeat(64)}`,
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    expect(bad.status).toBe(401);
   });
 });

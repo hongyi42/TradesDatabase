@@ -168,6 +168,10 @@ const RESET_TABLES = [
   // Registered BY NAME (eng-memory §1). Cascades from tenants, so omitting it
   // fails SILENTLY — a stale row would change this firm's cadence mid-eval.
   'tenant_settings',
+  // Glue seats and their bots (step 4): cascade from technicians / hosts,
+  // registered BY NAME anyway (eng-memory §1).
+  'seats',
+  'seat_bots',
   'sandbox_pool',
   'hosts',
 ];

@@ -7,6 +7,11 @@
 # value rides the environment and never reaches sudo's logged command line, ps,
 # or the journal. The glue's conversation state stays in /var/lib/seat-glue/<seat>
 # — a later cutover resumes it.
+#
+# STEP 4: nothing extra to undo. A seat that still has its pool sandbox keeps its
+# badge (the badge file only drops glue seats with NO pool row), so the openclaw
+# side reaches the spine through the doorman as before. The seat's token stays
+# valid but unused; rerunning install.sh later mints a fresh one.
 set -euo pipefail
 
 SEAT="${1:?usage: rollback.sh <seat>}"

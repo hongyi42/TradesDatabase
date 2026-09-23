@@ -11,6 +11,7 @@ import { readState, writeState } from './state.js';
 import { TelegramClient, TelegramConflictError, type TelegramApi } from './telegram.js';
 import { TurnPolicy } from './turnPolicy.js';
 import { transcribe } from './voice.js';
+import { fetchWhoami, type SeatWho } from './whoami.js';
 
 // The seat glue's entry point on trades-box-1: `node app/main.js`, run by
 // seat-glue@<seat>.service with the seat's env file.
@@ -20,32 +21,49 @@ import { transcribe } from './voice.js';
 // says so rather than fighting every 10 seconds.
 export const EXIT_CONFLICT = 3;
 
-export function engineConfig(cfg: SeatConfig): EngineConfig {
+export function engineConfig(cfg: SeatConfig, who: SeatWho): EngineConfig {
   return {
     seatRef: cfg.seatRef,
     stateDir: cfg.stateDir,
-    tz: cfg.tz,
+    tz: who.tz,
     model: cfg.model,
     openrouterKey: cfg.openrouterKey,
     spineUrl: cfg.spineUrl,
-    secret: cfg.secret,
-    tenantId: cfg.tenantId,
-    technicianRef: cfg.technicianRef,
+    seatToken: cfg.seatToken,
   };
 }
 
+/**
+ * Who this seat is, from Render (step 4). Refuses a token that names a
+ * DIFFERENT seat than the unit it runs in — an env file copied between seats
+ * would otherwise answer one person's Telegram with another person's identity.
+ */
+export async function whoAmI(cfg: SeatConfig): Promise<SeatWho> {
+  const who = await fetchWhoami(cfg.spineUrl, cfg.seatToken);
+  if (who.seatRef !== cfg.seatRef) {
+    throw new Error(`seat-glue: this token belongs to seat ${who.seatRef}, not ${cfg.seatRef}`);
+  }
+  return who;
+}
+
 /** Everything a Seat needs, wired to the real engine and the given Telegram. */
-export function seatDeps(cfg: SeatConfig, client: EngineClient, telegram: TelegramApi, policy: TurnPolicy): SeatDeps & { costLog: CostLog } {
+export function seatDeps(
+  cfg: SeatConfig,
+  who: SeatWho,
+  client: EngineClient,
+  telegram: TelegramApi,
+  policy: TurnPolicy,
+): SeatDeps & { costLog: CostLog } {
   const costLog = new CostLog({
     seat: cfg.seatRef,
-    tenantId: cfg.tenantId,
-    technicianRef: cfg.technicianRef,
+    tenantId: who.tenantId,
+    technicianRef: who.technicianRef,
     stateDir: cfg.stateDir,
     openrouterKey: cfg.openrouterKey,
   });
   return {
     telegram,
-    openSession: (id) => openSession(client, engineConfig(cfg), policy, id),
+    openSession: (id) => openSession(client, engineConfig(cfg, who), policy, id),
     policy,
     costLog,
     transcribe: (buf, mime) => transcribe(buf, mime, { openrouterKey: cfg.openrouterKey }),
@@ -53,7 +71,7 @@ export function seatDeps(cfg: SeatConfig, client: EngineClient, telegram: Telegr
     sweepMedia: () => sweepMedia(cfg.stateDir, cfg.mediaRetentionDays),
     readState: () => readState(cfg.stateDir),
     writeState: (s) => writeState(cfg.stateDir, s),
-    allowedUserId: cfg.telegramUserId,
+    allowedUserId: who.telegramUserId,
   };
 }
 
@@ -61,7 +79,7 @@ export function seatDeps(cfg: SeatConfig, client: EngineClient, telegram: Telegr
 export async function selfcheck(): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), 'seat-glue-selfcheck-'));
   try {
-    const client = await startEngine({ baseDirectory: dir, tz: process.env.SEAT_TZ || 'UTC' });
+    const client = await startEngine({ baseDirectory: dir, tz: 'UTC' });
     await client.ping('selfcheck');
     const errors = await client.stop();
     if (errors.length) throw new Error(`engine stop reported ${errors.length} error(s): ${errors[0].message}`);
@@ -75,8 +93,11 @@ async function main(argv: string[]): Promise<void> {
   if (argv.includes('--selfcheck')) return selfcheck();
 
   const cfg = loadConfig(process.env);
-  const client = await startEngine({ baseDirectory: join(cfg.stateDir, 'engine'), tz: cfg.tz });
-  const deps = seatDeps(cfg, client, new TelegramClient(cfg.botToken), new TurnPolicy());
+  // Before Telegram and before the engine: a seat that cannot say who it is
+  // exits non-zero and systemd retries — it never runs on a guessed identity.
+  const who = await whoAmI(cfg);
+  const client = await startEngine({ baseDirectory: join(cfg.stateDir, 'engine'), tz: who.tz });
+  const deps = seatDeps(cfg, who, client, new TelegramClient(cfg.botToken), new TurnPolicy());
   const seat = new Seat(deps);
 
   // A restart (an upgrade, systemd) must not drop the last reply's cost lines:
@@ -94,7 +115,7 @@ async function main(argv: string[]): Promise<void> {
   process.on('SIGTERM', () => void shutdown(0));
   process.on('SIGINT', () => void shutdown(0));
 
-  console.log(`seat-glue: ${cfg.seatRef} polling Telegram (model ${cfg.model}, tz ${cfg.tz})`);
+  console.log(`seat-glue: ${cfg.seatRef} polling Telegram (model ${cfg.model}, tz ${who.tz})`);
   try {
     await seat.run();
   } catch (err) {

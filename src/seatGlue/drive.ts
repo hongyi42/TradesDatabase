@@ -3,7 +3,7 @@ import { extname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
 import { startEngine } from './engine.js';
-import { seatDeps } from './main.js';
+import { seatDeps, whoAmI } from './main.js';
 import { Seat } from './seat.js';
 import { readState } from './state.js';
 import { STOP_TEXT, type TelegramApi, type TgMessage, type TgUpdate } from './telegram.js';
@@ -123,9 +123,10 @@ async function main(argv: string[]): Promise<void> {
   const cfg = loadConfig(process.env);
   const steps = JSON.parse(await readFile(scriptPath, 'utf8')) as Step[];
 
-  const client = await startEngine({ baseDirectory: join(cfg.stateDir, 'engine'), tz: cfg.tz });
-  const tg = new ScriptedTelegram(cfg.telegramUserId, (await readState(cfg.stateDir)).offset);
-  const deps = seatDeps(cfg, client, tg, new TurnPolicy());
+  const who = await whoAmI(cfg);
+  const client = await startEngine({ baseDirectory: join(cfg.stateDir, 'engine'), tz: who.tz });
+  const tg = new ScriptedTelegram(who.telegramUserId, (await readState(cfg.stateDir)).offset);
+  const deps = seatDeps(cfg, who, client, tg, new TurnPolicy());
   const seat = new Seat(deps);
   const loop = seat.run().catch((err: unknown) => {
     console.error(`seat loop failed: ${err instanceof Error ? err.message : String(err)}`);

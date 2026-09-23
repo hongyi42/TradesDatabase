@@ -162,6 +162,11 @@ const RESET_TABLES = [
   'technician_view_rules',
   'access_grants',
   'capture_tags',
+  // Glue seats (step 4) and their bots: both cascade from technicians / hosts,
+  // named anyway (eng-memory §1). bind_telegram writes a seat whenever a seat
+  // bot is free, so a stale one would hand the next run's hire a used bot.
+  'seats',
+  'seat_bots',
   // Infra, but the eval registers its own cold pool for bind_telegram, so stale
   // rows from a previous run would otherwise accumulate.
   'sandbox_pool',
@@ -197,6 +202,7 @@ async function reset() {
  *   raw_captures — append-only, no delete path. Its provenance FKs are
  *                  `on delete set null`, so it survives this untouched.
  *   hosts,
+ *   seat_bots,
  *   sandbox_pool — shared infra the real control plane and badge pull read. The
  *                  cold-pool fixture exists for tier 1's bind_telegram case, and
  *                  tier 1 stays local.
@@ -251,6 +257,10 @@ const PILOT_TENANT_SCOPED = [
   // migrations), so those need no explicit delete; listed last because the
   // cascade is what makes the order above safe.
   'customers',
+  // A person's glue seat (step 4) goes with the person. The FK cascades, so the
+  // roster delete below would take it anyway — named so it is a decision, not
+  // an accident (eng-memory §1). Its bot (seat_bots) is box infra and stays.
+  'seats',
   'technicians',
 ];
 

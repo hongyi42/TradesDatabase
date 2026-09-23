@@ -2,7 +2,9 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from './client.js';
 import {
+  addManagersTexted,
   closeAccessRequest,
+  contextOf,
   listRecentAccessRequestsFor,
   openAccessRequest,
   requestKeyOf,
@@ -96,5 +98,27 @@ describe('listRecentAccessRequestsFor', () => {
         '2000-01-01T00:00:00Z',
       ),
     ).toEqual([]);
+  });
+});
+
+describe('addManagersTexted', () => {
+  test('adds names to a waiting request, once each', async () => {
+    const me = await mkTech('me3');
+    const row = await file(me, 'record');
+    const updated = await addManagersTexted(tenantId, row, ['Sam Lee', 'Sam Lee']);
+    expect(contextOf(updated!).managersTexted).toEqual(['Sam Lee']);
+    const again = await addManagersTexted(tenantId, updated!, ['Dana Reed']);
+    expect(contextOf(again!).managersTexted).toEqual(['Sam Lee', 'Dana Reed']);
+  });
+
+  test('a stale read loses the race and changes nothing; a settled request is left alone', async () => {
+    const me = await mkTech('me4');
+    const row = await file(me, 'money');
+    await addManagersTexted(tenantId, row, ['Sam Lee']);
+    // `row` still holds the pre-update context: compare-and-set refuses it.
+    expect(await addManagersTexted(tenantId, row, ['Dana Reed'])).toBeNull();
+    const fresh = (await listRecentAccessRequestsFor(tenantId, me, '2000-01-01T00:00:00Z'))[0];
+    await closeAccessRequest(tenantId, fresh.id, 'declined by Sam: no');
+    expect(await addManagersTexted(tenantId, fresh, ['Dana Reed'])).toBeNull();
   });
 });

@@ -24,7 +24,8 @@ import { queuePersonPush } from '../db/index.js';
 import { Client } from 'pg';
 import type { AddressInfo } from 'node:net';
 import type http from 'node:http';
-import { createHttpServer } from './httpServer.js';
+import { createHttpServer, hangUpSignal } from './httpServer.js';
+import { EventEmitter } from 'node:events';
 import { mintBadge, sha256hex } from '../control/badges.js';
 import { createHost } from '../db/hosts.js';
 import { getClient } from '../db/client.js';
@@ -1034,5 +1035,27 @@ describe('/control/office (build 5.5 Phase 3)', () => {
       body: JSON.stringify({ id: messageId, outcome: 'failed' }),
     });
     expect(((await dupe.json()) as { result: string }).result).toBe('ignored');
+  });
+});
+
+describe('hangUpSignal (plan 2026-09-22, the office)', () => {
+  const fakeRes = (finished: boolean) =>
+    Object.assign(new EventEmitter(), { writableFinished: finished }) as unknown as Parameters<
+      typeof hangUpSignal
+    >[0] & EventEmitter;
+
+  test('the request closing before the reply aborts the signal', () => {
+    const res = fakeRes(false);
+    const signal = hangUpSignal(res);
+    expect(signal.aborted).toBe(false);
+    res.emit('close');
+    expect(signal.aborted).toBe(true);
+  });
+
+  test('the close that follows a finished reply does not', () => {
+    const res = fakeRes(true);
+    const signal = hangUpSignal(res);
+    res.emit('close');
+    expect(signal.aborted).toBe(false);
   });
 });

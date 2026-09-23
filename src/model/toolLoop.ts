@@ -253,6 +253,14 @@ export interface ToolLoopRequest {
    * Never allowed to break the loop: a throwing hook is caught and logged.
    */
   onStall?: () => void;
+  /**
+   * The CALLER's cancel switch (plan 2026-09-22, the office): aborted when the
+   * person waiting on this loop has hung up. Checked before every turn and
+   * carried into the model request beside the budget, so a loop nobody is
+   * waiting for stops at its next turn instead of running out its clock. The
+   * error it throws names the hang-up, so a caller can tell it from a failure.
+   */
+  signal?: AbortSignal;
 }
 
 /** One tool the model actually invoked, with what came back. Returned for the
@@ -669,6 +677,14 @@ function stringifyResult(value: unknown): string {
 // cap is hit: an answer produced by a loop that was cut off is an answer formed
 // on incomplete evidence, and the caller cannot tell the difference from the
 // text alone.
+/** The caller hung up (ToolLoopRequest.signal) — not a failure of the loop. */
+export class ToolLoopCancelledError extends Error {
+  constructor(label: string, turns: number) {
+    super(`${label}: the caller hung up — stopped after ${turns} turns`);
+    this.name = 'ToolLoopCancelledError';
+  }
+}
+
 export async function runToolLoop(
   req: ToolLoopRequest,
   tools: ForcedToolSpec[],
@@ -704,6 +720,7 @@ export async function runToolLoop(
   let stalledWarnings = 0;
 
   for (;;) {
+    if (req.signal?.aborted) throw new ToolLoopCancelledError(req.label, turns);
     if (turns >= maxTurns) {
       throw new ToolLoopLimitError(
         'turns',
@@ -730,8 +747,10 @@ export async function runToolLoop(
     // a stalled provider aborts instead of holding the tick open.
     let step: ModelStep;
     try {
-      step = await transport.step(history, AbortSignal.timeout(remaining));
+      const clock = AbortSignal.timeout(remaining);
+      step = await transport.step(history, req.signal ? AbortSignal.any([clock, req.signal]) : clock);
     } catch (err) {
+      if (req.signal?.aborted) throw new ToolLoopCancelledError(req.label, turns);
       // ForcedToolRequest.label promises that every thrown error names its
       // caller. A DOMException from the abort signal is the one error that
       // arrives from outside this module's own throws — and it is precisely the

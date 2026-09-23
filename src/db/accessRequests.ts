@@ -68,8 +68,12 @@ export interface AccessRequestContext {
   technicianName: string;
   jobId?: string;
   customerId: string;
-  /** The job or customer in words, for the planner's line and the texts. */
+  /** The job or customer in words, for the planner's line and the MANAGERS'
+   *  texts — it names the job by title, which she may not be able to see. */
   targetName: string;
+  /** The same, title-free, for anything read out to HER (a manager's "no").
+   *  Absent on rows filed before 2026-09-22. */
+  technicianWords?: string;
   wants: AccessWants;
   /** The technician's own reason, her words. */
   why: string;
@@ -219,6 +223,32 @@ export async function listRecentAccessRequestsFor(
     .limit(20);
   if (error) throw new Error(`listRecentAccessRequestsFor failed: ${error.message}`);
   return (data ?? []) as AccessRequest[];
+}
+
+// A REPEAT ASK ON A REQUEST STILL WAITING (plan 2026-09-22, the office): when the
+// office puts a waiting request to a manager it had not asked before, the names
+// are added here, so the next repeat texts only somebody new. Compare-and-set on
+// the context it read, and the caller CLAIMS before it texts: null means another
+// repeat got there first, and the caller sends nothing. Unsettled rows only.
+export async function addManagersTexted(
+  tenantId: string,
+  row: AccessRequest,
+  names: string[],
+): Promise<AccessRequest | null> {
+  const ctx = contextOf(row);
+  const merged = [...new Set([...(ctx.managersTexted ?? []), ...names])];
+  const { data, error } = await getClient()
+    .from('observations')
+    .update({ context: { ...ctx, managersTexted: merged } as unknown as Json })
+    .eq('id', row.id)
+    .eq('tenant_id', tenantId)
+    .eq('kind', 'access_request')
+    .in('status', [...UNSETTLED_REQUEST_STATUSES])
+    .eq('context', JSON.stringify(row.context))
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`addManagersTexted failed: ${error.message}`);
+  return (data as AccessRequest | null) ?? null;
 }
 
 // THE ANSWER, and the guard is what makes "the first answer wins" structural:

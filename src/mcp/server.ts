@@ -3,8 +3,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { fileURLToPath } from 'node:url';
 import { TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
-import { answerAsOffice, OFFICE_QUESTION_MAX } from '../teamLead/office.js';
-import { answerAccessRequest } from '../teamLead/accessDesk.js';
+import { answerAsOffice, OFFICE_QUESTION_MAX, routeAccessAsOffice } from '../teamLead/office.js';
+import type { runToolLoop } from '../model/toolLoop.js';
 import { spineNowIso } from '../evalClock.js';
 import type { ForcedToolSpec, JsonSchemaObject } from '../model/forcedTool.js';
 import {
@@ -82,9 +82,17 @@ export interface ServerDeps {
   // The office's question door (plan 2026-09-22; was the Q&A desk) — injectable
   // so a dispatch test never calls the live model (the extractor precedent).
   deskAnswer?: typeof answerAsOffice;
-  // The access-request seam (plan B) — the desk's ONE write. Injectable for the
-  // same reason as deskAnswer: a dispatch test must never call the live model.
-  accessDesk?: typeof answerAccessRequest;
+  // The office's access door (plan 2026-09-22; was the access desk). Injectable
+  // for the same reason as deskAnswer: a dispatch test must never call the live model.
+  accessDesk?: typeof routeAccessAsOffice;
+  // The office's model loop, for BOTH waiting doors — so a test can drive the
+  // real door code with a scripted model, or none (the access door then takes
+  // its code fallback, exactly as it would on a provider outage).
+  officeLoop?: typeof runToolLoop;
+  // The seat's HANG-UP: aborted by the HTTP server when the request closes
+  // before the reply is sent, so the office stops rather than working for
+  // nobody (and the access door files and texts nothing).
+  signal?: AbortSignal;
   // Cost-ledger seam. Injectable for the same reason as the rest: without it
   // every hermetic dispatch test would start writing to the real database.
   recordCost?: typeof appendCostEvents;
@@ -127,8 +135,9 @@ const TOOLS = [
           description:
             'ASK FOR ACCESS to something a tool answered "outside your view". Only ever after ' +
             "your person has said yes, and `question` carries THEIR reason in their words. " +
-            'ONLY A MANAGER CAN OPEN A RECORD: the office files the request and texts every ' +
-            'manager it can reach, and your person is texted when one answers. Say that you ' +
+            'ONLY A MANAGER CAN OPEN A RECORD: the office files the request and texts the ' +
+            'manager who looks after your person (every manager when it cannot tell), and your ' +
+            'person is texted when one answers. Say that you ' +
             'asked; never say they now have access, and never promise a reply. ' +
             'ASK FOR THE LEAST THAT ANSWERS THEM. A manager opens what you asked for, so pass ' +
             'jobId whenever a tool has given you one — get_job answers with the job id even ' +
@@ -788,7 +797,7 @@ async function dispatch(
         // inside an object spread put that throw somewhere surprising.
         const jobId = optStr('jobId');
         const customerId = optStr('customerId');
-        return await (deps.accessDesk ?? answerAccessRequest)(
+        return await (deps.accessDesk ?? routeAccessAsOffice)(
           {
             tenantId,
             askerRef: identity.technicianRef,
@@ -801,7 +810,14 @@ async function dispatch(
             ...(customerId ? { customerId } : {}),
             wants,
           },
-          {},
+          {
+            // The same surface and door the question gets (review, plan phase 3):
+            // the office picks the manager from its notes, so it needs its tools.
+            toolSchemas: TEAM_LEAD_TOOL_SCHEMAS as readonly ForcedToolSpec[],
+            dispatch: (n, a, officeIdentity) => dispatchForIdentity(n, a, officeIdentity, deps),
+            ...(deps.officeLoop ? { runLoop: deps.officeLoop } : {}),
+            ...(deps.signal ? { signal: deps.signal } : {}),
+          },
         );
       }
       const desk = await (deps.deskAnswer ?? answerAsOffice)(
@@ -824,6 +840,8 @@ async function dispatch(
           // an allowlist of them; the dispatch gate is the belt behind that.
           toolSchemas: TEAM_LEAD_TOOL_SCHEMAS as readonly ForcedToolSpec[],
           dispatch: (n, a, deskIdentity) => dispatchForIdentity(n, a, deskIdentity, deps),
+          ...(deps.officeLoop ? { runLoop: deps.officeLoop } : {}),
+          ...(deps.signal ? { signal: deps.signal } : {}),
         },
       );
       return desk.answer

@@ -249,12 +249,12 @@ key-on-asked, lapse-then-file, collision → converge, menu per width, one manag
 isolated, transcript pair.
 
 ### Automated verification
-- [ ] typecheck, lint, test (with `.env` present AND absent — no live call either way).
-- [ ] `office.test.ts` (stubbed loop): names Sam → only Sam pushed; names "Nobody" → every reachable
+- [x] typecheck, lint, test (with `.env` present AND absent — no live call either way).
+- [x] `office.test.ts` (stubbed loop): names Sam → only Sam pushed; names "Nobody" → every reachable
   manager; a foreign or malformed `jobId` → the asked target; a DECLINED request appears in the user
   message with its reason; body = headline with title + office words + menu; a live row + same
   manager → no new text; `args` null and a throwing apply both still file and text.
-- [ ] an aborted `signal` stops the loop before its next turn and, on the access door, files and
+- [x] an aborted `signal` stops the loop before its next turn and, on the access door, files and
   texts nothing; `httpServer` aborts the signal when the client closes before the reply.
 
 ### Live verification (agent-executable)
@@ -263,13 +263,13 @@ isolated, transcript pair.
   seeds Ben (technician) and a second manager beside Sam, each with `telegram_user_id` + `sandbox_ref`,
   then drives `routeAccessAsOffice`/`answerAsOffice` from `dist/`; `OPENROUTER_API_KEY` exported for
   that one command.
-- [ ] Ben asks customer-wide for a customer with one unfinished out-of-view job → the request row's
+- [x] Ben asks customer-wide for a customer with one unfinished out-of-view job → the request row's
   `context.jobId` is that job; pushes exist.
-- [ ] A manager declines via `decline_access`; Ben re-asks → the push goes to that manager only and
+- [x] A manager declines via `decline_access`; Ben re-asks → the push goes to that manager only and
   mentions the earlier no; evidence: `person_pushes` + the office's `reason`.
-- [ ] a scripted client drops an access call mid-office → no request row, no push (then repeat on
+- [x] a scripted client drops an access call mid-office → no request row, no push (then repeat on
   Render with the step-1 glue's Stop, once deployed, to confirm the proxy passes the hang-up).
-- [ ] Ben asks "what's on <that job>?" → the `desk` row names no title or detail.
+- [x] Ben asks "what's on <that job>?" → the `desk` row names no title or detail.
 
 ---
 

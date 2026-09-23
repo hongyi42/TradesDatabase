@@ -983,7 +983,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const body = await readBody(req);
     const identity = resolveIdentityFromHeaders(req.headers);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    const mcp = createServer({ identity });
+    const mcp = createServer({ identity, signal: hangUpSignal(res) });
     await mcp.connect(transport);
     await transport.handleRequest(req, res, body);
   } catch {
@@ -993,6 +993,20 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       res.end();
     }
   }
+}
+
+// THE SEAT'S HANG-UP (plan 2026-09-22, the office). A seat's Stop aborts its tool
+// call, which closes this request; the office can run for minutes, so it must
+// hear that rather than finish for nobody. 'close' also fires after a normal
+// reply — writableFinished tells the two apart. UNVERIFIED end to end: that the
+// seat engine's abort closes the connection, and that Render's proxy passes the
+// close through (a joint live check with the step-1 seat, owed).
+export function hangUpSignal(res: Pick<http.ServerResponse, 'on' | 'writableFinished'>): AbortSignal {
+  const hangUp = new AbortController();
+  res.on('close', () => {
+    if (!res.writableFinished) hangUp.abort();
+  });
+  return hangUp.signal;
 }
 
 export function createHttpServer(): http.Server {

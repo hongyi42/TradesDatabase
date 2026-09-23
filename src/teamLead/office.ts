@@ -1,8 +1,24 @@
 import type { ForcedToolSpec } from '../model/forcedTool.js';
 import { runToolLoop } from '../model/toolLoop.js';
 import {
+  addManagersTexted,
   createOfficeMessage,
+  findOpenAccessRequest,
   getCustomer,
+  getJob,
+  getTenant,
+  hasLapsed,
+  lapseAccessRequest,
+  listManagersWithTelegram,
+  listOpenJobsForCustomer,
+  openAccessRequest,
+  queuePersonPush,
+  requestKeyOf,
+  viewHasCustomer,
+  viewShowsMoney,
+  type AccessRequest,
+  type AccessWants,
+  type Technician,
   getTechnicianView,
   listJobsForCustomer,
   listNudgesByStatus,
@@ -20,7 +36,9 @@ import {
 import { renderMemoryIndex } from './memory.js';
 import { TEAM_LEAD_REF } from './identity.js';
 import { PLANNER_MAX_TOKENS, PLANNER_REASONING } from './planner.js';
-import { ANSWER_TOOL, OFFICE_SYSTEM } from './officePrompt.js';
+import { ANSWER_TOOL, OFFICE_SYSTEM, ROUTE_ACCESS_TOOL } from './officePrompt.js';
+import { localDateISO } from '../schedule/availability.js';
+import { servedDayPhrase } from '../schedule/dateResolve.js';
 
 // THE OFFICE (plan 2026-09-22, "the office: one agent, three doors").
 //
@@ -212,8 +230,8 @@ export interface AskerHistoryDeps {
 
 const DAY_MS = 24 * 3_600_000;
 
-/** How the access door's transcript ask row begins (accessDesk.ts recordPair,
- *  and the office's own access door after it). */
+/** How the access door's transcript ask row begins (recordPair below; rows from
+ *  before 2026-09-22 began the same way and named the job by title). */
 export const ACCESS_ASK_PREFIX = 'Asked to open ';
 
 /**
@@ -300,6 +318,8 @@ export interface OfficeDoorInput {
   dispatch?: OfficeDispatch;
   /** Cost lane label, per door. */
   lane: string;
+  /** Aborted when the seat hangs up — the loop stops at its next turn. */
+  signal?: AbortSignal;
 }
 
 export interface OfficeDoorDeps {
@@ -362,6 +382,7 @@ export async function runOfficeDoor(
       budgetMs: OFFICE_WAITING_BUDGET_MS,
       maxTurns: null,
       terminalTool: terminal.name,
+      ...(input.signal ? { signal: input.signal } : {}),
     },
     tools,
     async (name, args) => {
@@ -425,6 +446,8 @@ export interface OfficeWaitingDeps extends OfficeDoorDeps {
   createMessage?: typeof createOfficeMessage;
   markRead?: typeof markOfficeMessagesRead;
   listNudges?: typeof listNudgesByStatus;
+  /** The seat's hang-up (the HTTP request closed before the reply). */
+  signal?: AbortSignal;
 }
 
 export interface OfficeAnswer {
@@ -488,6 +511,7 @@ export async function answerAsOffice(
         schemas: deps.toolSchemas ?? [],
         dispatch: deps.dispatch,
         lane: 'office-question',
+        ...(deps.signal ? { signal: deps.signal } : {}),
       },
       deps,
     );
@@ -525,5 +549,585 @@ export async function answerAsOffice(
   } catch (err) {
     console.error(`[office] tenant ${tenantId}: could not answer — the ask stays queued`, err);
     return { answer: null, note: OFFICE_FALLBACK_NOTE, askId: ask.id };
+  }
+}
+
+// ── door 2: a seat's access ask ───────────────────────────────────────────────
+//
+// THE OFFICE JUDGES, CODE GUARDS (operator doctrine, 2026-09-22). The office
+// decides what to ask for (narrowing a customer-wide ask to one job), whether a
+// repeat goes out and to whom (it is shown her recent requests, a manager's "no"
+// included), which managers, and the words. Code keeps what must never be a
+// model's: the refusals (a manager, a roster-less badge, one real target on this
+// firm), the dedup index, the lapse that frees it, the line that names the target
+// (the office only ever saw ids), and the reply menu (a plain "yes" on a money
+// ask opens the figures, and the ledger has no delete).
+//
+// ONLY A MANAGER OPENS ANYTHING (2026-09-20): nothing on this path writes a grant.
+//
+// A REQUEST IS NEVER LOST (operator, 2026-09-22): if the office fails, or ends
+// without deciding, today's code path runs — narrow by rule, file, text every
+// reachable manager. The one exception is a seat that has hung up: nobody is
+// there to be told, so nothing is filed or sent.
+
+export type AccessDeskStatus = 'asked_manager' | 'already_open' | 'already_asked' | 'refused';
+
+export interface AccessDeskAnswer {
+  status: AccessDeskStatus;
+  answer: string;
+}
+
+export interface AccessRequestInput {
+  tenantId: string;
+  /** The asker's roster ref. Identity, never chat text. */
+  askerRef: string;
+  /** Their display name — what the manager's text says. */
+  askerName: string;
+  askerTier: string | null;
+  /** The asker's roster uuid — null for a badge with no roster row. */
+  askerTechnicianId: string | null;
+  /** The repo's one active-manager predicate, decided by the caller. */
+  activeManager: boolean;
+  /** The technician's own reason — ask_team_lead's `question`. */
+  why: string;
+  jobId?: string;
+  customerId?: string;
+  wants: AccessWants;
+}
+
+export interface AccessDoorDeps extends OfficeWaitingDeps {
+  now?: () => Date;
+  getJob?: typeof getJob;
+  getCustomer?: typeof getCustomer;
+  listOpenJobs?: typeof listOpenJobsForCustomer;
+  listJobs?: typeof listJobsForCustomer;
+  listManagers?: typeof listManagersWithTelegram;
+  queuePush?: typeof queuePersonPush;
+  openRequest?: typeof openAccessRequest;
+  findRequest?: typeof findOpenAccessRequest;
+  lapseRequest?: typeof lapseAccessRequest;
+  addManagers?: typeof addManagersTexted;
+  firmTenant?: typeof getTenant;
+}
+
+// ── words (NO IDS AND NO ROSTER REFS: they are read out to a person) ─────────
+
+interface Target {
+  jobId?: string;
+  customerId: string;
+  jobTitle?: string | null;
+  customerName: string;
+}
+
+const jobWords = (t: Target): string =>
+  t.jobTitle ? `the "${t.jobTitle}" job for ${t.customerName}` : `${t.customerName}'s job`;
+
+// What was asked for, in words — for the MANAGER, who may see anything.
+function whatWords(t: Target, wants: AccessWants): string {
+  const where = t.jobId ? jobWords(t) : `${t.customerName}'s record — every job of theirs`;
+  if (wants === 'money') return `the money figures on ${where}`;
+  if (wants === 'notes') return `every note on ${where}, calls and emails included`;
+  return where;
+}
+
+// The same, WITHOUT a job title — for the transcript row, which the office later
+// shows the technician through asker_history. She may not be able to see a job
+// the office narrowed to, so its title never goes in a row she is shown.
+function titleFreeWords(t: Target, wants: AccessWants): string {
+  const where = t.jobId ? `the job you asked about for ${t.customerName}` : `${t.customerName}'s record`;
+  return wants === 'money' ? `the figures on ${where}` : wants === 'notes' ? `the notes on ${where}` : where;
+}
+
+// A plain "yes" answers the question that was ASKED — grant_access fills `money`
+// and `opens` from the request — so the menu is width-aware: offering "yes with
+// prices" beside a money ask would imply the plain yes withholds them.
+function replyMenu(wants: AccessWants): string {
+  return wants === 'money'
+    ? 'Reply yes to open the figures, yes for good to leave them open, or no.'
+    : wants === 'notes'
+      ? 'Reply yes to open every note on it, yes for good to leave it open, or no.'
+      : 'Reply to answer: yes, yes for good, yes with prices, or no.';
+}
+
+const listNames = (names: string[]): string =>
+  names.length <= 1
+    ? (names[0] ?? '')
+    : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+
+const STOPPED: AccessDeskAnswer = {
+  status: 'refused',
+  answer: 'Stopped — nothing was sent to a manager.',
+};
+
+// ── the door ──────────────────────────────────────────────────────────────────
+
+export async function routeAccessAsOffice(
+  input: AccessRequestInput,
+  deps: AccessDoorDeps = {},
+): Promise<AccessDeskAnswer> {
+  const { tenantId, askerTechnicianId, wants } = input;
+  const readJob = deps.getJob ?? getJob;
+  const readCustomer = deps.getCustomer ?? getCustomer;
+  const readView = deps.technicianView ?? getTechnicianView;
+
+  // 1. WHO IS ASKING — refusals in words, never errors.
+  if (input.activeManager) {
+    return {
+      status: 'refused',
+      answer:
+        'You already see the whole record — every customer, every job. There is nothing for me ' +
+        'to open.',
+    };
+  }
+  if (!askerTechnicianId) {
+    return {
+      status: 'refused',
+      answer:
+        'I could not find you on the team list, so I cannot ask for access on your behalf. A ' +
+        'manager can sort that out.',
+    };
+  }
+
+  // 2. WHAT IS BEING ASKED FOR — exactly one target, this firm's. Another firm's
+  // id answers exactly like an unknown one.
+  if (!input.jobId && !input.customerId) {
+    return {
+      status: 'refused',
+      answer: 'I need to know which job or which customer you need. Ask me again and name one.',
+    };
+  }
+  if (input.jobId && input.customerId) {
+    return { status: 'refused', answer: 'Name one thing at a time — either the job or the customer.' };
+  }
+  const view = await readView(tenantId, askerTechnicianId);
+  let asked: Target;
+  if (input.jobId) {
+    const notFound = { status: 'refused' as const, answer: 'I cannot find that job on this firm.' };
+    if (!UUID_SHAPE.test(input.jobId)) return notFound;
+    const job = await readJob(input.jobId);
+    if (!job || job.tenant_id !== tenantId) return notFound;
+    const customer = await readCustomer(job.customer_id);
+    if (!customer || customer.tenant_id !== tenantId) return notFound;
+    asked = { jobId: job.id, customerId: customer.id, jobTitle: job.title, customerName: customer.name };
+  } else {
+    const notFound = { status: 'refused' as const, answer: 'I cannot find that customer on this firm.' };
+    if (!UUID_SHAPE.test(input.customerId as string)) return notFound;
+    const customer = await readCustomer(input.customerId as string);
+    if (!customer || customer.tenant_id !== tenantId) return notFound;
+    asked = { customerId: customer.id, customerName: customer.name };
+  }
+  // KEYED ON WHAT SHE ASKED, not on what it was narrowed to: narrowing depends on
+  // how many live jobs the customer has right now, and the same ask at 9am and
+  // 11am must key the same or every manager is texted twice.
+  const requestKey = requestKeyOf({
+    technicianId: askerTechnicianId,
+    jobId: input.jobId,
+    customerId: input.customerId ?? asked.customerId,
+    wants,
+  });
+  const managers = (await (deps.listManagers ?? listManagersWithTelegram)(tenantId)).filter(
+    (m) => !!m.sandbox_ref, // REACHABLE means texted: the push leg skips a seat-less person
+  );
+
+  // 3. THE OFFICE DECIDES.
+  let decision: Record<string, unknown> | null = null;
+  try {
+    decision = await askTheOffice(input, asked, view, managers, deps);
+  } catch (err) {
+    if (deps.signal?.aborted) return STOPPED;
+    console.error(`[office] tenant ${tenantId}: the access door fell back to code`, err);
+  }
+  if (deps.signal?.aborted) return STOPPED;
+
+  // 4. CODE APPLIES IT — or, with no usable decision, today's path.
+  try {
+    if (decision && isRouteDecision(decision)) {
+      return await applyDecision(input, asked, requestKey, view, managers, decision, deps);
+    }
+  } catch (err) {
+    console.error(`[office] tenant ${tenantId}: applying the office's access decision failed`, err);
+  }
+  return routeByCode(input, asked, requestKey, view, managers, deps);
+}
+
+interface RouteDecision {
+  outcome: 'ask' | 'already_open' | 'already_asked' | 'refuse';
+  jobId?: string;
+  managers?: string[];
+  managerMessage?: string;
+  replyToAsker: string;
+  reason: string;
+}
+
+function isRouteDecision(d: Record<string, unknown>): d is Record<string, unknown> & RouteDecision {
+  return (
+    ['ask', 'already_open', 'already_asked', 'refuse'].includes(d.outcome as string) &&
+    typeof d.replyToAsker === 'string' &&
+    d.replyToAsker.trim().length > 0
+  );
+}
+
+async function askTheOffice(
+  input: AccessRequestInput,
+  asked: Target,
+  view: TechnicianView,
+  managers: Technician[],
+  deps: AccessDoorDeps,
+): Promise<Record<string, unknown> | null> {
+  const { tenantId } = input;
+  const facing = {
+    kind: 'technician' as const,
+    technicianId: input.askerTechnicianId,
+    ref: input.askerRef,
+  };
+  // THE CATALOG ROWS for the target customer — ids and marks, never titles.
+  const catalog = await catalogLookup(tenantId, view, { customerId: asked.customerId }, {
+    getCustomer: deps.getCustomer,
+    listJobsForCustomer: deps.listJobs,
+  });
+  const history = await askerHistory(tenantId, facing, deps.history);
+  const targetLine = asked.jobId
+    ? `job ${asked.jobId} of customer "${asked.customerName}" (${asked.customerId})`
+    : `customer "${asked.customerName}" (${asked.customerId}) — every job of theirs`;
+  const inView = asked.jobId ? viewHasJob(view, asked.jobId) : viewHasCustomer(view, asked.customerId);
+  const money = viewShowsMoney(view, { jobId: asked.jobId, customerId: asked.customerId });
+  const lines = [
+    'THIS IS AN ACCESS ASK from a seat that is waiting — end with `route_access`.',
+    `THE PERSON ASKING is NOT a manager: ${input.askerName} (${input.askerRef}).`,
+    `THEY ASK FOR: ${input.wants} on ${targetLine}.`,
+    `THEIR REASON, in their words: "${input.why}"`,
+    `WHAT THEIR VIEW SAYS NOW: they ${inView ? 'CAN' : 'cannot'} open that; money figures there ` +
+      `are ${money ? 'OPEN' : 'not open'} to them.`,
+    "THAT CUSTOMER'S JOBS (the catalog — ids and marks only):",
+    ...(catalog.jobs ?? []).map(
+      (j) =>
+        `  - ${j.id}: ${j.unfinished ? 'unfinished' : 'finished'}, ` +
+        `${j.inTheirView ? 'in their view' : 'NOT in their view'}`,
+    ),
+    'THE MANAGERS YOU CAN ASK (names to copy into `managers`):',
+    ...(managers.length > 0
+      ? managers.map((m) => `  - ${m.display_name}`)
+      : ['  - nobody can be texted right now']),
+    '',
+    history,
+    '',
+    OFFICE_NARROW_REMINDER,
+  ];
+  const res = await runOfficeDoor(
+    {
+      tenantId,
+      facing,
+      userMessage: lines.join('\n'),
+      terminal: ROUTE_ACCESS_TOOL,
+      schemas: deps.toolSchemas ?? [],
+      dispatch: deps.dispatch,
+      lane: 'office-access',
+      ...(deps.signal ? { signal: deps.signal } : {}),
+    },
+    deps,
+  );
+  return res.args;
+}
+
+async function applyDecision(
+  input: AccessRequestInput,
+  asked: Target,
+  requestKey: string,
+  view: TechnicianView,
+  managers: Technician[],
+  d: RouteDecision,
+  deps: AccessDoorDeps,
+): Promise<AccessDeskAnswer> {
+  let reply = d.replyToAsker.trim();
+  // A FACT GUARD, like honest(): "already open" is checkable, and a wrong one
+  // would lose the request on a factual slip rather than a judgment. Its words
+  // go too — "it is already open to you" is false the moment a manager is asked.
+  if (d.outcome === 'already_open' && !alreadyOpen(asked, input.wants, view)) {
+    d = { ...d, outcome: 'ask' };
+    reply = askedReply(managers);
+  }
+  if (d.outcome !== 'ask') {
+    const status: AccessDeskStatus = d.outcome === 'refuse' ? 'refused' : d.outcome;
+    await recordPair(input, asked, reply, d.reason, deps);
+    return { status, answer: reply };
+  }
+
+  // WHAT TO ASK FOR: the office's job only if it really is one of the asked
+  // customer's jobs on this firm — otherwise what she asked for, unchanged.
+  let target = asked;
+  if (!asked.jobId && typeof d.jobId === 'string' && UUID_SHAPE.test(d.jobId)) {
+    const job = await (deps.getJob ?? getJob)(d.jobId);
+    if (job && job.tenant_id === input.tenantId && job.customer_id === asked.customerId) {
+      target = { ...asked, jobId: job.id, jobTitle: job.title };
+    }
+  }
+
+  // WHO: the office's names, resolved against who can actually be texted. None
+  // valid → every reachable manager (a lost request costs more than a text).
+  const wanted = new Set((d.managers ?? []).map((n) => String(n).trim().toLowerCase()));
+  const chosen = managers.filter((m) => wanted.has(m.display_name.trim().toLowerCase()));
+  const toText = chosen.length > 0 ? chosen : managers;
+
+  const body = managerBody(input, target, d.managerMessage);
+  const findRequest = deps.findRequest ?? findOpenAccessRequest;
+  const waiting = await findRequest(input.tenantId, requestKey);
+  const now = (deps.now ?? (() => new Date()))();
+
+  if (deps.signal?.aborted) return STOPPED; // the last check before anything leaves
+  if (waiting && !hasLapsed(waiting, now)) {
+    // STILL WAITING: no second row. Text only managers it has not been put to.
+    const wctx = contextOf(waiting);
+    const already = new Set((wctx.managersTexted ?? []).map((n) => n.toLowerCase()));
+    const fresh = toText.filter((m) => !already.has(m.display_name.toLowerCase()));
+    if (fresh.length === 0) {
+      await recordPair(input, asked, reply, d.reason, deps);
+      return { status: 'already_asked', answer: reply };
+    }
+    // CLAIM, THEN TEXT: two repeats racing on one waiting row must not both text
+    // the same manager. The loser of the compare-and-set sends nothing.
+    const claimed = await (deps.addManagers ?? addManagersTexted)(
+      input.tenantId,
+      waiting,
+      fresh.map((m) => m.display_name),
+    );
+    if (!claimed) {
+      const answer = 'That one is already with your manager — I have not sent it again.';
+      await recordPair(input, asked, answer, d.reason, deps);
+      return { status: 'already_asked', answer };
+    }
+    // THE WAITING ROW'S TARGET, not this repeat's: a manager's yes grants what
+    // the row says, so the text must describe exactly that (review, phase 3).
+    const waitingBody =
+      `${input.askerName} asks to open ${wctx.targetName ?? 'what they asked for'} — they say: ` +
+      `"${wctx.why ?? input.why}".` +
+      (d.managerMessage?.trim() ? ` ${d.managerMessage.trim()}` : '') +
+      ` ${replyMenu(wctx.wants ?? input.wants)}`;
+    await textManagers(input.tenantId, fresh, waitingBody, deps);
+    await recordPair(input, asked, reply, d.reason, deps);
+    return { status: 'asked_manager', answer: honest(reply, fresh) };
+  }
+  if (waiting) {
+    // A DAY OLD AND UNANSWERED IS GONE — move it, or the index refuses her forever.
+    try {
+      await (deps.lapseRequest ?? lapseAccessRequest)(input.tenantId, waiting.id);
+    } catch (err) {
+      console.error(`[office] tenant ${input.tenantId}: could not lapse request ${waiting.id}`, err);
+    }
+  }
+  const filed = await fileRequest(input, target, requestKey, toText, deps);
+  if (!filed) {
+    // Filed by somebody else between the check and the write: converge.
+    return { status: 'already_asked', answer: 'That one is already with your manager — I have not sent it again.' };
+  }
+  await textManagers(input.tenantId, toText, body, deps);
+  await recordPair(input, asked, reply, d.reason, deps);
+  return { status: 'asked_manager', answer: honest(reply, toText) };
+}
+
+/** Whether the view already answers the ask — the fallback's own tests, as one. */
+function alreadyOpen(t: Target, wants: AccessWants, view: TechnicianView): boolean {
+  if (wants === 'notes') return false; // the view never answers "every note"
+  // A customer-wide RECORD ask is never answered by the view: one granted job puts
+  // the customer in it while their other jobs stay shut (routeByCode's rule too).
+  if (wants === 'record') return t.jobId ? viewHasJob(view, t.jobId) : false;
+  const canOpen = t.jobId ? viewHasJob(view, t.jobId) : viewHasCustomer(view, t.customerId);
+  return canOpen && viewShowsMoney(view, { jobId: t.jobId, customerId: t.customerId });
+}
+
+/** Code's own "I asked" sentence — the fallback's words, for when the office's are
+ *  wrong. */
+function askedReply(managers: Technician[]): string {
+  const names = managers.map((m) => m.display_name);
+  return names.length > 0
+    ? `Asked your manager by text (${listNames(names)}). If they open it you'll get a message ` +
+        "here; if you hear nothing, ask me about this job again and I'll tell you where it got to."
+    : honest('', []);
+}
+
+// A FACT GUARD, not a wording rule: with nobody reachable, the office's reply
+// cannot say a manager was asked, so code says what is true.
+function honest(reply: string, texted: Technician[]): string {
+  return texted.length > 0
+    ? reply
+    : 'No manager could be texted just now. Your request is on the office record, but nobody ' +
+        'has been alerted — if it matters today, catch a manager yourself.';
+}
+
+function managerBody(input: AccessRequestInput, target: Target, officeWords?: string): string {
+  const head = `${input.askerName} asks to open ${whatWords(target, input.wants)} — they say: "${input.why}".`;
+  const mid = typeof officeWords === 'string' && officeWords.trim() ? ` ${officeWords.trim()}` : '';
+  return `${head}${mid} ${replyMenu(input.wants)}`;
+}
+
+async function fileRequest(
+  input: AccessRequestInput,
+  target: Target,
+  requestKey: string,
+  toText: Technician[],
+  deps: AccessDoorDeps,
+): Promise<AccessRequest | null> {
+  return (deps.openRequest ?? openAccessRequest)({
+    tenantId: input.tenantId,
+    technicianId: input.askerTechnicianId as string,
+    context: {
+      requestKey,
+      technicianRef: input.askerRef,
+      technicianName: input.askerName,
+      ...(target.jobId ? { jobId: target.jobId } : {}),
+      customerId: target.customerId,
+      targetName: whatWords(target, input.wants),
+      technicianWords: titleFreeWords(target, input.wants),
+      wants: input.wants,
+      why: input.why,
+      managersTexted: toText.map((m) => m.display_name),
+    },
+  });
+}
+
+async function textManagers(
+  tenantId: string,
+  managers: Technician[],
+  body: string,
+  deps: AccessDoorDeps,
+): Promise<void> {
+  for (const m of managers) {
+    try {
+      await (deps.queuePush ?? queuePersonPush)({ tenantId, technicianId: m.id, kind: 'access', body });
+    } catch (err) {
+      // One manager's failed queue write must not lose the other's text, nor the
+      // request, which is already filed.
+      console.error(`[office] tenant ${tenantId}: could not queue the access text for ${m.ref}`, err);
+    }
+  }
+}
+
+// ── the fallback: today's code path, unchanged in what it does ───────────────
+
+async function routeByCode(
+  input: AccessRequestInput,
+  asked: Target,
+  requestKey: string,
+  view: TechnicianView,
+  managers: Technician[],
+  deps: AccessDoorDeps,
+): Promise<AccessDeskAnswer> {
+  const { tenantId, wants } = input;
+  let target = asked;
+  // A CUSTOMER ASK BECOMES A JOB ASK when there is exactly one unfinished job on
+  // that customer AND she cannot already open it (so a customer-wide ask for the
+  // history is not dead-ended by a job she already has).
+  if (!asked.jobId) {
+    const live = await (deps.listOpenJobs ?? listOpenJobsForCustomer)(asked.customerId);
+    if (live.length === 1) {
+      const only = live[0];
+      const alreadySatisfied =
+        wants === 'record'
+          ? viewHasJob(view, only.id)
+          : wants === 'money'
+            ? viewHasJob(view, only.id) && viewShowsMoney(view, { jobId: only.id })
+            : false;
+      if (!alreadySatisfied) target = { ...asked, jobId: only.id, jobTitle: only.title };
+    }
+  }
+  // IS IT ALREADY OPEN? A notes ask is never short-circuited: the view answers
+  // "may she open this job", not "may she read every note on it".
+  if (target.jobId && wants === 'record' && viewHasJob(view, target.jobId)) {
+    return {
+      status: 'already_open',
+      answer: `${jobWords(target)} is already open to you — ask me for it again and it will be there.`,
+    };
+  }
+  // Money is only "already open" if the record is too.
+  const canOpenTarget = target.jobId ? viewHasJob(view, target.jobId) : viewHasCustomer(view, target.customerId);
+  if (wants === 'money' && canOpenTarget && viewShowsMoney(view, { jobId: target.jobId, customerId: target.customerId })) {
+    return {
+      status: 'already_open',
+      answer:
+        `You can already be told the figures on ${target.jobId ? jobWords(target) : `${target.customerName}'s work`} — ` +
+        'ask again and they will be in the answer.',
+    };
+  }
+  const waiting = await (deps.findRequest ?? findOpenAccessRequest)(tenantId, requestKey);
+  const now = (deps.now ?? (() => new Date()))();
+  if (waiting && !hasLapsed(waiting, now)) {
+    const tz = await firmTz(tenantId, deps);
+    return {
+      status: 'already_asked',
+      answer:
+        `You asked for that on ${servedDayPhrase(localDateISO(waiting.noticed_at, tz))} and it is ` +
+        'still with your manager. I have not sent it again.',
+    };
+  }
+  if (deps.signal?.aborted) return STOPPED; // before the first write, the lapse included
+  if (waiting) {
+    try {
+      await (deps.lapseRequest ?? lapseAccessRequest)(tenantId, waiting.id);
+    } catch (err) {
+      console.error(`[office] tenant ${tenantId}: could not lapse request ${waiting.id}`, err);
+    }
+  }
+  const filed = await fileRequest(input, target, requestKey, managers, deps);
+  if (!filed) {
+    return { status: 'already_asked', answer: 'That one is already with your manager — I have not sent it again.' };
+  }
+  await textManagers(tenantId, managers, managerBody(input, target), deps);
+  const answer = askedReply(managers);
+  await recordPair(input, asked, answer, null, deps);
+  return { status: 'asked_manager', answer };
+}
+
+// ── the transcript pair the review reads ─────────────────────────────────────
+
+// The ask in the technician's words and the outcome born READ. Best-effort: by
+// now the managers are texted, and a failed transcript write must not undo that.
+// TITLE-FREE (see titleFreeWords): asker_history shows these rows to her.
+async function recordPair(
+  input: AccessRequestInput,
+  asked: Target,
+  outcome: string,
+  officeReason: string | null,
+  deps: AccessDoorDeps,
+): Promise<void> {
+  const createMessage = deps.createMessage ?? createOfficeMessage;
+  try {
+    const ask = await createMessage({
+      tenantId: input.tenantId,
+      direction: 'to_planner',
+      kind: 'ask',
+      fromRef: input.askerRef,
+      toRef: TEAM_LEAD_REF,
+      tier: input.askerTier,
+      // The office's REASON rides on the ask row, never the answer row:
+      // asker_history hides access ask bodies from her, and the reason is the
+      // office's private judgment (review, phase 3). The review still reads it.
+      body:
+        `${ACCESS_ASK_PREFIX}${titleFreeWords(asked, input.wants)}: "${input.why}"` +
+        (officeReason ? ` — the office: ${officeReason}` : ''),
+    });
+    await createMessage({
+      tenantId: input.tenantId,
+      direction: 'to_planner',
+      kind: 'desk',
+      fromRef: TEAM_LEAD_REF,
+      toRef: input.askerRef,
+      body: outcome,
+      inReplyTo: ask.id,
+      status: 'read',
+    });
+    try {
+      await (deps.markRead ?? markOfficeMessagesRead)(input.tenantId, [ask.id], new Date().toISOString());
+    } catch (err) {
+      console.error(`[office] tenant ${input.tenantId}: marking the access ask read failed`, err);
+    }
+  } catch (err) {
+    console.error(`[office] tenant ${input.tenantId}: the access transcript was not recorded`, err);
+  }
+}
+
+async function firmTz(tenantId: string, deps: AccessDoorDeps): Promise<string> {
+  try {
+    return (await (deps.firmTenant ?? getTenant)(tenantId))?.timezone ?? 'UTC';
+  } catch {
+    return 'UTC';
   }
 }

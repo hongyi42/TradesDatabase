@@ -67,6 +67,14 @@
 //       → registers a HAND-MINTED badge's fingerprint so the pull loop ships
 //         it instead of erasing it and minting a competitor (do this for any
 //         badge that predates the pull loop, e.g. the bootstrap tech-jane one).
+//   scripts/assign-host.mjs add-glue-seat ref=<ref> host=<h> seat=<sandbox_ref> [tenant=<uuid>]
+//       → RECORDS A SEAT MOVING TO THE SEAT GLUE (step 4). Creates the person's
+//         `seats` row for a sandbox they ALREADY sit in (s5, and each seat step 5
+//         moves), so the box's install.sh can mint the seat's token. Refuses
+//         unless the roster already says this person is on this host + sandbox:
+//         it records a fact, never invents an assignment. No bot is linked — the
+//         seat's bot stays on its pool row. New hires get glue seats through
+//         bind_telegram instead.
 //   scripts/assign-host.mjs rotate-badge ref=<ref> [tenant=<uuid>]
 //       → THE leaked-badge procedure: clears the fingerprint, so the next pull
 //         drops the old badge (403 within one poll) and mints a replacement.
@@ -77,6 +85,8 @@ import { randomBytes } from 'node:crypto';
 import {
   claimSandbox,
   createHost,
+  createSeat,
+  getSeatByTechnician,
   findTechnicianByTelegramUserId,
   getHostByName,
   getTechnician,
@@ -111,6 +121,7 @@ const KNOWN_KEYS = {
   'claim-sandbox': ['host', 'sandbox', 'tech', 'tenant'],
   'set-badge': ['ref', 'hash', 'tenant'],
   'rotate-badge': ['ref', 'tenant'],
+  'add-glue-seat': ['ref', 'host', 'seat', 'tenant'],
 };
 if (!command || !(command in KNOWN_KEYS)) {
   console.error(
@@ -120,7 +131,7 @@ if (!command || !(command in KNOWN_KEYS)) {
       `| bind-telegram ref=<r> telegramUserId=<numeric> ` +
       `| claim-sandbox host=<h> sandbox=<s> tech=<r> ` +
       `| set-badge ref=<r> hash=<sha256> ` +
-      `| rotate-badge ref=<r>   (each: [tenant=<uuid>])`,
+      `| rotate-badge ref=<r> | add-glue-seat ref=<r> host=<h> seat=<s>   (each: [tenant=<uuid>])`,
   );
   process.exit(1);
 }
@@ -495,7 +506,44 @@ if (command === 'create-host') {
     process.exit(1);
   }
 
-  if (command === 'assign') {
+  if (command === 'add-glue-seat') {
+    if (!args.host || !/^[a-z0-9_]+$/.test(args.seat ?? '')) {
+      console.error('add-glue-seat requires ref=<ref> host=<host-name> seat=<sandbox_ref>.');
+      process.exit(1);
+    }
+    const host = await getHostByName(args.host);
+    if (!host) {
+      console.error(`Host '${args.host}' not found.`);
+      process.exit(1);
+    }
+    if (isInactiveState(tech.state)) {
+      console.error(`'${args.ref}' is deactivated -- a deactivated person gets no seat.`);
+      process.exit(1);
+    }
+    if (tech.host_id !== host.id || tech.sandbox_ref !== args.seat) {
+      console.error(
+        `The roster does not put '${args.ref}' on ${host.name}/${args.seat} ` +
+          `(it says ${tech.sandbox_ref ?? 'no sandbox'}). Refusing to invent an assignment.`,
+      );
+      process.exit(1);
+    }
+    const existing = await getSeatByTechnician(tech.id);
+    if (existing) {
+      console.log(`'${args.ref}' already has seat ${existing.seat_ref} -- nothing to do.`);
+    } else {
+      const seat = await createSeat({
+        tenantId,
+        technicianId: tech.id,
+        hostId: host.id,
+        seatRef: args.seat,
+        botRef: null,
+      });
+      console.log(
+        `Seat ${seat.seat_ref} recorded for ${args.ref} on ${host.name}. On the box: ` +
+          `sudo bash install.sh ${seat.seat_ref} (it fetches the seat's token itself).`,
+      );
+    }
+  } else if (command === 'assign') {
     if (!args.host || !args.sandbox) {
       console.error('assign requires ref=<ref> host=<host-name> sandbox=<sandbox_ref>.');
       process.exit(1);

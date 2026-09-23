@@ -1600,6 +1600,7 @@ export type Database = {
           kind: string
           message_group_id: string | null
           nudge_id: string | null
+          pinged_at: string | null
           read_at: string | null
           serve_count: number
           status: string
@@ -1622,6 +1623,7 @@ export type Database = {
           kind: string
           message_group_id?: string | null
           nudge_id?: string | null
+          pinged_at?: string | null
           read_at?: string | null
           serve_count?: number
           status?: string
@@ -1644,6 +1646,7 @@ export type Database = {
           kind?: string
           message_group_id?: string | null
           nudge_id?: string | null
+          pinged_at?: string | null
           read_at?: string | null
           serve_count?: number
           status?: string

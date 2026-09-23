@@ -4,6 +4,8 @@
 //   npm run build
 //   OPENROUTER_API_KEY=… node scripts/planner-eval/office-run.mjs [--only access|question|hangup|call]
 //
+// It ends with each door's input tokens per model call, read from cost_events.
+//
 // It drives the REAL door code (dist/) against the REAL model and THIS
 // WORKTREE'S LOCAL STACK, and prints the evidence — the rows written, the texts
 // queued, the office's own words — read back over direct pg, a channel the code
@@ -41,6 +43,10 @@ const { routeAccessAsOffice, answerAsOffice } = await import(`${ROOT}dist/teamLe
 const { TEAM_LEAD_TOOL_SCHEMAS, dispatchForIdentity } = await import(`${ROOT}dist/mcp/server.js`);
 
 const RUN = `ofr${Date.now().toString(36)}`;
+// Cost rows this run wrote are found by time and lane (recordModelUsage labels
+// every row with the door's lane), so the per-door token line below is read back
+// from the ledger rather than trusted from the loop.
+const STARTED_ISO = new Date().toISOString();
 const { rows: [tenant] } = await pg.query("select id from tenants where name = 'Default Tenant'");
 const tenantId = tenant.id;
 const officeDeps = {
@@ -220,6 +226,29 @@ try {
     await call('thanks', 'Hey, just calling to say thanks for fixing the boiler yesterday, all working great. Bye!', {
       customerName: null, phone: '+15550199', email: null, address: null, jobTitle: null, followUp: null,
     });
+  }
+
+  // PER-DOOR COST (rung 10c phase 2): each door now loads only its own
+  // doctrine, so a waiting door's input per model call is the number to watch.
+  // The call door runs as lane 'planner' (the focused pass).
+  const cost = await pg.query(
+    `select coalesce(e.metadata->>'lane', '?') as lane, e.sku,
+            count(*)::int as calls, sum(e.quantity)::bigint as qty,
+            round(sum(e.quantity * coalesce(r.unit_cost_usd, 0))::numeric, 4) as usd
+       from cost_events e
+       left join cost_rates r on r.provider = e.provider and r.sku = e.sku and r.effective_to is null
+      where e.tenant_id = $1 and e.occurred_at >= $2 and e.unit = 'token'
+      group by 1, 2 order by 1, 2`,
+    [tenantId, STARTED_ISO],
+  );
+  show('per-door tokens (calls = model calls; qty = tokens; input includes the system prompt every call)', cost.rows);
+  for (const lane of [...new Set(cost.rows.map((r) => r.lane))]) {
+    const rows = cost.rows.filter((r) => r.lane === lane);
+    const input = rows.filter((r) => !/output/.test(r.sku));
+    const calls = Math.max(...input.map((r) => r.calls), 0);
+    const tokens = input.reduce((n, r) => n + Number(r.qty), 0);
+    const usd = rows.reduce((n, r) => n + Number(r.usd), 0);
+    console.log(`   ${lane}: ${calls} model calls, ${calls ? Math.round(tokens / calls) : 0} input tokens per call, $${usd.toFixed(4)}`);
   }
 } finally {
   if (callObs.length > 0) {

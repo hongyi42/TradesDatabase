@@ -10105,7 +10105,9 @@ describe('the access tools', () => {
     // rows in two shared tables. Not truncating them leaked 6 pushes into the
     // next describe, where they read as "every manager was texted six times".
     await pg.query('truncate table person_pushes');
-    await pg.query("delete from office_messages where kind = 'inform'");
+    // 'news' is the office's copy of each decision (rung 10c); 'inform' is the
+    // note to the technician's seat.
+    await pg.query("delete from office_messages where kind in ('inform', 'news')");
     await setTechnicianViewRule(tenantId, null, 'server.test');
   });
 
@@ -10324,7 +10326,8 @@ describe('the access request flow', () => {
   // informs the planner in several of them), so the access lines are cleared
   // around each test rather than counted against whatever else has run.
   const clearInbox = () =>
-    pg.query("delete from office_messages where kind = 'inform' and from_ref = 'mgr-test'");
+    // 'news' is the office's copy (rung 10c); 'inform' is the note to her seat.
+    pg.query("delete from office_messages where kind in ('inform', 'news') and from_ref = 'mgr-test'");
 
   beforeEach(async () => {
     await clearInbox();
@@ -10646,7 +10649,7 @@ describe('the access request flow', () => {
     // …and the office has one line about it.
     const inbox = await pg.query(
       "select kind, from_ref, to_ref, body from office_messages " +
-        "where kind = 'inform' and from_ref = 'mgr-test' and direction = 'to_planner'",
+        "where kind = 'news' and from_ref = 'mgr-test' and direction = 'to_planner'",
     );
     expect(inbox.rows).toHaveLength(1);
     expect(inbox.rows[0].to_ref).toBe(TEAM_LEAD_REF);
@@ -10734,7 +10737,7 @@ describe('the access request flow', () => {
     expect(revoked.data.revoked).toBe(true);
     expect(revoked.data.stillOpen).toBe(false);
     const inbox = await pg.query(
-      "select body from office_messages where kind = 'inform' and from_ref = 'mgr-test' " +
+      "select body from office_messages where kind = 'news' and from_ref = 'mgr-test' " +
         "and direction = 'to_planner'",
     );
     expect(inbox.rows).toHaveLength(1);

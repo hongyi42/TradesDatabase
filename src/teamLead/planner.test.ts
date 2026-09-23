@@ -7227,6 +7227,38 @@ describe('rung 10 — inbound requests reach the planner', () => {
     expect(createOffice).toHaveBeenCalledWith(expect.objectContaining({ nudgeId: 'obs-1' }));
   });
 
+  test('(14i) a focused pass is THE OFFICE: it runs on OFFICE_SYSTEM; the tick stays the planner', async () => {
+    // Plan 2026-09-22: an inbound call is one of the office's doors. Same verbs,
+    // same submit_plan and rails — only the instructions differ.
+    const systems: string[] = [];
+    const capture = (async (req: { system: string }, tools: unknown, exec: unknown) => {
+      systems.push(req.system);
+      return (loopReturning([]) as unknown as (a: unknown, b: unknown, c: unknown) => Promise<ToolLoopResult>)(req, tools, exec);
+    }) as unknown as NonNullable<PlannerDeps['runLoop']>;
+    await runPlanner(
+      NOW,
+      'live',
+      baseDeps({
+        focus: { observationId: 'obs-1', budgetMs: 180_000 },
+        listTeam: async () => [MANAGER],
+        listNudges: async () => [],
+        listObservations: async () => [inboundObs()],
+        runLoop: capture,
+      }),
+    );
+    await runPlanner(
+      NOW,
+      'live',
+      baseDeps({
+        listTeam: async () => [MANAGER],
+        listNudges: async () => [],
+        listObservations: async () => [inboundObs()],
+        runLoop: capture,
+      }),
+    );
+    expect(systems).toEqual([OFFICE_SYSTEM, PLANNER_SYSTEM]);
+  });
+
   test('(14h) telling THREE managers still reaches all three — only the first marks the ask', async () => {
     // Gap-less sends are deliberately not deduped (user, 2026-09-02) so the
     // planner can tell several people one thing. Binding EVERY gap-less send to

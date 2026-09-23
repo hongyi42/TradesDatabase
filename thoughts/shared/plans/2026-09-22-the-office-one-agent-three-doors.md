@@ -285,15 +285,15 @@ timeout dependency. **Task record** — `/handoff` names the dependency; message
 drop it from the task's file list.
 
 ### Automated verification
-- [ ] typecheck, lint, test, build
-- [ ] `planner.test.ts`: a focused run hands the loop `OFFICE_SYSTEM`, a tick `PLANNER_SYSTEM`; every
+- [x] typecheck, lint, test, build
+- [x] `planner.test.ts`: a focused run hands the loop `OFFICE_SYSTEM`, a tick `PLANNER_SYSTEM`; every
   rung-10/10b focused-pass test passes unchanged.
-- [ ] `grep -rn "answerDeskQuestion\|answerAccessRequest\|DESK_BUDGET_MS\|deskPrompt" src scripts` → nothing.
+- [x] `grep -rn "answerDeskQuestion\|answerAccessRequest\|DESK_BUDGET_MS\|deskPrompt" src scripts` → nothing.
 
 ### Live verification (agent-executable)
 - Prerequisites: phase 3's, plus `PLANNER_MODE=live`, an `INFERENCE_MODEL` the spine rail allows, and a
   Telegram binding on the seeded tenant (`plannerPass.ts:69-77,108-112`), all set by `office-run.mjs`.
-- [ ] A seeded `inbound_unmatched` call through `runFocusedObservationPass` → the manager text + quiet
+- [x] A seeded `inbound_unmatched` call through `runFocusedObservationPass` → the manager text + quiet
   note pair (rung 10b's shape); a seeded thank-you call → `dismiss` with a reason. Evidence:
   `office_messages`, the observation's status, the decision log.
 

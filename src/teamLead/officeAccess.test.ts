@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest';
 import type { Customer, Job, Observation, OfficeMessage, PersonPush, Technician } from '../db/index.js';
 import type { ToolLoopResult } from '../model/toolLoop.js';
 import {
-  routeAccessAsOffice as answerAccessRequest,
+  routeAccessAsOffice,
   type AccessDoorDeps as AccessDeskDeps,
   type AccessRequestInput,
 } from './office.js';
@@ -121,7 +121,7 @@ const ask = (over: Partial<AccessRequestInput> = {}): AccessRequestInput => ({
 describe('the access desk — it can no longer open anything itself', () => {
   test('the narrow shape that USED to be opened now goes to a manager', async () => {
     const { deps, rec } = stub();
-    const out = await answerAccessRequest(ask(), deps);
+    const out = await routeAccessAsOffice(ask(), deps);
     expect(out.status).toBe('asked_manager');
     expect(rec.grants).toHaveLength(0);
     expect(rec.requests).toHaveLength(1);
@@ -130,7 +130,7 @@ describe('the access desk — it can no longer open anything itself', () => {
 
   test('a customer ask with one unfinished job also goes to a manager', async () => {
     const { deps, rec } = stub();
-    const out = await answerAccessRequest(ask({ jobId: undefined, customerId: CUST_ID }), deps);
+    const out = await routeAccessAsOffice(ask({ jobId: undefined, customerId: CUST_ID }), deps);
     expect(out.status).toBe('asked_manager');
     expect(rec.grants).toHaveLength(0);
     // …but it is still NARROWED to the one job, so the manager is asked to open
@@ -141,7 +141,7 @@ describe('the access desk — it can no longer open anything itself', () => {
   test('NO REQUEST OF ANY SHAPE writes a grant', async () => {
     for (const w of ['record', 'notes', 'money'] as const) {
       const { deps, rec } = stub();
-      const out = await answerAccessRequest(ask({ wants: w }), deps);
+      const out = await routeAccessAsOffice(ask({ wants: w }), deps);
       expect(out.status).toBe('asked_manager');
       expect(rec.grants).toHaveLength(0);
     }
@@ -149,14 +149,14 @@ describe('the access desk — it can no longer open anything itself', () => {
 
   test('the answer never claims anything was opened', async () => {
     const { deps } = stub();
-    const out = await answerAccessRequest(ask(), deps);
+    const out = await routeAccessAsOffice(ask(), deps);
     expect(out.answer).not.toMatch(/Opened for you/i);
     expect(out.answer).toContain('Asked your manager');
   });
 
   test('the desk pair records the ask and the outcome for the planner', async () => {
     const { deps, rec } = stub();
-    await answerAccessRequest(ask(), deps);
+    await routeAccessAsOffice(ask(), deps);
     expect(rec.messages).toHaveLength(2);
     expect(rec.messages[0]).toMatchObject({ kind: 'ask' });
     expect(rec.messages[1]).toMatchObject({ kind: 'desk', status: 'read' });
@@ -170,7 +170,7 @@ describe('the access desk — it can no longer open anything itself', () => {
 describe('the access desk — what always goes to a manager', () => {
   test('a money ask is texted to every reachable manager', async () => {
     const { deps, rec } = stub();
-    const out = await answerAccessRequest(ask({ wants: 'money' }), deps);
+    const out = await routeAccessAsOffice(ask({ wants: 'money' }), deps);
 
     expect(out.status).toBe('asked_manager');
     expect(rec.grants).toHaveLength(0);
@@ -193,7 +193,7 @@ describe('the access desk — what always goes to a manager', () => {
 
   test('a notes ask goes the same way', async () => {
     const { deps, rec } = stub();
-    const out = await answerAccessRequest(ask({ wants: 'notes' }), deps);
+    const out = await routeAccessAsOffice(ask({ wants: 'notes' }), deps);
     expect(out.status).toBe('asked_manager');
     expect(rec.requests[0].context.wants).toBe('notes');
   });
@@ -206,7 +206,7 @@ describe('the access desk — what always goes to a manager', () => {
   // to open every job that customer ever had, and granted it.
   test('a MONEY ask on a customer with one unfinished job is narrowed to that job', async () => {
     const { deps, rec } = stub();
-    const out = await answerAccessRequest(ask({ jobId: undefined, customerId: CUST_ID, wants: 'money' }), deps);
+    const out = await routeAccessAsOffice(ask({ jobId: undefined, customerId: CUST_ID, wants: 'money' }), deps);
     expect(out.status).toBe('asked_manager');
     expect(rec.requests[0].context.jobId).toBe(JOB_ID);
     expect(rec.requests[0].context.targetName).toContain('boiler swap');
@@ -215,7 +215,7 @@ describe('the access desk — what always goes to a manager', () => {
 
   test('a NOTES ask is narrowed the same way', async () => {
     const { deps, rec } = stub();
-    const out = await answerAccessRequest(ask({ jobId: undefined, customerId: CUST_ID, wants: 'notes' }), deps);
+    const out = await routeAccessAsOffice(ask({ jobId: undefined, customerId: CUST_ID, wants: 'notes' }), deps);
     expect(out.status).toBe('asked_manager');
     expect(rec.requests[0].context.jobId).toBe(JOB_ID);
   });
@@ -228,7 +228,7 @@ describe('the access desk — what always goes to a manager', () => {
         ...emptyView(), jobIds: new Set([JOB_ID]), moneyJobIds: new Set([JOB_ID]),
       }),
     });
-    await answerAccessRequest(ask({ jobId: undefined, customerId: CUST_ID, wants: 'money' }), deps);
+    await routeAccessAsOffice(ask({ jobId: undefined, customerId: CUST_ID, wants: 'money' }), deps);
     expect(rec.requests[0].context.jobId).toBeUndefined();
   });
 
@@ -236,7 +236,7 @@ describe('the access desk — what always goes to a manager', () => {
     const { deps, rec } = stub({
       listOpenJobs: async () => [job(), job({ id: '44444444-4444-4444-8444-444444444444', title: 'tap' })],
     });
-    const out = await answerAccessRequest(ask({ jobId: undefined, customerId: CUST_ID }), deps);
+    const out = await routeAccessAsOffice(ask({ jobId: undefined, customerId: CUST_ID }), deps);
     expect(out.status).toBe('asked_manager');
     expect(rec.requests[0].context.jobId).toBeUndefined();
     expect(rec.requests[0].context.requestKey).toBe(`${TECH_ID}:c:${CUST_ID}:record`);
@@ -249,7 +249,7 @@ describe('the access desk — what always goes to a manager', () => {
     const { deps, rec } = stub({
       listManagers: async () => [manager({ sandbox_ref: null }), manager({ id: 'm2', ref: 'kim', display_name: 'Kim Ng' })],
     });
-    const out = await answerAccessRequest(ask({ wants: 'money' }), deps);
+    const out = await routeAccessAsOffice(ask({ wants: 'money' }), deps);
     expect(rec.pushes).toHaveLength(1);
     expect(rec.pushes[0].technicianId).toBe('m2');
     expect(out.answer).toContain('Kim Ng');
@@ -259,7 +259,7 @@ describe('the access desk — what always goes to a manager', () => {
 
   test('nobody reachable: the request is still filed, and the answer says so honestly', async () => {
     const { deps, rec } = stub({ listManagers: async () => [] });
-    const out = await answerAccessRequest(ask({ wants: 'money' }), deps);
+    const out = await routeAccessAsOffice(ask({ wants: 'money' }), deps);
     expect(out.status).toBe('asked_manager');
     expect(rec.requests).toHaveLength(1);
     expect(rec.pushes).toHaveLength(0);
@@ -279,7 +279,7 @@ describe('the access desk — what always goes to a manager', () => {
         return { id: 'push-2' } as unknown as PersonPush;
       }) as NonNullable<AccessDeskDeps['queuePush']>,
     });
-    const out = await answerAccessRequest(ask({ wants: 'money' }), deps);
+    const out = await routeAccessAsOffice(ask({ wants: 'money' }), deps);
     expect(out.status).toBe('asked_manager');
     expect(rec.pushes).toHaveLength(1);
     expect(rec.requests).toHaveLength(1);
@@ -291,7 +291,7 @@ describe('the access desk — what it answers without filing anything', () => {
     const { deps, rec } = stub({
       technicianView: async () => ({ ...emptyView(), jobIds: new Set([JOB_ID]) }),
     });
-    const out = await answerAccessRequest(ask(), deps);
+    const out = await routeAccessAsOffice(ask(), deps);
     expect(out.status).toBe('already_open');
     expect(out.answer).toContain('already open to you');
     expect(rec.grants).toHaveLength(0);
@@ -303,7 +303,7 @@ describe('the access desk — what it answers without filing anything', () => {
     const { deps, rec } = stub({
       technicianView: async () => ({ ...emptyView(), moneyAll: true, jobIds: new Set([JOB_ID]) }),
     });
-    const out = await answerAccessRequest(ask({ wants: 'money' }), deps);
+    const out = await routeAccessAsOffice(ask({ wants: 'money' }), deps);
     expect(out.status).toBe('already_open');
     expect(rec.requests).toHaveLength(0);
     expect(rec.pushes).toHaveLength(0);
@@ -317,7 +317,7 @@ describe('the access desk — what it answers without filing anything', () => {
     const { deps, rec } = stub({
       technicianView: async () => ({ ...emptyView(), moneyAll: true }),
     });
-    const out = await answerAccessRequest(ask({ wants: 'money' }), deps);
+    const out = await routeAccessAsOffice(ask({ wants: 'money' }), deps);
     expect(out.status).toBe('asked_manager');
     expect(rec.requests).toHaveLength(1);
     expect(rec.pushes).toHaveLength(1);
@@ -327,7 +327,7 @@ describe('the access desk — what it answers without filing anything', () => {
     const { deps, rec } = stub({
       technicianView: async () => ({ ...emptyView(), jobIds: new Set([JOB_ID]) }),
     });
-    const out = await answerAccessRequest(ask({ wants: 'notes' }), deps);
+    const out = await routeAccessAsOffice(ask({ wants: 'notes' }), deps);
     expect(out.status).toBe('asked_manager');
     expect(rec.requests).toHaveLength(1);
   });
@@ -338,7 +338,7 @@ describe('the access desk — what it answers without filing anything', () => {
       findRequest: async () =>
         ({ id: 'obs-1', noticed_at: '2026-09-19T14:00:00Z' }) as unknown as Observation,
     });
-    const out = await answerAccessRequest(ask({ wants: 'money' }), deps);
+    const out = await routeAccessAsOffice(ask({ wants: 'money' }), deps);
     expect(out.status).toBe('already_asked');
     expect(rec.requests).toHaveLength(0);
     expect(rec.pushes).toHaveLength(0);
@@ -357,7 +357,7 @@ describe('the access desk — what it answers without filing anything', () => {
         return null;
       }) as never,
     });
-    const out = await answerAccessRequest(ask({ wants: 'money' }), deps);
+    const out = await routeAccessAsOffice(ask({ wants: 'money' }), deps);
     expect(lapsed).toEqual(['obs-old']);
     expect(out.status).toBe('asked_manager');
     expect(rec.requests).toHaveLength(1); // a FRESH one
@@ -373,14 +373,14 @@ describe('the access desk — what it answers without filing anything', () => {
       }) as never,
       openRequest: async () => null, // the index still holds the old row
     });
-    const out = await answerAccessRequest(ask({ wants: 'money' }), deps);
+    const out = await routeAccessAsOffice(ask({ wants: 'money' }), deps);
     expect(out.status).toBe('already_asked');
     expect(rec.pushes).toHaveLength(0);
   });
 
   test('a request filed between the check and the write converges instead of texting twice', async () => {
     const { deps, rec } = stub({ openRequest: async () => null });
-    const out = await answerAccessRequest(ask({ wants: 'money' }), deps);
+    const out = await routeAccessAsOffice(ask({ wants: 'money' }), deps);
     expect(out.status).toBe('already_asked');
     expect(rec.pushes).toHaveLength(0);
   });
@@ -389,7 +389,7 @@ describe('the access desk — what it answers without filing anything', () => {
 describe('the access desk — who may ask, and for what', () => {
   test('a manager is refused: they already see everything', async () => {
     const { deps, rec } = stub();
-    const out = await answerAccessRequest(ask({ activeManager: true }), deps);
+    const out = await routeAccessAsOffice(ask({ activeManager: true }), deps);
     expect(out.status).toBe('refused');
     expect(rec.grants).toHaveLength(0);
     expect(rec.requests).toHaveLength(0);
@@ -397,7 +397,7 @@ describe('the access desk — who may ask, and for what', () => {
 
   test('a badge with no roster row is refused in words', async () => {
     const { deps, rec } = stub();
-    const out = await answerAccessRequest(ask({ askerTechnicianId: null }), deps);
+    const out = await routeAccessAsOffice(ask({ askerTechnicianId: null }), deps);
     expect(out.status).toBe('refused');
     expect(out.answer).toContain('team list');
     expect(rec.requests).toHaveLength(0);
@@ -405,7 +405,7 @@ describe('the access desk — who may ask, and for what', () => {
 
   test('another firm\'s job answers exactly like an unknown one — no database error', async () => {
     const { deps, rec } = stub({ getJob: async () => job({ tenant_id: 'other-firm' }) });
-    const out = await answerAccessRequest(ask(), deps);
+    const out = await routeAccessAsOffice(ask(), deps);
     expect(out.status).toBe('refused');
     expect(out.answer).toContain('cannot find that job');
     expect(rec.grants).toHaveLength(0);
@@ -420,7 +420,7 @@ describe('the access desk — who may ask, and for what', () => {
         return job();
       },
     });
-    const out = await answerAccessRequest(ask({ jobId: 'not-a-uuid' }), deps);
+    const out = await routeAccessAsOffice(ask({ jobId: 'not-a-uuid' }), deps);
     expect(out.status).toBe('refused');
     expect(out.answer).toContain('cannot find that job');
     // The point of the guard: a uuid-typed column never sees it, so the seat is
@@ -438,7 +438,7 @@ describe('the access desk — who may ask, and for what', () => {
         return customer();
       },
     });
-    const out = await answerAccessRequest(ask({ jobId: undefined, customerId: 'nope' }), deps);
+    const out = await routeAccessAsOffice(ask({ jobId: undefined, customerId: 'nope' }), deps);
     expect(out.status).toBe('refused');
     expect(out.answer).toContain('cannot find that customer');
     expect(read).toBe(0);
@@ -446,13 +446,13 @@ describe('the access desk — who may ask, and for what', () => {
 
   test('naming neither a job nor a customer is refused', async () => {
     const { deps } = stub();
-    const out = await answerAccessRequest(ask({ jobId: undefined }), deps);
+    const out = await routeAccessAsOffice(ask({ jobId: undefined }), deps);
     expect(out.status).toBe('refused');
   });
 
   test('naming both is refused', async () => {
     const { deps } = stub();
-    const out = await answerAccessRequest(ask({ customerId: CUST_ID }), deps);
+    const out = await routeAccessAsOffice(ask({ customerId: CUST_ID }), deps);
     expect(out.status).toBe('refused');
   });
 });
@@ -484,7 +484,7 @@ const askSam = {
 describe('the office decides — code applies', () => {
   test('the named manager is texted, and only them; the reply is the office\'s words', async () => {
     const { deps, rec } = stub({ ...twoManagers, runLoop: decides(askSam) });
-    const out = await answerAccessRequest(ask(), deps);
+    const out = await routeAccessAsOffice(ask(), deps);
     expect(out).toEqual({ status: 'asked_manager', answer: 'I have asked Sam for you.' });
     expect(rec.pushes.map((p) => p.technicianId)).toEqual(['mgr-sam']);
     expect(rec.requests[0].context.managersTexted).toEqual(['Sam Lee']);
@@ -498,7 +498,7 @@ describe('the office decides — code applies', () => {
 
   test('no valid name → every reachable manager (a lost request costs more than a text)', async () => {
     const { deps, rec } = stub({ ...twoManagers, runLoop: decides({ ...askSam, managers: ['Nobody'] }) });
-    await answerAccessRequest(ask(), deps);
+    await routeAccessAsOffice(ask(), deps);
     expect(rec.pushes.map((p) => p.technicianId).sort()).toEqual(['mgr-sam', 'mgr-uuid-1']);
   });
 
@@ -514,7 +514,7 @@ describe('the office decides — code applies', () => {
         getJob: async () => getJobRow,
         runLoop: decides({ ...askSam, managers: [], jobId }),
       });
-      await answerAccessRequest(ask({ jobId: undefined, customerId: CUST_ID }), deps);
+      await routeAccessAsOffice(ask({ jobId: undefined, customerId: CUST_ID }), deps);
       expect(rec.requests[0].context.jobId).toBe(expected);
     }
   });
@@ -522,7 +522,7 @@ describe('the office decides — code applies', () => {
   test('the office is shown the catalog as ids and marks — never a job title', async () => {
     const seen: { user?: string } = {};
     const { deps } = stub({ runLoop: decides(askSam, seen) });
-    await answerAccessRequest(ask({ jobId: undefined, customerId: CUST_ID }), deps);
+    await routeAccessAsOffice(ask({ jobId: undefined, customerId: CUST_ID }), deps);
     expect(seen.user).toContain(JOB_ID);
     expect(seen.user).toContain('NOT in their view');
     expect(seen.user).not.toContain('boiler swap');
@@ -548,7 +548,7 @@ describe('the office decides — code applies', () => {
           ] as unknown as Observation[],
       },
     });
-    await answerAccessRequest(ask(), deps);
+    await routeAccessAsOffice(ask(), deps);
     expect(seen.user).toContain('declined by Sam Lee: wrong button');
   });
 
@@ -570,13 +570,13 @@ describe('the office decides — code applies', () => {
     }) as unknown as NonNullable<AccessDeskDeps['addManagers']>;
     // Asking Dana again sends nothing.
     let s = stub({ ...twoManagers, findRequest: async () => waiting, addManagers, runLoop: decides({ ...askSam, managers: ['Dana Reed'] }) });
-    let out = await answerAccessRequest(ask(), s.deps);
+    let out = await routeAccessAsOffice(ask(), s.deps);
     expect(out.status).toBe('already_asked');
     expect(s.rec.requests).toHaveLength(0);
     expect(s.rec.pushes).toHaveLength(0);
     // Going to Sam texts Sam only, and records that he was asked.
     s = stub({ ...twoManagers, findRequest: async () => waiting, addManagers, runLoop: decides(askSam) });
-    out = await answerAccessRequest(ask(), s.deps);
+    out = await routeAccessAsOffice(ask(), s.deps);
     expect(out.status).toBe('asked_manager');
     expect(s.rec.requests).toHaveLength(0);
     expect(s.rec.pushes.map((p) => p.technicianId)).toEqual(['mgr-sam']);
@@ -599,7 +599,7 @@ describe('the office decides — code applies', () => {
       addManagers: (async () => null) as unknown as NonNullable<AccessDeskDeps['addManagers']>,
       runLoop: decides(askSam),
     });
-    const out = await answerAccessRequest(ask(), deps);
+    const out = await routeAccessAsOffice(ask(), deps);
     expect(out.status).toBe('already_asked');
     expect(rec.pushes).toHaveLength(0);
     expect(rec.messages.map((m) => m.kind)).toEqual(['ask', 'desk']); // the review still sees it
@@ -609,7 +609,7 @@ describe('the office decides — code applies', () => {
     const { deps, rec } = stub({
       runLoop: decides({ outcome: 'already_open', replyToAsker: 'it is open', reason: 'r' }),
     });
-    const out = await answerAccessRequest(ask(), deps);
+    const out = await routeAccessAsOffice(ask(), deps);
     expect(out.status).toBe('asked_manager');
     expect(rec.requests).toHaveLength(1);
     // …and its words go with it: she is told a manager was asked, not "it is open".
@@ -622,21 +622,21 @@ describe('the office decides — code applies', () => {
       technicianView: async () => ({ ...emptyView(), customerIds: new Set([CUST_ID]) }),
       runLoop: decides({ outcome: 'already_open', replyToAsker: 'it is open', reason: 'r' }),
     });
-    const out = await answerAccessRequest(ask({ jobId: undefined, customerId: CUST_ID }), deps);
+    const out = await routeAccessAsOffice(ask({ jobId: undefined, customerId: CUST_ID }), deps);
     expect(out.status).toBe('asked_manager');
     expect(rec.requests).toHaveLength(1);
   });
 
   test("the office's reason rides the ask row, never the answer row she can be shown", async () => {
     const { deps, rec } = stub({ runLoop: decides({ ...askSam, reason: 'she seems careless' }) });
-    await answerAccessRequest(ask(), deps);
+    await routeAccessAsOffice(ask(), deps);
     expect(String(rec.messages[0].body)).toContain('she seems careless');
     expect(String(rec.messages[1].body)).not.toContain('she seems careless');
   });
 
   test('a filed request carries title-free words for anything read out to her', async () => {
     const { deps, rec } = stub({ runLoop: decides({ ...askSam, jobId: JOB_ID }) });
-    await answerAccessRequest(ask({ jobId: undefined, customerId: CUST_ID }), deps);
+    await routeAccessAsOffice(ask({ jobId: undefined, customerId: CUST_ID }), deps);
     expect(rec.requests[0].context.targetName).toContain('boiler swap'); // the managers' words
     expect(rec.requests[0].context.technicianWords).not.toContain('boiler swap');
     expect(rec.requests[0].context.technicianWords).toContain('Alice Byrne');
@@ -649,7 +649,7 @@ describe('the office decides — code applies', () => {
         // In her view, so an already_open is TRUE and the fact guard lets it stand.
         technicianView: async () => ({ ...emptyView(), jobIds: new Set([JOB_ID]) }),
       });
-      const out = await answerAccessRequest(ask(), deps);
+      const out = await routeAccessAsOffice(ask(), deps);
       expect(out.status).toBe(outcome === 'refuse' ? 'refused' : outcome);
       expect(out.answer).toBe(`said ${outcome}`);
       expect(rec.requests).toHaveLength(0);
@@ -659,7 +659,7 @@ describe('the office decides — code applies', () => {
 
   test('nobody reachable: the reply says so, whatever the office wrote', async () => {
     const { deps } = stub({ listManagers: async () => [], runLoop: decides(askSam) });
-    const out = await answerAccessRequest(ask(), deps);
+    const out = await routeAccessAsOffice(ask(), deps);
     expect(out.answer).toContain('No manager could be texted');
   });
 
@@ -669,7 +669,7 @@ describe('the office decides — code applies', () => {
       (async (): Promise<ToolLoopResult> => ({ text: 'hmm', turns: 1, calls: [], stalledWarnings: 0 })) as unknown as NonNullable<AccessDeskDeps['runLoop']>,
     ]) {
       const { deps, rec } = stub({ ...twoManagers, runLoop });
-      const out = await answerAccessRequest(ask(), deps);
+      const out = await routeAccessAsOffice(ask(), deps);
       expect(out.status).toBe('asked_manager');
       expect(rec.pushes).toHaveLength(2); // the fallback texts every reachable manager
     }
@@ -685,7 +685,7 @@ describe('the office decides — code applies', () => {
         return null;
       },
     });
-    const out = await answerAccessRequest(ask(), deps);
+    const out = await routeAccessAsOffice(ask(), deps);
     expect(out.status).toBe('asked_manager');
     expect(rec.requests).toHaveLength(1);
     expect(rec.pushes).toHaveLength(1);
@@ -702,7 +702,7 @@ describe('the seat hangs up', () => {
         throw new Error('the caller hung up');
       }) as unknown as NonNullable<AccessDeskDeps['runLoop']>,
     });
-    const out = await answerAccessRequest(ask(), deps);
+    const out = await routeAccessAsOffice(ask(), deps);
     expect(out.answer).toContain('Stopped');
     expect(rec.requests).toHaveLength(0);
     expect(rec.pushes).toHaveLength(0);
@@ -722,7 +722,7 @@ describe('the seat hangs up', () => {
         return null;
       }) as never,
     });
-    await answerAccessRequest(ask(), deps);
+    await routeAccessAsOffice(ask(), deps);
     expect(lapsed).toEqual([]);
     expect(rec.requests).toHaveLength(0);
   });
@@ -737,7 +737,7 @@ describe('the seat hangs up', () => {
         return { text: '', turns: 1, calls: [], stalledWarnings: 0 };
       }) as unknown as NonNullable<AccessDeskDeps['runLoop']>,
     });
-    await answerAccessRequest(ask(), deps);
+    await routeAccessAsOffice(ask(), deps);
     expect(rec.requests).toHaveLength(0);
     expect(rec.pushes).toHaveLength(0);
   });

@@ -49,14 +49,19 @@ const officeDeps = {
 };
 
 // ── seed ──────────────────────────────────────────────────────────────────────
+// A box for the seeded people: the planner counts somebody as reachable by chat
+// only with a host, a sandbox and a Telegram id (planner.ts buildRoster).
+const { createHost } = await import(`${ROOT}dist/db/hosts.js`);
+const host = await createHost(`host-${RUN}`, `hash-${RUN}`);
 async function person(ref, name, tier, reachable) {
   const t = await db.insertTechnician({ tenantId, ref: `${RUN}-${ref}`, displayName: name, tier });
   await db.setTechnicianState(t.id, 'active');
   if (reachable) {
-    await pg.query('update technicians set telegram_user_id = $2, sandbox_ref = $3 where id = $1', [
+    await pg.query('update technicians set telegram_user_id = $2, sandbox_ref = $3, host_id = $4 where id = $1', [
       t.id,
       String(900000000 + Math.floor(Math.random() * 99999)),
       `sbx-${RUN}-${ref}`,
+      host.id,
     ]);
   }
   return t;
@@ -106,6 +111,7 @@ const clearRunPushes = () =>
     'delete from person_pushes where tenant_id = $1 and technician_id in (select id from technicians where ref like $2)',
     [tenantId, `${RUN}-%`],
   );
+const callObs = [];
 const show = (label, v) => console.log(`\n── ${label}\n${typeof v === 'string' ? v : JSON.stringify(v, null, 2)}`);
 
 try {
@@ -163,7 +169,64 @@ try {
     show('4. request rows (should be none)', (await requests()).rows.length);
     show('4. texts (should be none)', (await pushes()).rows.length);
   }
+  if (want('call')) {
+    // 5. THE CALL DOOR (phase 4): a pass woken by an inbound call now runs on the
+    //    office's prompt. Two calls from nobody on file: a real request (expect
+    //    the manager text + quiet note pair, rung 10b's shape) and a thank-you
+    //    (expect a dismiss with a reason).
+    process.env.PLANNER_MODE = 'live';
+    const { runFocusedObservationPass } = await import(`${ROOT}dist/jobs/plannerPass.js`);
+    const call = async (label, words, asked) => {
+      const obs = await db.createObservation({
+        tenantId,
+        kind: 'inbound_unmatched',
+        subjectRef: `${RUN}-${label}`,
+        technicianId: null,
+        context: {
+          captureId: crypto.randomUUID(),
+          capturedAt: new Date().toISOString(),
+          channel: 'phone_call',
+          from: '+15550199',
+          matchReason: 'no customer on file has this number',
+          visitCommitted: false,
+          asked,
+          words,
+        },
+      });
+      callObs.push(obs.id);
+      const started = Date.now();
+      const summary = await runFocusedObservationPass(obs);
+      const after = await pg.query('select status, dismiss_reason, asked_at from observations where id = $1', [obs.id]);
+      const sent = await pg.query(
+        'select direction, via, to_ref, body from office_messages where nudge_id = $1 order by created_at',
+        [obs.id],
+      );
+      const decided = await pg.query(
+        'select action, outcome, reason from nudge_decisions where observation_id = $1 or nudge_id = $1 order by decided_at',
+        [obs.id],
+      );
+      show(`5. ${label} — pass took ${Date.now() - started}ms`, {
+        skipped: summary.skipped ?? null,
+        planned: summary.planned,
+        applied: summary.applied,
+        decisions: decided.rows,
+        observation: after.rows[0],
+        messages: sent.rows,
+      });
+    };
+    await call('request', 'Hi, this is Priya Nair, my water heater is leaking all over the garage floor at 40 Pier Road. Can someone come out today?', {
+      customerName: 'Priya Nair', phone: '+15550199', email: null, address: '40 Pier Road', jobTitle: 'water heater leaking', followUp: 'send someone today',
+    });
+    await call('thanks', 'Hey, just calling to say thanks for fixing the boiler yesterday, all working great. Bye!', {
+      customerName: null, phone: '+15550199', email: null, address: null, jobTitle: null, followUp: null,
+    });
+  }
 } finally {
+  if (callObs.length > 0) {
+    await pg.query('delete from office_messages where nudge_id = any($1::uuid[])', [callObs]);
+    await pg.query('delete from nudges where id = any($1::uuid[])', [callObs]);
+    await pg.query('delete from observations where id = any($1::uuid[])', [callObs]);
+  }
   await pg.query("delete from person_pushes where tenant_id = $1 and technician_id in (select id from technicians where ref like $2)", [tenantId, `${RUN}-%`]);
   await pg.query("delete from observations where kind = 'access_request' and technician_id = $1", [ben.id]);
   await pg.query('delete from office_messages where tenant_id = $1 and (from_ref like $2 or to_ref like $2)', [tenantId, `${RUN}-%`]);
@@ -171,6 +234,7 @@ try {
   await pg.query('delete from jobs where id = $1', [job.id]);
   await pg.query('delete from customers where id = $1', [customer.id]);
   await pg.query('delete from technicians where ref like $1', [`${RUN}-%`]);
+  await pg.query('delete from hosts where id = $1', [host.id]);
   if (priorIndex) await writeMemoryFile(tenantId, 'MEMORY.md', priorIndex.content);
   else await pg.query("delete from planner_memory where tenant_id = $1 and path = 'MEMORY.md'", [tenantId]);
   if (priorRule.rows[0]) {

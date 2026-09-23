@@ -2,6 +2,7 @@ import { getClient } from './client.js';
 import { participantIdsOf } from './visits.js';
 import { factEntriesCiting } from './standingFacts.js';
 import { correspondenceEntriesCiting } from './jobs.js';
+import { naiveWallClock } from './time.js';
 
 // What disappears from default views if a given capture is retracted: standing
 // facts (customer/job attributes bundle-citing it as evidence) and visits whose
@@ -198,8 +199,10 @@ export async function findFoldImpact(tenantId: string, captureId: string): Promi
       visitId: v.id,
       jobId: v.job_id,
       // The trip's own time, which is what "scheduled" meant all along — the
-      // old column of that name was never written by anything.
-      scheduledAt: v.starts_at,
+      // old column of that name was never written by anything. As WALL CLOCK:
+      // the retraction preview must be shown to the person, and the stored
+      // naive-local timestamp's false '+00' gets "converted" to the wrong hour.
+      scheduledAt: naiveWallClock(v.starts_at),
       // EVERY person on the trip (rung 9c) — the preview names who loses
       // evidence, and a crew loses it together.
       technicianIds: participantIdsOf(v, tenantId),

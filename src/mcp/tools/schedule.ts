@@ -209,7 +209,8 @@ const BASE_TOOLS = [
       'Your schedule day by day: for each day in [from,to] (YYYY-MM-DD; both ' +
       "optional — default is today in the firm's timezone; range is capped at 14 days) returns " +
       'your stops IN THE ORDER THEY ARE BOOKED — the schedule is already set, so this never ' +
-      'reorders it. Each stop carries mapsUrl, a Google Maps link that opens directions to THAT ' +
+      "reorders it. Each stop's startTime is its booked time on the firm's own clock (HH:MM): " +
+      'say it exactly as given, never convert it. Each stop carries mapsUrl, a Google Maps link that opens directions to THAT ' +
       'stop; relay it VERBATIM as a tappable link. mapsUrl null = that stop has no usable ' +
       'address on file — say so rather than guessing. ' +
       'days:[] means no stops in the range — UNLESS the result ' +
@@ -734,10 +735,19 @@ async function handleGetSchedule(toolCtx: ToolContext): Promise<unknown> {
       // stop, not the whole day at once. Address-less stops therefore stay in
       // the one chronological list with a null link; the old routable/unroutable
       // split existed only to protect a DRIVE-ordered sequence, which is gone.
+      //
+      // THE TIME GOES OUT AS WALL CLOCK, never the stored timestamp. Visits are
+      // stored naive-local (src/schedule/booking.ts: the firm's wall clock written
+      // as if UTC), so starts_at reads "2026-09-23T16:00:00+00:00" for a 4:00 PM
+      // visit. A model that knows the firm's local time "converts" that '+00' and
+      // tells the technician 9:00 AM (live, 2026-09-22, the Copilot SDK seat,
+      // whose engine stamps each message in the firm's timezone). startTime is the
+      // HH:MM as booked, the same shape get_customer_context already uses.
       const days = dayStops.map((day) => ({
         date: day.date,
-        stops: day.stops.map((s) => ({
+        stops: day.stops.map(({ scheduledStart, ...s }) => ({
           ...s,
+          startTime: scheduledStart ? scheduledStart.slice(11, 16) : null,
           mapsUrl: s.address === null ? null : buildMapsDeepLink([s]).url,
         })),
       }));

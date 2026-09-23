@@ -6,6 +6,12 @@
 > `docs/engineering-memory.md` §2 ("Manager seats become Claude-Cowork-like agents on a BOUGHT
 > harness…") and `thoughts/shared/research/2026-09-21-seat-runtime-direction-openrouter-agent-sdk.md`.
 > Use this runbook to OPERATE the existing seats until the cut-over; do not extend it.
+>
+> **s5 (Ben) is the first seat OFF openclaw (step 1, 2026-09-22).** It runs as `seat-glue@s5`
+> on the Copilot SDK engine: code in `src/seatGlue/`, box package + install/cutover/rollback in
+> `Box_Setup_Stuff/seat-glue/`, record in `docs/engineering-memory.md` §2 "Step 1 built". Its
+> openclaw sandbox is stopped with a DEAD bot token in its provider; do not `recover`, restart or
+> recycle s5 through this runbook — `Box_Setup_Stuff/seat-glue/rollback.sh s5` is the way back.
 
 How to wire a per-technician agent to the spine. The agent is the **channel + collector**;
 our MCP server ([src/mcp/server.ts](../src/mcp/server.ts)) is the **only thing that touches the

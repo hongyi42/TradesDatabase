@@ -19,7 +19,9 @@ import {
   MAX_TOOL_RESULT_CHARS,
   runToolLoop,
   type ToolExecutor,
-  ToolLoopLimitError,} from './toolLoop.js';
+  ToolLoopLimitError,
+  ToolLoopCancelledError,
+} from './toolLoop.js';
 import type { ForcedToolSpec } from './forcedTool.js';
 import type { recordModelUsage } from '../db/index.js';
 
@@ -941,6 +943,53 @@ describe('runToolLoop', () => {
 // Not a hypothetical: flipping the env var is the documented way back off a
 // suspended provider (Fireworks, 2026-08-15). These pin the message shapes the
 // Messages API requires, so the flip is not the first execution.
+describe('runToolLoop — the caller hangs up (plan 2026-09-22, the office)', () => {
+  const saved = process.env.INFERENCE_API_KEY;
+  const realFetch = globalThis.fetch;
+  beforeEach(() => {
+    process.env.INFERENCE_API_KEY = 'test-key';
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    if (saved === undefined) delete process.env.INFERENCE_API_KEY;
+    else process.env.INFERENCE_API_KEY = saved;
+  });
+  const req = (signal: AbortSignal) => ({
+    system: 's',
+    user: 'u',
+    maxTokens: 64,
+    label: 'office',
+    maxTurns: null,
+    budgetMs: 60_000,
+    signal,
+  });
+
+  test('already hung up: no model call is made at all', async () => {
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    const ac = new AbortController();
+    ac.abort();
+    await expect(
+      runToolLoop(req(ac.signal), [READ_TOOL], vi.fn(), undefined, { recordUsage: vi.fn(async () => {}) }),
+    ).rejects.toBeInstanceOf(ToolLoopCancelledError);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test('hung up mid-request: the request is aborted and the error names the hang-up', async () => {
+    const ac = new AbortController();
+    globalThis.fetch = ((_url: unknown, init: { signal?: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () =>
+          reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })),
+        );
+        setTimeout(() => ac.abort(), 5);
+      })) as unknown as typeof fetch;
+    await expect(
+      runToolLoop(req(ac.signal), [READ_TOOL], vi.fn(), undefined, { recordUsage: vi.fn(async () => {}) }),
+    ).rejects.toBeInstanceOf(ToolLoopCancelledError);
+  });
+});
+
 describe('runToolLoop on the Anthropic transport', () => {
   const saved = { key: process.env.ANTHROPIC_API_KEY, provider: process.env.MODEL_PROVIDER };
 

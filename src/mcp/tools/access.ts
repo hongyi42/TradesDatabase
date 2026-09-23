@@ -730,15 +730,20 @@ async function handleDeclineAccess(toolCtx: ToolContext): Promise<unknown> {
     `Said no to opening ${what} for ${ctx.technicianName ?? 'a technician'}. Why: ${reason}`,
   );
   if (request.technician_id) {
+    // HER words are title-free (plan 2026-09-22): the office may have narrowed a
+    // customer-wide ask to a job outside her view, and a "no" must not be how she
+    // learns its title. Rows filed before then carry only targetName.
     await textTheTechnician(
       tenantId,
       request.technician_id,
-      `${manager} said no to opening ${what}: ${reason}`,
+      `${manager} said no to opening ${ctx.technicianWords ?? what}: ${reason}`,
     );
   }
   return {
     declined: true,
-    note: `${ctx.technicianName ?? 'They'} have been texted that the answer is no, with your reason.`,
+    note: ctx.technicianName
+      ? `${ctx.technicianName} has been texted that the answer is no, with your reason.`
+      : 'They have been texted that the answer is no, with your reason.',
   };
 }
 

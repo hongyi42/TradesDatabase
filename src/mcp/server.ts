@@ -3,9 +3,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { fileURLToPath } from 'node:url';
 import { TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
-import { answerDeskQuestion } from '../teamLead/desk.js';
-import { answerAccessRequest } from '../teamLead/accessDesk.js';
-import { DESK_QUESTION_MAX } from '../teamLead/deskPrompt.js';
+import { answerAsOffice, OFFICE_QUESTION_MAX, routeAccessAsOffice } from '../teamLead/office.js';
+import type { runToolLoop } from '../model/toolLoop.js';
 import { spineNowIso } from '../evalClock.js';
 import type { ForcedToolSpec, JsonSchemaObject } from '../model/forcedTool.js';
 import {
@@ -80,12 +79,20 @@ export interface ServerDeps {
   cancelRetirement?: typeof liveCancelRetirement;
   webSearch?: typeof braveWebSearch; // Brave seam — tests never need BRAVE_API_KEY
   fetchPage?: typeof fetchPageText; // fetch seam — tests never hit the network
-  // The Q&A desk seam (build 5.5 Phase 2) — injectable so a dispatch test
-  // never calls the live model (the extractor precedent).
-  deskAnswer?: typeof answerDeskQuestion;
-  // The access-request seam (plan B) — the desk's ONE write. Injectable for the
-  // same reason as deskAnswer: a dispatch test must never call the live model.
-  accessDesk?: typeof answerAccessRequest;
+  // The office's question door (plan 2026-09-22; was the Q&A desk) — injectable
+  // so a dispatch test never calls the live model (the extractor precedent).
+  deskAnswer?: typeof answerAsOffice;
+  // The office's access door (plan 2026-09-22; was the access desk). Injectable
+  // for the same reason as deskAnswer: a dispatch test must never call the live model.
+  accessDesk?: typeof routeAccessAsOffice;
+  // The office's model loop, for BOTH waiting doors — so a test can drive the
+  // real door code with a scripted model, or none (the access door then takes
+  // its code fallback, exactly as it would on a provider outage).
+  officeLoop?: typeof runToolLoop;
+  // The seat's HANG-UP: aborted by the HTTP server when the request closes
+  // before the reply is sent, so the office stops rather than working for
+  // nobody (and the access door files and texts nothing).
+  signal?: AbortSignal;
   // Cost-ledger seam. Injectable for the same reason as the rest: without it
   // every hermetic dispatch test would start writing to the real database.
   recordCost?: typeof appendCostEvents;
@@ -105,15 +112,17 @@ const TOOLS = [
   ...commsTools.base,
   ...officeTools.base,
   {
-    // The Q&A desk (plan 2026-08-31, build 5.5 Phase 2): synchronous, seconds.
+    // The office's waiting doors (plan 2026-09-22; was the Q&A desk). The
+    // office itself answers, so it may take a few minutes — the seat's tool-call
+    // timeout must allow for that (the Copilot SDK seat is set to 300s).
     name: 'ask_team_lead',
     description:
-      "Ask the office's team lead a question and get an answer NOW, in this same call — use it " +
-      'when the answer would change what you do next: "am I square with the office?", "is the ' +
-      'office waiting on anything from my person?", "has this already been chased?". It reads ' +
-      "the office's records and notes; it does not act — EXCEPT that it can ask for access for " +
-      'you (accessRequest below). If it cannot answer, your question is kept for the office\'s ' +
-      'next planning pass automatically.',
+      "Ask the office a question and get its answer in this same call — use it when the answer " +
+      'would change what you do next: "am I square with the office?", "is the office waiting ' +
+      'on anything from my person?", "has this already been chased?". The office looks into it ' +
+      'itself, so it can take a few minutes. It answers; it does not act — EXCEPT that it can ' +
+      'ask a manager for access for you (accessRequest below). If it cannot answer, your ' +
+      "question is kept for the office's next planning pass automatically.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -126,8 +135,9 @@ const TOOLS = [
           description:
             'ASK FOR ACCESS to something a tool answered "outside your view". Only ever after ' +
             "your person has said yes, and `question` carries THEIR reason in their words. " +
-            'ONLY A MANAGER CAN OPEN A RECORD: the office files the request and texts every ' +
-            'manager it can reach, and your person is texted when one answers. Say that you ' +
+            'ONLY A MANAGER CAN OPEN A RECORD: the office files the request and texts the ' +
+            'manager who looks after your person (every manager when it cannot tell), and your ' +
+            'person is texted when one answers. Say that you ' +
             'asked; never say they now have access, and never promise a reply. ' +
             'ASK FOR THE LEAST THAT ANSWERS THEM. A manager opens what you asked for, so pass ' +
             'jobId whenever a tool has given you one — get_job answers with the job id even ' +
@@ -745,20 +755,19 @@ async function dispatch(
 
   switch (name) {
     case 'ask_team_lead': {
-      // The Q&A desk (plan 2026-08-31, build 5.5 Phase 2): a read-only
-      // reconstitution of the planner answers INSIDE this call. "Answering is
-      // not waking" — the deciding planner still reads the transcript next
-      // tick. spine: identities never reach here (the namespace ceiling), so
-      // the desk cannot be asked to ask itself.
+      // The office answers INSIDE this call (plan 2026-09-22; was the read-only
+      // desk). The review still reads the transcript on its next pass. spine:
+      // identities never reach here (the namespace ceiling), so the office
+      // cannot be asked to ask itself.
       const rawQ = str('question') ?? '';
       const question = rawQ
         .replace(/[\u0000-\u001f\u007f]+/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
       if (!question) throw new Error('question is required — ask what you actually need to know');
-      if (question.length > DESK_QUESTION_MAX) {
+      if (question.length > OFFICE_QUESTION_MAX) {
         throw new Error(
-          `question is too long (max ${DESK_QUESTION_MAX} characters) — ask the one thing that ` +
+          `question is too long (max ${OFFICE_QUESTION_MAX} characters) — ask the one thing that ` +
             'would change what you do',
         );
       }
@@ -788,7 +797,7 @@ async function dispatch(
         // inside an object spread put that throw somewhere surprising.
         const jobId = optStr('jobId');
         const customerId = optStr('customerId');
-        return await (deps.accessDesk ?? answerAccessRequest)(
+        return await (deps.accessDesk ?? routeAccessAsOffice)(
           {
             tenantId,
             askerRef: identity.technicianRef,
@@ -801,15 +810,22 @@ async function dispatch(
             ...(customerId ? { customerId } : {}),
             wants,
           },
-          {},
+          {
+            // The same surface and door the question gets (review, plan phase 3):
+            // the office picks the manager from its notes, so it needs its tools.
+            toolSchemas: TEAM_LEAD_TOOL_SCHEMAS as readonly ForcedToolSpec[],
+            dispatch: (n, a, officeIdentity) => dispatchForIdentity(n, a, officeIdentity, deps),
+            ...(deps.officeLoop ? { runLoop: deps.officeLoop } : {}),
+            ...(deps.signal ? { signal: deps.signal } : {}),
+          },
         );
       }
-      const desk = await (deps.deskAnswer ?? answerDeskQuestion)(
+      const desk = await (deps.deskAnswer ?? answerAsOffice)(
         {
           tenantId,
           askerRef: identity.technicianRef,
           // Metadata (rides the ask row) vs CAPABILITY, split on purpose
-          // (review F-A): the manager desk needs the repo's one manager
+          // (review F-A): a manager-facing office needs the repo's one manager
           // predicate — active manager — not tier alone, or an invited
           // manager's pre-minted badge would read the whole tenant before
           // verification, exactly what the admin-tool gate refuses it.
@@ -819,11 +835,13 @@ async function dispatch(
           question,
         },
         {
-          // The read surface + the door, handed in here so desk.ts never
-          // imports this module (no static cycle). The desk filters out the
-          // write tools itself; the dispatch gate is the belt behind that.
+          // The team-lead schemas + the door, handed in here so office.ts never
+          // imports this module (no static cycle). The office hands each door
+          // an allowlist of them; the dispatch gate is the belt behind that.
           toolSchemas: TEAM_LEAD_TOOL_SCHEMAS as readonly ForcedToolSpec[],
           dispatch: (n, a, deskIdentity) => dispatchForIdentity(n, a, deskIdentity, deps),
+          ...(deps.officeLoop ? { runLoop: deps.officeLoop } : {}),
+          ...(deps.signal ? { signal: deps.signal } : {}),
         },
       );
       return desk.answer

@@ -69,6 +69,7 @@ import { readSettingsTolerantly, type ResolvedTenantSettings } from '../db/tenan
 import { isMissingRelation } from '../db/costs.js';
 import { localDateISO, localTimeHHMM, parseAsUtc } from '../schedule/availability.js';
 import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
+import { OFFICE_SYSTEM } from './officePrompt.js';
 import { TEAM_LEAD_REF } from './identity.js';
 
 // The team-lead planner (plan 2026-08-19, Phase 3).
@@ -4386,8 +4387,9 @@ export async function runPlanner(
         }),
       ]);
       // ACCESS REQUESTS ARE NOT THE PLANNER'S WORK (operator ruling,
-      // 2026-09-19). The office is a middleman for ONE inference — open this
-      // narrow ask, or put it to a manager — and after that it is done: it does
+      // 2026-09-19). The office judges each one when it is made — which manager
+      // to put it to, and in what words (only a manager opens anything, 2026-09-20;
+      // src/teamLead/office.ts) — and after that it is done: it does
       // not chase, does not remind, and has no dismissal to make, because this
       // is not an observation it curates. An unanswered one is simply gone after
       // a day (REQUEST_LAPSE_MS). Dropped HERE, at the one read, so no verb
@@ -5095,7 +5097,10 @@ export async function runPlanner(
       };
       const result = await runLoop(
         {
-          system: PLANNER_SYSTEM,
+          // A FOCUSED PASS IS THE OFFICE (plan 2026-09-22): one inbound call, handled
+          // now, on the office's own prompt. Same verbs, same submit_plan, same
+          // rails — only the instructions change. The tick stays the planner.
+          system: focus ? OFFICE_SYSTEM : PLANNER_SYSTEM,
           user,
           maxTokens: PLANNER_MAX_TOKENS,
           label: 'teamLeadPlanner',

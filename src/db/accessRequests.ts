@@ -11,9 +11,9 @@ import {
 //
 // A request IS AN OBSERVATION, kind 'access_request' — not a fifth queue. It is
 // something the record has noticed and nobody has settled, which is what
-// observations are for: the planner reads its open set every tick, so a
-// forwarded request reaches the planner with no new read, and the planner can
-// chase the manager or tell the technician it is still waiting.
+// observations are for. The planner does NOT work them (see below): the office
+// judges each ask when it is made (src/teamLead/office.ts), and the planner hears
+// only what a manager decided.
 //
 // EVERY READ AND WRITE HERE FILTERS kind = 'access_request'. That is the point
 // of the module: `grant_access { requestId }` takes an id from a model, and
@@ -37,8 +37,8 @@ import {
 
 export type AccessRequest = Observation;
 
-/** What the technician asked to be opened. 'record' is the only width the desk
- *  will open by itself; the other two always go to a manager. */
+/** What the technician asked to be opened. Every width goes to a manager: only
+ *  a manager (or the firm's own rule) opens anything. */
 export type AccessWants = 'record' | 'notes' | 'money';
 
 // The statuses that mean "nobody has answered this yet" — the same set the
@@ -68,8 +68,12 @@ export interface AccessRequestContext {
   technicianName: string;
   jobId?: string;
   customerId: string;
-  /** The job or customer in words, for the planner's line and the texts. */
+  /** The job or customer in words, for the planner's line and the MANAGERS'
+   *  texts — it names the job by title, which she may not be able to see. */
   targetName: string;
+  /** The same, title-free, for anything read out to HER (a manager's "no").
+   *  Absent on rows filed before 2026-09-22. */
+  technicianWords?: string;
   wants: AccessWants;
   /** The technician's own reason, her words. */
   why: string;
@@ -196,6 +200,55 @@ export async function listOpenAccessRequests(
     .order('id', { ascending: true });
   if (error) throw new Error(`listOpenAccessRequests failed: ${error.message}`);
   return (data ?? []) as AccessRequest[];
+}
+
+// One person's requests, SETTLED ONES INCLUDED, newest first (plan 2026-09-22,
+// the office). This is what lets the office see that a manager said no an hour
+// ago — the open-set reads above cannot, because a declined request is
+// dismissed. Tenant and kind filtered like every read here.
+export async function listRecentAccessRequestsFor(
+  tenantId: string,
+  technicianId: string,
+  sinceIso: string,
+): Promise<AccessRequest[]> {
+  const { data, error } = await getClient()
+    .from('observations')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('kind', 'access_request')
+    .eq('technician_id', technicianId)
+    .gte('noticed_at', sinceIso)
+    .order('noticed_at', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(20);
+  if (error) throw new Error(`listRecentAccessRequestsFor failed: ${error.message}`);
+  return (data ?? []) as AccessRequest[];
+}
+
+// A REPEAT ASK ON A REQUEST STILL WAITING (plan 2026-09-22, the office): when the
+// office puts a waiting request to a manager it had not asked before, the names
+// are added here, so the next repeat texts only somebody new. Compare-and-set on
+// the context it read, and the caller CLAIMS before it texts: null means another
+// repeat got there first, and the caller sends nothing. Unsettled rows only.
+export async function addManagersTexted(
+  tenantId: string,
+  row: AccessRequest,
+  names: string[],
+): Promise<AccessRequest | null> {
+  const ctx = contextOf(row);
+  const merged = [...new Set([...(ctx.managersTexted ?? []), ...names])];
+  const { data, error } = await getClient()
+    .from('observations')
+    .update({ context: { ...ctx, managersTexted: merged } as unknown as Json })
+    .eq('id', row.id)
+    .eq('tenant_id', tenantId)
+    .eq('kind', 'access_request')
+    .in('status', [...UNSETTLED_REQUEST_STATUSES])
+    .eq('context', JSON.stringify(row.context))
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`addManagersTexted failed: ${error.message}`);
+  return (data as AccessRequest | null) ?? null;
 }
 
 // THE ANSWER, and the guard is what makes "the first answer wins" structural:

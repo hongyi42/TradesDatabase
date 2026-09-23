@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { asNaiveLocal, dayEndNaive, dayStartNaive, naiveLocalISO, type NaiveLocal } from './time.js';
+import { asNaiveLocal, dayEndNaive, dayStartNaive, naiveLocalISO, naiveWallClock, type NaiveLocal } from './time.js';
 import { isTechnicianAvailableOn, localDateISO, localDayOfWeek, localTimeHHMM } from '../schedule/availability.js';
 import type { Visit } from './visits.js';
 
@@ -94,5 +94,19 @@ describe('the species boundary on the visit row', () => {
     // The JSONB re-entry points (watchers, the cancel CAS) lose the type on the
     // round trip. `grep asNaiveLocal` is the list of places trusting convention.
     expect(asNaiveLocal('2026-09-19T09:00:00.000Z')).toBe('2026-09-19T09:00:00.000Z');
+  });
+});
+
+describe('naiveWallClock — the only form a naive-local time may take in model-facing output', () => {
+  test('drops the false offset, never converts', () => {
+    // Every shape the DB or the code produces: '+00:00', fractional seconds, 'Z'.
+    expect(naiveWallClock('2026-09-23T16:00:00+00:00')).toBe('2026-09-23 16:00');
+    expect(naiveWallClock('2026-09-23T16:00:00.123+00:00')).toBe('2026-09-23 16:00');
+    expect(naiveWallClock(naiveLocalISO('2026-09-23', '16:00'))).toBe('2026-09-23 16:00');
+  });
+
+  test('passes an untimed value through as null', () => {
+    expect(naiveWallClock(null)).toBeNull();
+    expect(naiveWallClock(undefined)).toBeNull();
   });
 });

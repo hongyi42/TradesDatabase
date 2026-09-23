@@ -241,11 +241,11 @@ the seat's `seats` row (`add-glue-seat`); rollback is unchanged (the badge survi
 bad zone, fetch injected); every test building a `SeatConfig`/`seatDeps` updated.
 
 ### Automated verification
-- [ ] gates pass; `npm run build` emits `dist/seatGlue/whoami.js`
-- [ ] `grep -rn GATEWAY_IDENTITY_SECRET src/seatGlue Box_Setup_Stuff/seat-glue` → nothing
-- [ ] `httpServer.test.ts`: `fetchWhoami` against the test server with a minted token returns the
+- [x] gates pass; `npm run build` emits `dist/seatGlue/whoami.js`
+- [x] `grep -rn GATEWAY_IDENTITY_SECRET src/seatGlue Box_Setup_Stuff/seat-glue` → nothing
+- [x] `httpServer.test.ts`: `fetchWhoami` against the test server with a minted token returns the
   seeded person and tenant timezone (the glue's real client, Render's real route)
-- [ ] local driver: mint for a seeded seat, then `SEAT_TOKEN=… SPINE_MCP_URL=http://127.0.0.1:<port>/
+- [x] local driver: mint for a seeded seat, then `SEAT_TOKEN=… SPINE_MCP_URL=http://127.0.0.1:<port>/
   node dist/seatGlue/drive.js <one-turn script>`; the local server logs a spine call as that person
 
 ### Live verification (agent-executable)

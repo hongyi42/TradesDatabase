@@ -1,4 +1,4 @@
-import { signedHeaders } from './identity.js';
+import { seatHeaders } from './identity.js';
 import { TECHNICIAN_DOCTRINE } from './doctrine.js';
 import type { TurnPolicy } from './turnPolicy.js';
 
@@ -54,9 +54,7 @@ export interface EngineConfig {
   model: string;
   openrouterKey: string;
   spineUrl: string;
-  secret: string;
-  tenantId: string;
-  technicianRef: string;
+  seatToken: string;
 }
 
 // The types do not say whether a permission request's serverName is the key in
@@ -71,8 +69,8 @@ export async function startEngine(opts: { baseDirectory: string; tz: string }): 
     mode: 'empty',
     baseDirectory: opts.baseDirectory,
     // An explicit allowlist, never process.env: the glue's env holds the bot
-    // token, the identity secret and the OpenRouter key, and none of them may
-    // reach the engine process. The key travels only in provider.apiKey.
+    // token, the seat token and the OpenRouter key, and none of them may reach
+    // the engine process (the seat token travels only as the MCP header). The key travels only in provider.apiKey.
     env: { PATH: process.env.PATH, HOME: process.env.HOME, LANG: 'C.UTF-8', TZ: opts.tz },
     logLevel: 'warning',
   });
@@ -118,7 +116,7 @@ export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy): Record<str
         // (desk→office merge). The SDK's own default is 60 s — at that the seat
         // would give up while the office keeps working and its answer is lost.
         timeout: 300_000,
-        headers: { ...signedHeaders(cfg.secret, cfg.tenantId, cfg.technicianRef) },
+        headers: { ...seatHeaders(cfg.seatToken) },
       },
     },
     onPermissionRequest: (r: PermissionRequestLike) => {

@@ -37,6 +37,7 @@ import {
 } from '../db/sandboxPool.js';
 import { setTenantSeats } from '../db/tenants.js';
 import { createSeat } from '../db/seats.js';
+import { fetchWhoami } from '../seatGlue/whoami.js';
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
@@ -1175,6 +1176,19 @@ describe('seat tokens: POST /control/seat-token, GET /seat/whoami, /mcp', () => 
       },
     });
     expect(hmac.status).toBe(401);
+  });
+
+  test("the glue's own fetchWhoami against Render's own route", async () => {
+    const { token } = (await (await mint(hostToken, 'g_probe001')).json()) as { token: string };
+    const tz = (await pg.query('select timezone from tenants where id = $1', [tenantId])).rows[0]
+      .timezone;
+    expect(await fetchWhoami(`${base}/`, token)).toEqual({
+      seatRef: 'g_probe001',
+      tenantId,
+      technicianRef: 'seat-probe',
+      telegramUserId: 5801703167,
+      tz,
+    });
   });
 
   test('a deactivated person: mint 409, whoami 403, /mcp refused', async () => {

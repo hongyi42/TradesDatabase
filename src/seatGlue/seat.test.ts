@@ -60,6 +60,21 @@ class FakeTelegram implements TelegramApi {
   async download(fileId: string): Promise<Buffer> {
     return this.files.get(fileId) ?? Buffer.from('bytes');
   }
+  /** "Working…" lines currently on screen, by message id. */
+  readonly working = new Set<number>();
+  readonly callbacks: Array<{ id: string; text?: string }> = [];
+  private nextId = 100;
+  async sendWorking(): Promise<number> {
+    const id = this.nextId++;
+    this.working.add(id);
+    return id;
+  }
+  async deleteMessage(_chat: number, id: number): Promise<void> {
+    this.working.delete(id);
+  }
+  async answerCallback(id: string, text?: string): Promise<void> {
+    this.callbacks.push({ id, text });
+  }
 }
 
 let n = 0;
@@ -489,6 +504,51 @@ describe('Seat', () => {
     expect(t.policy.isBusy).toBe(false);
     await t.seat.whenIdle(1);
     expect(t.telegram.sent).toEqual([TEXT.replyFailed]);
+  });
+
+  it('shows a Working line with a Stop button while replying, and removes it when the answer arrives', async () => {
+    const t = setup();
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: "what's on tomorrow?" }));
+    expect(t.telegram.working.size).toBe(1);
+    const s = t.session();
+    s.emit('assistant.turn_start', {});
+    s.emit('assistant.message', { content: 'One stop: Tom Becker at 16:00.' });
+    s.emit('assistant.turn_end', {});
+    s.emit('session.idle', {});
+    await t.seat.whenIdle(1);
+    expect(t.telegram.working.size).toBe(0);
+    expect(t.telegram.sent).toEqual(['One stop: Tom Becker at 16:00.']);
+  });
+
+  it('a tap on the Stop button stops the reply, answers the tap and clears the line', async () => {
+    const t = setup();
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'write me something long' }));
+    const [line] = [...t.telegram.working];
+    await t.seat.handleUpdate({
+      update_id: ++n,
+      callback_query: { id: 'cb1', from: { id: BEN }, data: 'stop', message: { message_id: line, chat: { id: BEN, type: 'private' } } },
+    });
+    await t.seat.whenIdle(1);
+    expect(t.session().aborts).toBe(1);
+    expect(t.telegram.callbacks).toEqual([{ id: 'cb1', text: 'Stopping…' }]);
+    expect(t.telegram.working.size).toBe(0);
+    expect(t.telegram.sent).toEqual([TEXT.stopped]);
+  });
+
+  it('a tap on a leftover Working line is answered quietly — nothing to stop', async () => {
+    const t = setup();
+    await t.seat.start();
+    t.telegram.working.add(7);
+    await t.seat.handleUpdate({
+      update_id: ++n,
+      callback_query: { id: 'cb2', from: { id: BEN }, data: 'stop', message: { message_id: 7, chat: { id: BEN, type: 'private' } } },
+    });
+    await t.seat.whenIdle(1);
+    expect(t.telegram.callbacks).toEqual([{ id: 'cb2', text: 'Nothing to stop' }]);
+    expect(t.telegram.working.has(7)).toBe(false);
+    expect(t.telegram.sent).toEqual([]);
   });
 
   it('stops polling on a 409 — another poller owns the bot', async () => {

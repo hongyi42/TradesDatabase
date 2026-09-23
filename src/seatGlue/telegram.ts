@@ -10,9 +10,17 @@ import { defaultFetch, type FetchLike } from './http.js';
 
 export const TELEGRAM_MAX_TEXT = 4096;
 export const TELEGRAM_MAX_DOWNLOAD = 20 * 1024 * 1024;
-// A persistent one-button keyboard: the Stop button is always under the chat.
+// Stop, operator 2026-09-23: a small "⏹ Stop" button on a "Working…" line that
+// exists only while the seat is working (an inline keyboard, answered through
+// callback_query), not a permanent reply keyboard taking half the screen.
+// Typing "stop" or /stop still works.
 export const STOP_TEXT = 'Stop';
-const KEYBOARD = { keyboard: [[{ text: STOP_TEXT }]], is_persistent: true, resize_keyboard: true };
+export const STOP_CALLBACK = 'stop';
+export const WORKING_TEXT = 'Working…';
+// Telegram keeps a reply keyboard on the phone until a message removes it: the
+// big Stop button the first s5 build installed goes away with the next reply.
+const REMOVE_KEYBOARD = { remove_keyboard: true };
+const STOP_BUTTON = { inline_keyboard: [[{ text: '⏹ Stop', callback_data: STOP_CALLBACK }]] };
 
 export class TelegramConflictError extends Error {
   constructor() {
@@ -39,9 +47,17 @@ export interface TgMessage {
   [other: string]: unknown;
 }
 
+export interface TgCallbackQuery {
+  id: string;
+  from: { id: number };
+  data?: string;
+  message?: { message_id: number; chat: { id: number; type: string } };
+}
+
 export interface TgUpdate {
   update_id: number;
   message?: TgMessage;
+  callback_query?: TgCallbackQuery;
 }
 
 export interface TelegramApi {
@@ -49,6 +65,11 @@ export interface TelegramApi {
   send(chatId: number, text: string): Promise<void>;
   typing(chatId: number): Promise<void>;
   download(fileId: string): Promise<Buffer>;
+  /** Post the "Working…" line with its Stop button; returns its message id. */
+  sendWorking(chatId: number): Promise<number>;
+  deleteMessage(chatId: number, messageId: number): Promise<void>;
+  /** Acknowledge a button tap (Telegram shows a spinner until this is called). */
+  answerCallback(callbackQueryId: string, text?: string): Promise<void>;
 }
 
 export class TelegramClient implements TelegramApi {
@@ -73,7 +94,7 @@ export class TelegramClient implements TelegramApi {
   async getUpdates(offset: number): Promise<TgUpdate[]> {
     const result = await this.call(
       'getUpdates',
-      { offset, timeout: 30, allowed_updates: ['message'] },
+      { offset, timeout: 30, allowed_updates: ['message', 'callback_query'] },
       45_000,
     );
     return Array.isArray(result) ? (result as TgUpdate[]) : [];
@@ -92,12 +113,31 @@ export class TelegramClient implements TelegramApi {
           chat_id: chatId,
           text: toTelegramHtml(chunk),
           parse_mode: 'HTML',
-          reply_markup: KEYBOARD,
+          reply_markup: REMOVE_KEYBOARD,
         });
       } catch {
-        await this.call('sendMessage', { chat_id: chatId, text: chunk, reply_markup: KEYBOARD });
+        await this.call('sendMessage', { chat_id: chatId, text: chunk, reply_markup: REMOVE_KEYBOARD });
       }
     }
+  }
+
+  async sendWorking(chatId: number): Promise<number> {
+    const msg = (await this.call('sendMessage', {
+      chat_id: chatId,
+      text: WORKING_TEXT,
+      reply_markup: STOP_BUTTON,
+      disable_notification: true,
+    })) as { message_id?: number };
+    if (typeof msg?.message_id !== 'number') throw new Error('telegram: sendMessage returned no message_id');
+    return msg.message_id;
+  }
+
+  async deleteMessage(chatId: number, messageId: number): Promise<void> {
+    await this.call('deleteMessage', { chat_id: chatId, message_id: messageId });
+  }
+
+  async answerCallback(callbackQueryId: string, text?: string): Promise<void> {
+    await this.call('answerCallbackQuery', { callback_query_id: callbackQueryId, ...(text ? { text } : {}) });
   }
 
   async typing(chatId: number): Promise<void> {

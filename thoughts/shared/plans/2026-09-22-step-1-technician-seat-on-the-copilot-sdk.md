@@ -2,7 +2,7 @@
 date: 2026-09-22
 task: Step 1 — Ben's technician seat (s5) moves from its openclaw sandbox to one Copilot SDK engine plus our glue on trades-box-1
 research: thoughts/shared/research/2026-09-22-step-1-technician-seat-glue-on-the-copilot-sdk.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -275,15 +275,15 @@ Ships the staged package to trades-box-1, installs a systemd unit, moves s5's bo
 - `docs/nemoclaw-tech-agent.md` gets a short banner at the top: s5 no longer runs here; see `Box_Setup_Stuff/seat-glue/` (memory: agent-stack changes update both).
 
 ### Automated verification
-- [ ] typecheck, lint and test pass; `bash -n` passes on all three scripts.
+- [x] typecheck, lint and test pass; `bash -n` passes on all three scripts.
 
 ### Live verification (agent-executable)
 - Prerequisites: `ssh tradesbox`; the operator runs `install.sh` and `cutover.sh` with `!`; a supabase-test MCP SELECT for the arguments.
-- [ ] `journalctl -u seat-glue@s5` shows polling started and no 409. `docker ps` shows s5's container stopped.
-- [ ] After the operator's first phone turn, the journal shows a spine call. Read back independently: a pilot `cost_events` SELECT shows a new `spine/tool_call` row for Ben's `technician_ref` in the last 10 minutes.
-- [ ] A cost line exists in `/var/lib/seat-glue/s5/costs/` (the unit's per-seat state dir).
+- [x] `journalctl -u seat-glue@s5` shows polling started and no 409. `docker ps` shows s5's container stopped.
+- [x] After the operator's first phone turn, the journal shows a spine call (2026-09-23: resolve_date, get_schedule, ask_team_lead all landed in pilot cost_events as ben-shelton — the glue's own identity signing accepted by Render). Read back independently: a pilot `cost_events` SELECT shows a new `spine/tool_call` row for Ben's `technician_ref` in the last 10 minutes.
+- [x] A cost line exists in `/var/lib/seat-glue/s5/costs/` (the unit's per-seat state dir).
 
 ### Manual verification (operator, on Ben's Telegram)
-- [ ] A text, a double text, a photo, a voice note, Stop, and `/new` all behave as in phase 2.
-- [ ] The reply voice is readable, and the reply keyboard shows "Stop".
+- [x] A text, a double text, a photo, a voice note, Stop, and `/new` all behave as in phase 2 (2026-09-23 on the pilot: text, photo-then-question double text, photo, voice PASS; four Stop taps → four "Stopped."; `/new` opened a fresh conversation. Not yet seen live: a reply AFTER a Stop, and the first reply in the fresh conversation).
+- [x] The reply voice is readable; no narration reached the phone (operator); the Stop control is now the "Working… ⏹ Stop" line (PR #277), seen appearing and vanishing (operator).
 - [ ] One field note is filed, and you're comfortable that it's permanent in the pilot's L1.

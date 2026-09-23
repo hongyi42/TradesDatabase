@@ -1,0 +1,36 @@
+# /etc/systemd/system/seat-glue@.service — one technician seat on the Copilot
+# SDK engine (openclaw retirement step 1). Instance = the seat ref: seat-glue@s5.
+#
+# Installed by install.sh; enabled by cutover.sh, never by hand before the old
+# openclaw seat has lost the bot token (Telegram allows ONE poller per bot).
+#
+# Exit 3 = Telegram 409, another process is polling this bot. The glue stops
+# rather than fighting every 10 s (RestartPreventExitStatus=3): find the other
+# poller — most likely the openclaw container revived by gateway-heal or the
+# token medic — and remove ITS token (cutover.sh), then restart this unit.
+[Unit]
+Description=Technician seat glue for %i (Copilot SDK engine)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=seatglue
+Group=seatglue
+EnvironmentFile=/etc/seat-glue/%i.env
+Environment=SEAT_REF=%i HOME=/var/lib/seat-glue SEAT_STATE_DIR=/var/lib/seat-glue/%i
+StateDirectory=seat-glue/%i
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/seat-glue/%i
+ExecStart=/usr/local/bin/node /opt/seat-glue/app/main.js
+Restart=always
+RestartSec=10
+RestartPreventExitStatus=3
+# ProtectSystem=strict leaves no writable /tmp for the engine without this.
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/seat-glue
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -69,7 +69,7 @@ import { readSettingsTolerantly, type ResolvedTenantSettings } from '../db/tenan
 import { isMissingRelation } from '../db/costs.js';
 import { localDateISO, localTimeHHMM, parseAsUtc } from '../schedule/availability.js';
 import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
-import { OFFICE_SYSTEM } from './officePrompt.js';
+import { officeSystemFor } from './officePrompt.js';
 import { TEAM_LEAD_REF } from './identity.js';
 
 // The team-lead planner (plan 2026-08-19, Phase 3).
@@ -5103,7 +5103,7 @@ export async function runPlanner(
           // A FOCUSED PASS IS THE OFFICE (plan 2026-09-22): one inbound call, handled
           // now, on the office's own prompt. Same verbs, same submit_plan, same
           // rails — only the instructions change. The tick stays the planner.
-          system: focus ? OFFICE_SYSTEM : PLANNER_SYSTEM,
+          system: focus ? officeSystemFor('call') : PLANNER_SYSTEM,
           user,
           maxTokens: PLANNER_MAX_TOKENS,
           label: 'teamLeadPlanner',

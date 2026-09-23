@@ -31,7 +31,7 @@ import {
   type OfficeDoorDeps,
   type OfficeWaitingDeps,
 } from './office.js';
-import { ANSWER_TOOL, OFFICE_SYSTEM } from './officePrompt.js';
+import { ANSWER_TOOL, officeSystemFor } from './officePrompt.js';
 import { TEAM_LEAD_REF } from './identity.js';
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
@@ -270,6 +270,7 @@ const doorInput = (over = {}) => ({
   tenantId: T,
   facing: TECH,
   userMessage: 'QUESTION from ben-shelton: am I square?',
+  door: 'question' as const,
   terminal: ANSWER_TOOL,
   schemas: SCHEMAS,
   dispatch: vi.fn(async () => 'dispatched'),
@@ -420,7 +421,7 @@ describe('answerAsOffice — who is facing it decides the tools', () => {
     );
     const res = await answerAsOffice(q, questionDeps({ listNudges }, seen));
     expect(res.answer).toBe('the office has nothing open for you');
-    expect(seen.req!.system).toBe(OFFICE_SYSTEM);
+    expect(seen.req!.system).toBe(officeSystemFor('question'));
     expect(seen.tools!.map((t) => t.name)).toEqual([
       'read_memory',
       'write_memory',

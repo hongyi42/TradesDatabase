@@ -36,16 +36,18 @@ import {
 import { renderMemoryIndex } from './memory.js';
 import { TEAM_LEAD_REF } from './identity.js';
 import { PLANNER_MAX_TOKENS, PLANNER_REASONING } from './planner.js';
-import { ANSWER_TOOL, OFFICE_SYSTEM, ROUTE_ACCESS_TOOL } from './officePrompt.js';
+import { ANSWER_TOOL, officeSystemFor, ROUTE_ACCESS_TOOL } from './officePrompt.js';
 import { localDateISO } from '../schedule/availability.js';
 import { servedDayPhrase } from '../schedule/dateResolve.js';
 
-// THE OFFICE (plan 2026-09-22, "the office: one agent, three doors").
+// THE OFFICE (plan 2026-09-22, "the office: one agent, three doors"; rung 10c
+// added a fourth, a seat's message, and gave each door its own prompt).
 //
 // One runner for the doors where a seat is WAITING — its question, and its
-// access ask. (The third door, an inbound call, is the planner's focused pass
-// running on OFFICE_SYSTEM; see runPlanner.) Both waiting doors are the same
-// agent, the same prompt and the same model as the rest of the team lead; what
+// access ask. (The call and message doors are the planner's focused pass
+// running on the office's prompt; see runPlanner.) Both waiting doors are the
+// same agent, the same doctrine and the same model as the rest of the team lead
+// — each loading only the sections it uses (officeSystemFor); what
 // differs per call is WHO IS FACING IT, and that is decided here, by code:
 //
 //   * a MANAGER gets the team lead's reads (spine_read, recall_decisions) and its
@@ -56,7 +58,7 @@ import { servedDayPhrase } from '../schedule/dateResolve.js';
 //     office). No record reads: their own seat already has those, scoped to them.
 //
 // So what a technician-facing office can SEE is bounded by mechanism. What it
-// SAYS is steered by OFFICE_SYSTEM — and the notes, which carry contents, stay
+// SAYS is steered by the office's prompt — and the notes, which carry contents, stay
 // prompt-guarded by the operator's 2026-09-01 ruling (the known hole).
 //
 // NO SHORT CLOCK (operator, 2026-09-22): a waiting person tolerates minutes, and
@@ -318,6 +320,10 @@ export interface OfficeDoorInput {
   facing: Facing;
   /** Everything the door knows, already rendered: who is asking and what. */
   userMessage: string;
+  /** Which waiting door this is — it picks the prompt (each door loads only
+   *  the doctrine it uses; officeSystemFor). Named by the caller rather than
+   *  read off `terminal`, so a new door cannot silently inherit another's. */
+  door: 'question' | 'access';
   /** The door's terminal tool — calling it IS the outcome. */
   terminal: ForcedToolSpec;
   /** The team lead's schemas (handed in by the MCP server — no import cycle). */
@@ -390,7 +396,7 @@ export async function runOfficeDoor(
 
   const result = await runLoop(
     {
-      system: OFFICE_SYSTEM,
+      system: officeSystemFor(input.door),
       user,
       maxTokens: OFFICE_MAX_TOKENS,
       label: 'office',
@@ -525,6 +531,7 @@ export async function answerAsOffice(
         tenantId,
         facing,
         userMessage: lines.join('\n'),
+        door: 'question',
         terminal: ANSWER_TOOL,
         schemas: deps.toolSchemas ?? [],
         dispatch: deps.dispatch,
@@ -847,6 +854,7 @@ async function askTheOffice(
       tenantId,
       facing,
       userMessage: lines.join('\n'),
+      door: 'access',
       terminal: ROUTE_ACCESS_TOOL,
       schemas: deps.toolSchemas ?? [],
       dispatch: deps.dispatch,

@@ -242,6 +242,12 @@ across `src/`, plus `officeRow` in `scripts/planner-eval/notes-run.mjs`).
 - `OFFICE_CLOSING` becomes per door. The full composition's closing names the call AND message
   doors. The waiting doors' closing drops "any tool a section above names…", because their sections
   no longer name tools they lack.
+  *As built (Phase 2):* that premise was false — WRITING names `send`/`nudgeIds` and CONTEXT names
+  `spine_read`/`submit_plan`, which a technician-facing waiting door lacks — so every door's closing
+  KEEPS the other-doors line and ends on its own terminal tool. The call door's "Everything below
+  about gaps, verbs, sending and closing…" sentence moved out of `OFFICE_DOORS` into
+  `OFFICE_DOCTRINE_POINTER`, included only in the call/message composition. `office.ts` names the
+  door explicitly (`door: 'question' | 'access'` on `OfficeDoorInput`).
 - `OFFICE_SYSTEM` stays exported and equal to `officeSystemFor('call')`, so every existing import
   keeps its meaning. `office.test.ts:423` then moves to the per-door value.
 
@@ -256,20 +262,28 @@ It lands with Phase 3's union; until then it is `'call'`.
 `PLANNER_SYSTEM` is NOT touched. Its byte pin in `plannerPrompt.test.ts` must pass unchanged.
 
 ### Automated verification
-- [ ] typecheck, lint, test pass; the `PLANNER_SYSTEM` byte pin passes UNCHANGED
-- [ ] `plannerPrompt.test.ts`, the "carries every section a call needs" case runs against both
+- [x] typecheck, lint, test pass; the `PLANNER_SYSTEM` byte pin passes UNCHANGED
+- [x] `plannerPrompt.test.ts`, the "carries every section a call needs" case runs against both
       `'call'` and `'message'`
-- [ ] New case: `question` and `access` contain `OFFICE_AUDIENCE`'s money line, "never quote a
+- [x] New case: `question` and `access` contain `OFFICE_AUDIENCE`'s money line, "never quote a
       note", `NOTES`, `CONTEXT` and `WRITING`, and contain NONE of `STATES`, `CALLS`, `VERBS`,
       `SILENCE`, `SEND` or `CLOSING`
-- [ ] New case: each door's prompt ends in its own terminal tool's name
-- [ ] New case: the waiting doors' prompt is under 4,500 tokens by the repo's existing estimator,
+- [x] New case: each door's prompt ends in its own terminal tool's name
+- [x] New case: the waiting doors' prompt is under 4,500 tokens by the repo's existing estimator,
       or chars/3.6 if there is none
 
 ### Live verification (costs cents)
-- [ ] `node scripts/planner-eval/office-run.mjs` (all doors). Record per-door input tokens and cost
+- [x] `node scripts/planner-eval/office-run.mjs` (all doors). Record per-door input tokens and cost
       against the merge's baseline (about 10.3K fixed per technician question). Answers must still
       hold the disclosure rules the harness grades.
+      **Result (2026-09-23, GLM 5.3, local stack):** input tokens per model call, read back from
+      `cost_events` by lane: question **4,853** (4 calls, $0.0066), access **5,302** (2 calls,
+      $0.0100), call door 15,571 (5 calls, $0.0792). Prompt sizes by chars/3.6: waiting doors
+      ~4.08K, call/message ~10.45K, so each waiting-door call carries ~6.4K fewer fixed tokens than
+      before. Graded behaviour held: the customer-wide ask narrowed to the one job; after Sam's
+      accidental no, the re-ask went to Sam alone and named his "wrong button"; the out-of-view
+      question leaked no job title; the 2s hang-up filed and texted nothing; the call door sent the
+      manager text + quiet note pair for a real request and dismissed a thank-you.
 
 ## Phase 3: the office can be scoped to one message
 
@@ -486,3 +500,8 @@ included. The comment at `:54` becomes THREE.
   the office's next planning pass". "Shortly" remains true. Not edited here: that text is
   drift-tested by step 1, and editing it means telling step 1 first.
 - **The office's replies to a Copilot seat** wait for step 3 (see above).
+- **A manager's question door is handed `recall_decisions` with no doctrine for it**: the waiting
+  composition leaves out `MEMORY_DECISIONS` (as specified), so the tool's own description is its
+  only guidance. Matters only if the live model misuses it on manager questions.
+- **The waiting-door size test has ~10% headroom** (4,076 of 4,500): a paragraph added to WRITING,
+  NOTES or CONTEXT (shared with the planner) trips it, which is the intended alarm.

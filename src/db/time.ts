@@ -88,3 +88,16 @@ export const asNaiveLocal = (s: string): NaiveLocal => s as NaiveLocal;
 
 /** `asNaiveLocal` under a short name, for test fixtures that build literals. */
 export const nl = asNaiveLocal;
+
+/**
+ * A naive-local timestamp as the firm reads it: "YYYY-MM-DD HH:MM", no offset.
+ *
+ * THE ONLY FORM A NAIVE-LOCAL VALUE MAY TAKE IN ANYTHING A MODEL READS. The
+ * stored "2026-09-23T16:00:00+00:00" carries a false '+00'; a model that knows
+ * the firm's local time "converts" it and states the wrong hour — live on
+ * 2026-09-22, a 4:00 PM visit told to a technician as 9:00 AM. Slices, never
+ * parses: there is no timezone math to do, only a label to drop.
+ */
+export function naiveWallClock(ts: string | null | undefined): string | null {
+  return ts ? `${ts.slice(0, 10)} ${ts.slice(11, 16)}` : null;
+}

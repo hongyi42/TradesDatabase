@@ -4,6 +4,7 @@ import { getClient } from './client.js';
 import {
   createOfficeMessage,
   listDeskTranscriptsSince,
+  listOfficeMessagesForRef,
   listOfficeMessagesByStatus,
   markOfficeMessagesRead,
   OFFICE_MESSAGE_BODY_MAX,
@@ -188,5 +189,33 @@ describe('office_messages accessors', () => {
     expect(rows[0].anon_select).toBe(false);
     expect(rows[0].auth_select).toBe(false);
     expect(rows[0].relrowsecurity).toBe(true);
+  });
+});
+
+// The office's `asker_history` read (plan 2026-09-22): one person's business
+// with the office, both directions, and nobody else's.
+describe('listOfficeMessagesForRef', () => {
+  test('returns rows the ref sent or was sent, newest first, and no one else\'s', async () => {
+    const me = `${RUN}-me`;
+    const sent = await mkMessage({ fromRef: me, body: `${RUN} from me` });
+    const got = await mkMessage({ fromRef: 'spine:team-lead', toRef: me, kind: 'desk', status: 'read', body: `${RUN} to me` });
+    await mkMessage({ fromRef: `${RUN}-other`, body: `${RUN} someone else` });
+    const rows = await listOfficeMessagesForRef(tenantId, me, '2000-01-01T00:00:00Z');
+    expect(rows.map((r) => r.id)).toEqual([got.id, sent.id]);
+  });
+
+  test('another firm sees none of them', async () => {
+    const me = `${RUN}-me2`;
+    await mkMessage({ fromRef: me, body: `${RUN} mine` });
+    const rows = await listOfficeMessagesForRef(
+      '00000000-0000-4000-8000-000000000000',
+      me,
+      '2000-01-01T00:00:00Z',
+    );
+    expect(rows).toEqual([]);
+  });
+
+  test('a ref that is not slug-shaped is refused, not escaped into the filter', async () => {
+    expect(await listOfficeMessagesForRef(tenantId, 'a,from_ref.neq.x', '2000-01-01T00:00:00Z')).toEqual([]);
   });
 });

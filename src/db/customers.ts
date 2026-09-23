@@ -260,6 +260,24 @@ export async function listCustomerCapturesForCapture(
 // glue its digits into a phone search that returns every 206-5xx customer and,
 // under the 20-row cap, can bury the address it was actually after. The key
 // form strips a leading US 1; the fragment is digits only — no `.or()` syntax.
+// NAME ONLY (plan 2026-09-22, the office's catalog): searchCustomers also matches
+// phone and street under one 20-row cap, so a name filter applied after it can
+// lose real name matches behind address hits. LIKE wildcards in the query are
+// matched literally.
+export async function searchCustomersByName(tenantId: string, query: string): Promise<Customer[]> {
+  const needle = query.trim().replace(/[\\%_]/g, (c) => `\\${c}`);
+  if (!needle) return [];
+  const { data, error } = await getClient()
+    .from('customers')
+    .select()
+    .eq('tenant_id', tenantId)
+    .ilike('name', `%${needle}%`)
+    .order('name', { ascending: true })
+    .limit(20);
+  if (error) throw new Error(`searchCustomersByName failed: ${error.message}`);
+  return data ?? [];
+}
+
 export async function searchCustomers(tenantId: string, query: string): Promise<Customer[]> {
   const like = `%${query.trim().replace(/[,()]/g, ' ')}%`;
   const digits = query.replace(/[^0-9]/g, '');

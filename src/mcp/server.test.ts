@@ -123,6 +123,7 @@ beforeAll(async () => {
     // supplies technicianRef. 'tech-mcp' matches the schedule entry below.
     identity: { tenantId, technicianRef: 'tech-mcp' },
     extract: async () => ({ workPerformed: 'did the work' }),
+    officeLoop: NO_OFFICE_MODEL,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   client = new Client({ name: 'test-client', version: '0.0.0' });
@@ -149,6 +150,16 @@ afterAll(async () => {
   await pg.end();
 });
 
+// NO LIVE MODEL IN THIS SUITE (plan 2026-09-22, review F4): test.setup.ts loads
+// .env, so with a key present the office's waiting doors would otherwise call
+// the real provider. This loop refuses — the question door degrades honestly and
+// the access door takes its code fallback, which is exactly the path the access
+// tests below were written against. The office's own judgment is tested in
+// src/teamLead/office.test.ts, with a scripted model.
+const NO_OFFICE_MODEL = (async () => {
+  throw new Error('no model in the dispatch suite');
+}) as unknown as NonNullable<ServerDeps['officeLoop']>;
+
 async function call(name: string, args: Record<string, unknown>) {
   const res = await client.callTool({ name, arguments: args });
   const content = res.content as Array<{ type: string; text: string }>;
@@ -168,6 +179,7 @@ async function clientFor(
   const server = createServer({
     identity,
     extract: async () => ({ workPerformed: 'did the work' }),
+    officeLoop: NO_OFFICE_MODEL,
     ...extra,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -10283,7 +10295,8 @@ describe('the access tools', () => {
 
 // ── the access REQUEST flow: ask_team_lead's accessRequest (plan B, phase 1) ──
 //
-// The desk itself is unit-tested hermetically in src/teamLead/accessDesk.test.ts.
+// The office's judgment is unit-tested hermetically in src/teamLead/office.test.ts;
+// here the office has no model, so every ask takes the code fallback.
 // What this block tests is the part only a real server can answer: that the
 // dispatch door threads the caller's identity into the request, that the
 // sensitive shape really does reach the managers through the push queue, and

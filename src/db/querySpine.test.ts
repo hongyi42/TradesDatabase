@@ -390,7 +390,7 @@ describe('query_spine — the view surface is closed', () => {
   // BUILD 7 FINAL REVIEW, and the highest-severity finding of the build.
   //
   // The PLANNER'S OWN WORDS are its `to_agent` send text AND the desk answers
-  // written in its name — which are `to_planner`, kind 'desk' (desk.ts), so the
+  // written in its name — which are `to_planner`, kind 'desk' (teamLead/office.ts), so the
   // direction filter alone never caught them (fixed 2026-09-15 by
   // 20260916130000_desk_answers_not_citable). `spine_read` is in CITABLE_TOOLS, so a view
   // without these filters lets the planner read its own prose back and quote it

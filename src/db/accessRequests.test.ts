@@ -122,3 +122,27 @@ describe('addManagersTexted', () => {
     expect(await addManagersTexted(tenantId, fresh, ['Dana Reed'])).toBeNull();
   });
 });
+
+// The office catalog's name-only search (plan 2026-09-22, final review): a phone or
+// street match must not come back, and must not crowd a name match out of the cap.
+describe('searchCustomersByName', () => {
+  test('matches names only, commas and LIKE wildcards literally', async () => {
+    const { createCustomer, searchCustomersByName } = await import('./customers.js');
+    const made = [
+      await createCustomer({ tenantId, name: `Smith, John ${RUN}`, phone: '555-7100' }),
+      await createCustomer({ tenantId, name: `Oak Tree Cafe ${RUN}`, phone: '555-7101' }),
+      await createCustomer({ tenantId, name: `Nobody ${RUN}`, phone: '555-7102', addressLine1: `12 Smith St ${RUN}` }),
+    ];
+    try {
+      const byComma = await searchCustomersByName(tenantId, `Smith, John ${RUN}`);
+      expect(byComma.map((c) => c.id)).toEqual([made[0].id]);
+      // A street that matches is NOT a name match.
+      const street = await searchCustomersByName(tenantId, `12 Smith St ${RUN}`);
+      expect(street).toEqual([]);
+      // '%' is literal, not "anything".
+      expect(await searchCustomersByName(tenantId, `%${RUN}`)).toEqual([]);
+    } finally {
+      await pg.query('delete from customers where id = any($1::uuid[])', [made.map((c) => c.id)]);
+    }
+  });
+});

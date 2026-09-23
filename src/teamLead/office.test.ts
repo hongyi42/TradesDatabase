@@ -102,12 +102,12 @@ describe('catalogLookup — names and ids, nothing else', () => {
     expect(blob).not.toContain('+1206');
   });
 
-  test('a query with a comma still matches the name (the search blanks it too)', async () => {
-    const res = await catalogLookup(T, view(), { query: 'Marina, Holdings' }, {
+  test('a name with a comma matches itself (the search is by name, nothing blanked)', async () => {
+    const res = await catalogLookup(T, view(), { query: 'Smith, John' }, {
       ...deps,
-      searchCustomers: vi.fn(async () => [customer({ name: 'Marina  Holdings' })]),
+      searchCustomers: vi.fn(async () => [customer({ name: 'Smith, John' })]),
     });
-    expect(res.customers).toHaveLength(1);
+    expect(res.customers).toEqual([{ id: CUST, name: 'Smith, John' }]);
   });
 
   test('an address or phone query finds nothing (no probing through the catalog)', async () => {
@@ -198,6 +198,17 @@ describe('askerHistory — only the person asking, and no job titles', () => {
     expect(out).toContain('(an access request');
     // Their own question is their own words, and stays.
     expect(out).toContain('am I square with the office?');
+  });
+
+  test('a day-old request nobody moved yet reads as LAPSED, never as still waiting', async () => {
+    const out = await askerHistory(T, TECH, {
+      now: () => new Date('2026-09-22T12:00:00Z'),
+      listMessages: async () => [],
+      listNudges: async () => [],
+      listRequests: async () => [request({ status: 'open', dismiss_reason: null, noticed_at: '2026-09-20T09:00:00Z' })],
+    });
+    expect(out).toContain('LAPSED');
+    expect(out).not.toContain('still waiting');
   });
 
   test('a roster-less asker has no requests to read', async () => {
@@ -310,6 +321,27 @@ describe('runOfficeDoor', () => {
       tenantId: T,
       technicianRef: TEAM_LEAD_REF,
     });
+  });
+
+  test('a malformed terminal call is refused back to the model, not taken as the ending', async () => {
+    let err: unknown;
+    const res = await runOfficeDoor(
+      { ...doorInput(), validate: (a) => (typeof a.text === 'string' ? null : 'needs text') },
+      {
+        memoryIndex: async () => '',
+        runLoop: loopThat(async (exec) => {
+          try {
+            await exec('answer', {});
+          } catch (e) {
+            err = e;
+          }
+          await exec('answer', { text: 'fixed' });
+          return '';
+        }),
+      },
+    );
+    expect(String(err)).toContain('needs text');
+    expect(res.args).toEqual({ text: 'fixed' });
   });
 
   test('a tool the door was not given is refused before anything runs', async () => {

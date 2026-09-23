@@ -627,11 +627,47 @@ describe('the office decides — code applies', () => {
     expect(rec.requests).toHaveLength(1);
   });
 
-  test("the office's reason rides the ask row, never the answer row she can be shown", async () => {
+  test("the office's reason is in neither transcript row — not shown to her, not citable", async () => {
     const { deps, rec } = stub({ runLoop: decides({ ...askSam, reason: 'she seems careless' }) });
     await routeAccessAsOffice(ask(), deps);
-    expect(String(rec.messages[0].body)).toContain('she seems careless');
-    expect(String(rec.messages[1].body)).not.toContain('she seems careless');
+    for (const m of rec.messages) expect(String(m.body)).not.toContain('she seems careless');
+  });
+
+  test("a wrong 'already_asked' — nothing live is waiting — is asked instead", async () => {
+    for (const findRequest of [
+      async () => null,
+      // a day old: lapsed, so it no longer holds
+      async () => ({ id: 'obs-old', noticed_at: '2026-09-18T16:00:00Z' }) as unknown as Observation,
+    ]) {
+      const { deps, rec } = stub({
+        findRequest,
+        lapseRequest: (async () => null) as never,
+        runLoop: decides({ outcome: 'already_asked', replyToAsker: 'it is with Sam', reason: 'r' }),
+      });
+      const out = await routeAccessAsOffice(ask(), deps);
+      expect(out.status).toBe('asked_manager');
+      expect(out.answer).toContain('Asked your manager');
+      expect(rec.requests).toHaveLength(1);
+    }
+  });
+
+  test('a malformed route_access is refused back to the model, which may retry', async () => {
+    const errors: string[] = [];
+    const { deps, rec } = stub({
+      runLoop: (async (_r: unknown, _t: unknown, exec: Exec): Promise<ToolLoopResult> => {
+        try {
+          await exec('route_access', { outcome: 'ask', replyToAsker: 'ok', managerMessage: 42, reason: 'r' });
+        } catch (e) {
+          errors.push(String(e));
+          await exec('route_access', askSam); // the retry
+        }
+        return { text: '', turns: 2, calls: [], stalledWarnings: 0 };
+      }) as unknown as NonNullable<AccessDeskDeps['runLoop']>,
+    });
+    const out = await routeAccessAsOffice(ask(), deps);
+    expect(errors[0]).toContain('route_access');
+    expect(out.answer).toBe('I have asked Sam for you.');
+    expect(rec.pushes).toHaveLength(1);
   });
 
   test('a filed request carries title-free words for anything read out to her', async () => {
@@ -646,8 +682,10 @@ describe('the office decides — code applies', () => {
     for (const outcome of ['already_open', 'already_asked', 'refuse'] as const) {
       const { deps, rec } = stub({
         runLoop: decides({ outcome, replyToAsker: `said ${outcome}`, reason: 'r' }),
-        // In her view, so an already_open is TRUE and the fact guard lets it stand.
+        // In her view, and a live request waiting — so already_open and
+        // already_asked are both TRUE and the fact guards let them stand.
         technicianView: async () => ({ ...emptyView(), jobIds: new Set([JOB_ID]) }),
+        findRequest: async () => ({ id: 'obs-1', noticed_at: '2026-09-19T14:00:00Z' }) as unknown as Observation,
       });
       const out = await routeAccessAsOffice(ask(), deps);
       expect(out.status).toBe(outcome === 'refuse' ? 'refused' : outcome);

@@ -27,7 +27,7 @@ import {
   markOfficeMessagesRead,
   OFFICE_MESSAGE_BODY_MAX,
   OPEN_NUDGE_STATUSES,
-  searchCustomers,
+  searchCustomersByName,
   viewHasJob,
   type Nudge,
   type TechnicianView,
@@ -154,7 +154,7 @@ export interface CatalogJob {
 }
 
 export interface CatalogDeps {
-  searchCustomers?: typeof searchCustomers;
+  searchCustomers?: typeof searchCustomersByName;
   getCustomer?: typeof getCustomer;
   listJobsForCustomer?: typeof listJobsForCustomer;
 }
@@ -162,8 +162,8 @@ export interface CatalogDeps {
 /**
  * NAME AND ID, nothing else — that is already what find_customer gives a
  * technician for a customer outside their view, so the catalog adds no exposure.
- * A name match only: searchCustomers also matches phone and street, and handing
- * those hits back would let an address be probed for ("is 12 Oak St a customer?").
+ * A name match only: a phone or street match handed back would let an address
+ * be probed for ("is 12 Oak St a customer?").
  */
 export async function catalogLookup(
   tenantId: string,
@@ -190,10 +190,10 @@ export async function catalogLookup(
   }
   const query = typeof args.query === 'string' ? args.query.trim() : '';
   if (!query) return { customers: [] };
-  // searchCustomers blanks these before matching; do the same, or a name with
-  // a comma in the query could never match its own row.
-  const needle = query.replace(/[,()]/g, ' ').toLowerCase().trim();
-  const rows = await (deps.searchCustomers ?? searchCustomers)(tenantId, query);
+  // A NAME-ONLY search (searchCustomersByName), then the same test again here —
+  // the belt: nothing but a name match may come back, whatever the accessor does.
+  const needle = query.toLowerCase();
+  const rows = await (deps.searchCustomers ?? searchCustomersByName)(tenantId, query);
   return {
     customers: rows
       .filter((c) => c.tenant_id === tenantId && c.name.toLowerCase().includes(needle))
@@ -287,8 +287,15 @@ export async function askerHistory(
   for (const r of requests) {
     const c = contextOf(r);
     const target = c.jobId ? `job ${c.jobId} (customer ${c.customerId})` : `customer ${c.customerId}`;
+    // A day-old open row has LAPSED (REQUEST_LAPSE_MS) even though nothing has
+    // moved it yet — the lapse is applied where it is read. Shown as waiting, it
+    // would talk the office out of ever asking again (final review).
     const ending =
-      r.status === 'dismissed' ? `ended: ${r.dismiss_reason ?? 'settled'}` : 'still waiting on a manager';
+      r.status === 'dismissed'
+        ? `ended: ${r.dismiss_reason ?? 'settled'}`
+        : hasLapsed(r, new Date(now))
+          ? 'LAPSED — over a day with no answer; it no longer holds, and asking again files a fresh request'
+          : 'still waiting on a manager';
     const asked = c.managersTexted?.length ? `; asked ${c.managersTexted.join(', ')}` : '';
     lines.push(
       `  - ${r.noticed_at} wanted ${c.wants ?? 'record'} on ${target}` +
@@ -320,6 +327,14 @@ export interface OfficeDoorInput {
   lane: string;
   /** Aborted when the seat hangs up — the loop stops at its next turn. */
   signal?: AbortSignal;
+  /** Checks the terminal tool's arguments. A message REFUSES the call, and the
+   *  model hears why and may retry — as submit_plan is validated in its executor,
+   *  rather than letting a malformed ending end the loop. */
+  validate?: (args: Record<string, unknown>) => string | null;
+  /** The asker's view, when the door has already read it. */
+  view?: TechnicianView;
+  /** Tools this door leaves out (its content is already in the message). */
+  omit?: ReadonlyArray<string>;
 }
 
 export interface OfficeDoorDeps {
@@ -354,7 +369,7 @@ export async function runOfficeDoor(
   }
 
   // Read the view ONCE per door, lazily: only the catalog needs it.
-  let view: TechnicianView | null = null;
+  let view: TechnicianView | null = input.view ?? null;
   const viewOf = async (): Promise<TechnicianView> => {
     if (!view) {
       const id = facing.kind === 'technician' ? facing.technicianId : null;
@@ -363,7 +378,8 @@ export async function runOfficeDoor(
     return view;
   };
 
-  const tools = [...officeToolsFor(facing, input.schemas), terminal];
+  const omit = new Set(input.omit ?? []);
+  const tools = [...officeToolsFor(facing, input.schemas).filter((t) => !omit.has(t.name)), terminal];
   const handed = new Set(tools.map((t) => t.name));
   let captured: Record<string, unknown> | null = null;
 
@@ -389,6 +405,8 @@ export async function runOfficeDoor(
       // The loop refuses unknown names itself; this is the belt behind it.
       if (!handed.has(name)) throw new Error(`'${name}' is not a tool this door was given`);
       if (name === terminal.name) {
+        const problem = input.validate?.(args) ?? null;
+        if (problem) throw new Error(problem);
         captured = args;
         return 'ok';
       }
@@ -511,6 +529,10 @@ export async function answerAsOffice(
         schemas: deps.toolSchemas ?? [],
         dispatch: deps.dispatch,
         lane: 'office-question',
+        validate: (a) =>
+          typeof a.text === 'string' && a.text.trim()
+            ? null
+            : '`answer` needs `text`: the words the seat should hear.',
         ...(deps.signal ? { signal: deps.signal } : {}),
       },
       deps,
@@ -760,10 +782,17 @@ interface RouteDecision {
 }
 
 function isRouteDecision(d: Record<string, unknown>): d is Record<string, unknown> & RouteDecision {
+  const optText = (v: unknown) => v === undefined || v === null || typeof v === 'string';
   return (
     ['ask', 'already_open', 'already_asked', 'refuse'].includes(d.outcome as string) &&
     typeof d.replyToAsker === 'string' &&
-    d.replyToAsker.trim().length > 0
+    d.replyToAsker.trim().length > 0 &&
+    optText(d.jobId) &&
+    optText(d.managerMessage) &&
+    optText(d.reason) &&
+    (d.managers === undefined ||
+      d.managers === null ||
+      (Array.isArray(d.managers) && d.managers.every((m) => typeof m === 'string')))
   );
 }
 
@@ -822,6 +851,14 @@ async function askTheOffice(
       schemas: deps.toolSchemas ?? [],
       dispatch: deps.dispatch,
       lane: 'office-access',
+      view,
+      // Her history is already in the message above.
+      omit: [ASKER_HISTORY_TOOL.name],
+      validate: (a) =>
+        isRouteDecision(a)
+          ? null
+          : '`route_access` needs an `outcome` from the list and a non-empty `replyToAsker`; ' +
+            '`managers` is a list of names, and `jobId` and `managerMessage` are text.',
       ...(deps.signal ? { signal: deps.signal } : {}),
     },
     deps,
@@ -839,16 +876,25 @@ async function applyDecision(
   deps: AccessDoorDeps,
 ): Promise<AccessDeskAnswer> {
   let reply = d.replyToAsker.trim();
-  // A FACT GUARD, like honest(): "already open" is checkable, and a wrong one
-  // would lose the request on a factual slip rather than a judgment. Its words
-  // go too — "it is already open to you" is false the moment a manager is asked.
-  if (d.outcome === 'already_open' && !alreadyOpen(asked, input.wants, view)) {
+  const findRequest = deps.findRequest ?? findOpenAccessRequest;
+  const waiting = await findRequest(input.tenantId, requestKey);
+  const now = (deps.now ?? (() => new Date()))();
+  const live = !!waiting && !hasLapsed(waiting, now);
+  // FACT GUARDS, like honest(): "already open" and "already asked" are both
+  // checkable, and a wrong one would lose the request on a factual slip rather
+  // than a judgment. Their words go too — "it is already open to you" / "it is
+  // with your manager" is false the moment a manager is actually asked.
+  if (
+    (d.outcome === 'already_open' && !alreadyOpen(asked, input.wants, view)) ||
+    (d.outcome === 'already_asked' && !live)
+  ) {
     d = { ...d, outcome: 'ask' };
     reply = askedReply(managers);
   }
   if (d.outcome !== 'ask') {
     const status: AccessDeskStatus = d.outcome === 'refuse' ? 'refused' : d.outcome;
-    await recordPair(input, asked, reply, d.reason, deps);
+    logReason(input, d);
+    await recordPair(input, asked, reply, deps);
     return { status, answer: reply };
   }
 
@@ -869,18 +915,16 @@ async function applyDecision(
   const toText = chosen.length > 0 ? chosen : managers;
 
   const body = managerBody(input, target, d.managerMessage);
-  const findRequest = deps.findRequest ?? findOpenAccessRequest;
-  const waiting = await findRequest(input.tenantId, requestKey);
-  const now = (deps.now ?? (() => new Date()))();
+  logReason(input, d);
 
   if (deps.signal?.aborted) return STOPPED; // the last check before anything leaves
-  if (waiting && !hasLapsed(waiting, now)) {
+  if (waiting && live) {
     // STILL WAITING: no second row. Text only managers it has not been put to.
     const wctx = contextOf(waiting);
     const already = new Set((wctx.managersTexted ?? []).map((n) => n.toLowerCase()));
     const fresh = toText.filter((m) => !already.has(m.display_name.toLowerCase()));
     if (fresh.length === 0) {
-      await recordPair(input, asked, reply, d.reason, deps);
+      await recordPair(input, asked, reply, deps);
       return { status: 'already_asked', answer: reply };
     }
     // CLAIM, THEN TEXT: two repeats racing on one waiting row must not both text
@@ -892,7 +936,7 @@ async function applyDecision(
     );
     if (!claimed) {
       const answer = 'That one is already with your manager — I have not sent it again.';
-      await recordPair(input, asked, answer, d.reason, deps);
+      await recordPair(input, asked, answer, deps);
       return { status: 'already_asked', answer };
     }
     // THE WAITING ROW'S TARGET, not this repeat's: a manager's yes grants what
@@ -903,7 +947,7 @@ async function applyDecision(
       (d.managerMessage?.trim() ? ` ${d.managerMessage.trim()}` : '') +
       ` ${replyMenu(wctx.wants ?? input.wants)}`;
     await textManagers(input.tenantId, fresh, waitingBody, deps);
-    await recordPair(input, asked, reply, d.reason, deps);
+    await recordPair(input, asked, reply, deps);
     return { status: 'asked_manager', answer: honest(reply, fresh) };
   }
   if (waiting) {
@@ -920,7 +964,7 @@ async function applyDecision(
     return { status: 'already_asked', answer: 'That one is already with your manager — I have not sent it again.' };
   }
   await textManagers(input.tenantId, toText, body, deps);
-  await recordPair(input, asked, reply, d.reason, deps);
+  await recordPair(input, asked, reply, deps);
   return { status: 'asked_manager', answer: honest(reply, toText) };
 }
 
@@ -1072,8 +1116,19 @@ async function routeByCode(
   }
   await textManagers(tenantId, managers, managerBody(input, target), deps);
   const answer = askedReply(managers);
-  await recordPair(input, asked, answer, null, deps);
+  await recordPair(input, asked, answer, deps);
   return { status: 'asked_manager', answer };
+}
+
+// THE OFFICE'S REASON GOES TO THE LOG, and nowhere in the record (final review).
+// Not the answer row — asker_history shows that to her, and the reason is the
+// office's private judgment. Not the ask row either — v_office_messages exposes
+// ask rows to spine_read, which would make the office's own guess citable as if
+// she had said it (the rule migration 20260916130000 exists for).
+function logReason(input: AccessRequestInput, d: RouteDecision): void {
+  if (typeof d.reason === 'string' && d.reason.trim()) {
+    console.info(`[office] tenant ${input.tenantId}: access ${d.outcome} for ${input.askerRef} — ${d.reason.trim()}`);
+  }
 }
 
 // ── the transcript pair the review reads ─────────────────────────────────────
@@ -1085,7 +1140,6 @@ async function recordPair(
   input: AccessRequestInput,
   asked: Target,
   outcome: string,
-  officeReason: string | null,
   deps: AccessDoorDeps,
 ): Promise<void> {
   const createMessage = deps.createMessage ?? createOfficeMessage;
@@ -1097,12 +1151,7 @@ async function recordPair(
       fromRef: input.askerRef,
       toRef: TEAM_LEAD_REF,
       tier: input.askerTier,
-      // The office's REASON rides on the ask row, never the answer row:
-      // asker_history hides access ask bodies from her, and the reason is the
-      // office's private judgment (review, phase 3). The review still reads it.
-      body:
-        `${ACCESS_ASK_PREFIX}${titleFreeWords(asked, input.wants)}: "${input.why}"` +
-        (officeReason ? ` — the office: ${officeReason}` : ''),
+      body: `${ACCESS_ASK_PREFIX}${titleFreeWords(asked, input.wants)}: "${input.why}"`,
     });
     await createMessage({
       tenantId: input.tenantId,

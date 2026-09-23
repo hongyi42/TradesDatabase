@@ -3051,6 +3051,10 @@ describe('get_schedule', () => {
       // Booked (time) order — 15:00 before 17:00. The schedule is already set,
       // so the read renders it; nothing re-derives a "better" sequence.
       expect(d1.stops.map((s: { label: string }) => s.label)).toEqual(['G g1-a', 'G g1-b']);
+      // Wall-clock times as booked, never the stored '+00' timestamp a model
+      // would "convert" into the wrong hour (live, 2026-09-22).
+      expect(d1.stops.map((s: { startTime: string }) => s.startTime)).toEqual(['15:00', '17:00']);
+      expect(d1.stops[0].scheduledStart).toBeUndefined();
       // Each stop links to ITSELF as the destination, not to a day-long route.
       expect(d1.stops[0].mapsUrl).toContain('https://www.google.com/maps/dir/?api=1');
       expect(d1.stops[0].mapsUrl).toContain(

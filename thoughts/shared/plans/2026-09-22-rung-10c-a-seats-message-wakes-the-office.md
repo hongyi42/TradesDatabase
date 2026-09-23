@@ -10,6 +10,7 @@ supersedes: nothing
 > of the Copilot seat (#276/#277). What the merge changed for this plan is under "What the merge
 > changed". Line numbers below are re-read against the merged code. The adversarial review's eight
 > findings and the operator's fix A are applied in this revision.
+> The operator approved the `news` kind for access decisions on 2026-09-23 (see Decisions).
 
 ## Overview
 
@@ -95,14 +96,19 @@ from `supabase/config.toml`, and the merge of `main` was conflict-free. The only
   - question and access: the office's own sections plus `NOTES`, `CONTEXT` and `WRITING`, about 4.0K
     tokens (was 10.4K);
   - the call door and the new message door: the full set.
-- **OPEN, the operator's call: an access decision becomes a `news` kind.** `tellThePlanner`
-  (access.ts:348-360) writes each grant, decline and revoke as `kind:'inform'`. Under this plan,
-  that would wake the office for news it has nothing to do with.
-  - Recommended: yes. Add `'news'` to the kind check in Phase 1's migration and write it at
-    access.ts:353. The writing code already knows it for certain. The Jev eval found access news is
-    the one category both models misread (memory `jev-typesafe-system-one-model`).
-  - The alternative is to accept the wake: pennies a day, and a pass that does nothing.
-  - access.ts:407 is a `to_agent` note to the technician's seat, so it is outside this inbox.
+- **DECIDED (operator, 2026-09-23): an access decision becomes a `news` kind.** `tellThePlanner`
+  (access.ts:348-360) writes each grant, decline and revoke as `kind:'inform'`; under this plan
+  that would wake the office for news it has nothing to do with. So Phase 1's migration adds
+  `'news'` to the kind check, and access.ts:353 writes it. The writing code knows the category
+  for certain, and the Jev eval found access news is the one category both models misread (memory
+  `jev-typesafe-system-one-model`).
+  - Rejected: accept the wake (pennies a day, a pass that does nothing). Rejected because a writer
+    that already knows the category should say it, rather than leave a model to guess.
+  - `news` is NOT in `PINGED_MESSAGE_KINDS`, so it never wakes the office. The half-hourly tick
+    still shows it unread, exactly as today: the tick renders `(${m.kind})` (planner.ts:3435 area),
+    so it reads as `(news)` with no prompt change.
+  - access.ts:407 is a `to_agent` note to the technician's seat, so it is outside this inbox and
+    stays `inform`.
 - **Jev stays a follow-up**, not folded in. The harness (`scripts/planner-eval/classify-*.mjs`)
   ships with this branch as a record.
 
@@ -125,7 +131,7 @@ seat: "route all job messages to Sam"  ──▶ office_messages row (inform, un
 
 **Phase 1: a "someone has this" stamp.** Messages today have only unread/read. If a worker marked
 a message read to claim it and then crashed, the message would be gone. So we add a separate stamp,
-`pinged_at`, meaning "a pass has picked this up" (plus the `news` kind, if the operator says yes).
+`pinged_at`, meaning "a pass has picked this up", plus a `news` kind for access decisions.
 You'd notice it as a new column and passing tests.
 
 **Phase 2: each office door loads only its own instructions.** A technician's question stops
@@ -165,8 +171,11 @@ create index if not exists idx_office_messages_unpinged
   on office_messages (created_at)
   where direction = 'to_planner' and status = 'unread' and pinged_at is null;
 ```
-**If `news` is approved:** the same file also replaces the `kind` check constraint to add `'news'`.
-Read the current constraint name from the latest migration that set it, and mirror its shape.
+**The `news` kind.** The same file replaces the `kind` check to add `'news'`. The check is inline
+on the column (20260901150000_office_messages.sql:26), so Postgres named it
+`office_messages_kind_check`; confirm that name on the local stack (`\d office_messages`), then
+`drop constraint if exists` + `add constraint ... check (kind in ('ask','inform','reply','desk','news'))`,
+mirroring 20260917200000_person_pushes_ops_kind.sql.
 
 **`src/db/officeMessages.ts`.** Each accessor below is written in the style of its observations
 twin (`src/db/observations.ts:402-551`):
@@ -185,7 +194,8 @@ twin (`src/db/observations.ts:402-551`):
 - `listOfficeReadSince(tenantId, sinceIso, limit)` (fix A):
   - `to_planner` rows with `status='read'`, `read_at >= sinceIso`, and kind `inform` or `reply`;
   - newest first, capped at `OFFICE_MESSAGES_SHOWN`.
-- `OfficeMessageKind` gains `'news'` if approved. `access.ts:353` writes it.
+- `OfficeMessageKind` gains `'news'`. `tellThePlanner` (access.ts:353) writes it; update its comment
+  ("One inform per grant" → "One news message per grant").
 
 **`src/db/database.types.ts`.** Do this inside this worktree, whose `config.toml` carries its own
 `project_id`:
@@ -193,7 +203,7 @@ twin (`src/db/observations.ts:402-551`):
 2. Run `npx supabase gen types typescript --local > src/db/database.types.ts`.
 
 **Never run `npm run gen:types`**: it is `--linked`, meaning the pilot. The diff must be only
-`pinged_at` (and the kind union, if `news`). Anything more means the local stack is behind, so stop.
+`pinged_at` and the kind union's `'news'`. Anything more means the local stack is behind, so stop.
 
 **Fixtures.** Add `pinged_at: null` to the full-row `OfficeMessage` literals (`grep -n "read_at:"`
 across `src/`, plus `officeRow` in `scripts/planner-eval/notes-run.mjs`).
@@ -210,7 +220,8 @@ across `src/`, plus `officeRow` in `scripts/planner-eval/notes-run.mjs`).
     second one, following `src/db/costs.test.ts:82-92`;
   - the probe respects `sinceIso` and ignores `ask`;
   - `listOfficeReadSince` returns read `inform`/`reply` rows after `sinceIso` for its tenant only.
-- [ ] If `news`: a grant written through access.ts lands as `kind:'news'`, and the reader skips it
+- [ ] A grant written through access.ts lands as `kind:'news'`; `listUnpingedOfficeMessages` skips it,
+  and the tick's unread list still shows it
 
 ## Phase 2: the office prompt per door
 
@@ -457,6 +468,10 @@ included. The comment at `:54` becomes THREE.
 4. If the code lands before the migration anyway:
    - the tick's claim throws, so it shows the slice unclaimed, today's behaviour;
    - the message loop logs a failed read every idle backoff until the column exists.
+   - **the `news` writer is the one silent loss**: the old kind check rejects `'news'`, and
+     `tellThePlanner` is best-effort, so an access decision made in that window never reaches the
+     planner (the grant itself still commits; only the planner's copy is lost). Another reason
+     the migration goes first.
 
 ## Named holes (build fast, then fill)
 

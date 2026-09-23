@@ -2,7 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { StringDecoder } from 'node:string_decoder';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { resolveIdentityFromHeaders } from '../mcp/identity.js';
+import { resolveIdentity } from '../mcp/identity.js';
 import { getTechnician, isInactiveState, recordComposioCall } from '../db/index.js';
 import { ensurePersonSession, getSessionMcpUrl } from './sessions.js';
 import { capToolResult, resultCapChars } from '../mcp/resultCap.js';
@@ -486,7 +486,7 @@ export async function handleComposioRelay(
 ): Promise<void> {
   // Identity failures THROW (→ httpServer's bare 401); everything below
   // answers for itself.
-  const identity = resolveIdentityFromHeaders(req.headers);
+  const identity = await resolveIdentity(req.headers);
 
   const tech = await (deps.getTech ?? getTechnician)(identity.tenantId, identity.technicianRef);
   if (!tech) return jsonError(res, 403, 'no roster row for this badge');

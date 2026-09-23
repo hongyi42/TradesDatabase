@@ -1,5 +1,6 @@
 import type { Database } from './database.types.js';
 import { getClient } from './client.js';
+import { getPoolRowByTechnician } from './sandboxPool.js';
 
 export type Seat = Database['public']['Tables']['seats']['Row'];
 export type SeatBot = Database['public']['Tables']['seat_bots']['Row'];
@@ -55,6 +56,21 @@ export async function getSeatIdentityByTokenHash(
   const { technicians: person, ...seat } = data;
   if (!person || person.tenant_id !== seat.tenant_id) return null;
   return { seat, technicianRef: person.ref };
+}
+
+// The bot a seat answers: its seat_bots row, else the pool row it came from
+// (s5 and every seat step 5 moves keep their bot there), else unknown.
+export async function getSeatBotUsername(seat: Seat): Promise<string | null> {
+  if (seat.bot_ref) {
+    const { data, error } = await getClient()
+      .from('seat_bots')
+      .select('bot_username')
+      .eq('id', seat.bot_ref)
+      .maybeSingle();
+    if (error) throw new Error(`getSeatBotUsername failed: ${error.message}`);
+    if (data) return data.bot_username;
+  }
+  return (await getPoolRowByTechnician(seat.technician_id))?.bot_username ?? null;
 }
 
 // Store a freshly minted token's fingerprint. Overwrites any previous one: that

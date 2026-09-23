@@ -19,3 +19,12 @@ export function mintBadge(): MintedBadge {
   const badge = randomBytes(32).toString('hex');
   return { badge, hash: sha256hex(badge) };
 }
+
+// A seat's bearer token (step 4): the badge's shape with an `st_` prefix, so a
+// seat token is recognisable on sight — in a request, and in a leaked log line.
+// Same custody: the plaintext goes back once, in the mint response; Render
+// stores only sha256hex(token) (seats.token_hash).
+export function newSeatToken(): MintedBadge {
+  const token = `st_${randomBytes(32).toString('hex')}`;
+  return { badge: token, hash: sha256hex(token) };
+}

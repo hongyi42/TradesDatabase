@@ -149,18 +149,18 @@ seat step 5 moves); `bot_ref` null. Add to the command table (`:105-113`).
 `technicians`), and `scripts/agentic-eval/run.mjs:166-172`.
 
 ### Automated verification
-- [ ] gates pass (`typecheck`, `lint`, `test`) on this worktree's stack
-- [ ] `src/db/seats.test.ts`: create/read; bot race → `seats_live_bot_key`; second live seat for a
+- [x] gates pass (`typecheck`, `lint`, `test`) on this worktree's stack
+- [x] `src/db/seats.test.ts`: create/read; bot race → `seats_live_bot_key`; second live seat for a
   person → `seats_live_technician_key`; retired seat never resolves by token; **two-tenant case**:
   a token whose seat and person disagree on tenant resolves to null; `listPoollessSeatRefs`
   excludes a ref that has a pool row; `listLiveSeatBotIds` → `[]` when the table is absent (stub)
-- [ ] `supabase db reset` applies cleanly after the merge
+- [x] `supabase db reset` applies cleanly after the merge
 
 ### Live verification (agent-executable)
 - Prerequisites: Supabase test MCP. `apply_migration`, then `notify pgrst, 'reload schema'`
   (engineering memory :1861-1864). Operator runs `node scripts/assign-host.mjs add-glue-seat
   host=trades-box-1 ref=ben-shelton seat=s5` with `!` from the worktree root.
-- [ ] pilot: `select seat_ref, bot_ref, token_hash is null from seats` → one row `s5, null, true`
+- [x] pilot: `select seat_ref, bot_ref, token_hash is null from seats` → one row `s5, null, true`
 
 ---
 
@@ -187,10 +187,10 @@ null → throw `'unknown seat token'`; else `resolveIdentityFromHeaders(headers)
   `getTenant(tenantId)?.timezone ?? 'UTC'`, `telegramUserId` null if unbound.
 
 ### Automated verification
-- [ ] gates pass
-- [ ] `src/mcp/identity.test.ts`: token resolves; unknown/retired rejects; HMAC unchanged; both
+- [x] gates pass
+- [x] `src/mcp/identity.test.ts`: token resolves; unknown/retired rejects; HMAC unchanged; both
   present → token wins
-- [ ] `src/mcp/httpServer.test.ts`: seat-token 401 (none/bad host token), 404 for a seat on another
+- [x] `src/mcp/httpServer.test.ts`: seat-token 401 (none/bad host token), 404 for a seat on another
   host (create that host with `createHost`; its cleanup cascades), 409 inactive; second mint → first
   token 401s on `/mcp`; whoami 401 for HMAC, right timezone, 403 inactive; `tools/list` over `/mcp`
   with a token returns the technician tool list

@@ -32,7 +32,7 @@ describe('TelegramClient', () => {
     const updates = await new TelegramClient('TOKEN', f).getUpdates(5);
     expect(updates).toEqual([{ update_id: 7 }]);
     expect(calls[0].url).toContain('/getUpdates');
-    expect(body(calls[0])).toMatchObject({ offset: 5, timeout: 30, allowed_updates: ['message'] });
+    expect(body(calls[0])).toMatchObject({ offset: 5, timeout: 30, allowed_updates: ['message', 'callback_query'] });
   });
 
   it('turns HTTP 409 into a TelegramConflictError', async () => {
@@ -48,7 +48,7 @@ describe('TelegramClient', () => {
     });
   });
 
-  it('sends Telegram HTML with the persistent Stop keyboard on every chunk', async () => {
+  it('sends Telegram HTML and removes the old reply keyboard on every chunk', async () => {
     const { f, calls } = fakeFetch(() => ({ json: { ok: true, result: {} } }));
     await new TelegramClient('TOKEN', f).send(42, 'x'.repeat(9000));
     expect(calls).toHaveLength(3);
@@ -56,7 +56,7 @@ describe('TelegramClient', () => {
       const b = body(c);
       expect(b.chat_id).toBe(42);
       expect(b.parse_mode).toBe('HTML');
-      expect(b.reply_markup).toEqual({ keyboard: [[{ text: 'Stop' }]], is_persistent: true, resize_keyboard: true });
+      expect(b.reply_markup).toEqual({ remove_keyboard: true });
     }
   });
 
@@ -68,6 +68,17 @@ describe('TelegramClient', () => {
     expect(calls).toHaveLength(2);
     expect(body(calls[1]).parse_mode).toBeUndefined();
     expect(body(calls[1]).text).toBe('**Tom** at 16:00');
+  });
+
+  it('posts the Working line with an inline Stop button, silently, and returns its id', async () => {
+    const { f, calls } = fakeFetch(() => ({ json: { ok: true, result: { message_id: 55 } } }));
+    expect(await new TelegramClient('TOKEN', f).sendWorking(9)).toBe(55);
+    expect(body(calls[0])).toMatchObject({
+      chat_id: 9,
+      text: 'Working…',
+      disable_notification: true,
+      reply_markup: { inline_keyboard: [[{ text: '⏹ Stop', callback_data: 'stop' }]] },
+    });
   });
 
   it('downloads a file through getFile and refuses one over 20 MB', async () => {

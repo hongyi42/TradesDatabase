@@ -22,6 +22,17 @@ describe('classify', () => {
     expect(classify(msg({ text: '/new@ragisan03_bot' }), BEN)).toEqual({ kind: 'new', chatId: BEN });
   });
 
+  it('reads a tap on the Stop button, and /stop', () => {
+    const tap = (from: number, data = 'stop'): TgUpdate => ({
+      update_id: 9,
+      callback_query: { id: 'cb', from: { id: from }, data, message: { message_id: 4, chat: { id: from, type: 'private' } } },
+    });
+    expect(classify(tap(BEN), BEN)).toEqual({ kind: 'stop', chatId: BEN, callbackQueryId: 'cb', workingMessageId: 4 });
+    expect(classify(tap(123456789), BEN)).toEqual({ kind: 'ignored' });
+    expect(classify(tap(BEN, 'other'), BEN)).toEqual({ kind: 'ignored' });
+    expect(classify(msg({ text: '/stop' }), BEN)).toEqual({ kind: 'stop', chatId: BEN });
+  });
+
   it('keeps a sentence containing "stop" as text', () => {
     expect(classify(msg({ text: 'stop by the Hendricks job' }), BEN).kind).toBe('text');
   });

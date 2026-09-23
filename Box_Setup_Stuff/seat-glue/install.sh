@@ -96,7 +96,10 @@ unset bot secret orkey
 log "/etc/seat-glue/${SEAT}.env written (root, 0600)"
 
 # 5. Prove the NEW engine starts under the service user, then swap it in.
-runuser -u seatglue -- env HOME=/var/lib/seat-glue "$NODE" "$NEXT/app/main.js" --selfcheck
+# From / — not the caller's cwd: run over ssh that is the operator's home,
+# which is 0750 and closed to seatglue, and the engine dies on start
+# (ERR_STREAM_DESTROYED, first install 2026-09-23). The unit sets its own.
+(cd / && runuser -u seatglue -- env HOME=/var/lib/seat-glue "$NODE" "$NEXT/app/main.js" --selfcheck)
 rm -rf "${PREFIX}.old"
 if [ -d "$PREFIX" ]; then mv "$PREFIX" "${PREFIX}.old"; fi
 mv "$NEXT" "$PREFIX"

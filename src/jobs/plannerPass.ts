@@ -1,4 +1,8 @@
-import { listTenantIdsWithTelegramBindings, type Observation } from '../db/index.js';
+import {
+  listTenantIdsWithTelegramBindings,
+  type Observation,
+  type OfficeMessage,
+} from '../db/index.js';
 import {
   runPlanner,
   type PlannerDeps,
@@ -77,6 +81,13 @@ export function focusedPassBlockedBy(): string | null {
   return null;
 }
 
+// ONE FOCUSED PASS'S CLOCK, for a call and a message alike. It runs inside the
+// Calls worker, the process that also drains the call queue, so it must not
+// hold the tick's 15 minutes. OFFICE_CLAIM_LEASE_MS (teamLead/planner.ts) must
+// stay above it — a test pins that — or a tick could take back a message from a
+// pass still working on it.
+export const FOCUSED_PASS_BUDGET_MS = 180_000;
+
 // THE FOCUSED PASS (rung 10). One observation, one firm, called within seconds
 // of the capture landing — not the tick.
 //
@@ -97,7 +108,7 @@ export function focusedPassBlockedBy(): string | null {
 export async function runFocusedObservationPass(
   observation: Observation,
   impl: typeof runPlanner = runPlanner,
-  budgetMs = 180_000,
+  budgetMs = FOCUSED_PASS_BUDGET_MS,
 ): Promise<PlannerSummary | { skipped: string }> {
   const blocked = focusedPassBlockedBy();
   const mode = plannerModeFromEnv();
@@ -130,6 +141,46 @@ export async function runFocusedObservationPass(
       // gaps on screen — so an unscoped read here would let a pass about one
       // call un-dismiss any gap in the firm. Empty = nothing is recoverable in
       // a focused pass, which is the honest reading of "this is not yours now".
+      listDismissedIds: async () => [],
+      listDismissedNudges: async () => [],
+    },
+    impl,
+  );
+}
+
+// THE MESSAGE PASS (rung 10c) — the office's fourth door. One seat message, one
+// firm, called within seconds of the seat sending it, on the office's prompt.
+//
+// THE CALL PASS'S MIRROR IMAGE: there the one item is a gap and the inbox is
+// emptied; here the one item is a MESSAGE and every gap reader is emptied. The
+// same blocked/mode preamble, the same eligibility filter, the same "nothing the
+// pass was not shown may be mutated" rule for recover. The message is marked
+// read by runPlanner itself when the pass succeeds, exactly as the tick marks
+// what it showed — a failed pass leaves it unread, for the tick.
+export async function runFocusedMessagePass(
+  message: OfficeMessage,
+  impl: typeof runPlanner = runPlanner,
+  budgetMs = FOCUSED_PASS_BUDGET_MS,
+): Promise<PlannerSummary | { skipped: string }> {
+  const blocked = focusedPassBlockedBy();
+  const mode = plannerModeFromEnv();
+  if (blocked || !mode) return { skipped: blocked ?? "PLANNER_MODE 'off'" };
+  return await runPlannerPass(
+    new Date().toISOString(),
+    mode,
+    {
+      focus: { messageId: message.id, budgetMs },
+      // ONE FIRM, and only one the planner serves (see the call pass).
+      listTenants: async () =>
+        (await listTenantIdsWithTelegramBindings()).filter((id) => id === message.tenant_id),
+      // ONE MESSAGE, and no gaps at all.
+      listOfficeMessages: async () => [message],
+      listObservations: async () => [],
+      listNudges: async () => [],
+      // The firm's other traffic is not this message's business.
+      listDeskTranscripts: async () => [],
+      listOfficeRead: async () => [],
+      // Nothing recoverable in a pass that was shown no gaps.
       listDismissedIds: async () => [],
       listDismissedNudges: async () => [],
     },

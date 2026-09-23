@@ -322,11 +322,17 @@ It lands with Phase 3's union; until then it is `'call'`.
 
   A firm whose only messages were claimed by a live pass makes no model call. **Never claim in focus
   mode**: the worker already holds that claim, and the guard would refuse it.
+
+  *As built:* the early `no_gaps` skip uses a PURE filter (live claims hidden, no write), and the
+  claim WRITE moved after the cadence skip, followed by a second `no_gaps` check for messages lost
+  to a race. Claiming before the cadence skip would let an off-cadence firm claim messages it never
+  shows, and the ping loop only takes unclaimed rows, so they would be starved until the lease
+  lapsed and a due tick came.
 - `:5058`: `unreadMessages.length - unreadSlice.length`. A message lost to a race is not "more
   unread".
 - **Fix A, the appendix.** Not in focus mode: `listOfficeRead(tenantId, <this firm's last tick
   time>, OFFICE_MESSAGES_SHOWN)`. Use the same `lastMs` the due check reads, and on NaN, now minus
-  the cadence.
+  the cadence. *As built:* one lease further back than that, and 24h on NaN (Phase 3 review).
   - Render it after the unread block, under one header:
     `ALREADY READ BY THE OFFICE since your last look — handled; shown so you can quote one to close a gap it answers. Do not act on them again.`
   - Add their bodies to the `readText` map, so a close can quote them.
@@ -347,41 +353,45 @@ It lands with Phase 3's union; until then it is `'call'`.
       `listDismissedNudges` and `listOfficeRead` all return `[]`.
 
 ### Automated verification
-- [ ] typecheck, lint and test pass; the observation-focus tests (`(14i)` and its neighbours in
+- [x] typecheck, lint and test pass; the observation-focus tests (`(14i)` and its neighbours in
       `describe('rung 10 …')`) pass UNCHANGED
-- [ ] `planner.test.ts`: `baseDeps` gains `claimMessages: async (_t, ids) => ids` and
+- [x] `planner.test.ts`: `baseDeps` gains `claimMessages: async (_t, ids) => ids` and
       `listOfficeRead: async () => []` **(review fix d)**. Without these, the inbox tests silently
       hit the database and only exercise the fallback.
-- [ ] `plannerPass.test.ts`:
+- [x] `plannerPass.test.ts`:
   - `runFocusedMessagePass` hands `impl` those exact pinned readers and that focus;
   - a blocked env returns `{ skipped }` without calling `impl`;
   - `OFFICE_CLAIM_LEASE_MS > FOCUSED_PASS_BUDGET_MS`.
-- [ ] `planner.test.ts`, message focus:
+- [x] `planner.test.ts`, message focus:
   - with zero gaps and one message, the loop RUNS on `officeSystemFor('message')`;
   - the user message carries the message line and not `This firm has`;
   - `claimMessages` and `listOfficeRead` are not called;
   - the message is marked read, and there is no `planner_runs` write;
   - the summary has `focusMessageId`;
   - a gap-less chat send keeps `nudgeId` null.
-- [ ] `planner.test.ts`, the tick:
+- [x] `planner.test.ts`, the tick:
   - a row claimed 1 min ago is not shown, and a firm holding only that row skips `no_gaps` **before
     the model call**;
   - a row claimed 20 min ago IS shown;
   - a row `claimMessages` does not return is not shown;
   - a throwing `claimMessages` shows the whole slice.
-- [ ] `planner.test.ts`, fix A:
+- [x] `planner.test.ts`, fix A:
   - an office-read `inform` appears under the appendix header, and a gap closed by quoting it passes
     the quote check;
   - it is not marked read again;
   - a firm with only appendix rows and no gaps skips `no_gaps`.
 
 ### Live verification (costs cents: the notes eval, re-framed, review fix g + carry-over 2)
-- [ ] Extend `scripts/planner-eval/notes-run.mjs` with a `--frame message` option. Render the
+- [x] Extend `scripts/planner-eval/notes-run.mjs` with a `--frame message` option. Render the
       briefing through `buildPlannerUserMessage(…, 'message')` with no gaps, on
       `officeSystemFor('message')`, and keep the same four variants.
-- [ ] Run 30 standing-instruction runs + 10 controls. **Pass:** the binomial tail from
+- [x] Run 30 standing-instruction runs + 10 controls. **Pass:** the binomial tail from
       `notes-analyze.mjs` rules out a coin flip, the same bar as the 29/30 on the planner.
-- [ ] A clear drop is a stop-and-ask, not a patch.
+- [x] A clear drop is a stop-and-ask, not a patch.
+- **Result (2026-09-23, GLM 5.3, `thoughts/shared/evals/planner-notes-message-frame-2026-09-20T17-00-00-000Z`):**
+  standing instructions filed **30/30** (routing-sam, away-until, no-early-texts 10/10 each), the
+  control filed nothing **10/10**, every run submitted a plan (median 3 turns). Binomial tail vs a
+  coin flip: 9.3e-10. No drop from the tick's 29/30 on `PLANNER_SYSTEM`. ≈ $0.51.
 
 ## Phase 4: the wake, and rung 10's two fallbacks
 
@@ -500,6 +510,16 @@ included. The comment at `:54` becomes THREE.
   the office's next planning pass". "Shortly" remains true. Not edited here: that text is
   drift-tested by step 1, and editing it means telling step 1 first.
 - **The office's replies to a Copilot seat** wait for step 3 (see above).
+- **The already-read appendix overlaps on purpose** (Phase 3 review): its window starts one lease
+  before the last look, because a message pass stamps `read_at` with its START time and one that
+  spans a tick's start would otherwise fall between two windows (with no known last look: 24h back,
+  the desk appendix's fallback). The cost is repetition: a tick's own reads, and a pass's reads
+  just before a look, can reappear under "ALREADY READ BY THE OFFICE" (more than once if two ticks
+  land within the lease). They are labelled handled and are never work.
+- **The appendix is capped at 30, newest first, with no "N more" line.** After a flood (a tick
+  that read 30 messages), the oldest row in the window — exactly a message a pass read just before
+  that tick — is the one dropped, and a failed appendix read on a tick that then succeeds loses
+  that window for good. Both are rare; neither is fixed here.
 - **A manager's question door is handed `recall_decisions` with no doctrine for it**: the waiting
   composition leaves out `MEMORY_DECISIONS` (as specified), so the tool's own description is its
   only guidance. Matters only if the live model misuses it on manager questions.

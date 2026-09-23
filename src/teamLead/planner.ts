@@ -15,7 +15,9 @@ import {
   listNudgesByStatus,
   listObservationsByStatus,
   createOfficeMessage,
+  claimOfficeMessagesForTick,
   listDeskTranscriptsSince,
+  listOfficeReadSince,
   listOfficeMessagesByIds,
   listOfficeMessagesByStatus,
   listRecentOutboundMessages,
@@ -525,8 +527,11 @@ export interface PlannerSummary {
   // only when true, the settingsTableMissing contract: a key that is absent on
   // every ordinary tick is cheaper to read in a summary than a false.
   focused?: true;
-  // Which observation it was called about. Present with `focused`.
+  // Which observation it was called about. Present with `focused` on a call.
   focusObservationId?: string;
+  // Which seat message it was called about (rung 10c). Present with `focused`
+  // on a message pass; exactly one of the two ids is ever set.
+  focusMessageId?: string;
   // Firms the HEARTBEAT ran early for because an unclaimed inbound observation
   // was waiting — the fallback path, when the ping loop never got to it.
   pingedByObservation?: number;
@@ -736,7 +741,12 @@ export interface PlannerDeps {
   // says, no `planner_runs` marker is written (a focused pass is not the tick,
   // and stamping one would tell the next half-hourly pass it had already run),
   // the gap count line says so, and the loop gets its own budget.
-  focus?: { observationId: string; budgetMs: number };
+  //
+  // RUNG 10C: or ONE SEAT MESSAGE — the office's message door. Told apart by
+  // WHICH ID IS PRESENT ('observationId' in focus), never by a kind tag: a test
+  // that builds a focus through a cast would silently flip on a tag, where a
+  // missing id field fails to compile.
+  focus?: { observationId: string; budgetMs: number } | { messageId: string; budgetMs: number };
   // The ask marker and its compensation (rung 10). `send` stamps `asked_at`
   // under a guard so the focused pass and the heartbeat can never both text a
   // manager about one call; a failed delivery clears its OWN stamp.
@@ -759,6 +769,13 @@ export interface PlannerDeps {
   // touches the database — the fixture tenant is the literal 't1'.
   listOfficeMessages?: typeof listOfficeMessagesByStatus;
   markMessagesRead?: typeof markOfficeMessagesRead;
+  // RUNG 10C: the tick CLAIMS the messages it is about to show (a lease — see
+  // OFFICE_CLAIM_LEASE_MS), so a message pass and a tick never both handle one;
+  // and it is shown what the office already READ since its last look (fix A),
+  // so a message that answers a gap can still be quoted to close it. Injected
+  // for the standing 't1' reason.
+  claimMessages?: typeof claimOfficeMessagesForTick;
+  listOfficeRead?: typeof listOfficeReadSince;
   // Phase 2: the desk-transcript appendix — what was said in the planner's
   // name since its last successful run, and the questions those answers were
   // for. Injected for the standing 't1' reason.
@@ -3381,6 +3398,20 @@ export const DESK_PAIRS_SHOWN = 5;
 // header so the planner knows the list is partial.
 export const OFFICE_MESSAGES_SHOWN = 30;
 
+// HOW LONG A CLAIM ON A SEAT MESSAGE STANDS (rung 10c). A message pass claims
+// its message by stamping `pinged_at`, and nothing releases a claim — so a pass
+// that crashed would leave its message claimed forever. The tick treats a claim
+// older than this as abandoned and takes the message back. MUST stay above the
+// focused pass's own budget (FOCUSED_PASS_BUDGET_MS, a test pins it), or a tick
+// could take a message from a pass that is still running.
+export const OFFICE_CLAIM_LEASE_MS = 10 * 60_000;
+
+// The header over what the office already read (fix A). It says what these are
+// in the block itself, so the doctrine's "you see a message ONCE" can stay as
+// it is (PLANNER_SYSTEM is byte-pinned).
+export const OFFICE_ALREADY_READ_HEADER =
+  'ALREADY READ BY THE OFFICE since your last look — handled; shown so you can quote one to close a gap it answers. Do not act on them again.';
+
 /** One answered desk exchange, for the appendix: who asked, what, what the
  *  desk said in the planner's name. */
 export interface DeskPair {
@@ -3399,8 +3430,11 @@ export function buildOfficeMessagesBlock(
   // Unread rows beyond OFFICE_MESSAGES_SHOWN, named so a partial list never
   // reads as complete (the silent-truncation rule).
   moreCount = 0,
+  // RUNG 10C (fix A): seat messages the office already read and handled since
+  // the planner's last look — shown for quoting, never as work.
+  alreadyRead: OfficeMessage[] = [],
 ): string {
-  if (rows.length === 0 && deskPairs.length === 0) return '';
+  if (rows.length === 0 && deskPairs.length === 0 && alreadyRead.length === 0) return '';
   const lines = [
     // THE REWRITE BUILD 7 EXISTS FOR, and what had to survive it.
     //
@@ -3439,6 +3473,14 @@ export function buildOfficeMessagesBlock(
     lines.push(
       `[${m.id}] ${ago}, from ${m.from_ref}${tier}${replyTag}${newsTag}: ${flat(m.body, OFFICE_MESSAGE_BODY_MAX)}`,
     );
+  }
+  if (alreadyRead.length > 0) {
+    lines.push(OFFICE_ALREADY_READ_HEADER);
+    for (const m of alreadyRead) {
+      const ago = elapsedLabel(m.created_at, nowMs) ?? 'just now';
+      const tier = m.tier ? ` (${m.tier})` : '';
+      lines.push(`  [${m.id}] ${ago}, from ${m.from_ref}${tier}: ${flat(m.body, OFFICE_MESSAGE_BODY_MAX)}`);
+    }
   }
   if (deskPairs.length > 0) {
     lines.push('the desk answered for you since your last run — said in YOUR name:');
@@ -3535,7 +3577,9 @@ export function buildPlannerUserMessage(
   // the model has to be told that: "this firm has 1 open gap" would be a lie
   // about the firm, and a planner that believed it might close or dismiss on
   // the strength of an emptiness that is an artefact of the scoping.
-  focused = false,
+  // RUNG 10C: 'message' — the pass is about one seat message, and there are no
+  // gaps in it at all.
+  focused: boolean | 'message' = false,
   // How many open gaps this look does NOT show (PLANNER_GAPS_SHOWN). Defaulted
   // so the eval renderers and tests that build a message by hand stay valid.
   hiddenGaps = 0,
@@ -3567,7 +3611,9 @@ export function buildPlannerUserMessage(
     `In UTC that instant is ${nowIso} — use UTC for any notBefore you write.`,
     '',
     ...(reachableBlock ? [reachableBlock, ''] : []),
-    focused
+    focused === 'message'
+      ? 'This pass is about 1 message from a seat, under OFFICE MESSAGES; the firm\'s open gaps are not shown and are not yours now.'
+      : focused
       ? 'This pass shows 1 item; the firm\'s other open work is not shown and is not yours now.'
       : // ONE line, starting "This firm has": the memory neutraliser keys on that
         // prefix, so a forged copy of it inside a note is still caught.
@@ -4194,6 +4240,8 @@ export async function runPlanner(
   const createObservationRow = deps.createObservation ?? createObservation;
   const createFromObservation = deps.createFromObservation ?? createNudgeFromObservation;
   const listOffice = deps.listOfficeMessages ?? listOfficeMessagesByStatus;
+  const claimMessages = deps.claimMessages ?? claimOfficeMessagesForTick;
+  const listOfficeRead = deps.listOfficeRead ?? listOfficeReadSince;
   const markRead = deps.markMessagesRead ?? markOfficeMessagesRead;
   const createOffice = deps.createOffice ?? createOfficeMessage;
   const listEvidence = deps.listEvidence ?? listGapEvidence;
@@ -4230,7 +4278,14 @@ export async function runPlanner(
 
   const nowMs = Date.parse(nowIso);
   const summary: PlannerSummary = {
-    ...(focus ? { focused: true as const, focusObservationId: focus.observationId } : {}),
+    ...(focus
+      ? {
+          focused: true as const,
+          ...('observationId' in focus
+            ? { focusObservationId: focus.observationId }
+            : { focusMessageId: focus.messageId }),
+        }
+      : {}),
     mode,
     tenants: 0,
     planned: 0,
@@ -4364,7 +4419,7 @@ export async function runPlanner(
       // — worn as gap rows in state 'noticed'. Merged oldest-first so the
       // prompt reads as one list. The DISMISSED set rides along to validate
       // `recover`, and the stage map keys each decision row to its table.
-      const [openNudges, openObsAll, unreadMessages] = await Promise.all([
+      const [openNudges, openObsAll, unreadAll] = await Promise.all([
         listNudges(tenantId, [...OPEN_NUDGE_STATUSES]),
         listObservations(tenantId, ['open']),
         // The planner's inbox (build 5.5): unread seat informs, read in the
@@ -4401,6 +4456,19 @@ export async function runPlanner(
       // grant, decline or revoke arrives as an inform in its inbox, and
       // v_access_grants holds the whole history.
       const openObs = openObsAll.filter((o) => o.kind !== 'access_request');
+      // A LIVE CLAIM IS ANOTHER PASS'S MESSAGE (rung 10c). The Calls worker's
+      // message pass claimed it seconds ago and is handling it now, so the tick
+      // neither shows it nor counts it as work; a claim older than the lease is
+      // abandoned and comes back. NOT IN FOCUS MODE: a message pass's own row
+      // carries its own fresh claim, and filtering it would hide the one thing
+      // the pass is about. A pure filter, no write — the tick's own claim waits
+      // until the firm is known to be due (below), or an off-cadence firm
+      // would claim messages it never shows and starve the ping loop of them.
+      const unreadMessages = focus
+        ? unreadAll
+        : unreadAll.filter(
+            (m) => !m.pinged_at || Date.parse(m.pinged_at) < nowMs - OFFICE_CLAIM_LEASE_MS,
+          );
       // OBSERVATIONS FIRST so the nudge label wins a same-id collision — the
       // stage map must agree with the F7 view rule below, or decisions on the
       // live ask get recorded under the observation FK (code-review).
@@ -4514,6 +4582,42 @@ export async function runPlanner(
       // item and never capped.
       const shown = focus ? open : gapsToShow(open, nowMs);
       hiddenGaps = open.length - shown.length;
+
+      // THE TICK CLAIMS WHAT IT WILL SHOW (rung 10c). Bounded render + bounded
+      // drain (final review): the OLDEST slice is shown and — on success —
+      // marked read, so a flood drains batch by batch. The claim makes the
+      // slice this tick's: only rows it actually moved are shown, so a message
+      // pass that claimed one between the read and here keeps it. HERE, after
+      // the cadence skip, because a claim is a promise to show. On a failed
+      // claim (an unmigrated column included) the whole slice is shown —
+      // today's behaviour, a possible double-handle rather than a lost message.
+      // NEVER IN FOCUS MODE: the worker already holds that claim, and the
+      // guard would refuse it.
+      const unreadSlice = unreadMessages.slice(0, OFFICE_MESSAGES_SHOWN);
+      let unreadShown = unreadSlice;
+      if (!focus && unreadSlice.length > 0) {
+        try {
+          const moved = new Set(
+            await claimMessages(
+              tenantId,
+              unreadSlice.map((m) => m.id),
+              new Date(nowMs - OFFICE_CLAIM_LEASE_MS).toISOString(),
+            ),
+          );
+          unreadShown = unreadSlice.filter((m) => moved.has(m.id));
+        } catch (err) {
+          console.error(
+            `[planner] tenant ${tenantId}: claiming office messages failed — showing them unclaimed`,
+            err,
+          );
+        }
+      }
+      // Every message lost to a race and no gaps: nothing left to think about.
+      if (open.length === 0 && unreadShown.length === 0) {
+        summary.skippedNoGaps += 1;
+        name(idlePlan(tenantId, 'no_gaps', 0));
+        continue;
+      }
 
       // The recover-validation set, read only for a firm that is DUE — ids
       // only, since dismissed rows are permanent and monotonic (review F3). A
@@ -4991,10 +5095,6 @@ export async function runPlanner(
       } catch (err) {
         console.error(`[planner] tenant ${tenantId}: desk-transcript read failed — no appendix`, err);
       }
-      // Bounded render + bounded drain (final review): the OLDEST slice is
-      // shown and — on success — marked read, so a flood drains batch by
-      // batch instead of failing every tick before mark-read can run.
-      const unreadShown = unreadMessages.slice(0, OFFICE_MESSAGES_SHOWN);
       // WHAT A SEAT SAID IS QUOTABLE (user ruling 2026-09-02). This SUPERSEDES
       // the build-5.5 rule that office-channel answers never fill the record
       // (§6a entry 6.5). The user's argument: the planner already gets to end a
@@ -5014,6 +5114,34 @@ export async function runPlanner(
       // Anything older is still quotable the ordinary way, through a
       // `spine_read` of v_office_messages.
       for (const m of unreadShown) readText.push(m.body);
+      // FIX A (rung 10c): what the office already READ since this firm's last
+      // look. A message pass marks its message read, and the tick reads only
+      // unread — so without this an inform that answers a gap would never sit
+      // beside that gap, and "quote a message to close a gap" would regress.
+      // Quotable like the unread ones (same bodies, same rule); never marked
+      // read (they are), never counted as work (the skip above has run).
+      // Degrades to no appendix. Not in focus mode — a pass about one item.
+      let alreadyRead: OfficeMessage[] = [];
+      if (!focus) {
+        try {
+          // ONE LEASE FURTHER BACK than the last look, on purpose. A message
+          // pass stamps `read_at` with its START time, and the last look's
+          // marker is that tick's start too — so a pass that began just before
+          // a tick and finished during it is read "before" the tick yet was
+          // hidden from it as a live claim, and a window from the marker
+          // would miss it for good. Overlap is harmless: these rows are
+          // labelled handled and are never work. With no last look (a first
+          // run, or a failed marker read), 24h back — the desk appendix's
+          // fallback: one cadence would miss what passes read while the firm
+          // sat idle or off-hours, and the row cap bounds it anyway.
+          const from = Number.isNaN(lastMs) ? nowMs - 24 * 3_600_000 : lastMs;
+          const since = new Date(from - OFFICE_CLAIM_LEASE_MS).toISOString();
+          alreadyRead = await listOfficeRead(tenantId, since, OFFICE_MESSAGES_SHOWN);
+          for (const m of alreadyRead) readText.push(m.body);
+        } catch (err) {
+          console.error(`[planner] tenant ${tenantId}: already-read read failed — no appendix`, err);
+        }
+      }
       // WHAT YOU SENT (build 6.5 Phase 5). Same doctrine as the roster read: a
       // failure costs the tick nothing — the block simply does not render, and
       // the planner is back to judging silence from the record alone, which is
@@ -5058,7 +5186,10 @@ export async function runPlanner(
           unreadShown,
           nowMs,
           deskPairs,
-          unreadMessages.length - unreadShown.length,
+          // The slice, not what was shown: a message lost to a race is another
+          // pass's, not "more unread".
+          unreadMessages.length - unreadSlice.length,
+          alreadyRead,
         ),
         // Departed people are listed ONLY when a gap in this tick names one —
         // deduped by id, because two gaps can name the same person.
@@ -5075,7 +5206,7 @@ export async function runPlanner(
           tz,
         ),
         outboundBlock,
-        !!focus,
+        focus ? ('observationId' in focus ? true : 'message') : false,
         hiddenGaps,
       );
 
@@ -5103,7 +5234,10 @@ export async function runPlanner(
           // A FOCUSED PASS IS THE OFFICE (plan 2026-09-22): one inbound call, handled
           // now, on the office's own prompt. Same verbs, same submit_plan, same
           // rails — only the instructions change. The tick stays the planner.
-          system: focus ? officeSystemFor('call') : PLANNER_SYSTEM,
+          // RUNG 10C: a seat's message is the office's fourth door.
+          system: focus
+            ? officeSystemFor('observationId' in focus ? 'call' : 'message')
+            : PLANNER_SYSTEM,
           user,
           maxTokens: PLANNER_MAX_TOKENS,
           label: 'teamLeadPlanner',
@@ -5178,7 +5312,7 @@ export async function runPlanner(
               // NOTE but forgot it on the TEXT would have the text go out and be
               // marked as the ask while the note was dropped, leaving the
               // manager's assistant without the id it exists to carry.
-              focus?.observationId ?? null,
+              focus && 'observationId' in focus ? focus.observationId : null,
             );
             outcome = checked; // the LAST submission stands, refusals included
             // A dropped note is not a refused decision, so it would otherwise
@@ -5246,13 +5380,17 @@ export async function runPlanner(
       // thing a note exists to carry. The doctrine covers that ("both naming the
       // item in `nudgeId`"); binding it here would consume the binding the real
       // chat message needs.
+      //
+      // A CALL ONLY (rung 10c): a message pass is about a seat's message, which
+      // is not a gap — there is no id a send could be bound to.
       let boundGapless = false;
-      const decisions = focus
+      const boundTo = focus && 'observationId' in focus ? focus.observationId : null;
+      const decisions = boundTo
         ? outcome.decisions.map((d) => {
             if (d.action !== 'send' || d.nudgeId || boundGapless) return d;
             if ((d.as ?? 'assistant') !== 'chat') return d;
             boundGapless = true;
-            return { ...d, nudgeId: focus.observationId };
+            return { ...d, nudgeId: boundTo };
           })
         : outcome.decisions;
       summary.planned += 1;

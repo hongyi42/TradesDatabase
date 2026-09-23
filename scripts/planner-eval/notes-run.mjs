@@ -3,6 +3,14 @@
 //   node scripts/planner-eval/notes-run.mjs --yes
 //   node scripts/planner-eval/notes-run.mjs --yes --runs 10
 //   node scripts/planner-eval/notes-run.mjs --yes --runs 1 --only routing-sam
+//   node scripts/planner-eval/notes-run.mjs --yes --frame message
+//
+// --frame message (rung 10c): the same four messages, but as the OFFICE's
+// message door sees them — a focused pass about ONE seat message, no gaps, on
+// officeSystemFor('message') — rather than as the half-hourly tick sees them.
+// The 29/30 was measured on the tick's framing and PLANNER_SYSTEM; the message
+// pass is where a standing instruction now lands first, so it is re-measured
+// there. Written to its own directory, so it never overwrites a tick run.
 //
 // THE QUESTION. A seat sends the planner a standing instruction — "route all
 // future job/visit messages to Sam". It appears in the briefing ONCE, and when
@@ -75,6 +83,11 @@ const modelOverride = flag('model', null);
 if (modelOverride) process.env.INFERENCE_MODEL = modelOverride;
 
 const runs = Number(flag('runs', 10));
+const frame = flag('frame', 'tick');
+if (frame !== 'tick' && frame !== 'message') {
+  console.error(`--frame must be tick or message, not ${frame}`);
+  process.exit(2);
+}
 const only = flag('only', null);
 
 const NOW = '2026-09-20T17:00:00.000Z'; // Sunday, 10:00 AM firm-local
@@ -193,13 +206,17 @@ if (!args.includes('--yes')) {
   console.error(
     'This step CALLS THE MODEL AND SPENDS MONEY. Re-run with --yes.\n' +
       `  variants: ${only ?? VARIANTS.map((v) => v.id).join(', ')}\n` +
-      `  runs each: ${runs}   total tool-loop runs: ${n}\n` +
+      `  runs each: ${runs}   total tool-loop runs: ${n}   frame: ${frame}\n` +
       `  model: ${modelOverride ?? 'production default (z-ai/glm-5.3 via OpenRouter)'}`,
   );
   process.exit(2);
 }
 
 const { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } = await import(`${DIST}/teamLead/plannerPrompt.js`);
+const { officeSystemFor } = await import(`${DIST}/teamLead/officePrompt.js`);
+// The prompt this frame runs on: the tick is the planner; a message pass is the
+// office's fourth door (planner.ts picks the same way).
+const SYSTEM = frame === 'message' ? officeSystemFor('message') : PLANNER_SYSTEM;
 const {
   buildGapView,
   buildPlannerUserMessage,
@@ -272,7 +289,11 @@ function makeExecutor(record) {
 }
 
 const stamp = NOW.replace(/[:.]/g, '-');
-const dir = join(ROOT, 'thoughts/shared/evals', `planner-notes-${stamp}`);
+const dir = join(
+  ROOT,
+  'thoughts/shared/evals',
+  frame === 'message' ? `planner-notes-message-frame-${stamp}` : `planner-notes-${stamp}`,
+);
 mkdirSync(dir, { recursive: true });
 const out = join(dir, 'run.jsonl');
 writeFileSync(out, '');
@@ -305,7 +326,7 @@ if (chosen.length === 0) {
   process.exit(2);
 }
 
-console.log(`model: ${MODEL}   via: ${BASE_URL}   runs each: ${runs}\n`);
+console.log(`model: ${MODEL}   via: ${BASE_URL}   runs each: ${runs}   frame: ${frame}\n`);
 
 let totalIn = 0;
 let totalOut = 0;
@@ -352,14 +373,29 @@ for (const v of chosen) {
   if (views.some((x) => !x.block)) throw new Error(`${v.id}: rendered no block`);
   const office = buildOfficeMessagesBlock([officeRow({ body: v.body })], nowMs, [], 0);
   if (!office) throw new Error(`${v.id}: rendered no office block`);
-  const user = buildPlannerUserMessage(
-    NOW,
-    TZ,
-    views,
-    MEMORY_INDEX,
-    { lastSuccessAt: ago(0.5), everyMinutes: 30 },
-    office,
-  );
+  // THE MESSAGE FRAME shows NO gaps — runFocusedMessagePass empties every gap
+  // reader — and says the pass is about one message ('message', planner.ts).
+  const user =
+    frame === 'message'
+      ? buildPlannerUserMessage(
+          NOW,
+          TZ,
+          [],
+          MEMORY_INDEX,
+          { lastSuccessAt: ago(0.5), everyMinutes: 30 },
+          office,
+          '',
+          '',
+          'message',
+        )
+      : buildPlannerUserMessage(
+          NOW,
+          TZ,
+          views,
+          MEMORY_INDEX,
+          { lastSuccessAt: ago(0.5), everyMinutes: 30 },
+          office,
+        );
 
   for (let i = 1; i <= runs; i += 1) {
     if (RESERVE > 0) {
@@ -387,7 +423,7 @@ for (const v of chosen) {
       try {
         result = await runToolLoop(
           {
-            system: PLANNER_SYSTEM,
+            system: SYSTEM,
             user,
             maxTokens: PLANNER_MAX_TOKENS,
             label: 'teamLeadPlanner',
@@ -480,7 +516,7 @@ for (const v of chosen) {
 writeFileSync(
   join(dir, 'meta.json'),
   JSON.stringify(
-    { model: MODEL, baseUrl: BASE_URL, now: NOW, tz: TZ, runs, totalIn, totalOut, totalCached },
+    { model: MODEL, baseUrl: BASE_URL, now: NOW, tz: TZ, runs, frame, totalIn, totalOut, totalCached },
     null,
     2,
   ),

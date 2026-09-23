@@ -16,6 +16,8 @@ import {
   cleanQuestionDraft,
   buildPlannerUserMessage,
   CITABLE_TOOLS,
+  OFFICE_ALREADY_READ_HEADER,
+  OFFICE_CLAIM_LEASE_MS,
   cleanPlannerText,
   observationAsGapRow,
   clockLabel,
@@ -36,7 +38,7 @@ import {
   type PlannerDeps,
 } from './planner.js';
 import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
-import { OFFICE_SYSTEM } from './officePrompt.js';
+import { OFFICE_SYSTEM, officeSystemFor } from './officePrompt.js';
 import { OFFICE_NARROW_REMINDER } from './office.js';
 import { ORPHAN_FOOTER_PREFIX } from './memory.js';
 
@@ -179,6 +181,11 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     // which is what every pre-inbox test assumes; the inbox tests override.
     listOfficeMessages: async () => [],
     markMessagesRead: async () => 0,
+    // Rung 10c (review fix d): the tick's claim and the already-read appendix.
+    // Unstubbed, both hit the database with 't1' and every inbox test here
+    // would silently exercise only the claim-failed fallback.
+    claimMessages: async (_t, ids) => ids,
+    listOfficeRead: async () => [],
     listDeskTranscripts: async () => [],
     listMessagesByIds: async () => [],
     listEvidence: async () => [],
@@ -8031,5 +8038,256 @@ describe('access requests and the planner', () => {
     expect(PLANNER_SYSTEM).not.toContain('still waiting');
     // …and the standing money rule is untouched by any of this.
     expect(PLANNER_SYSTEM).toContain('never told an AMOUNT');
+  });
+});
+
+// ── RUNG 10C: a seat's message wakes the office ──────────────────────────────
+describe('rung 10c — the message pass, the tick claim, and fix A', () => {
+  const msg = (over: Partial<OfficeMessage> = {}): OfficeMessage =>
+    ({
+      id: 'm1',
+      tenant_id: 't1',
+      direction: 'to_planner',
+      kind: 'inform',
+      from_ref: 'ben-shelton',
+      to_ref: 'spine:team-lead',
+      technician_id: null,
+      body: 'route all job messages to Sam from now on',
+      tier: 'technician',
+      nudge_id: null,
+      in_reply_to: null,
+      status: 'unread',
+      serve_count: 0,
+      attempts: 0,
+      created_at: '2026-08-16T11:59:00.000Z',
+      updated_at: '2026-08-16T11:59:00.000Z',
+      read_at: null,
+      delivered_at: null,
+      pinged_at: null,
+      ...over,
+    }) as unknown as OfficeMessage;
+  const minsAgo = (n: number) => new Date(Date.parse(NOW) - n * 60_000).toISOString();
+  const SAM = {
+    id: 'mgr-1', tenant_id: 't1', ref: 'sam-ortiz', display_name: 'Sam', tier: 'manager',
+    state: 'active', seat_exempt: false, host_id: 'h1', sandbox_ref: 'sb-1',
+    telegram_user_id: '5501', skills: [], service_cities: [], created_at: NOW, updated_at: NOW,
+  } as unknown as Technician;
+  const capturing = (seen: { system?: string; user?: string }, decisions: unknown[] = []) =>
+    (async (req: { system: string; user: string }, tools: unknown, exec: unknown) => {
+      seen.system = req.system;
+      seen.user = req.user;
+      return (loopReturning(decisions) as unknown as (a: unknown, b: unknown, c: unknown) => Promise<ToolLoopResult>)(req, tools, exec);
+    }) as unknown as NonNullable<PlannerDeps['runLoop']>;
+
+  describe('a message pass', () => {
+    const messageFocus = { messageId: 'm1', budgetMs: 180_000 };
+
+    test('zero gaps and one message RUNS, on the message door, told it is about one message', async () => {
+      const seen: { system?: string; user?: string } = {};
+      const claimMessages = vi.fn(async (_t: string, ids: string[]) => ids);
+      const listOfficeRead = vi.fn(async () => []);
+      const markRead = vi.fn(async () => 1);
+      const plannerRun = vi.fn(async () => {});
+      const summary = await runPlanner(NOW, 'live', baseDeps({
+        focus: messageFocus,
+        listNudges: async () => [],
+        listObservations: async () => [],
+        // Its own fresh claim: the pass must see it anyway.
+        listOfficeMessages: async () => [msg({ pinged_at: minsAgo(0.1) })],
+        claimMessages: claimMessages as unknown as NonNullable<PlannerDeps['claimMessages']>,
+        listOfficeRead: listOfficeRead as unknown as NonNullable<PlannerDeps['listOfficeRead']>,
+        markMessagesRead: markRead as unknown as NonNullable<PlannerDeps['markMessagesRead']>,
+        plannerRun: plannerRun as unknown as NonNullable<PlannerDeps['plannerRun']>,
+        runLoop: capturing(seen),
+      }));
+      expect(summary.planned).toBe(1);
+      expect(summary.skippedNoGaps).toBe(0);
+      expect(seen.system).toBe(officeSystemFor('message'));
+      expect(seen.user).toContain('This pass is about 1 message from a seat, under OFFICE MESSAGES');
+      expect(seen.user).not.toContain('This firm has');
+      expect(seen.user).toContain('route all job messages to Sam');
+      // The worker holds the claim; the tick's claim and appendix are not this pass's.
+      expect(claimMessages).not.toHaveBeenCalled();
+      expect(listOfficeRead).not.toHaveBeenCalled();
+      expect(markRead).toHaveBeenCalledWith('t1', ['m1'], NOW);
+      // A focused pass is not the tick: no run marker.
+      expect(plannerRun).not.toHaveBeenCalled();
+      expect(summary.focused).toBe(true);
+      expect(summary.focusMessageId).toBe('m1');
+      expect(summary.focusObservationId).toBeUndefined();
+    });
+
+    test('a gap-less chat send stays gap-less — a message is not a gap to bind it to', async () => {
+      const createOffice = vi.fn(async (input: unknown) => input as never);
+      const summary = await runPlanner(NOW, 'live', baseDeps({
+        focus: messageFocus,
+        listTeam: async () => [SAM],
+        listNudges: async () => [],
+        listObservations: async () => [],
+        listOfficeMessages: async () => [msg()],
+        createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+        runLoop: loopReturning([
+          { action: 'send', as: 'chat', to: 'sam-ortiz', message: 'Ben wants job messages routed to you. OK?', confidence: 'high', reason: 'r' },
+        ]),
+      }));
+      expect(summary.applied).toBe(1);
+      expect(createOffice).toHaveBeenCalledTimes(1);
+      expect((createOffice.mock.calls[0][0] as { nudgeId?: string | null }).nudgeId ?? null).toBeNull();
+    });
+  });
+
+  describe('the tick claims what it shows', () => {
+    test('a live claim is not shown, and a firm holding only that skips no_gaps before the model', async () => {
+      const loop = vi.fn(loopReturning([]));
+      const claimMessages = vi.fn(async (_t: string, ids: string[]) => ids);
+      const summary = await runPlanner(NOW, 'shadow', baseDeps({
+        listNudges: async () => [],
+        listOfficeMessages: async () => [msg({ pinged_at: minsAgo(1) })],
+        claimMessages: claimMessages as unknown as NonNullable<PlannerDeps['claimMessages']>,
+        runLoop: loop as unknown as NonNullable<PlannerDeps['runLoop']>,
+      }));
+      expect(loop).not.toHaveBeenCalled();
+      expect(summary.skippedNoGaps).toBe(1);
+      expect(claimMessages).not.toHaveBeenCalled();
+    });
+
+    test('a claim older than the lease IS shown, and claimed with the lease cutoff', async () => {
+      const seen: { user?: string } = {};
+      const claimMessages = vi.fn(async (_t: string, ids: string[]) => ids);
+      await runPlanner(NOW, 'shadow', baseDeps({
+        listOfficeMessages: async () => [msg({ pinged_at: minsAgo(20) })],
+        claimMessages: claimMessages as unknown as NonNullable<PlannerDeps['claimMessages']>,
+        runLoop: loopReturning([], seen),
+      }));
+      expect(seen.user).toContain('[m1]');
+      expect(claimMessages).toHaveBeenCalledWith(
+        't1',
+        ['m1'],
+        new Date(Date.parse(NOW) - OFFICE_CLAIM_LEASE_MS).toISOString(),
+      );
+    });
+
+    test('a row the claim does not return is not shown, nor marked read, nor counted as more', async () => {
+      const seen: { user?: string } = {};
+      const markRead = vi.fn(async () => 1);
+      await runPlanner(NOW, 'shadow', baseDeps({
+        listOfficeMessages: async () => [msg(), msg({ id: 'm2', body: 'lost to a race' })],
+        claimMessages: (async () => ['m1']) as unknown as NonNullable<PlannerDeps['claimMessages']>,
+        markMessagesRead: markRead as unknown as NonNullable<PlannerDeps['markMessagesRead']>,
+        runLoop: loopReturning([], seen),
+      }));
+      expect(seen.user).toContain('[m1]');
+      expect(seen.user).not.toContain('lost to a race');
+      expect(seen.user).not.toContain('more unread');
+      expect(markRead).toHaveBeenCalledWith('t1', ['m1'], NOW);
+    });
+
+    test('every message lost to a race and no gaps: skipped, no model call', async () => {
+      const loop = vi.fn(loopReturning([]));
+      const summary = await runPlanner(NOW, 'shadow', baseDeps({
+        listNudges: async () => [],
+        listOfficeMessages: async () => [msg()],
+        claimMessages: (async () => []) as unknown as NonNullable<PlannerDeps['claimMessages']>,
+        runLoop: loop as unknown as NonNullable<PlannerDeps['runLoop']>,
+      }));
+      expect(loop).not.toHaveBeenCalled();
+      expect(summary.skippedNoGaps).toBe(1);
+    });
+
+    test('a throwing claim shows the whole slice — today\'s behaviour, never a lost message', async () => {
+      const seen: { user?: string } = {};
+      const summary = await runPlanner(NOW, 'shadow', baseDeps({
+        listOfficeMessages: async () => [msg(), msg({ id: 'm2', body: 'second one' })],
+        claimMessages: (async () => {
+          throw new Error('column pinged_at does not exist');
+        }) as unknown as NonNullable<PlannerDeps['claimMessages']>,
+        runLoop: loopReturning([], seen),
+      }));
+      expect(summary.tenantErrors).toBe(0);
+      expect(seen.user).toContain('[m1]');
+      expect(seen.user).toContain('second one');
+    });
+
+    test('an off-cadence firm claims nothing — a claim is a promise to show', async () => {
+      const claimMessages = vi.fn(async (_t: string, ids: string[]) => ids);
+      const summary = await runPlanner('2026-08-16T12:17:00.000Z', 'shadow', baseDeps({
+        lastRunAt: async () => '2026-08-16T12:00:00.000Z',
+        listOfficeMessages: async () => [msg({ created_at: '2026-08-16T11:00:00.000Z', kind: 'reply' })],
+        claimMessages: claimMessages as unknown as NonNullable<PlannerDeps['claimMessages']>,
+      }));
+      expect(summary.skippedCadence).toBe(1);
+      expect(claimMessages).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('fix A: what the office already read', () => {
+    const handled = msg({
+      id: 'm-read',
+      status: 'read',
+      read_at: minsAgo(5),
+      body: 'the parts came to two hundred and ten pounds all in',
+    });
+
+    test('it renders under its own header, and a close may quote it', async () => {
+      const seen: { user?: string } = {};
+      const closed: string[] = [];
+      const markRead = vi.fn(async () => 0);
+      const summary = await runPlanner(NOW, 'live', baseDeps({
+        listNudges: async () => [nudge()],
+        listOfficeRead: async () => [handled],
+        markMessagesRead: markRead as unknown as NonNullable<PlannerDeps['markMessagesRead']>,
+        markOutcome: (async (id: string) => {
+          closed.push(id);
+          return nudge() as never;
+        }) as unknown as NonNullable<PlannerDeps['markOutcome']>,
+        runLoop: capturing(seen, [
+          { nudgeId: 'n1', action: 'close', basis: 'evidence', citation: handled.body, confidence: 'high', reason: 'they said' },
+        ]),
+      }));
+      expect(seen.user).toContain(OFFICE_ALREADY_READ_HEADER);
+      expect(seen.user!.indexOf(OFFICE_ALREADY_READ_HEADER)).toBeLessThan(seen.user!.indexOf('two hundred and ten'));
+      expect(summary.applied).toBe(1);
+      expect(closed).toEqual(['n1']);
+      // Already read — never marked again.
+      expect(markRead).not.toHaveBeenCalled();
+    });
+
+    test('it reads from the last look (or 24h back), minus one lease', async () => {
+      const since: string[] = [];
+      const listOfficeRead = (async (_t: string, s: string) => {
+        since.push(s);
+        return [];
+      }) as unknown as NonNullable<PlannerDeps['listOfficeRead']>;
+      await runPlanner(NOW, 'shadow', baseDeps({ lastRunAt: async () => '2026-08-16T11:00:00.000Z', listOfficeRead }));
+      await runPlanner(NOW, 'shadow', baseDeps({ listOfficeRead }));
+      // One lease further back than the last look: a message pass that spans
+      // a tick's start is read "before" that tick yet was hidden from it. With
+      // no last look, 24h back (the desk appendix's fallback).
+      const lease = OFFICE_CLAIM_LEASE_MS / 60_000;
+      expect(since).toEqual([minsAgo(60 + lease), minsAgo(24 * 60 + lease)]);
+    });
+
+    test('appendix rows alone are not work: no gaps + only already-read skips no_gaps', async () => {
+      const loop = vi.fn(loopReturning([]));
+      const summary = await runPlanner(NOW, 'shadow', baseDeps({
+        listNudges: async () => [],
+        listOfficeRead: async () => [handled],
+        runLoop: loop as unknown as NonNullable<PlannerDeps['runLoop']>,
+      }));
+      expect(loop).not.toHaveBeenCalled();
+      expect(summary.skippedNoGaps).toBe(1);
+    });
+
+    test('a failed read degrades to no appendix', async () => {
+      const seen: { user?: string } = {};
+      const summary = await runPlanner(NOW, 'shadow', baseDeps({
+        listOfficeRead: (async () => {
+          throw new Error('db down');
+        }) as unknown as NonNullable<PlannerDeps['listOfficeRead']>,
+        runLoop: loopReturning([], seen),
+      }));
+      expect(summary.tenantErrors).toBe(0);
+      expect(seen.user).not.toContain(OFFICE_ALREADY_READ_HEADER);
+    });
   });
 });

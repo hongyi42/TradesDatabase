@@ -70,6 +70,17 @@ export class ScriptedTelegram implements TelegramApi {
 
   async typing(): Promise<void> {}
 
+  private nextMessageId = 1;
+
+  async sendWorking(): Promise<number> {
+    console.log('   (Working… ⏹ Stop)');
+    return this.nextMessageId++;
+  }
+
+  async deleteMessage(): Promise<void> {}
+
+  async answerCallback(): Promise<void> {}
+
   /** In the driver a file id IS a local path. */
   async download(fileId: string): Promise<Buffer> {
     return readFile(fileId);

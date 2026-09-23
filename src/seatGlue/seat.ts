@@ -54,6 +54,8 @@ export class Seat {
   private state: SeatState = { sessionId: null, offset: 0 };
   private chatId: number;
   private typingTimer: ReturnType<typeof setInterval> | null = null;
+  /** The "Working…" line's message id, once Telegram has it (null = could not post). */
+  private workingLine: Promise<number | null> | null = null;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private outbox: Promise<void> = Promise.resolve();
   private idleCount = 0;
@@ -122,7 +124,7 @@ export class Seat {
 
   stop(): void {
     this.stopped = true;
-    this.stopTyping();
+    this.stopWorking();
     if (this.sweepTimer) clearInterval(this.sweepTimer);
   }
 
@@ -164,7 +166,7 @@ export class Seat {
       case 'unsupported':
         return this.say(TEXT.unsupported);
       case 'stop':
-        return this.stopReply();
+        return this.stopReply(msg.callbackQueryId, msg.workingMessageId);
       case 'new':
         return this.startFresh();
       case 'text':
@@ -232,7 +234,7 @@ export class Seat {
     policy.onSend();
     if (freshTurn) {
       this.errorToldFor = null;
-      this.startTyping();
+      this.startWorking();
     }
     try {
       await session.send({
@@ -247,20 +249,31 @@ export class Seat {
       // turn never started, and after abort-then-send the old loop is dead.
       if (route !== 'steer') {
         policy.finish();
-        this.stopTyping();
+        this.stopWorking();
       }
       await this.say(TEXT.replyFailed);
     }
   }
 
-  private async stopReply(): Promise<void> {
+  private async stopReply(callbackQueryId?: string, tappedMessageId?: number): Promise<void> {
+    const { telegram, policy } = this.deps;
+    // A tap on a "Working…" line left over from a reply that already ended:
+    // acknowledge it quietly and remove the line — nothing to stop, nothing to say.
+    if (callbackQueryId && !policy.isBusy) {
+      void telegram.answerCallback(callbackQueryId, 'Nothing to stop').catch(() => {});
+      if (tappedMessageId !== undefined) void telegram.deleteMessage(this.chatId, tappedMessageId).catch(() => {});
+      return;
+    }
+    // Telegram spins the button until the tap is answered.
+    if (callbackQueryId) void telegram.answerCallback(callbackQueryId, 'Stopping…').catch(() => {});
     // Never abort mid-tool: a note filed while the model believes it was
     // interrupted gets filed again. The wait happens HERE, inside the
     // one-at-a-time update loop, so anything sent after Stop queues behind it.
     // The one exception is ask_team_lead (ABORT_SAFE_TOOLS): the office can take
     // minutes and stops itself when the caller hangs up, so Stop cuts it off.
     await this.toolsSettled({ interruptAbortSafe: true });
-    if (this.deps.policy.isBusy) await this.abortReply();
+    if (policy.isBusy) await this.abortReply();
+    this.stopWorking();
     await this.say(TEXT.stopped);
   }
 
@@ -271,7 +284,7 @@ export class Seat {
       else this.deps.policy.cancelAbort(false); // nothing to abort: never leave a waiter behind
     } else await this.waitFor(done);
     this.deps.policy.finish();
-    this.stopTyping();
+    this.stopWorking();
   }
 
   /**
@@ -342,7 +355,7 @@ export class Seat {
         this.idleCount += 1;
         this.releaseHeldText();
         const result = policy.onIdle(data.aborted === true);
-        if (result === 'idle') this.stopTyping();
+        if (result === 'idle') this.stopWorking();
         // Idle clears pending tools even when no completion named them (an
         // id-less permission request), so a waiting Stop or /new moves on here too.
         this.releaseToolWaiters();
@@ -396,7 +409,7 @@ export class Seat {
             if (quiet && policy.isBusy && policy.currentReplyId() === reply && !policy.toolPending) {
               this.log('no idle after the error — ending the reply');
               policy.finish();
-              this.stopTyping();
+              this.stopWorking();
             }
           }, this.deps.errorIdleWaitMs ?? 5_000);
           timer.unref?.();
@@ -422,6 +435,9 @@ export class Seat {
     this.heldText = [];
     this.heldCallHadTool = false;
     if (hadTool) return;
+    // The answer is here: the "Working…" line goes first (through the same
+    // ordered outbox), typing carries on until the reply really ends.
+    if (texts.length) this.clearWorkingLine();
     for (const text of texts) void this.say(text);
   }
 
@@ -430,6 +446,33 @@ export class Seat {
       .then(() => this.deps.telegram.send(this.chatId, text))
       .catch((err: unknown) => this.log(`send to Telegram failed: ${errText(err)}`));
     return this.outbox;
+  }
+
+  /** A reply started: typing, plus the "Working…" line with its Stop button. */
+  private startWorking(): void {
+    this.startTyping();
+    if (!this.workingLine) {
+      this.workingLine = this.deps.telegram.sendWorking(this.chatId).catch((err: unknown) => {
+        this.log(`could not post the Working line: ${errText(err)}`);
+        return null;
+      });
+    }
+  }
+
+  /** The reply is over (or stopped): typing stops and the "Working…" line goes. */
+  private stopWorking(): void {
+    this.stopTyping();
+    this.clearWorkingLine();
+  }
+
+  private clearWorkingLine(): void {
+    const line = this.workingLine;
+    if (!line) return;
+    this.workingLine = null;
+    this.outbox = this.outbox
+      .then(() => line)
+      .then((id) => (id === null ? undefined : this.deps.telegram.deleteMessage(this.chatId, id)))
+      .catch((err: unknown) => this.log(`could not remove the Working line: ${errText(err)}`));
   }
 
   private startTyping(): void {

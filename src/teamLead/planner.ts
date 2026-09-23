@@ -5154,7 +5154,15 @@ export async function runPlanner(
           // sat idle or off-hours, and the row cap bounds it anyway.
           const from = Number.isNaN(lastMs) ? nowMs - 24 * 3_600_000 : lastMs;
           const since = new Date(from - OFFICE_CLAIM_LEASE_MS).toISOString();
-          alreadyRead = await listOfficeRead(tenantId, since, OFFICE_MESSAGES_SHOWN);
+          // …MINUS THE LAST LOOK'S OWN READS. A tick marks what it showed read
+          // at its own start instant, and that same instant is the marker the
+          // next tick reads back as `lastMs` — so without this every tick
+          // would re-show the previous tick's whole inbox as "handled by the
+          // office". (Final review.) A message pass stamps its own start, never
+          // a tick's, so nothing the appendix exists for is lost.
+          alreadyRead = (await listOfficeRead(tenantId, since, OFFICE_MESSAGES_SHOWN)).filter(
+            (m) => Number.isNaN(lastMs) || !m.read_at || Date.parse(m.read_at) !== lastMs,
+          );
           for (const m of alreadyRead) readText.push(m.body);
         } catch (err) {
           console.error(`[planner] tenant ${tenantId}: already-read read failed — no appendix`, err);

@@ -8321,6 +8321,18 @@ describe('rung 10c — the message pass, the tick claim, and fix A', () => {
       expect(since).toEqual([minsAgo(60 + lease), minsAgo(24 * 60 + lease)]);
     });
 
+    test("the last tick's own reads are not re-shown as the office's (final review)", async () => {
+      const seen: { user?: string } = {};
+      const ownRead = msg({ id: 'm-tick', status: 'read', read_at: '2026-08-16T11:30:00.000Z', body: 'read by the last tick' });
+      await runPlanner(NOW, 'shadow', baseDeps({
+        lastRunAt: async () => '2026-08-16T11:30:00.000Z',
+        listOfficeRead: async () => [ownRead, { ...handled, read_at: '2026-08-16T11:29:00.000Z' }],
+        runLoop: loopReturning([], seen),
+      }));
+      expect(seen.user).toContain('two hundred and ten');
+      expect(seen.user).not.toContain('read by the last tick');
+    });
+
     test('appendix rows alone are not work: no gaps + only already-read skips no_gaps', async () => {
       const loop = vi.fn(loopReturning([]));
       const summary = await runPlanner(NOW, 'shadow', baseDeps({

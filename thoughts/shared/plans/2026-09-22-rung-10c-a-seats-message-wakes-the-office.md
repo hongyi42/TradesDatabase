@@ -2,7 +2,7 @@
 date: 2026-09-22
 task: rung 10c — a seat's message wakes the office within seconds, the way an inbound call already does; and each office door loads only the prompt it uses
 research: thoughts/shared/research/2026-09-20-the-desk-as-the-offices-fast-path.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -525,9 +525,10 @@ included. The comment at `:54` becomes THREE.
 - **The already-read appendix overlaps on purpose** (Phase 3 review): its window starts one lease
   before the last look, because a message pass stamps `read_at` with its START time and one that
   spans a tick's start would otherwise fall between two windows (with no known last look: 24h back,
-  the desk appendix's fallback). The cost is repetition: a tick's own reads, and a pass's reads
-  just before a look, can reappear under "ALREADY READ BY THE OFFICE" (more than once if two ticks
-  land within the lease). They are labelled handled and are never work.
+  the desk appendix's fallback). Rows read at exactly the last look's instant are left out
+  (they are that tick's own reads — final review). The remaining cost is repetition: a pass's
+  reads just before a look, and an earlier tick's reads when two ticks land within the lease, can
+  reappear under "ALREADY READ BY THE OFFICE". They are labelled handled and are never work.
 - **The appendix is capped at 30, newest first, with no "N more" line.** After a flood (a tick
   that read 30 messages), the oldest row in the window — exactly a message a pass read just before
   that tick — is the one dropped, and a failed appendix read on a tick that then succeeds loses

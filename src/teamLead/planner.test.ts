@@ -697,6 +697,7 @@ describe("the planner's inbox (plan 2026-08-31, build 5.5 Phase 1)", () => {
       updated_at: '2026-08-16T09:00:00.000Z',
       read_at: null,
       delivered_at: null,
+      pinged_at: null,
       ...over,
     } as unknown as OfficeMessage;
   }
@@ -1002,6 +1003,21 @@ describe("the planner's inbox (plan 2026-08-31, build 5.5 Phase 1)", () => {
     );
     expect(block).toContain('in reply to your ask on gap n1');
     expect(block).toContain('Ben says all done');
+  });
+
+  test('NEWS says it is news: an access decision is tagged, an inform is not (rung 10c)', () => {
+    const block = buildOfficeMessagesBlock(
+      [
+        officeMsg({ id: 'm-news', kind: 'news', tier: 'manager', body: 'Granted Ben the marina job' }),
+        officeMsg({ id: 'm-inf', kind: 'inform', body: 'Ben is on leave' }),
+      ],
+      Date.parse(NOW),
+    );
+    const lines = block.split('\n');
+    expect(lines.find((l) => l.startsWith('[m-news]'))).toContain(
+      ', news of an access decision already made: Granted Ben',
+    );
+    expect(lines.find((l) => l.startsWith('[m-inf]'))).not.toContain('news of an access decision');
   });
 
   test('a message id cannot take a decision — the rails drop it as unknown', () => {

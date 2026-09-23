@@ -3433,8 +3433,11 @@ export function buildOfficeMessagesBlock(
     // up with the question it sent.
     const replyTag =
       m.kind === 'reply' && m.nudge_id ? `, in reply to your ask on gap ${m.nudge_id}` : '';
+    // NEWS says what it is (rung 10c): an access decision, written by the code
+    // that made it, which knows for certain it is news and not a request.
+    const newsTag = m.kind === 'news' ? ', news of an access decision already made' : '';
     lines.push(
-      `[${m.id}] ${ago}, from ${m.from_ref}${tier}${replyTag}: ${flat(m.body, OFFICE_MESSAGE_BODY_MAX)}`,
+      `[${m.id}] ${ago}, from ${m.from_ref}${tier}${replyTag}${newsTag}: ${flat(m.body, OFFICE_MESSAGE_BODY_MAX)}`,
     );
   }
   if (deskPairs.length > 0) {

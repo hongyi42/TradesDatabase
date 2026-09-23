@@ -105,8 +105,10 @@ from `supabase/config.toml`, and the merge of `main` was conflict-free. The only
   - Rejected: accept the wake (pennies a day, a pass that does nothing). Rejected because a writer
     that already knows the category should say it, rather than leave a model to guess.
   - `news` is NOT in `PINGED_MESSAGE_KINDS`, so it never wakes the office. The half-hourly tick
-    still shows it unread, exactly as today: the tick renders `(${m.kind})` (planner.ts:3435 area),
-    so it reads as `(news)` with no prompt change.
+    still shows it unread, exactly as today. *Corrected in Phase 1 review:* the tick's message line
+    never printed `kind` (only the office's asker history does, office.ts:279), so
+    `buildOfficeMessagesBlock` gains a `, news of an access decision already made` tag beside the
+    reply tag. That is the tick's user message, not `PLANNER_SYSTEM`, whose byte pin is untouched.
   - access.ts:407 is a `to_agent` note to the technician's seat, so it is outside this inbox and
     stays `inform`.
 - **Jev stays a follow-up**, not folded in. The harness (`scripts/planner-eval/classify-*.mjs`)
@@ -209,7 +211,7 @@ twin (`src/db/observations.ts:402-551`):
 across `src/`, plus `officeRow` in `scripts/planner-eval/notes-run.mjs`).
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass
 - [ ] New cases in `src/db/officeMessages.test.ts` (local stack):
   - the reader returns only unread + unpinged `inform` rows, oldest first, and skips a `reply`, an
     `ask`, a read row and a pinged row;
@@ -220,7 +222,7 @@ across `src/`, plus `officeRow` in `scripts/planner-eval/notes-run.mjs`).
     second one, following `src/db/costs.test.ts:82-92`;
   - the probe respects `sinceIso` and ignores `ask`;
   - `listOfficeReadSince` returns read `inform`/`reply` rows after `sinceIso` for its tenant only.
-- [ ] A grant written through access.ts lands as `kind:'news'`; `listUnpingedOfficeMessages` skips it,
+- [x] A grant written through access.ts lands as `kind:'news'`; `listUnpingedOfficeMessages` skips it,
   and the tick's unread list still shows it
 
 ## Phase 2: the office prompt per door

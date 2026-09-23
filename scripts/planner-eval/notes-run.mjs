@@ -126,7 +126,7 @@ const officeRow = (over = {}) => ({
   id: 'm-1', tenant_id: 't1', direction: 'to_planner', kind: 'inform',
   from_ref: 'judy-alvarez', to_ref: 'spine:team-lead', technician_id: 'tech-2',
   tier: 'manager', nudge_id: null, in_reply_to: null, status: 'unread',
-  read_at: null, delivered_at: null, attempts: 0, serve_count: 0,
+  read_at: null, delivered_at: null, pinged_at: null, attempts: 0, serve_count: 0,
   message_group_id: null, via: 'assistant',
   created_at: ago(0.2), updated_at: ago(0.2),
   body: '',

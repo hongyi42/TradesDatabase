@@ -338,8 +338,10 @@ async function actorWords(tenantId: string, ref: string | null): Promise<string>
   }
 }
 
-// THE PLANNER HEARS EVERY ANSWER, as NEWS rather than as work. One inform per
-// grant, decline and revoke, in words. It grants nothing itself and does not
+// THE PLANNER HEARS EVERY ANSWER, as NEWS rather than as work. One news message
+// per grant, decline and revoke, in words — kind 'news', never 'inform' (rung
+// 10c, operator 2026-09-23): only an inform wakes the office, and this code
+// knows for certain there is nothing here to act on. It grants nothing itself and does not
 // chase a request (operator, 2026-09-19 — the office decides once and is
 // done); what it needs is to know what the firm has opened, because that
 // changes what it can safely say to whom. Best-effort: the access decision is
@@ -350,7 +352,7 @@ async function tellThePlanner(tenantId: string, managerRef: string, body: string
     await createOfficeMessage({
       tenantId,
       direction: 'to_planner',
-      kind: 'inform',
+      kind: 'news',
       fromRef: managerRef,
       toRef: TEAM_LEAD_REF,
       // Sender metadata, never authority — the office.ts inform precedent.

@@ -96,4 +96,10 @@ log "/etc/seat-glue/${SEAT}.env written (root, 0600)"
 install -m 0644 "$here/seat-glue@.service" /etc/systemd/system/seat-glue@.service
 systemctl daemon-reload
 runuser -u seatglue -- env HOME=/var/lib/seat-glue "$NODE" "$PREFIX/app/main.js" --selfcheck
-log "installed. NOT started — run cutover.sh ${SEAT} to move the bot over."
+# An upgrade: a running glue keeps the old code until it restarts.
+if systemctl is-active --quiet "seat-glue@${SEAT}"; then
+  systemctl restart "seat-glue@${SEAT}"
+  log "seat-glue@${SEAT} restarted on the new code"
+else
+  log "installed. NOT started — run cutover.sh ${SEAT} to move the bot over."
+fi

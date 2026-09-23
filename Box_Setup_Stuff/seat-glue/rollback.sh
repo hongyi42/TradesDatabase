@@ -3,9 +3,10 @@
 # to the openclaw sandbox. Run as ROOT on trades-box-1.
 #
 # The real token comes back from /root/seats/<seat>.env (bootstrap-box.sh wrote
-# it at provision time) into the container's provider, the same argv-safe way
-# badge-pull.sh installs a badge. The glue's conversation state stays in
-# /var/lib/seat-glue/<seat> — a later cutover resumes it.
+# it at provision time) into the seat's provider through the bare-KEY form: the
+# value rides the environment and never reaches sudo's logged command line, ps,
+# or the journal. The glue's conversation state stays in /var/lib/seat-glue/<seat>
+# — a later cutover resumes it.
 set -euo pipefail
 
 SEAT="${1:?usage: rollback.sh <seat>}"
@@ -17,20 +18,40 @@ home="$(getent passwd "$NEMOCLAW_USER" | cut -d: -f6)"
 OSH="${OSH:-$home/.local/bin/openshell}"
 log() { printf '== %s\n' "$*"; }
 
+# Everything that can fail is checked BEFORE the glue lets go of the bot.
+[ -x "$OSH" ] || { echo "rollback: openshell not found at $OSH — nothing changed" >&2; exit 1; }
+REAL="$(grep -m1 '^TELEGRAM_BOT_TOKEN=' "/root/seats/${SEAT}.env" 2>/dev/null | cut -d= -f2- | tr -d '"' || true)"
+[ -n "$REAL" ] || { echo "rollback: no token in /root/seats/${SEAT}.env — nothing changed" >&2; exit 1; }
+cid="$(docker ps -aq --filter "name=openshell-${SEAT}-" | head -1 || true)"
+[ -n "$cid" ] || { echo "rollback: no openshell-${SEAT}- container on this box — nothing changed" >&2; exit 1; }
+trap 'echo "rollback: FAILED at line $LINENO — check seat-glue@${SEAT} and the openclaw container by hand" >&2' ERR
+
 # 1. The glue lets go of the bot first — one poller per bot.
 systemctl disable --now "seat-glue@${SEAT}" 2>/dev/null || true
 log "seat-glue@${SEAT} stopped"
 
-# 2. The real token back into the openclaw provider.
-REAL="$(grep -m1 '^TELEGRAM_BOT_TOKEN=' "/root/seats/${SEAT}.env" | cut -d= -f2- | tr -d '"')"
-[ -n "$REAL" ] || { echo "rollback: no token in /root/seats/${SEAT}.env" >&2; exit 1; }
-sudo -u "$NEMOCLAW_USER" -H env REAL="$REAL" \
-  bash -c '"$0" provider update "$1-telegram-bridge" --credential "TELEGRAM_BOT_TOKEN=${REAL:?}"' "$OSH" "$SEAT" >/dev/null
+# 2. The real token back into the provider.
+TELEGRAM_BOT_TOKEN="$REAL" sudo --preserve-env=TELEGRAM_BOT_TOKEN -u "$NEMOCLAW_USER" -H \
+  "$OSH" provider update "${SEAT}-telegram-bridge" --credential TELEGRAM_BOT_TOKEN </dev/null >/dev/null
 unset REAL
 log "openclaw ${SEAT}: real token restored"
 
-# 3. The container and its revive unit back up.
-cid="$(docker ps -aq --filter "name=openshell-${SEAT}-" | head -1)"
-[ -n "$cid" ] && docker restart "$cid" >/dev/null
+# 3. A container stopped for days may hold an expired sandbox JWT (the "docker
+#    restart = expired JWT" trap): re-mint first, then restart, then relaunch
+#    the agent through its revive unit.
+systemctl restart sandbox-token-medic.service 2>/dev/null || log "token medic not run (not installed?) — continuing"
+docker restart "$cid" >/dev/null
 systemctl enable --now "nemoclaw-agent-${SEAT}.service"
-log "openclaw ${SEAT}: container restarted, revive unit enabled — check it polls: docker logs --since 3m $cid | grep getUpdates"
+log "openclaw ${SEAT}: container restarted, revive unit enabled — waiting for it to poll (up to 180 s)"
+
+# 4. Proof, the way bootstrap-box.sh's provision step checks it.
+deadline=$(( $(date +%s) + 180 ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  if docker logs --since 3m "$cid" 2>&1 | grep -q getUpdates; then
+    log "openclaw ${SEAT} is polling Telegram again"
+    exit 0
+  fi
+  sleep 10
+done
+echo "rollback: openclaw ${SEAT} did not show getUpdates within 180 s — check: docker logs --since 5m $cid" >&2
+exit 1

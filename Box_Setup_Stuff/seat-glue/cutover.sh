@@ -2,18 +2,28 @@
 # cutover.sh <seat> — move a seat's Telegram bot from its openclaw sandbox to the
 # seat glue. Run as ROOT on trades-box-1 after install.sh. Undo: rollback.sh.
 #
-# WHY IT REMOVES THE TOKEN INSTEAD OF JUST STOPPING THE CONTAINER. Stopping is
-# not retiring: gateway-heal.sh starts every exited openshell- container, and
-# sandbox-token-medic.mjs `docker restart`s the containers whose JWT it renews.
-# A revived openclaw would poll the bot alongside the glue — Telegram allows one
-# poller per bot and both go deaf. So the container's provider gets a dead token
-# first; revived or not, it can no longer take the bot. The real token stays in
-# /root/seats/<seat>.env, which is where rollback.sh puts it back from.
+# STOPPING A CONTAINER IS NOT RETIRING IT. gateway-heal.sh starts every exited
+# openshell- container and sandbox-token-medic.mjs `docker restart`s the ones
+# it renews. What keeps a restarted container from polling the bot is that its
+# openclaw agent only comes back through nemoclaw-agent-<seat>.service
+# (nemoclaw-agent-revive.sh: a bare container restart brings up PID 1 only). So:
+#   1. disable that revive unit — the agent can no longer be relaunched;
+#   2. put a DEAD bot token in the seat's provider — a second layer, for any
+#      relaunch path we do not know about (credentials resolve at launch);
+#   3. stop the container, which ends the poller that is running now;
+#   4. start the glue. Telegram allows ONE poller per bot: if anything still
+#      polls, the glue logs ANOTHER POLLER and its unit stays down (exit 3).
+# The real token stays in /root/seats/<seat>.env; rollback.sh restores it.
+#
+# What this does NOT verify, honestly: which token the openclaw process holds.
+# A sandbox never shows a credential's value — `docker exec … printenv` sees a
+# placeholder or nothing — so the only live proof is the glue polling without
+# a 409, which step 4 shows.
 #
 # KNOWN GAP, accepted by the operator (decision 5 = C): the nudge and office
-# runners deliver by exec INSIDE this container. From here until step 3 builds
-# their replacement, this seat's planner questions, office notes and pushes
-# report failed on Render.
+# runners deliver by exec INSIDE this container. Until step 3 builds their
+# replacement, this seat's planner questions, office notes and pushes report
+# failed on Render.
 set -euo pipefail
 
 SEAT="${1:?usage: cutover.sh <seat>}"
@@ -27,43 +37,46 @@ home="$(getent passwd "$NEMOCLAW_USER" | cut -d: -f6)"
 OSH="${OSH:-$home/.local/bin/openshell}"
 [ -x "$OSH" ] || { echo "cutover: openshell not found at $OSH" >&2; exit 1; }
 log() { printf '== %s\n' "$*"; }
-container() { docker ps -aq --filter "name=openshell-${SEAT}-" | head -1; }
 
-# 1. A dead token into the openclaw seat's provider. Same argv-safe form as
-#    badge-pull.sh:126 (the value rides the environment, never the command line).
-DEAD="retired-to-seat-glue-$(date +%s)"
-sudo -u "$NEMOCLAW_USER" -H env DEAD="$DEAD" \
-  bash -c '"$0" provider update "$1-telegram-bridge" --credential "TELEGRAM_BOT_TOKEN=${DEAD:?}"' "$OSH" "$SEAT" >/dev/null
+# Nothing has changed yet. From the first change on, a failure must say how to recover.
+changed=0
+trap '[ "$changed" = 1 ] && echo "cutover: FAILED at line $LINENO — the bot may have NO poller now; run rollback.sh ${SEAT}" >&2' ERR
+
+# 0. The provider must already hold a TELEGRAM_BOT_TOKEN key — otherwise the
+#    update below would ADD a key and leave the real one live. Key NAMES only
+#    (bootstrap-box.sh's idiom: strip colours, read the "Credential keys" line).
+keys="$(sudo -u "$NEMOCLAW_USER" -H "$OSH" provider get "${SEAT}-telegram-bridge" </dev/null 2>/dev/null \
+        | sed 's/\x1b\[[0-9;]*m//g' | grep -i 'Credential keys:' || true)"
+case "$keys" in
+  *TELEGRAM_BOT_TOKEN*) log "provider ${SEAT}-telegram-bridge holds TELEGRAM_BOT_TOKEN" ;;
+  *) echo "cutover: could not confirm ${SEAT}-telegram-bridge holds TELEGRAM_BOT_TOKEN — nothing changed" >&2; exit 1 ;;
+esac
+cid="$(docker ps -aq --filter "name=openshell-${SEAT}-" | head -1 || true)"
+
+# 1. No more relaunches.
+changed=1
+systemctl disable --now "nemoclaw-agent-${SEAT}.service" 2>/dev/null || true
+log "openclaw ${SEAT}: revive unit disabled"
+
+# 2. A dead token in the provider. The bare-KEY form reads the value from the
+#    environment (docs/inference-recovery-runbook.md), so it never reaches
+#    sudo's logged command line or ps. (This value is not a secret either way.)
+TELEGRAM_BOT_TOKEN="retired-to-seat-glue-$(date +%s)" \
+  sudo --preserve-env=TELEGRAM_BOT_TOKEN -u "$NEMOCLAW_USER" -H \
+  "$OSH" provider update "${SEAT}-telegram-bridge" --credential TELEGRAM_BOT_TOKEN </dev/null >/dev/null
 log "openclaw ${SEAT}: provider token replaced with a dead one"
 
-# 2. Restart it so the process picks the dead token up (credentials inject at
-#    launch only), then check what it now holds — by hash, never by value.
-cid="$(container)"
-if [ -n "$cid" ]; then
-  docker restart "$cid" >/dev/null
-  sleep 20
-  real_hash="$(grep -m1 '^TELEGRAM_BOT_TOKEN=' "/root/seats/${SEAT}.env" | cut -d= -f2- | tr -d '"' | sha256sum | cut -d' ' -f1)"
-  seen_hash="$(docker exec "$cid" sh -c 'printf %s "${TELEGRAM_BOT_TOKEN:-}"' 2>/dev/null | sha256sum | cut -d' ' -f1)"
-  empty_hash="$(printf '' | sha256sum | cut -d' ' -f1)"
-  if [ "$seen_hash" = "$real_hash" ]; then
-    echo "cutover: the openclaw container STILL holds the real token — stopping here (nothing else changed)" >&2
-    exit 1
-  elif [ "$seen_hash" = "$empty_hash" ]; then
-    log "container env has no TELEGRAM_BOT_TOKEN (the gateway injects it) — relying on the provider change + the glue's 409 check"
-  else
-    log "container now holds a token that is NOT the real one"
-  fi
-fi
+# 3. End the poller that is running now.
+if [ -n "$cid" ]; then docker stop "$cid" >/dev/null; fi
+log "openclaw ${SEAT}: container stopped"
 
-# 3. Stop the openclaw seat: its revive unit first (Restart=always), then the container.
-systemctl disable --now "nemoclaw-agent-${SEAT}.service" 2>/dev/null || true
-[ -n "$cid" ] && docker stop "$cid" >/dev/null
-log "openclaw ${SEAT}: revive unit disabled, container stopped"
-
-# 4. Start the glue and show its first lines. A 409 here means another poller
-#    still holds the bot: the unit stops (exit 3) instead of fighting it.
+# 4. Start the glue and show its first lines.
 systemctl enable --now "seat-glue@${SEAT}"
-sleep 15
+sleep 20
 journalctl -u "seat-glue@${SEAT}" -n 20 --no-pager
-systemctl is-active --quiet "seat-glue@${SEAT}" && log "seat-glue@${SEAT} is running" \
-  || { echo "cutover: seat-glue@${SEAT} is NOT running — see the journal above; rollback.sh ${SEAT} restores openclaw" >&2; exit 1; }
+if systemctl is-active --quiet "seat-glue@${SEAT}"; then
+  log "seat-glue@${SEAT} is running — text the bot to test it"
+else
+  echo "cutover: seat-glue@${SEAT} is NOT running — see the journal above; rollback.sh ${SEAT} restores openclaw" >&2
+  exit 1
+fi

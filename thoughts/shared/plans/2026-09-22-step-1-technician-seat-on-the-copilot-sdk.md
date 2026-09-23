@@ -265,11 +265,9 @@ Ships the staged package to trades-box-1, installs a systemd unit, moves s5's bo
 **`Box_Setup_Stuff/seat-glue/cutover.sh s5` / `rollback.sh s5`** (run by the operator with `!`)
 - **Cut-over:**
   1. Check the provider's credential key names without values (expected `TELEGRAM_BOT_TOKEN`).
-  2. `openshell provider update s5-telegram-bridge --credential "TELEGRAM_BOT_TOKEN=${DEAD:?}"`, using the environment-variable form from `badge-pull.sh:126` so the value never lands in logs.
-  3. `docker restart` the s5 container.
-  4. Confirm there's no successful `getUpdates` in `docker logs --since 2m`.
-  5. `systemctl disable --now nemoclaw-agent-s5.service`, then `docker stop` the container.
-  6. `systemctl enable --now seat-glue@s5`.
+  2. `systemctl disable --now nemoclaw-agent-s5.service` (a restarted container only relaunches its agent through this unit).
+  3. A dead token via the bare-KEY form (`--credential TELEGRAM_BOT_TOKEN`, value in the environment, per docs/inference-recovery-runbook.md) so no value reaches sudo's log or `ps`.
+  4. `docker stop` the container, then `systemctl enable --now seat-glue@s5`. (Phase 3 review: a sandbox never exposes a credential's value, so the old "check the token by hash" step could only ever pass — removed; the glue polling without a 409 is the proof.)
 - **Rollback:** stop the glue, put the real token back from `/root/seats/s5.env` the same way, restart the container, re-enable the revive unit.
 
 **Docs**
@@ -283,7 +281,7 @@ Ships the staged package to trades-box-1, installs a systemd unit, moves s5's bo
 - Prerequisites: `ssh tradesbox`; the operator runs `install.sh` and `cutover.sh` with `!`; a supabase-test MCP SELECT for the arguments.
 - [ ] `journalctl -u seat-glue@s5` shows polling started and no 409. `docker ps` shows s5's container stopped.
 - [ ] After the operator's first phone turn, the journal shows a spine call. Read back independently: a pilot `cost_events` SELECT shows a new `spine/tool_call` row for Ben's `technician_ref` in the last 10 minutes.
-- [ ] A cost line exists in `/var/lib/seat-glue/costs/`.
+- [ ] A cost line exists in `/var/lib/seat-glue/s5/costs/` (the unit's per-seat state dir).
 
 ### Manual verification (operator, on Ben's Telegram)
 - [ ] A text, a double text, a photo, a voice note, Stop, and `/new` all behave as in phase 2.

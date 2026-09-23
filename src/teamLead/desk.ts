@@ -6,10 +6,10 @@ import {
   markOfficeMessagesRead,
   OFFICE_MESSAGE_BODY_MAX,
   OPEN_NUDGE_STATUSES,
-  type Nudge,
 } from '../db/index.js';
 import { renderMemoryIndex } from './memory.js';
 import { TEAM_LEAD_REF } from './identity.js';
+import { renderAskerState } from './office.js';
 import {
   DESK_BUDGET_MS,
   DESK_MAX_TOKENS,
@@ -67,11 +67,6 @@ export const DESK_FALLBACK_NOTE =
   'the desk could not answer right now — the office will see your question at its next ' +
   'planning pass';
 
-const flat = (text: string, max: number): string => {
-  const one = text.replace(/\s+/g, ' ').trim();
-  return one.length <= max ? one : `${one.slice(0, max)}…`;
-};
-
 export interface DeskQuestionInput {
   tenantId: string;
   /** The asker's display ref (their technician ref) — becomes from_ref. */
@@ -110,25 +105,8 @@ export interface DeskDeps {
   listNudges?: typeof listNudgesByStatus;
 }
 
-/** What the office currently has open for ONE person, inlined for the
- *  technician-tier desk — their own questions and nothing else. */
-export function renderAskerState(rows: Nudge[], askerTechnicianId: string | null): string {
-  const own = askerTechnicianId
-    ? rows.filter((n) => n.technician_id === askerTechnicianId)
-    : [];
-  if (own.length === 0) {
-    return 'WHAT THE OFFICE HAS OPEN FOR THIS PERSON: nothing — no open questions for them.';
-  }
-  const lines = ['WHAT THE OFFICE HAS OPEN FOR THIS PERSON (their own questions only):'];
-  for (const n of own) {
-    lines.push(
-      `  - ${n.kind}, status ${n.status}` +
-        (n.question ? `: "${flat(n.question, 300)}"` : ' (no question written yet)') +
-        (n.asked_at ? ` — went out ${n.asked_at}` : ''),
-    );
-  }
-  return lines.join('\n');
-}
+// Moved to the office (plan 2026-09-22); re-exported until this module is retired.
+export { renderAskerState };
 
 export interface DeskAnswer {
   answer: string | null;

@@ -219,6 +219,36 @@ export async function listDeskTranscriptsSince(
   return ((data ?? []) as OfficeMessage[]).reverse();
 }
 
+// ONE PERSON'S BUSINESS WITH THE OFFICE (plan 2026-09-22, the office): every row
+// this ref sent or was sent, newest first, both directions. The office's
+// `asker_history` tool reads it for the person asking and NOBODY else — the ref
+// is the verified caller's, never a model's argument.
+//
+// The ref is interpolated into a PostgREST `or=` filter, so anything that is not
+// the slug shape roster refs are minted in is refused rather than escaped: a
+// comma or a parenthesis there would change the filter, not match a row.
+const REF_SHAPE = /^[a-z0-9][a-z0-9:-]*$/;
+
+export async function listOfficeMessagesForRef(
+  tenantId: string,
+  ref: string,
+  sinceIso: string,
+  limit = 40,
+): Promise<OfficeMessage[]> {
+  if (!REF_SHAPE.test(ref)) return [];
+  const { data, error } = await getClient()
+    .from('office_messages')
+    .select()
+    .eq('tenant_id', tenantId)
+    .or(`from_ref.eq.${ref},to_ref.eq.${ref}`)
+    .gt('created_at', sinceIso)
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(`listOfficeMessagesForRef failed: ${error.message}`);
+  return (data ?? []) as OfficeMessage[];
+}
+
 // The transport's host-scoped reads (Phase 3, the listQueuedNudgesForHost
 // twins). Cross-tenant BY DESIGN — a box serves every tenant whose
 // technicians live on it — so these key on host, and `!inner` makes the host

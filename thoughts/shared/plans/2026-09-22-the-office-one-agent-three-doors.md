@@ -159,13 +159,13 @@ newest first); fix the stale header (:13–16) and `AccessWants` doc (:40).
   — a text-only ending leaves `args` null and each door decides (below).
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`
-- [ ] `office.test.ts`: `catalogLookup` rows carry only the listed keys and no job title appears in
+- [x] `npm run typecheck`, `npm run lint`, `npm test`
+- [x] `office.test.ts`: `catalogLookup` rows carry only the listed keys and no job title appears in
   the serialized result; an address/phone query → `[]`; a malformed or other-tenant `customerId` →
   `[]`; `askerHistory` returns nothing about another ref and no job title from a request's
   `targetName`; the technician tool list has no `spine_read`/`recall_decisions`; a stub loop that
   calls the terminal tool gets its args back; a text-only stub gets `args: null`.
-- [ ] a test that `PLANNER_SYSTEM` equals the pre-refactor string with only the ACCESS paragraph
+- [x] a test that `PLANNER_SYSTEM` equals the pre-refactor string with only the ACCESS paragraph
   swapped; `OFFICE_SYSTEM` contains each shared section's first line; the `planner.test.ts:3150+`
   and `:7974` pins pass.
 

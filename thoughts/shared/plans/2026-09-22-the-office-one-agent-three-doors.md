@@ -2,7 +2,7 @@
 date: 2026-09-22
 task: Merge the desk into the office — one office prompt and runner; the question, access and inbound-call doors all run on it; code guards what a technician-facing office can see
 research: thoughts/shared/research/2026-09-22-merging-the-desk-into-the-office.md
-status: draft
+status: complete
 supersedes: thoughts/shared/plans/2026-09-19-access-plan-b-the-request-flow-through-the-office.md (its "the desk filters; narrow asks are opened by the desk" shape — already fenced 2026-09-20; this plan moves the remaining judgment from code to the office)
 ---
 
@@ -71,6 +71,11 @@ cron) keeps `PLANNER_SYSTEM`. What a technician-facing office can SEE is bounded
 - **Asker-scoped tools run in-process** (implementation): `catalog_lookup` and `asker_history` are
   executed inside `office.ts`'s executor, closed over the asker — never on the MCP surface, never on
   `TEAM_LEAD_TOOL_NAMES`. Every other tool dispatches as `spine:team-lead` through the existing gate.
+
+- **Final-review rulings (operator, 2026-09-22).** (1) An access ask on an OpenClaw seat that runs
+  past 60s is cut by OpenClaw; "hang-up = stop" holds, so it may file nothing — ACCEPTED, the seat
+  shows an error and the hole ends with OpenClaw. (2) Technician-facing doors KEEP write_memory /
+  write_job_note; the prompt's "routing claims are claims" is the guard, knowingly.
 
 ## Plain-language walkthrough
 

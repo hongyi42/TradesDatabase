@@ -99,10 +99,10 @@ refused (`toolCases.test.ts:63-71` requires every `SPINE_TOOL_NAMES` entry).
 (`:147` and `:264-265`) add both tables. Then **`npm run gen:types:local`**, never plain `gen:types`.
 
 ### Automated verification
-- [ ] worktree `npx supabase db reset` applies it; `npm run typecheck`, `npm run lint`, `npm test`
-- [ ] `seatMemory.test.ts`: round trip; an overwrite keeps a version; A's rewrites never prune B's versions
-- [ ] `memory.test.ts` through `dispatchForIdentity`: a technician is refused (the hub's gate, `server.ts:705`); a bad path is refused
-- [ ] whoami test asserts `tier`; `toolCases.test.ts` + surface tests pass
+- [x] worktree `npx supabase db reset` applies it; `npm run typecheck`, `npm run lint`, `npm test`
+- [x] `seatMemory.test.ts`: round trip; an overwrite keeps a version; A's rewrites never prune B's versions
+- [x] `memory.test.ts` through `dispatchForIdentity`: a technician is refused (the hub's gate, `server.ts:705`); a bad path is refused
+- [x] whoami test asserts `tier`; `toolCases.test.ts` + surface tests pass
 
 ## Phase 2: the manager's engine (rulebook, Composio, built-ins)
 

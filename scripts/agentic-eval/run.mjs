@@ -146,6 +146,8 @@ const RESET_TABLES = [
   // hangs off nothing, so no cascade reaches any of them.
   'planner_memory',
   'planner_memory_versions',
+  'seat_memory',
+  'seat_memory_versions',
   'planner_runs',
   'job_notes',
   'job_note_versions',
@@ -263,6 +265,8 @@ for (const s of scenarios) {
   // a per-scenario corpus cannot tolerate.
   await sql.query(`delete from planner_memory where tenant_id = $1`, [tenant.id]);
   await sql.query(`delete from planner_memory_versions where tenant_id = $1`, [tenant.id]);
+  await sql.query(`delete from seat_memory where tenant_id = $1`, [tenant.id]);
+  await sql.query(`delete from seat_memory_versions where tenant_id = $1`, [tenant.id]);
   await sql.query(`delete from planner_runs where tenant_id = $1`, [tenant.id]);
   // Notepads reach the next scenario's PROMPT the same way memory does — as the
   // "you have a note on this job" line — so they leak across scenarios too.

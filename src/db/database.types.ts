@@ -2506,6 +2506,76 @@ export type Database = {
           },
         ]
       }
+      seat_memory: {
+        Row: {
+          content: string
+          created_at: string
+          path: string
+          technician_ref: string
+          tenant_id: string
+          updated_at: string
+        }
+        Insert: {
+          content: string
+          created_at?: string
+          path: string
+          technician_ref: string
+          tenant_id: string
+          updated_at?: string
+        }
+        Update: {
+          content?: string
+          created_at?: string
+          path?: string
+          technician_ref?: string
+          tenant_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "seat_memory_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      seat_memory_versions: {
+        Row: {
+          content: string
+          id: string
+          path: string
+          replaced_at: string
+          technician_ref: string
+          tenant_id: string
+        }
+        Insert: {
+          content: string
+          id?: string
+          path: string
+          replaced_at?: string
+          technician_ref: string
+          tenant_id: string
+        }
+        Update: {
+          content?: string
+          id?: string
+          path?: string
+          replaced_at?: string
+          technician_ref?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "seat_memory_versions_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       seats: {
         Row: {
           bot_ref: string | null

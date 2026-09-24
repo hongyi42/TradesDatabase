@@ -133,6 +133,9 @@ const RESET_TABLES = [
   // previous world's conclusions into the rebuilt firm's very first prompt.
   'planner_memory',
   'planner_memory_versions',
+  // A manager seat's own memory (step 2a): tenants-only FKs, same trap.
+  'seat_memory',
+  'seat_memory_versions',
   'planner_runs',
   // The planner's per-job notepads (build: job notepads, 2026-08-30). These DO
   // cascade from jobs — named anyway (eng-memory §1).
@@ -234,6 +237,9 @@ const PILOT_TENANT_SCOPED = [
   // The planner's memory (build 3) — see the note on the list above.
   'planner_memory',
   'planner_memory_versions',
+  // A manager seat's own memory (step 2a): tenants-only FKs, same trap.
+  'seat_memory',
+  'seat_memory_versions',
   'planner_runs',
   // observations (build 4) and office_messages (build 5.5): the nudges trap
   // exactly — both carry NO ACTION technician FKs, so the roster delete below

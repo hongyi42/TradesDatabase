@@ -29,6 +29,7 @@ export * from './moneyEvents.js';
 export * from './tenantProfiles.js';
 export * from './tenantSettings.js';
 export * from './plannerMemory.js';
+export * from './seatMemory.js';
 export * from './plannerRuns.js';
 export * from './jobNotes.js';
 export * from './callNumbers.js';

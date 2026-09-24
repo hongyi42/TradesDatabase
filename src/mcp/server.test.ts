@@ -7938,6 +7938,19 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     }
   });
 
+  test("a manager's conversation is private: the office is told to ask them directly", async () => {
+    const { client: c, callWith } = await clientFor({ tenantId, technicianRef: 'spine:team-lead' });
+    try {
+      const res = await callWith('read_conversation', { person: 'mgr-test' });
+      expect(res.isError).toBe(false);
+      expect(res.data.status).toBe('private');
+      expect(res.data.note).toContain('Ask them directly');
+      expect(res.data.turns).toBeUndefined();
+    } finally {
+      await c.close();
+    }
+  });
+
   test("another firm's office cannot read this firm's people", async () => {
     const other = await createTenant('read-conv-other-firm', { technicianSeats: 1 });
     try {

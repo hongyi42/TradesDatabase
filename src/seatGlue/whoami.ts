@@ -15,6 +15,12 @@ export interface SeatWho {
   telegramUserId: number;
   /** The firm's IANA timezone — the engine process's TZ. */
   tz: string;
+  /**
+   * May this seat's conversation be uploaded for the office to read? False for a
+   * MANAGER (operator, 2026-09-24: a manager's chat is private), and false when
+   * Render does not say — privacy is the default, never the fallback.
+   */
+  shareConversation: boolean;
 }
 
 export async function fetchWhoami(spineUrl: string, token: string, fetchFn: FetchLike = defaultFetch): Promise<SeatWho> {
@@ -46,5 +52,6 @@ export async function fetchWhoami(spineUrl: string, token: string, fetchFn: Fetc
     technicianRef: text('technicianRef'),
     telegramUserId: Number(idText),
     tz,
+    shareConversation: body.shareConversation === true,
   };
 }

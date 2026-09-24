@@ -69,7 +69,7 @@ export interface SeatDeps {
     report(r: { id: string; leg: InboxItem['leg']; outcome: 'delivered' | 'failed'; detail?: string }): Promise<void>;
   };
   /** Who the seat was at start (whoami): an inbox pull that disagrees means the seat changed. */
-  who?: { telegramUserId: number; tz: string };
+  who?: { telegramUserId: number; tz: string; shareConversation?: boolean };
   /**
    * The seat changed under the running glue. 0 = rebind or timezone (restart and
    * ask whoami again); 1 = token refused (restart: a reinstall rotated it);
@@ -148,7 +148,8 @@ export class Seat {
     await this.sweep();
     this.sweepTimer = setInterval(() => void this.sweep(), this.deps.sweepEveryMs ?? 3_600_000);
     this.sweepTimer.unref?.();
-    if (this.deps.inbox) {
+    // The notice only where it is true: a manager's chat is never shared.
+    if (this.deps.inbox && this.deps.who?.shareConversation) {
       this.disclosing = this.disclose();
       await this.disclosing;
       void this.pollInbox();
@@ -452,8 +453,12 @@ export class Seat {
       }
       // Compared as numbers: whoami parsed the same text with Number(), so an id
       // too long for exact integers still compares equal to itself.
-      if (Number(got.seat.telegramUserId) !== who.telegramUserId || got.seat.timezone !== who.tz) {
-        this.log('this seat changed on Render (Telegram account or timezone) — restarting to pick it up');
+      if (
+        Number(got.seat.telegramUserId) !== who.telegramUserId ||
+        got.seat.timezone !== who.tz ||
+        got.seat.shareConversation !== (who.shareConversation ?? false)
+      ) {
+        this.log('this seat changed on Render (Telegram account, timezone or tier) — restarting to pick it up');
         this.deps.onSeatChanged?.(0);
         return;
       }

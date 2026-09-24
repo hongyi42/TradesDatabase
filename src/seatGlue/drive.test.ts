@@ -35,14 +35,20 @@ describe('seatDeps office wiring', () => {
     stateDir: '/tmp/seat-glue-test-never-written',
     mediaRetentionDays: 7,
   };
-  const who = { seatRef: 's5', tenantId: 't', technicianRef: 'ben', telegramUserId: 5801703167, tz: 'UTC' };
+  const who = { seatRef: 's5', tenantId: 't', technicianRef: 'ben', telegramUserId: 5801703167, tz: 'UTC', shareConversation: true };
   const client = {} as EngineClient;
 
   it('the office is wired by default', () => {
     const deps = seatDeps(cfg, who, client, new ScriptedTelegram(1), new TurnPolicy());
     expect(deps.inbox).toBeDefined();
-    expect(deps.who).toEqual({ telegramUserId: 5801703167, tz: 'UTC' });
+    expect(deps.who).toEqual({ telegramUserId: 5801703167, tz: 'UTC', shareConversation: true });
     expect(deps.transcript).toBeDefined();
+  });
+
+  it("a manager's seat gets the inbox but never a recorder (their chat is private)", () => {
+    const deps = seatDeps(cfg, { ...who, shareConversation: false }, client, new ScriptedTelegram(1), new TurnPolicy());
+    expect(deps.inbox).toBeDefined();
+    expect(deps.transcript).toBeUndefined();
   });
 
   it('office:false leaves it out entirely', () => {

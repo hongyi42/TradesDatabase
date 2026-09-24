@@ -24,7 +24,7 @@ function fake(status: number, body: unknown = {}): { fetch: FetchLike; calls: Ar
 describe('fetchInbox', () => {
   it('pulls /seat/inbox with the seat token and returns the seat and its items', async () => {
     const f = fake(200, {
-      seat: { telegramUserId: '5801703167', timezone: 'America/Vancouver' },
+      seat: { telegramUserId: '5801703167', timezone: 'America/Vancouver', shareConversation: true },
       items: [
         { id: ID, leg: 'phone', text: 'How did the Smith visit go?' },
         { id: ID.replace('1111', '9999'), leg: 'note', text: 'OFFICE NOTE (…): the Smith job is open to them' },
@@ -33,7 +33,7 @@ describe('fetchInbox', () => {
     const got = await fetchInbox('https://spine.example/mcp', TOKEN, f.fetch);
     expect(f.calls[0].url).toBe('https://spine.example/seat/inbox');
     expect(f.calls[0].init?.headers).toEqual({ authorization: `Bearer ${TOKEN}` });
-    expect(got.seat).toEqual({ telegramUserId: '5801703167', timezone: 'America/Vancouver' });
+    expect(got.seat).toEqual({ telegramUserId: '5801703167', timezone: 'America/Vancouver', shareConversation: true });
     expect(got.items.map((i) => i.leg)).toEqual(['phone', 'note']);
   });
 

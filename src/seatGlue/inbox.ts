@@ -22,7 +22,7 @@ export interface InboxItem {
 
 export interface InboxResult {
   /** The seat's Telegram account now — null when nobody is bound. */
-  seat: { telegramUserId: string | null; timezone: string };
+  seat: { telegramUserId: string | null; timezone: string; shareConversation: boolean };
   items: InboxItem[];
 }
 
@@ -59,7 +59,10 @@ export async function fetchInbox(spineUrl: string, token: string, fetchFn: Fetch
     if (typeof raw.text !== 'string' || !raw.text) continue;
     items.push({ id: raw.id, leg: raw.leg, text: raw.text });
   }
-  return { seat: { telegramUserId: tg, timezone: seat.timezone }, items };
+  return {
+    seat: { telegramUserId: tg, timezone: seat.timezone, shareConversation: seat.shareConversation === true },
+    items,
+  };
 }
 
 export async function reportInbox(

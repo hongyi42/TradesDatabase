@@ -16,3 +16,38 @@ describe('ScriptedTelegram', () => {
     expect((await tg.getUpdates(0))[0].update_id).toBe(1);
   });
 });
+
+// Step 3: the driver runs the REAL seat token against a scripted Telegram, so
+// the office must stay unwired — no real inbox drained, no notice to a fake.
+import { seatDeps } from './main.js';
+import { TurnPolicy } from './turnPolicy.js';
+import type { SeatConfig } from './config.js';
+import type { EngineClient } from './engine.js';
+
+describe('seatDeps office wiring', () => {
+  const cfg: SeatConfig = {
+    botToken: 'x',
+    seatRef: 's5',
+    seatToken: `st_${'a'.repeat(64)}`,
+    spineUrl: 'https://spine.example/mcp',
+    openrouterKey: 'k',
+    model: 'm',
+    stateDir: '/tmp/seat-glue-test-never-written',
+    mediaRetentionDays: 7,
+  };
+  const who = { seatRef: 's5', tenantId: 't', technicianRef: 'ben', telegramUserId: 5801703167, tz: 'UTC' };
+  const client = {} as EngineClient;
+
+  it('the office is wired by default', () => {
+    const deps = seatDeps(cfg, who, client, new ScriptedTelegram(1), new TurnPolicy());
+    expect(deps.inbox).toBeDefined();
+    expect(deps.who).toEqual({ telegramUserId: 5801703167, tz: 'UTC' });
+  });
+
+  it('office:false leaves it out entirely', () => {
+    const deps = seatDeps(cfg, who, client, new ScriptedTelegram(1), new TurnPolicy(), { office: false });
+    expect(deps.inbox).toBeUndefined();
+    expect(deps.who).toBeUndefined();
+    expect(deps.onSeatChanged).toBeUndefined();
+  });
+});

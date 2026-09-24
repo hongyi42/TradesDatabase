@@ -25,10 +25,10 @@
 # seat=<seat>), so record it first. The glue then learns who it is from Render
 # (/seat/whoami); nothing about the person is typed on the box.
 #
-# KNOWN GAP, accepted by the operator (decision 5 = C): the nudge and office
-# runners deliver by exec INSIDE this container. Until step 3 builds their
-# replacement, this seat's planner questions, office notes and pushes report
-# failed on Render.
+# OFFICE TRAFFIC (step 3): the glue pulls this seat's planner questions, office
+# notes and pushes itself from Render's /seat/inbox. While it pulls, the box's
+# nudge and office runners skip this person; after rollback.sh they take them
+# back within two minutes.
 set -euo pipefail
 
 SEAT="${1:?usage: cutover.sh <seat>}"

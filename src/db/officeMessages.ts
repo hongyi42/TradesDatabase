@@ -1,5 +1,6 @@
 import type { Database } from './database.types.js';
 import { getClient } from './client.js';
+import { scopeQueueQuery, type QueueScope } from './queueScope.js';
 import type { Technician } from './technicians.js';
 
 // The office_messages bucket (plan 2026-08-31 "the planner's inbox", Phase 1).
@@ -275,6 +276,8 @@ export async function listQueuedOfficeMessagesForHost(
   // chat message as an agent turn AS WELL AS texting it, and an unfiltered
   // nudge pull would text a message meant to land silently.
   via: OfficeMessageVia = 'assistant',
+  // Step 3: one glue seat's person, or everyone except live glue seats.
+  scope: QueueScope = {},
 ): Promise<QueuedOfficeMessageForHost[]> {
   // PAGED (final review): frozen rows deliberately KEEP status 'queued' and
   // sort first (oldest-first), so an unpaged read under PostgREST's silent
@@ -284,13 +287,16 @@ export async function listQueuedOfficeMessagesForHost(
   // agent would be the wrong audience.
   const out: QueuedOfficeMessageForHost[] = [];
   for (let from = 0; ; from += PAGE) {
-    const { data, error } = await getClient()
-      .from('office_messages')
-      .select(HOST_QUEUE_SELECT)
-      .eq('status', 'queued')
-      .eq('direction', 'to_agent')
-      .eq('via', via)
-      .eq('technicians.host_id', hostId)
+    const { data, error } = await scopeQueueQuery(
+      getClient()
+        .from('office_messages')
+        .select(HOST_QUEUE_SELECT)
+        .eq('status', 'queued')
+        .eq('direction', 'to_agent')
+        .eq('via', via)
+        .eq('technicians.host_id', hostId),
+      scope,
+    )
       .order('created_at', { ascending: true })
       .order('id', { ascending: true }) // deterministic paging tiebreak
       .range(from, from + PAGE - 1);

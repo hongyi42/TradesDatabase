@@ -34,6 +34,7 @@ export * from './jobNotes.js';
 export * from './callNumbers.js';
 export * from './callIngest.js';
 export * from './nudges.js';
+export * from './queueScope.js';
 export * from './observations.js';
 export * from './accessRequests.js';
 export * from './officeMessages.js';

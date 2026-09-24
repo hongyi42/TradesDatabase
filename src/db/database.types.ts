@@ -2512,6 +2512,7 @@ export type Database = {
           created_at: string
           host_id: string
           id: string
+          last_pulled_at: string | null
           retired_at: string | null
           seat_ref: string
           technician_id: string
@@ -2524,6 +2525,7 @@ export type Database = {
           created_at?: string
           host_id: string
           id?: string
+          last_pulled_at?: string | null
           retired_at?: string | null
           seat_ref: string
           technician_id: string
@@ -2536,6 +2538,7 @@ export type Database = {
           created_at?: string
           host_id?: string
           id?: string
+          last_pulled_at?: string | null
           retired_at?: string | null
           seat_ref?: string
           technician_id?: string

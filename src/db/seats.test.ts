@@ -11,12 +11,14 @@ import {
   getSeatByTechnician,
   getSeatIdentityByTokenHash,
   listFreeSeatBots,
+  listLiveGlueTechnicianIds,
   listLiveSeatBotIds,
   listPoollessSeatRefs,
   listSeatBotHandles,
   mintSeatToken,
   registerSeatBot,
   retireSeatByHostRef,
+  touchSeatPull,
 } from './seats.js';
 
 // Integration against the LOCAL stack (pattern: sandboxPool.test.ts). The seat
@@ -40,7 +42,7 @@ beforeAll(async () => {
   if (error || !data) throw new Error(`could not load seed tenant: ${error?.message ?? 'none'}`);
   tenantId = data.id;
   await pg.query('truncate table seats, seat_bots, sandbox_pool, technicians cascade');
-  await setTenantSeats(tenantId, { managerSeats: 1, technicianSeats: 12 });
+  await setTenantSeats(tenantId, { managerSeats: 1, technicianSeats: 20 });
   otherTenantId = (await createTenant('seats-other', { technicianSeats: 5 })).id;
   hostId = (await createHost('seats-host', 'b'.repeat(64))).id;
   otherHostId = (await createHost('seats-other-host', 'c'.repeat(64))).id;
@@ -164,6 +166,69 @@ describe('seats', () => {
     await createSeat({ tenantId, technicianId: bare.id, hostId, seatRef: 'g_bare0001', botRef: null });
     expect(await listPoollessSeatRefs(hostId)).toEqual(['g_bare0001']);
     expect(await listPoollessSeatRefs(otherHostId)).toEqual([]);
+  });
+});
+
+// STEP 3: a glue seat's inbox pull stamps it live, and the box's runners skip
+// its person while the stamp is fresh.
+describe('live glue seats (step 3)', () => {
+  test('fresh stamps count; stale, retired and other-host seats do not', async () => {
+    const mk = async (ref: string, host: string, seatRef: string) => {
+      const t = await insertTechnician({ tenantId, ref, displayName: ref });
+      const seat = await createSeat({ tenantId, technicianId: t.id, hostId: host, seatRef, botRef: null });
+      return { t, seat };
+    };
+    const fresh = await mk('live-fresh', hostId, 'g_live0001');
+    const stale = await mk('live-stale', hostId, 'g_live0002');
+    const retired = await mk('live-retired', hostId, 'g_live0003');
+    const elsewhere = await mk('live-elsewhere', otherHostId, 'g_live0004');
+    const never = await mk('live-never', hostId, 'g_live0005');
+
+    await touchSeatPull(fresh.seat.id);
+    await touchSeatPull(elsewhere.seat.id);
+    await touchSeatPull(retired.seat.id);
+    await pg.query("update seats set last_pulled_at = now() - interval '5 minutes' where id = $1", [
+      stale.seat.id,
+    ]);
+    await retireSeatByHostRef(hostId, 'g_live0003');
+
+    const since = new Date(Date.now() - 120_000).toISOString();
+    const live = await listLiveGlueTechnicianIds(hostId, since);
+    expect(live).toContain(fresh.t.id);
+    expect(live).not.toContain(stale.t.id);
+    expect(live).not.toContain(retired.t.id);
+    expect(live).not.toContain(never.t.id);
+    expect(live).not.toContain(elsewhere.t.id);
+    expect(await listLiveGlueTechnicianIds(otherHostId, since)).toEqual([elsewhere.t.id]);
+  });
+
+  test('touching a retired seat stamps nothing', async () => {
+    const t = await insertTechnician({ tenantId, ref: 'live-gone', displayName: 'Gone' });
+    const seat = await createSeat({ tenantId, technicianId: t.id, hostId, seatRef: 'g_live0006', botRef: null });
+    await retireSeatByHostRef(hostId, 'g_live0006');
+    await touchSeatPull(seat.id);
+    const row = await pg.query('select last_pulled_at from seats where id = $1', [seat.id]);
+    expect(row.rows[0].last_pulled_at).toBeNull();
+  });
+});
+
+describe('listLiveGlueTechnicianIds before the column is migrated', () => {
+  test.each(['42703', '42P01'])('%s → [] so the runners keep every item', async (code) => {
+    vi.resetModules();
+    vi.doMock('./client.js', () => ({
+      getClient: () => ({
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              is: () => ({ gte: async () => ({ data: null, error: { code, message: 'missing' } }) }),
+            }),
+          }),
+        }),
+      }),
+    }));
+    const { listLiveGlueTechnicianIds: fresh } = await import('./seats.js');
+    expect(await fresh('h', new Date().toISOString())).toEqual([]);
+    vi.doUnmock('./client.js');
   });
 });
 

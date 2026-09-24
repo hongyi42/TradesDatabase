@@ -19,15 +19,20 @@ import {
   getHostByTokenHash,
   getSeatBotUsername,
   getSeatByHostRef,
+  getSeatIdentityByTokenHash,
   getTechnician,
   getTechnicianById,
   getTenant,
   isInactiveState,
+  listLiveGlueTechnicianIds,
   listPoolRowsForHost,
   mintSeatToken,
   pingDb,
   retireSeatByHostRef,
   setSandboxBotId,
+  touchSeatPull,
+  type Seat,
+  type Technician,
 } from '../db/index.js';
 import { isValidService, recordOpsEvent } from '../db/opsEvents.js';
 import { recordHostMetrics } from '../db/hostMetrics.js';
@@ -386,6 +391,146 @@ async function handleSeatWhoami(req: http.IncomingMessage, res: http.ServerRespo
   }
 }
 
+// STEP 3: a glue seat that pulled its inbox this recently is LIVE, and the box's
+// bash runners skip its person. Twelve missed 10 s polls: long enough that a
+// slow Render response never flaps a seat back to the runners, short enough that
+// a stopped glue (rollback.sh) hands its person back to openclaw in two minutes.
+export const LIVE_GLUE_WINDOW_MS = 120_000;
+const liveGlueSince = (): string => new Date(Date.now() - LIVE_GLUE_WINDOW_MS).toISOString();
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// The seat a request's token names, and its person — the /seat/whoami posture:
+// no or unknown token → 401, a deactivated or missing person → 403, a database
+// failure → thrown (the caller's 500, which the glue reads as "retry").
+async function seatOfRequest(
+  req: http.IncomingMessage,
+): Promise<{ seat: Seat; person: Technician } | { status: 401 | 403 }> {
+  const token = seatTokenOf(req.headers);
+  if (!token) return { status: 401 };
+  const found = await getSeatIdentityByTokenHash(sha256hex(token));
+  if (!found) return { status: 401 };
+  const person = await getTechnicianById(found.seat.technician_id, found.seat.tenant_id);
+  if (!person || isInactiveState(person.state)) return { status: 403 };
+  return { seat: found.seat, person };
+}
+
+/** One inbox item: `phone` is texted to the person word for word; `note` is for their assistant. */
+export interface SeatInboxItem {
+  id: string;
+  leg: 'phone' | 'note';
+  text: string;
+}
+
+// STEP 3 — a glue seat's inbox (plan 2026-09-23-step-3-office-reaches-glue-seats).
+// The glue pulls with its SEAT token and gets only its own person's rows: the
+// phone leg (nudges, chat office rows, pushes) and the note leg (assistant
+// office rows), exactly as the box's two runners would have been served them —
+// same serve counting, same freezes. The pull stamps the seat live, which takes
+// its person out of the runners' host pulls. It also carries who the seat is,
+// so a running glue learns of a rebind or a timezone change without a restart.
+async function handleSeatInboxPull(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const json = (code: number, body: unknown) => {
+    res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    const who = await seatOfRequest(req);
+    if ('status' in who) {
+      res.writeHead(who.status);
+      res.end();
+      return;
+    }
+    const { seat, person } = who;
+    // seat.host_id stands in for the person's technicians.host_id, which is what
+    // the queue reads filter on. They agree by construction: bind_telegram writes
+    // the roster's host FROM the seat (roster.ts), and assign-host's
+    // add-glue-seat records the seat on the person's host. If they ever
+    // diverged, this inbox would come back empty and the runners would not skip
+    // the person — so the two must move together.
+    await touchSeatPull(seat.id);
+    const scope = { onlyTechnicianId: seat.technician_id };
+    const [phone, notes, tenant] = await Promise.all([
+      buildNudgeDelivery(seat.host_id, {}, scope),
+      buildOfficeDelivery(seat.host_id, {}, scope),
+      getTenant(seat.tenant_id),
+    ]);
+    const decode = (b64: string) => Buffer.from(b64, 'base64').toString('utf8');
+    const items: SeatInboxItem[] = [
+      ...phone.nudges.map((n) => ({ id: n.id, leg: 'phone' as const, text: decode(n.directMessageB64) })),
+      ...notes.messages.map((m) => ({ id: m.id, leg: 'note' as const, text: decode(m.directMessageB64) })),
+    ];
+    json(200, {
+      seat: { telegramUserId: person.telegram_user_id, timezone: tenant?.timezone ?? 'UTC' },
+      items,
+    });
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
+// The glue's per-item report. The seat, its host and its person all come from the
+// TOKEN; the body names only the item, its leg and the outcome.
+async function handleSeatInboxReport(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const json = (code: number, body: unknown) => {
+    res.writeHead(code, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    const who = await seatOfRequest(req);
+    if ('status' in who) {
+      res.writeHead(who.status);
+      res.end();
+      return;
+    }
+    let body: unknown;
+    try {
+      const raw = await readRawBody(req, 16 * 1024);
+      body = raw.length ? JSON.parse(raw) : undefined;
+    } catch (err) {
+      if ((err as { code?: string }).code === 'BODY_TOO_LARGE') {
+        json(413, { error: 'body too large' });
+        return;
+      }
+      json(400, { error: 'malformed JSON body' });
+      return;
+    }
+    const b = (body ?? {}) as Record<string, unknown>;
+    const id = typeof b.id === 'string' ? b.id.trim() : '';
+    if (!UUID.test(id)) {
+      json(400, { error: 'id must be an inbox item id (uuid)' });
+      return;
+    }
+    if (b.leg !== 'phone' && b.leg !== 'note') {
+      json(400, { error: "leg must be 'phone' or 'note'" });
+      return;
+    }
+    if (b.outcome !== 'delivered' && b.outcome !== 'failed') {
+      json(400, { error: "outcome must be 'delivered' or 'failed'" });
+      return;
+    }
+    const detail = typeof b.detail === 'string' ? b.detail.slice(0, 300) : null;
+    const { seat } = who;
+    const scope = { onlyTechnicianId: seat.technician_id };
+    const result =
+      b.leg === 'phone'
+        ? await completeNudgeDelivery(seat.host_id, id, b.outcome, detail, {}, scope)
+        : await completeOfficeDelivery(seat.host_id, id, b.outcome, detail, {}, scope);
+    json(200, { result });
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
 // The voice's outbox pull (plan 2026-08-15 feature B, Phase 4): queued nudges
 // for this host's sandboxes, served until acked. Same host-token auth +
 // bare-401 posture as the badge pull.
@@ -398,7 +543,9 @@ async function handleNudgePull(req: http.IncomingMessage, res: http.ServerRespon
       res.end();
       return;
     }
-    const body = await buildNudgeDelivery(host.id);
+    const body = await buildNudgeDelivery(host.id, {}, {
+      skipTechnicianIds: await listLiveGlueTechnicianIds(host.id, liveGlueSince()),
+    });
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(body));
   } catch {
@@ -478,7 +625,9 @@ async function handleOfficePull(req: http.IncomingMessage, res: http.ServerRespo
       res.end();
       return;
     }
-    const body = await buildOfficeDelivery(host.id);
+    const body = await buildOfficeDelivery(host.id, {}, {
+      skipTechnicianIds: await listLiveGlueTechnicianIds(host.id, liveGlueSince()),
+    });
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(body));
   } catch {
@@ -984,6 +1133,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     if (req.url === '/seat/whoami' && req.method === 'GET') {
       await handleSeatWhoami(req, res);
+      return;
+    }
+    // Step 3: a glue seat's inbox — its own person's office items, and its
+    // report per item. Seat token only; before allowed() like whoami.
+    if (req.url === '/seat/inbox' && req.method === 'GET') {
+      await handleSeatInboxPull(req, res);
+      return;
+    }
+    if (req.url === '/seat/inbox' && req.method === 'POST') {
+      await handleSeatInboxReport(req, res);
       return;
     }
     // The voice's outbox: nudge pull + delivery report — same host-token gate

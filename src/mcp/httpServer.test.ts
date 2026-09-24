@@ -1255,3 +1255,172 @@ describe('seat tokens: POST /control/seat-token, GET /seat/whoami, /mcp', () => 
     expect(bad.status).toBe(401);
   });
 });
+
+// STEP 3 (plan 2026-09-23-step-3-office-reaches-glue-seats): a glue seat pulls
+// its OWN person's office items with its seat token; while it pulls, the box's
+// host pulls leave that person alone, so no item is served twice.
+describe('GET/POST /seat/inbox (step 3)', () => {
+  let hostId: string;
+  let techA: string;
+  let techB: string;
+  let tokenA: string;
+  const ids: Record<string, string> = {};
+
+  const mintFor = async (seatRef: string): Promise<string> => {
+    const res = await fetch(`${base}/control/seat-token`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ seatRef }),
+    });
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { token: string }).token;
+  };
+  const pull = (token: string) =>
+    fetch(`${base}/seat/inbox`, { headers: { authorization: `Bearer ${token}` } });
+  const report = (token: string, body: unknown) =>
+    fetch(`${base}/seat/inbox`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  beforeAll(async () => {
+    await setTenantSeats(tenantId, { managerSeats: 1, technicianSeats: 10 });
+    hostId = (await pg.query<{ id: string }>('select id from hosts where name = $1', [HOST_NAME])).rows[0].id;
+    const mk = async (ref: string, seatRef: string, tg: string) => {
+      const t = await insertTechnician({ tenantId, ref, displayName: ref });
+      await updateTechnician(t.id, { host_id: hostId, sandbox_ref: seatRef, state: 'active', telegram_user_id: tg });
+      await createSeat({ tenantId, technicianId: t.id, hostId, seatRef, botRef: null });
+      return t.id;
+    };
+    techA = await mk('inbox-a', 'g_inbox00a', '7000000001');
+    techB = await mk('inbox-b', 'g_inbox00b', '7000000002');
+    tokenA = await mintFor('g_inbox00a');
+
+    const one = async (sql: string, params: unknown[]) => (await pg.query<{ id: string }>(sql, params)).rows[0].id;
+    ids.nudgeA = await one(
+      `insert into nudges (tenant_id, kind, subject_ref, technician_id, status, question, queued_at, context)
+       values ($1, 'overdue_visit_gap', 'inbox-nudge-a', $2, 'queued', 'How did the Smith visit go?', now(), '{}'::jsonb)
+       returning id`,
+      [tenantId, techA],
+    );
+    ids.nudgeB = await one(
+      `insert into nudges (tenant_id, kind, subject_ref, technician_id, status, question, queued_at, context)
+       values ($1, 'overdue_visit_gap', 'inbox-nudge-b', $2, 'queued', 'And the Jones one?', now(), '{}'::jsonb)
+       returning id`,
+      [tenantId, techB],
+    );
+    ids.chatA = await one(
+      `insert into office_messages (tenant_id, direction, kind, from_ref, to_ref, technician_id, body, status, via)
+       values ($1, 'to_agent', 'inform', 'spine:team-lead', 'inbox-a', $2, 'Van service is due Friday.', 'queued', 'chat')
+       returning id`,
+      [tenantId, techA],
+    );
+    ids.noteA = await one(
+      `insert into office_messages (tenant_id, direction, kind, from_ref, to_ref, technician_id, body, status, via)
+       values ($1, 'to_agent', 'inform', 'spine:team-lead', 'inbox-a', $2, 'The Smith job is now open to them.', 'queued', 'assistant')
+       returning id`,
+      [tenantId, techA],
+    );
+    ids.pushA = await one(
+      `insert into person_pushes (tenant_id, technician_id, kind, body)
+       values ($1, $2, 'schedule', 'Your 2pm moved to 4pm.') returning id`,
+      [tenantId, techA],
+    );
+  });
+
+  afterAll(async () => {
+    await pg.query("delete from nudges where subject_ref in ('inbox-nudge-a', 'inbox-nudge-b')");
+    await pg.query('delete from office_messages where id = any($1)', [[ids.chatA, ids.noteA]]);
+    await pg.query('delete from person_pushes where id = $1', [ids.pushA]);
+  });
+
+  test('no token or an unknown token → bare 401, both methods', async () => {
+    const none = await fetch(`${base}/seat/inbox`);
+    expect(none.status).toBe(401);
+    expect(await none.text()).toBe('');
+    expect((await pull(`st_${'0'.repeat(64)}`)).status).toBe(401);
+    expect((await report(`st_${'0'.repeat(64)}`, { id: ids.nudgeA, leg: 'phone', outcome: 'delivered' })).status).toBe(401);
+    // A HOST token is not a seat token.
+    expect((await pull(hostToken)).status).toBe(401);
+  });
+
+  test("serves only the seat's own person, both legs, and stamps the seat live", async () => {
+    const res = await pull(tokenA);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    const body = (await res.json()) as {
+      seat: { telegramUserId: string; timezone: string };
+      items: Array<{ id: string; leg: string; text: string }>;
+    };
+    const tz = (await pg.query('select timezone from tenants where id = $1', [tenantId])).rows[0].timezone;
+    expect(body.seat).toEqual({ telegramUserId: '7000000001', timezone: tz });
+    const byId = new Map(body.items.map((i) => [i.id, i]));
+    expect(byId.get(ids.nudgeA)).toEqual({ id: ids.nudgeA, leg: 'phone', text: 'How did the Smith visit go?' });
+    expect(byId.get(ids.chatA)).toEqual({ id: ids.chatA, leg: 'phone', text: 'Van service is due Friday.' });
+    expect(byId.get(ids.pushA)).toEqual({ id: ids.pushA, leg: 'phone', text: 'Your 2pm moved to 4pm.' });
+    expect(byId.get(ids.noteA)?.leg).toBe('note');
+    expect(byId.get(ids.noteA)?.text).toContain('OFFICE NOTE (from the office record system, not a person)');
+    expect(byId.has(ids.nudgeB)).toBe(false);
+    // Phone items first, then notes.
+    expect(body.items.map((i) => i.leg)).toEqual(['phone', 'phone', 'phone', 'note']);
+
+    const stamp = await pg.query('select last_pulled_at from seats where technician_id = $1', [techA]);
+    expect(stamp.rows[0].last_pulled_at).not.toBeNull();
+    const served = await pg.query('select serve_count from nudges where id = $1', [ids.nudgeA]);
+    expect(served.rows[0].serve_count).toBeGreaterThanOrEqual(1);
+  });
+
+  test("the box's host pulls skip a live glue seat's person, but still serve the rest", async () => {
+    await pull(tokenA); // live now
+    const nudges = (await (
+      await fetch(`${base}/control/nudges`, { headers: { authorization: `Bearer ${hostToken}` } })
+    ).json()) as { nudges: Array<{ id: string }> };
+    const served = nudges.nudges.map((n) => n.id);
+    expect(served).not.toContain(ids.nudgeA);
+    expect(served).not.toContain(ids.chatA);
+    expect(served).not.toContain(ids.pushA);
+    expect(served).toContain(ids.nudgeB); // B's glue has never pulled
+    const office = (await (
+      await fetch(`${base}/control/office`, { headers: { authorization: `Bearer ${hostToken}` } })
+    ).json()) as { messages: Array<{ id: string }> };
+    expect(office.messages.map((m) => m.id)).not.toContain(ids.noteA);
+
+    // A stale stamp hands the person back to the runners (rollback.sh's case).
+    await pg.query("update seats set last_pulled_at = now() - interval '5 minutes' where technician_id = $1", [techA]);
+    const back = (await (
+      await fetch(`${base}/control/nudges`, { headers: { authorization: `Bearer ${hostToken}` } })
+    ).json()) as { nudges: Array<{ id: string }> };
+    expect(back.nudges.map((n) => n.id)).toContain(ids.nudgeA);
+  });
+
+  test("reports: another person's item is ignored; its own settle; malformed bodies are 400s", async () => {
+    const foreign = await report(tokenA, { id: ids.nudgeB, leg: 'phone', outcome: 'delivered' });
+    expect(((await foreign.json()) as { result: string }).result).toBe('ignored');
+    expect((await pg.query('select status from nudges where id = $1', [ids.nudgeB])).rows[0].status).toBe('queued');
+
+    expect((await report(tokenA, { id: 'nope', leg: 'phone', outcome: 'delivered' })).status).toBe(400);
+    expect((await report(tokenA, { id: ids.nudgeA, leg: 'sms', outcome: 'delivered' })).status).toBe(400);
+    expect((await report(tokenA, { id: ids.nudgeA, leg: 'phone', outcome: 'lost' })).status).toBe(400);
+
+    const asked = await report(tokenA, { id: ids.nudgeA, leg: 'phone', outcome: 'delivered' });
+    expect(((await asked.json()) as { result: string }).result).toBe('asked');
+    const push = await report(tokenA, { id: ids.pushA, leg: 'phone', outcome: 'delivered' });
+    expect(((await push.json()) as { result: string }).result).toBe('delivered');
+    const note = await report(tokenA, { id: ids.noteA, leg: 'note', outcome: 'delivered' });
+    expect(((await note.json()) as { result: string }).result).toBe('delivered');
+    // (The leg only ROUTES the report. The office settle reads office_messages
+    // by id whatever its `via`, exactly as /control/office does — the glue
+    // always reports an item on the leg it was served on.)
+  });
+
+  test('a deactivated person → 403 on both methods', async () => {
+    await updateTechnician(techA, { state: 'offboarded' });
+    try {
+      expect((await pull(tokenA)).status).toBe(403);
+      expect((await report(tokenA, { id: ids.chatA, leg: 'phone', outcome: 'delivered' })).status).toBe(403);
+    } finally {
+      await updateTechnician(techA, { state: 'active' });
+    }
+  });
+});

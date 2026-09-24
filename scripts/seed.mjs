@@ -204,6 +204,9 @@ async function truncateSpine(hasScheduling) {
     for (const t of [
       'planner_memory',
       'planner_memory_versions',
+      // A manager seat's own memory (step 2a): tenants-only FKs, same trap.
+      'seat_memory',
+      'seat_memory_versions',
       'planner_runs',
       // The planner's per-job notepads (plan 2026-08-30). These DO cascade from
       // jobs, unlike the three above — named anyway (eng-memory §1).

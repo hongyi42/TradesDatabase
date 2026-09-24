@@ -57,11 +57,13 @@ export const MANAGER_ONLY_TOOLS = [
   'get_team_schedule',
   'grant_access', // access plan A (2026-09-19): open a record to one technician
   'list_access', // access plan A: the firm's rule + live grants
+  'list_my_memory', // step 2a (2026-09-24): the manager seat's own notes
   'list_team',
   'move_visit',
   'open_job', // rung 10: open a job without also booking a visit
   'query_spine', // ad-hoc read fallback (2026-08-06)
   'reactivate_technician_seat',
+  'read_my_memory', // step 2a
   'record_money_event', // the money ledger (2026-08-15)
   'remove_time_off',
   'revoke_access', // access plan A
@@ -74,6 +76,7 @@ export const MANAGER_ONLY_TOOLS = [
   'set_timezone', // the firm's IANA zone (2026-09-20) — no writer existed before it
   'unschedule_visit',
   'update_job',
+  'write_my_memory', // step 2a
 ] as const;
 
 /**

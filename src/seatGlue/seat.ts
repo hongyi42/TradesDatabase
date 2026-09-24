@@ -1,9 +1,11 @@
 import type { CallRef } from './costLog.js';
-import { SPINE_NAMES, type BlobAttachment, type EngineEvent, type EngineSession } from './engine.js';
+import type { BlobAttachment, EngineEvent, EngineSession, ExitPlanRequestLike, ExitPlanResultLike, SeatHooks, UserInputRequestLike, UserInputResponseLike } from './engine.js';
+import { SPINE_NAMES } from './engine.js';
 import { classify, type Inbound } from './inbound.js';
 import { InboxRefused, type InboxItem, type InboxResult } from './inbox.js';
+import { PendingPrompts } from './prompts.js';
 import { HANDLED_IDS_KEPT, type PendingItem, type SeatState } from './state.js';
-import { TelegramConflictError, type TelegramApi, type TgUpdate } from './telegram.js';
+import { TelegramConflictError, type ButtonRow, type TelegramApi, type TgUpdate } from './telegram.js';
 import type { TurnPolicy } from './turnPolicy.js';
 
 // One technician seat: Telegram in, the Copilot engine in the middle, Telegram
@@ -21,10 +23,22 @@ export const TEXT = {
   unsupported: 'I can read texts, photos and voice notes.',
   voiceFailed: "I couldn't make out that voice note. Could you type it?",
   replyFailed: "I couldn't answer that just now. Try again in a minute.",
+  promptClosed: 'This question has closed.',
+  whatShouldChange: 'What should change?',
+  /** Sent once when an approved plan was followed by nothing at all (measured 1/10). */
+  goAhead: 'Go ahead with the plan.',
+  /** A typed reply to a buttons-only question that names no button. */
+  tapAnOption: 'Please tap one of the options above, or type stop.',
   // Step 3 (operator, 2026-09-23): sent once per seat, the first time the glue
   // runs with the office wired in. No em dashes; names AI (customer-facing copy).
   disclosure: 'Heads up from your AI assistant: the office can read our chats here, and your managers can ask it about them.',
 } as const;
+
+/** How long a typed plan reply may wait on Jev before it counts as a change request. */
+export const APPROVE_WAIT_MS = 3_500;
+
+/** Plan text shown with Go/Change — kept well inside one Telegram message. */
+export const PLAN_TEXT_MAX = 3_500;
 
 /** Office items kept for the person's next message (oldest dropped past this). */
 export const PENDING_KEPT = 30;
@@ -38,8 +52,8 @@ export const PENDING_TEXT_MAX = 2_500;
 
 export interface SeatDeps {
   telegram: TelegramApi;
-  /** Resume the given conversation, or start one when null. */
-  openSession(sessionId: string | null): Promise<EngineSession>;
+  /** Resume the given conversation, or start one when null. `hooks` = how a manager seat asks its person. */
+  openSession(sessionId: string | null, hooks?: SeatHooks): Promise<EngineSession>;
   policy: TurnPolicy;
   costLog: { record(ref: CallRef): Promise<unknown> };
   transcribe(buf: Buffer, mime: string): Promise<{ text: string; generationId: string | null }>;
@@ -60,6 +74,22 @@ export interface SeatDeps {
   errorIdleWaitMs?: number;
   /** How long a Stop or /new waits for an in-flight spine tool. */
   toolWaitMs?: number;
+  /** A manager seat (step 2a): questions and plans reach the person with buttons. */
+  manager?: boolean;
+  /** Does a TYPED reply to a plan approve it as it stands? (Jev, phase 4.) Absent = never. */
+  approvesPlan?(reply: string, planSummary: string): Promise<boolean>;
+  /**
+   * Should this manager message get a plan first? (Jev, phase 4.) Called before
+   * every FRESH send — never for a steer, a prompt answer or the go-ahead nudge.
+   * Absent (technicians) = the mode is never touched.
+   */
+  planChooser?(message: string, previous: { user: string; assistant: string } | null): Promise<{ plan: boolean; p: number | null }>;
+  /**
+   * A typed or spoken reply while a question or plan waits: does it answer it, or
+   * is it a NEW request that should start its own turn (with its own plan check)?
+   * (Jev; operator 2026-09-24.) Absent = every reply answers.
+   */
+  answersPrompt?(reply: string, question: string, choices: string[]): Promise<boolean>;
   /**
    * Step 3: the seat's inbox on Render. Absent = no office traffic (tests, and
    * the local driver, which must never drain a real person's inbox).
@@ -119,6 +149,18 @@ export class Seat {
   /** The one-time office notice while it is being sent and saved. */
   private disclosing: Promise<void> = Promise.resolve();
   private readonly log: (msg: string) => void;
+  /** A manager seat's hooks (step 2a phase 3); passed to every openSession. */
+  protected hooks: SeatHooks | undefined = undefined;
+  /** The one waiting question/plan at a time; the person's next tap, text or voice answers it. */
+  private readonly prompts = new PendingPrompts();
+  private promptCount = 0;
+  /** The last manager message and the last reply, for Jev (a follow-up means nothing alone). */
+  private lastUser = '';
+  private lastReply = '';
+  /** After a plan's Go: did anything follow? (the go-ahead nudge, phase 4). */
+  private afterApproval: { tools: number; replied: boolean; nudged: boolean; errored: boolean } | null = null;
+  /** A typed plan reply is with Jev: later texts are held here, never sent (review round 2). */
+  private deciding: { buffer: string[]; cancelled: boolean } | null = null;
 
   constructor(private readonly deps: SeatDeps) {
     this.log = deps.log ?? ((m) => console.log(`seat-glue: ${m}`));
@@ -127,6 +169,19 @@ export class Seat {
     let resolve = () => {};
     const promise = new Promise<void>((r) => (resolve = r));
     this.readyGate = { promise, resolve };
+    if (deps.manager) {
+      this.hooks = { onUserInput: (r) => this.askUser(r), onExitPlan: (r) => this.showPlan(r) };
+    }
+  }
+
+  /** A prompt is waiting on the person. */
+  get promptOpen(): boolean {
+    return this.prompts.isOpen;
+  }
+
+  /** How many prompts this seat has posted — the driver's waitPrompt step waits for it to grow. */
+  get promptsPosted(): number {
+    return this.promptCount;
   }
 
   /** Resolves once the conversation is open and the seat is taking updates. */
@@ -144,14 +199,17 @@ export class Seat {
 
   async start(): Promise<void> {
     this.state = await this.deps.readState();
-    await this.attach(await this.deps.openSession(this.state.sessionId));
+    await this.attach(await this.deps.openSession(this.state.sessionId, this.hooks));
     await this.sweep();
     this.sweepTimer = setInterval(() => void this.sweep(), this.deps.sweepEveryMs ?? 3_600_000);
     this.sweepTimer.unref?.();
-    // The notice only where it is true: a manager's chat is never shared.
-    if (this.deps.inbox && this.deps.who?.shareConversation) {
-      this.disclosing = this.disclose();
-      await this.disclosing;
+    if (this.deps.inbox) {
+      // The notice only where it is true: a manager's chat is never shared. The
+      // inbox itself runs for everyone — the office still asks a manager directly.
+      if (this.deps.who?.shareConversation) {
+        this.disclosing = this.disclose();
+        await this.disclosing;
+      }
       void this.pollInbox();
       this.inboxTimer = setInterval(() => {
         void this.pollInbox();
@@ -232,6 +290,17 @@ export class Seat {
   }
 
   private async handle(msg: Inbound): Promise<void> {
+    // A WAITING PROMPT (step 2a): only the person's own text, voice or tap answers
+    // it — never delivered as a new message (no abort, no steer). A photo, Stop or
+    // /new ends it first, so the engine's handler is never left waiting.
+    // Stop, /new or a photo end a decision in progress too (the plan comes back as
+    // stopped), so nothing sent afterwards is swallowed into a dead loop's feedback.
+    if (msg.kind === 'stop' || msg.kind === 'new' || msg.kind === 'photo') this.endDeciding();
+    if (this.prompts.isOpen) {
+      if (msg.kind === 'photo') this.cancelPrompts('the manager sent a photo instead, which follows as their next message');
+      if (msg.kind === 'stop') this.cancelPrompts('the manager pressed Stop');
+      if (msg.kind === 'new') this.cancelPrompts('the manager started a new conversation');
+    }
     switch (msg.kind) {
       case 'ignored':
         return;
@@ -239,11 +308,13 @@ export class Seat {
         return this.say(TEXT.unsupported);
       case 'stop':
         return this.stopReply(msg.callbackQueryId, msg.workingMessageId);
+      case 'tap':
+        return this.tapPrompt(msg.promptId, msg.index, msg.callbackQueryId);
       case 'new':
         return this.startFresh();
       case 'text':
         this.deps.transcript?.person(msg.text, this.sessionId);
-        return this.deliver(msg.text);
+        return this.routeReply(msg.text, false);
       case 'photo': {
         const buf = await this.deps.telegram.download(msg.fileId);
         await this.keepCopy(buf, 'jpg');
@@ -273,18 +344,51 @@ export class Seat {
           });
         }
         this.deps.transcript?.person(`[voice note] ${transcript.text}`, this.sessionId);
-        return this.deliver(`[voice note] ${transcript.text}`);
+        return this.routeReply(transcript.text, true);
       }
     }
   }
 
+  /**
+   * Where a typed or spoken message goes (step 2a). While Jev judges a typed plan
+   * reply it is HELD (it turns the reply into a change request). While a question
+   * or plan waits it ANSWERS it — unless Jev says it is a new request, which then
+   * closes the prompt unanswered and starts its own turn with its own plan check.
+   * Otherwise it is a normal message.
+   */
+  private async routeReply(text: string, voice: boolean): Promise<void> {
+    const asMessage = voice ? `[voice note] ${text}` : text;
+    if (this.deciding && !this.prompts.isOpen) {
+      this.deciding.buffer.push(text);
+      return;
+    }
+    const spec = this.prompts.current;
+    if (spec) {
+      // "What should change?" was asked BY the Change tap: the next text answers it.
+      if (spec.kind !== 'plan-feedback' && this.deps.answersPrompt) {
+        const answers = await this.deps.answersPrompt(text, spec.text, spec.choices);
+        // The verdict is about THAT prompt. If it closed while Jev decided (the
+        // turn ended, or a failed post handed over to a queued one), the reply is
+        // a normal message — never an answer to a question it was not judged against.
+        if (this.prompts.current?.id !== spec.id) return this.deliver(asMessage);
+        if (!answers) {
+          this.log('a reply while a prompt waits is a new request — closing the prompt, starting a new turn');
+          this.cancelPrompts('the manager moved on to a new request, which follows as their next message');
+          return this.deliver(asMessage);
+        }
+      }
+      if (this.prompts.isOpen) return this.answerPrompt(text);
+    }
+    return this.deliver(asMessage);
+  }
+
   /** Send a message into the conversation, per the turn policy. */
-  private async deliver(prompt: string, attachments?: BlobAttachment[]): Promise<void> {
+  private async deliver(prompt: string, attachments?: BlobAttachment[], opts: { nudge?: boolean } = {}): Promise<void> {
     // No conversation open (a /new whose open failed): reopen the recorded one,
     // or a fresh one, rather than going silent until a restart.
     if (!this.session) {
       try {
-        await this.attach(await this.deps.openSession(this.state.sessionId));
+        await this.attach(await this.deps.openSession(this.state.sessionId, this.hooks));
       } catch (err) {
         this.log(`could not open a conversation: ${errText(err)}`);
         return this.say(TEXT.replyFailed);
@@ -303,6 +407,26 @@ export class Seat {
         await this.waitFor(done);
         return this.deliver(prompt, attachments); // another abort won: route again
       }
+    }
+
+    // PLAN OR NOT (step 2a phase 4): Jev decides for every fresh manager message
+    // and the session's mode is set before the send (agentMode on send() is only
+    // a label — measured). A steer joins a running reply, and the nudge must not
+    // re-plan, so neither is classified. A failing Jev or mode switch never blocks.
+    if (this.deps.planChooser && route !== 'steer' && !opts.nudge) {
+      // Show typing at once: Jev can take up to 3 s before the turn starts.
+      if (!policy.isBusy) this.startTyping();
+      const previous = this.lastUser ? { user: this.lastUser, assistant: this.lastReply } : null;
+      const { plan, p } = await this.deps.planChooser(prompt, previous);
+      this.log(`plan ${plan ? 'yes' : 'no'} p=${p === null ? 'n/a' : p.toFixed(2)}`);
+      try {
+        await session.rpc?.mode.set({ mode: plan ? 'plan' : 'interactive' });
+      } catch (err) {
+        this.log(`could not set the mode (${errText(err)}) — sending anyway`);
+      }
+      this.lastUser = prompt;
+      this.lastReply = '';
+      this.afterApproval = null;
     }
 
     const freshTurn = !policy.isBusy;
@@ -394,11 +518,15 @@ export class Seat {
     this.session = null;
     await old?.disconnect().catch((err: unknown) => this.log(`disconnect failed: ${errText(err)}`));
     try {
-      await this.attach(await this.deps.openSession(null));
+      await this.attach(await this.deps.openSession(null, this.hooks));
     } catch (err) {
       this.log(`could not start a fresh conversation: ${errText(err)}`);
       return this.say(TEXT.replyFailed);
     }
+    // The new conversation has no history: Jev must not judge against the old one.
+    this.lastUser = '';
+    this.lastReply = '';
+    this.afterApproval = null;
     await this.say(TEXT.fresh);
   }
 
@@ -574,6 +702,7 @@ export class Seat {
         return;
       case 'tool.execution_start':
         this.activityCount += 1;
+        if (this.afterApproval && data.toolName !== 'exit_plan_mode') this.afterApproval.tools += 1;
         // Spine tools only, told apart by SERVER name (SPINE_NAMES holds server
         // names, never tool names). mcpToolName is the tool's own name, without
         // the engine's `spine-` prefix.
@@ -588,10 +717,31 @@ export class Seat {
         this.deps.transcript?.settleOpenTools();
         void this.deps.transcript?.flush();
         const result = policy.onIdle(data.aborted === true);
+        // A finished (or aborted) turn has no handler left waiting: close any
+        // prompt — but NOT on a stale idle, which belongs to an old, dead loop
+        // while the reply now running may be waiting on its person.
+        if (result !== 'stale' && this.prompts.isOpen) this.cancelPrompts('the turn ended');
+        if (result !== 'stale') this.endDeciding();
+        // An approved plan followed by nothing at all (no tool, no reply): say go
+        // once, as a plain send — no Jev, no mode switch, never twice per plan.
+        let nudge = false;
+        if (result === 'idle' && this.afterApproval) {
+          const a = this.afterApproval;
+          if (!a.nudged && !a.errored && a.tools === 0 && !a.replied) {
+            a.nudged = true;
+            nudge = true;
+          } else this.afterApproval = null;
+        }
         if (result === 'idle') this.stopWorking();
         // Idle clears pending tools even when no completion named them (an
         // id-less permission request), so a waiting Stop or /new moves on here too.
         this.releaseToolWaiters();
+        // AFTER the idle bookkeeping: the nudge starts a new reply (typing, the
+        // Working line with Stop) that stopWorking() above must not take down.
+        if (nudge) {
+          this.log('plan approved but nothing followed — nudging once');
+          void this.deliver(TEXT.goAhead, undefined, { nudge: true });
+        }
         return;
       }
       case 'assistant.message': {
@@ -622,6 +772,9 @@ export class Seat {
         return;
       case 'session.error': {
         this.log(`session error: ${String(data.errorType ?? '')} ${String(data.message ?? '')}`.trim());
+        // An approved plan that died on an error (a 429, the key's cap) is not
+        // "nothing followed": the nudge would only fail again.
+        if (this.afterApproval) this.afterApproval.errored = true;
         // An OpenRouter 429 or the key's monthly cap otherwise leaves the person
         // with silence. Once per reply.
         const reply = policy.isBusy ? policy.currentReplyId() : null;
@@ -641,6 +794,8 @@ export class Seat {
             const quiet = this.idleCount === idlesAtError && this.activityCount === activityAtError;
             if (quiet && policy.isBusy && policy.currentReplyId() === reply && !policy.toolPending) {
               this.log('no idle after the error — ending the reply');
+              // A prompt left open by the dead loop would swallow the next text.
+              this.cancelPrompts('the turn ended');
               policy.finish();
               this.stopWorking();
               // The reply is over without an idle: close its tool turns too, or
@@ -653,6 +808,133 @@ export class Seat {
         return;
       }
     }
+  }
+
+  // ── waiting prompts (step 2a phase 3) ──────────────────────────────────────
+
+  /** The engine's ask_user: the question with its choices as buttons; the turn waits here. */
+  private async askUser(req: UserInputRequestLike): Promise<UserInputResponseLike> {
+    // Empty choices make Telegram refuse the whole message; past 10 the keyboard
+    // gets unwieldy, so the rest are listed in the text for typing.
+    const all = (req.choices ?? []).map((c) => c.trim()).filter(Boolean);
+    const choices = all.slice(0, 10);
+    const extra = all.slice(10);
+    let text = req.question;
+    if (extra.length) text += `\n\nAlso possible (type it): ${extra.join('; ')}`;
+    else if (choices.length && req.allowFreeform !== false) text += '\n\n(Or type your answer.)';
+    if (all.length > 10) this.log(`ask_user offered ${all.length} choices; ${extra.length} listed as text`);
+    const r = await this.prompts.ask(
+      // Every choice, buttons and listed alike, so a typed one matches (buttons-only questions).
+      { kind: 'question', choices: all, text, allowFreeform: req.allowFreeform !== false },
+      (id) => this.postPrompt(text, choices.map((c, i) => [{ text: c.slice(0, 60), data: `p:${id}:${i}` }])),
+      (mid) => this.clearPromptButtons(mid),
+    );
+    this.resumeWorking();
+    if (r.cancelled) return { answer: `(no answer: ${r.reason ?? 'cancelled'})`, wasFreeform: true };
+    return { answer: r.answer, wasFreeform: r.freeform };
+  }
+
+  /** The engine's exit_plan_mode: the plan with [Go][Change]; Change asks what should change. */
+  private async showPlan(req: ExitPlanRequestLike): Promise<ExitPlanResultLike> {
+    const stopped: ExitPlanResultLike = { approved: false, feedback: 'The manager stopped this plan. Do not carry it out.' };
+    // Not approved, and why — the model reads it (a photo or a new request may follow).
+    const notApproved = (reason?: string): ExitPlanResultLike =>
+      reason ? { approved: false, feedback: `The manager did not approve this plan (${reason}). Do not carry it out.` } : stopped;
+    const body = planText(req);
+    const r = await this.prompts.ask(
+      { kind: 'plan', choices: ['Go', 'Change'], text: body, allowFreeform: true },
+      (id) => this.postPrompt(body, [[{ text: 'Go', data: `p:${id}:0` }, { text: 'Change', data: `p:${id}:1` }]]),
+      (mid) => this.clearPromptButtons(mid),
+    );
+    const go: ExitPlanResultLike = { approved: true, selectedAction: req.recommendedAction };
+    if (r.cancelled) return this.resumed(notApproved(r.reason));
+    if (!r.freeform && r.index === 0) return this.approved(go);
+    if (r.freeform) {
+      // A typed reply instead of a tap: "yes go" approves; anything else is a
+      // change request. Texts arriving while Jev decides are HELD and make it one.
+      const deciding = { buffer: [] as string[], cancelled: false };
+      this.deciding = deciding;
+      // Never throws: a failing or slow Jev answers "not approved".
+      const yes = this.deps.approvesPlan
+        ? await Promise.race([
+            this.deps.approvesPlan(r.answer, req.summary).catch(() => false),
+            new Promise<boolean>((res) => setTimeout(() => res(false), APPROVE_WAIT_MS).unref?.()),
+          ])
+        : false;
+      if (this.deciding === deciding) this.deciding = null;
+      if (deciding.cancelled) return this.resumed(stopped);
+      if (deciding.buffer.length) return this.resumed({ approved: false, feedback: [r.answer, ...deciding.buffer].join('\n') });
+      return yes ? this.approved(go) : this.resumed({ approved: false, feedback: r.answer });
+    }
+    const f = await this.prompts.ask(
+      { kind: 'plan-feedback', choices: [], text: TEXT.whatShouldChange, allowFreeform: true },
+      () => this.postPrompt(TEXT.whatShouldChange, []),
+    );
+    return this.resumed(f.cancelled ? notApproved(f.reason) : { approved: false, feedback: f.answer });
+  }
+
+  /** End a typed-reply decision in progress: the plan answers "stopped". */
+  private endDeciding(): void {
+    if (!this.deciding) return;
+    this.deciding.cancelled = true;
+    this.deciding = null;
+  }
+
+  /** Go: the plan runs — and the glue watches that something actually follows. */
+  private approved(value: ExitPlanResultLike): ExitPlanResultLike {
+    this.afterApproval = { tools: 0, replied: false, nudged: false, errored: false };
+    return this.resumed(value);
+  }
+
+  private resumed<T>(value: T): T {
+    this.resumeWorking();
+    return value;
+  }
+
+  /** Post a prompt through the ordered outbox; the Working line and typing pause while it waits. */
+  private postPrompt(text: string, rows: ButtonRow[]): Promise<number | null> {
+    this.promptCount += 1;
+    this.stopWorking();
+    const posted = this.outbox.then(() =>
+      rows.length
+        ? this.deps.telegram.sendButtons(this.chatId, text, rows)
+        : this.deps.telegram.send(this.chatId, text).then(() => null),
+    );
+    this.outbox = posted.then(
+      () => undefined,
+      (err: unknown) => this.log(`could not post a prompt: ${errText(err)}`),
+    );
+    return posted;
+  }
+
+  /** The prompt was answered: the reply carries on, so typing and the Stop line come back. */
+  private resumeWorking(): void {
+    if (this.deps.policy.isBusy && !this.prompts.isOpen) this.startWorking();
+  }
+
+  private answerPrompt(text: string): void {
+    const r = this.prompts.resolveText(text);
+    // A buttons-only question: text that names no button leaves it open.
+    if (r?.rejected) {
+      void this.say(TEXT.tapAnOption);
+      return;
+    }
+    if (r?.messageId != null) this.clearPromptButtons(r.messageId);
+  }
+
+  private tapPrompt(promptId: string, index: number, callbackQueryId: string): void {
+    const r = this.prompts.resolveTap(promptId, index);
+    void this.deps.telegram.answerCallback(callbackQueryId, r ? undefined : TEXT.promptClosed).catch(() => {});
+    if (r?.messageId != null) this.clearPromptButtons(r.messageId);
+  }
+
+  private cancelPrompts(reason: string): void {
+    const messageId = this.prompts.cancelAll(reason);
+    if (messageId != null) this.clearPromptButtons(messageId);
+  }
+
+  private clearPromptButtons(messageId: number): void {
+    void this.deps.telegram.clearButtons(this.chatId, messageId).catch((err: unknown) => this.log(`could not clear buttons: ${errText(err)}`));
   }
 
   /** The 7-day box copy is a convenience: failing to keep it must never lose the message. */
@@ -673,7 +955,11 @@ export class Seat {
     if (hadTool) return;
     // The answer is here: the "Working…" line goes first (through the same
     // ordered outbox), typing carries on until the reply really ends.
-    if (texts.length) this.clearWorkingLine();
+    if (texts.length) {
+      this.clearWorkingLine();
+      this.lastReply = texts.join('\n');
+      if (this.afterApproval) this.afterApproval.replied = true;
+    }
     for (const text of texts) {
       this.deps.transcript?.assistant(text, this.sessionId);
       void this.say(text);
@@ -784,3 +1070,10 @@ export class Seat {
 }
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/** The plan as the manager reads it, inside PLAN_TEXT_MAX. */
+export function planText(req: ExitPlanRequestLike): string {
+  const parts = ["Here's the plan:", req.summary.trim(), (req.planContent ?? '').trim()].filter(Boolean);
+  const text = parts.join('\n\n');
+  return text.length <= PLAN_TEXT_MAX ? text : `${text.slice(0, PLAN_TEXT_MAX - 1).trimEnd()}…`;
+}

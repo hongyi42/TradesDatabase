@@ -386,6 +386,8 @@ async function handleSeatWhoami(req: http.IncomingMessage, res: http.ServerRespo
       technicianRef: identity.technicianRef,
       telegramUserId: person.telegram_user_id,
       timezone: tenant?.timezone ?? 'UTC',
+      // Step 2a: the glue picks the manager or technician rulebook from this.
+      tier: person.tier,
       shareConversation: sharesConversation(person),
     });
   } catch {

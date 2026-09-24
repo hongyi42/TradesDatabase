@@ -70,7 +70,16 @@ export interface TelegramApi {
   deleteMessage(chatId: number, messageId: number): Promise<void>;
   /** Acknowledge a button tap (Telegram shows a spinner until this is called). */
   answerCallback(callbackQueryId: string, text?: string): Promise<void>;
+  /**
+   * A message with inline buttons (step 2a: ask_user choices, a plan's Go/Change).
+   * Long text is split like send(); the buttons ride the LAST chunk, whose id is returned.
+   */
+  sendButtons(chatId: number, text: string, rows: ButtonRow[]): Promise<number>;
+  /** Remove a message's buttons once it is answered. */
+  clearButtons(chatId: number, messageId: number): Promise<void>;
 }
+
+export type ButtonRow = Array<{ text: string; data: string }>;
 
 export class TelegramClient implements TelegramApi {
   constructor(
@@ -130,6 +139,25 @@ export class TelegramClient implements TelegramApi {
     })) as { message_id?: number };
     if (typeof msg?.message_id !== 'number') throw new Error('telegram: sendMessage returned no message_id');
     return msg.message_id;
+  }
+
+  async sendButtons(chatId: number, text: string, rows: ButtonRow[]): Promise<number> {
+    const chunks = splitText(text);
+    for (const chunk of chunks.slice(0, -1)) await this.send(chatId, chunk);
+    const last = chunks.at(-1) ?? '';
+    const reply_markup = { inline_keyboard: rows.map((r) => r.map((b) => ({ text: b.text, callback_data: b.data }))) };
+    let msg: { message_id?: number };
+    try {
+      msg = (await this.call('sendMessage', { chat_id: chatId, text: toTelegramHtml(last), parse_mode: 'HTML', reply_markup })) as { message_id?: number };
+    } catch {
+      msg = (await this.call('sendMessage', { chat_id: chatId, text: last, reply_markup })) as { message_id?: number };
+    }
+    if (typeof msg?.message_id !== 'number') throw new Error('telegram: sendMessage returned no message_id');
+    return msg.message_id;
+  }
+
+  async clearButtons(chatId: number, messageId: number): Promise<void> {
+    await this.call('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } });
   }
 
   async deleteMessage(chatId: number, messageId: number): Promise<void> {

@@ -1479,6 +1479,56 @@ export function buildToolCases(): ToolCase[] {
     ),
   });
 
+  // ── the manager seat's own memory (step 2a, 2026-09-24) ─────────────────────
+  add({
+    id: 'M01',
+    family: 'memory',
+    title: 'a manager writes a note, reads it back, and lists it',
+    tool: 'write_my_memory',
+    tenant: 'main',
+    badge: 'manager-sam',
+    steps: [
+      {
+        label: 'write',
+        args: () => ({ path: 'prefs.md', content: 'Invoices are due in 14 days.' }),
+        check: all(ok, mentions('saved')),
+      },
+      {
+        label: 'read',
+        tool: 'read_my_memory',
+        args: () => ({ path: 'prefs.md' }),
+        check: all(ok, mentions('14 days')),
+      },
+      {
+        label: 'list',
+        tool: 'list_my_memory',
+        args: () => ({}),
+        check: all(ok, mentions('prefs.md')),
+      },
+    ],
+  });
+
+  one({
+    id: 'G10',
+    family: 'gating',
+    title: 'a technician calling write_my_memory is refused at dispatch',
+    tool: 'write_my_memory',
+    tenant: 'main',
+    badge: 'tech-jane',
+    args: () => ({ path: 'gate.md', content: 'should never land' }),
+    check: all(
+      refused(/manager|not authorized|unknown tool/i),
+      dbCheck(
+        'the refused write must not have landed',
+        (ctx) => ({
+          text: "select count(*)::int n from seat_memory where tenant_id = $1 and technician_ref = 'tech-jane'",
+          params: [ctx.tenant.id],
+        }),
+        (rows) => count(rows) === 0,
+      ),
+    ),
+  });
+
   return cases;
 }
 

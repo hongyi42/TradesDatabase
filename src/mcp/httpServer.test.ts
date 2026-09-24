@@ -1165,7 +1165,7 @@ describe('seat tokens: POST /control/seat-token, GET /seat/whoami, /mcp', () => 
     expect((await whoami(b.token)).status).toBe(200);
   });
 
-  test("whoami: the seat's person, Telegram id and the firm's timezone; HMAC headers are refused", async () => {
+  test("whoami: the seat's person, Telegram id, the firm's timezone and the tier; HMAC headers are refused", async () => {
     const { token } = (await (await mint(hostToken, 'g_probe001')).json()) as { token: string };
     const res = await whoami(token);
     const tz = (await pg.query('select timezone from tenants where id = $1', [tenantId])).rows[0]
@@ -1176,6 +1176,8 @@ describe('seat tokens: POST /control/seat-token, GET /seat/whoami, /mcp', () => 
       technicianRef: 'seat-probe',
       telegramUserId: '5801703167',
       timezone: tz,
+      // Step 2a: the tier picks the glue's rulebook (insertTechnician defaults to technician).
+      tier: 'technician',
       shareConversation: true, // a technician's chat is shared; a manager's never
     });
     const hmac = await fetch(`${base}/seat/whoami`, {
@@ -1198,6 +1200,7 @@ describe('seat tokens: POST /control/seat-token, GET /seat/whoami, /mcp', () => 
       technicianRef: 'seat-probe',
       telegramUserId: 5801703167,
       tz,
+      tier: 'technician',
       shareConversation: true,
     });
   });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { FetchLike } from './http.js';
 import { fetchWhoami } from './whoami.js';
 
@@ -9,6 +9,7 @@ const GOOD = {
   technicianRef: 'ben-shelton',
   telegramUserId: '5801703167',
   timezone: 'America/Los_Angeles',
+  tier: 'technician',
 };
 
 function fake(status: number, body: unknown, seen: { url?: string; auth?: string } = {}): FetchLike {
@@ -35,6 +36,7 @@ describe('fetchWhoami', () => {
       technicianRef: 'ben-shelton',
       telegramUserId: 5801703167,
       tz: 'America/Los_Angeles',
+      tier: 'technician',
       // GOOD carries no shareConversation: privacy is the default.
       shareConversation: false,
     });
@@ -62,5 +64,16 @@ describe('fetchWhoami', () => {
     await expect(
       fetchWhoami('https://spine.example/', TOKEN, fake(200, { ...GOOD, technicianRef: '' })),
     ).rejects.toThrow('technicianRef');
+  });
+
+  it('reads the tier; a missing one runs as a technician, an unknown one refuses', async () => {
+    const mgr = await fetchWhoami('https://spine.example/', TOKEN, fake(200, { ...GOOD, tier: 'manager' }));
+    expect(mgr.tier).toBe('manager');
+    const { tier: _omit, ...noTier } = GOOD;
+    void _omit;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect((await fetchWhoami('https://spine.example/', TOKEN, fake(200, noTier))).tier).toBe('technician');
+    expect(warn).toHaveBeenCalled();
+    await expect(fetchWhoami('https://spine.example/', TOKEN, fake(200, { ...GOOD, tier: 'owner' }))).rejects.toThrow('tier');
   });
 });

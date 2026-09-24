@@ -1,3 +1,4 @@
+import { PROMPT_DATA } from './prompts.js';
 import { STOP_CALLBACK, STOP_TEXT, type TgUpdate } from './telegram.js';
 
 // What one Telegram update means to the seat. The allowlist lives here: anyone
@@ -8,6 +9,8 @@ export type Inbound =
   | { kind: 'photo'; chatId: number; fileId: string; caption?: string }
   | { kind: 'voice'; chatId: number; fileId: string; mimeType: string }
   | { kind: 'stop'; chatId: number; callbackQueryId?: string; workingMessageId?: number }
+  /** A tap on a waiting prompt's button (step 2a): `p:<promptId>:<index>`. */
+  | { kind: 'tap'; chatId: number; promptId: string; index: number; callbackQueryId: string }
   | { kind: 'new'; chatId: number }
   | { kind: 'unsupported'; chatId: number }
   | { kind: 'ignored' };
@@ -17,10 +20,13 @@ export function classify(update: TgUpdate, allowedUserId: number): Inbound {
   const cb = update.callback_query;
   if (cb) {
     const chat = cb.message?.chat;
-    if (cb.from?.id !== allowedUserId || !chat || chat.type !== 'private' || cb.data !== STOP_CALLBACK) {
-      return { kind: 'ignored' };
+    if (cb.from?.id !== allowedUserId || !chat || chat.type !== 'private') return { kind: 'ignored' };
+    if (cb.data === STOP_CALLBACK) {
+      return { kind: 'stop', chatId: chat.id, callbackQueryId: cb.id, workingMessageId: cb.message?.message_id };
     }
-    return { kind: 'stop', chatId: chat.id, callbackQueryId: cb.id, workingMessageId: cb.message?.message_id };
+    const tap = PROMPT_DATA.exec(cb.data ?? '');
+    if (tap) return { kind: 'tap', chatId: chat.id, promptId: tap[1], index: Number(tap[2]), callbackQueryId: cb.id };
+    return { kind: 'ignored' };
   }
 
   const m = update.message;

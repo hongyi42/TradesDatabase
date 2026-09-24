@@ -64,4 +64,16 @@ describe('classify', () => {
   it('answers anything else as unsupported', () => {
     expect(classify(msg({ sticker: { file_id: 's' } }), BEN)).toEqual({ kind: 'unsupported', chatId: BEN });
   });
+
+  it('reads a prompt button tap (step 2a) only from the seat person, in a private chat', () => {
+    const cb = (data: string, from = BEN, type = 'private'): TgUpdate => ({
+      update_id: 9,
+      callback_query: { id: 'q1', from: { id: from }, data, message: { message_id: 5, chat: { id: from, type } } },
+    });
+    expect(classify(cb('p:0000abcd:1'), BEN)).toEqual({ kind: 'tap', chatId: BEN, promptId: '0000abcd', index: 1, callbackQueryId: 'q1' });
+    expect(classify(cb('p:0000abcd:1', 111111111), BEN)).toEqual({ kind: 'ignored' });
+    expect(classify(cb('p:0000abcd:1', BEN, 'group'), BEN)).toEqual({ kind: 'ignored' });
+    expect(classify(cb('p:nothex00:1'), BEN)).toEqual({ kind: 'ignored' });
+    expect(classify(cb('stop'), BEN)).toMatchObject({ kind: 'stop' });
+  });
 });

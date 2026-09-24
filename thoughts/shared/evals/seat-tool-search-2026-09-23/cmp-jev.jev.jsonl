@@ -1,0 +1,96 @@
+{"q":"get schedule or visits for a day","names":["get_team_schedule","query_spine"],"confident":true,"noneWins":false,"top":0.98}
+{"q":"view technician schedule or visits for a team member","names":["get_team_schedule","query_spine"],"confident":true,"noneWins":false,"top":0.99}
+{"q":"check schedule or who is working on a date","names":["get_team_schedule","get_availability"],"confident":true,"noneWins":false,"top":0.88}
+{"q":"find available slots or schedule visit","names":["find_slots","book_visit"],"confident":true,"noneWins":false,"top":0.97}
+{"q":"check technician schedule availability slots","names":["find_slots","get_availability","get_team_schedule","set_availability","bind_telegram"],"confident":false,"noneWins":false,"top":0.55}
+{"q":"get customer context or list jobs","names":["get_customer_context","revoke_access"],"confident":true,"noneWins":false,"top":0.99}
+{"q":"list customer jobs open jobs","names":["get_customer_context","get_team_schedule"],"confident":true,"noneWins":false,"top":0.68}
+{"q":"unschedule visit or remove visit from schedule","names":["unschedule_visit","list_team"],"confident":true,"noneWins":false,"top":1}
+{"q":"get schedule or find visits for customer","names":["get_customer_context","query_spine"],"confident":true,"noneWins":false,"top":0.62}
+{"q":"technician schedule and availability","names":["get_availability","get_team_schedule"],"confident":true,"noneWins":false,"top":0.76}
+{"q":"record time off or technician leave","names":["add_time_off","query_spine"],"confident":true,"noneWins":false,"top":1}
+{"q":"move visit or reschedule visit","names":["move_visit","set_job_duration"],"confident":true,"noneWins":false,"top":1}
+{"q":"set technician working hours schedule availability","names":["set_availability","move_visit"],"confident":true,"noneWins":false,"top":1}
+{"q":"list roster technicians team members","names":["list_team","revoke_access"],"confident":true,"noneWins":false,"top":1}
+{"q":"get technician availability working pattern","names":["get_availability","read_webpage"],"confident":true,"noneWins":false,"top":1}
+{"q":"read notes or captures on a job","names":["list_recent_captures","get_capture"],"confident":true,"noneWins":false,"top":0.93}
+{"q":"customer context and jobs","names":["get_customer_context","get_job"],"confident":true,"noneWins":false,"top":0.9}
+{"q":"list jobs","names":["query_spine","get_customer_context","get_team_schedule","get_job","list_team"],"confident":false,"noneWins":true,"top":0.3}
+{"q":"open a job","names":["open_job","unschedule_visit"],"confident":true,"noneWins":false,"top":1}
+{"q":"update job","names":["update_job","get_job"],"confident":true,"noneWins":false,"top":1}
+{"q":"record estimate or quote","names":["record_money_event","open_job"],"confident":true,"noneWins":false,"top":0.91}
+{"q":"get customer jobs or customer details","names":["get_customer_context","get_job"],"confident":true,"noneWins":false,"top":0.9}
+{"q":"void an invoice","names":["record_money_event","record_field_note"],"confident":true,"noneWins":false,"top":1}
+{"q":"list jobs for a customer","names":["get_customer_context","query_spine"],"confident":true,"noneWins":false,"top":0.96}
+{"q":"record field note","names":["record_field_note","add_technician_seat"],"confident":true,"noneWins":false,"top":1}
+{"q":"list captures or notes on a job","names":["list_recent_captures","get_job"],"confident":true,"noneWins":false,"top":1}
+{"q":"record a payment on a job","names":["record_money_event","retract_capture"],"confident":true,"noneWins":false,"top":1}
+{"q":"get customer jobs context","names":["get_customer_context","get_job"],"confident":true,"noneWins":false,"top":0.96}
+{"q":"list recent captures notes on a job","names":["list_recent_captures","ask_team_lead"],"confident":true,"noneWins":false,"top":1}
+{"q":"query spine or sql database","names":["query_spine","write_file"],"confident":true,"noneWins":false,"top":1}
+{"q":"send email or list emails","names":["send_email","write_file"],"confident":true,"noneWins":false,"top":0.94}
+{"q":"invoices","names":["record_money_event","set_firm_profile","run_command","send_email","query_spine"],"confident":false,"noneWins":false,"top":0.49}
+{"q":"job money ledger invoice payment","names":["record_money_event","grant_access"],"confident":true,"noneWins":false,"top":1}
+{"q":"send email to customer","names":["send_email","move_visit"],"confident":true,"noneWins":false,"top":1}
+{"q":"get customer details and jobs","names":["get_customer_context","find_customer"],"confident":true,"noneWins":false,"top":0.98}
+{"q":"invoice billing ledger","names":["record_money_event","query_spine"],"confident":true,"noneWins":false,"top":0.89}
+{"q":"invoice","names":["record_money_event","set_firm_profile"],"confident":true,"noneWins":false,"top":0.76}
+{"q":"cancel void retract delete","names":["retract_capture","cancel_job"],"confident":true,"noneWins":false,"top":0.71}
+{"q":"update job status","names":["update_job","record_money_event","write_file","bind_telegram","list_recent_captures"],"confident":false,"noneWins":true,"top":0.15000000000000002}
+{"q":"query spine database","names":["query_spine","share_file"],"confident":true,"noneWins":false,"top":1}
+{"q":"list captures or notes","names":["list_recent_captures","set_technician_horizon"],"confident":true,"noneWins":false,"top":0.99}
+{"q":"run command or write file in sandbox","names":["run_command","write_file"],"confident":true,"noneWins":false,"top":0.93}
+{"q":"technician schedule visit job sheet","names":["book_visit","get_team_schedule","get_job","run_command","open_job"],"confident":false,"noneWins":false,"top":0.26}
+{"q":"roster technicians","names":["list_team","add_technician_seat"],"confident":true,"noneWins":false,"top":0.79}
+{"q":"share file send file","names":["share_file","add_time_off"],"confident":true,"noneWins":false,"top":1}
+{"q":"outstanding balances invoices revenue","names":["query_spine","record_money_event","run_command","ask_team_lead","grant_access"],"confident":false,"noneWins":false,"top":0.38}
+{"q":"run command in sandbox share file","names":["run_command","share_file"],"confident":true,"noneWins":false,"top":0.89}
+{"q":"customer context contact details notes","names":["get_customer_context","record_standing_fact","record_field_note","list_recent_captures","find_customer"],"confident":false,"noneWins":false,"top":0.58}
+{"q":"write file read file sandbox","names":["read_file","write_file","run_command","bind_telegram","retract_capture"],"confident":false,"noneWins":false,"top":0.56}
+{"q":"send email","names":["send_email","resolve_date"],"confident":true,"noneWins":false,"top":1}
+{"q":"schedule for today","names":["get_team_schedule","resolve_date"],"confident":true,"noneWins":false,"top":0.93}
+{"q":"customer jobs and notes","names":["get_customer_context","get_job"],"confident":true,"noneWins":false,"top":0.8200000000000001}
+{"q":"technicians list","names":["list_team","bind_telegram"],"confident":true,"noneWins":false,"top":0.99}
+{"q":"send an email to a customer","names":["send_email","set_firm_profile"],"confident":true,"noneWins":false,"top":1}
+{"q":"get jobs for a customer","names":["get_customer_context","get_job"],"confident":true,"noneWins":false,"top":0.98}
+{"q":"get capture or notes","names":["get_capture","list_recent_captures","get_customer_context","write_file","run_command"],"confident":false,"noneWins":false,"top":0.58}
+{"q":"get capture note by id","names":["get_capture","share_file"],"confident":true,"noneWins":false,"top":1}
+{"q":"query database spine","names":["query_spine","set_technician_horizon"],"confident":true,"noneWins":false,"top":1}
+{"q":"run SQL query against database","names":["query_spine","run_command"],"confident":true,"noneWins":false,"top":0.98}
+{"q":"read file","names":["read_file","write_file"],"confident":true,"noneWins":false,"top":1}
+{"q":"send text message or SMS to customer","names":["send_email","share_file","move_visit","list_access","reactivate_technician_seat"],"confident":false,"noneWins":true,"top":0.03}
+{"q":"search supply house vendors or standing facts or web search","names":["web_search","write_file"],"confident":true,"noneWins":false,"top":1}
+{"q":"standing facts","names":["record_standing_fact","get_customer_context"],"confident":true,"noneWins":false,"top":0.95}
+{"q":"vendor or supplier contact info and hours","names":["web_search","find_slots"],"confident":true,"noneWins":false,"top":1}
+{"q":"search notes or field notes","names":["list_recent_captures","web_search"],"confident":true,"noneWins":false,"top":0.84}
+{"q":"query database or spine","names":["query_spine","bind_telegram"],"confident":true,"noneWins":false,"top":0.99}
+{"q":"send an email","names":["send_email","reactivate_technician_seat"],"confident":true,"noneWins":false,"top":1}
+{"q":"search the web for part information","names":["web_search","find_slots"],"confident":true,"noneWins":false,"top":1}
+{"q":"execute shell command or python","names":["run_command","set_timezone"],"confident":true,"noneWins":false,"top":1}
+{"q":"query database spine","names":["query_spine","set_timezone"],"confident":true,"noneWins":false,"top":1}
+{"q":"add technician seat","names":["add_technician_seat","set_technician_skills"],"confident":true,"noneWins":false,"top":1}
+{"q":"run command or read file","names":["run_command","read_file"],"confident":true,"noneWins":false,"top":0.88}
+{"q":"read file from sandbox","names":["read_file","run_command"],"confident":true,"noneWins":false,"top":1}
+{"q":"list team roster","names":["list_team","find_slots"],"confident":true,"noneWins":false,"top":1}
+{"q":"write file","names":["write_file","set_technician_horizon"],"confident":true,"noneWins":false,"top":1}
+{"q":"invite or activate technician","names":["add_technician_seat","reactivate_technician_seat"],"confident":true,"noneWins":false,"top":0.79}
+{"q":"ask team lead","names":["ask_team_lead","inform_team_lead"],"confident":true,"noneWins":false,"top":0.94}
+{"q":"technician skills","names":["set_technician_skills","list_team"],"confident":true,"noneWins":false,"top":0.97}
+{"q":"grant access to technicians or permissions","names":["grant_access","set_technician_view"],"confident":true,"noneWins":false,"top":0.99}
+{"q":"inform team lead or office","names":["inform_team_lead","inform_teammate"],"confident":true,"noneWins":false,"top":0.99}
+{"q":"ask office or check office tasks and open items","names":["ask_team_lead","get_team_schedule"],"confident":true,"noneWins":false,"top":0.93}
+{"q":"office open items triage inbox unassigned jobs tasks","names":["get_team_schedule","ask_team_lead"],"confident":true,"noneWins":false,"top":0.92}
+{"q":"incoming calls triage new customer messages","names":["record_caller","open_job"],"confident":true,"noneWins":false,"top":0.63}
+{"q":"record a standing fact or customer fact","names":["record_standing_fact","run_command"],"confident":true,"noneWins":false,"top":1}
+{"q":"list access requests pending from technicians","names":["list_access","find_slots"],"confident":true,"noneWins":false,"top":1}
+{"q":"list recent captures or field notes","names":["list_recent_captures","resolve_date"],"confident":true,"noneWins":false,"top":0.99}
+{"q":"retract capture","names":["retract_capture","set_timezone"],"confident":true,"noneWins":false,"top":1}
+{"q":"query database or recent notes across system","names":["list_recent_captures","query_spine","get_customer_context","find_customer","write_file"],"confident":false,"noneWins":false,"top":0.47000000000000003}
+{"q":"schedule or book visit or list visits","names":["book_visit","get_team_schedule"],"confident":true,"noneWins":false,"top":0.92}
+{"q":"grant access to a customer or job","names":["grant_access","resolve_date"],"confident":true,"noneWins":false,"top":1}
+{"q":"pass a note to a teammate or message technician","names":["inform_teammate","record_field_note"],"confident":true,"noneWins":false,"top":0.92}
+{"q":"list team members roster","names":["list_team","write_file"],"confident":true,"noneWins":false,"top":1}
+{"q":"list access requests","names":["list_access","grant_access"],"confident":true,"noneWins":false,"top":1}
+{"q":"list jobs for customer","names":["get_customer_context","get_job"],"confident":true,"noneWins":false,"top":0.94}
+{"q":"get customer context or customer details","names":["get_customer_context","move_visit"],"confident":true,"noneWins":false,"top":1}
+{"q":"send text or message to technician","names":["inform_teammate","send_email","share_file","decline_access","grant_access"],"confident":false,"noneWins":true,"top":0.28}

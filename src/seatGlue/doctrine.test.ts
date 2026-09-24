@@ -50,3 +50,18 @@ describe('technician doctrine', () => {
     },
   );
 });
+
+describe('manager doctrine (step 2a)', () => {
+  it('carries every ported block, the spine- and composio- prefixes, memory and ask_user', async () => {
+    const { MANAGER_DOCTRINE, MANAGER_PREAMBLE } = await import('./doctrine.js');
+    for (const block of PORTED_BLOCKS.map((b) => DOCTRINE_UPDATES.reduce((t, [from, to]) => t.split(from).join(to), b))) {
+      expect(MANAGER_DOCTRINE).toContain(block);
+    }
+    expect(MANAGER_DOCTRINE.startsWith(MANAGER_PREAMBLE)).toBe(true);
+    expect(MANAGER_PREAMBLE).toContain('composio-COMPOSIO_MANAGE_CONNECTIONS');
+    expect(MANAGER_PREAMBLE).toContain('spine-write_my_memory');
+    expect(MANAGER_PREAMBLE).toContain('`ask_user`');
+    expect(MANAGER_PREAMBLE).not.toContain('technician');
+    expect(MANAGER_DOCTRINE).not.toContain('## Long or bulk tasks');
+  });
+});

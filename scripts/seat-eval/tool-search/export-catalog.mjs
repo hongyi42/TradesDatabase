@@ -1,0 +1,12 @@
+import { writeFileSync } from 'node:fs';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { SPINE, SPINE_ENV } from './spine-env.mjs';
+const c = new Client({ name: 'catalog-export', version: '0' });
+await c.connect(new StdioClientTransport({ ...SPINE, env: SPINE_ENV }));
+const { tools } = await c.listTools();
+writeFileSync('catalog-spine.json', JSON.stringify(tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })), null, 1));
+const chars = tools.reduce((s, t) => s + (t.description?.length ?? 0) + JSON.stringify(t.inputSchema).length, 0);
+console.log(`${tools.length} tools; ~${Math.round(chars / 4)} tokens of descriptions+schemas`);
+console.log(tools.map((t) => `${t.name} (${Math.round(((t.description?.length ?? 0) + JSON.stringify(t.inputSchema).length) / 4)})`).join(', '));
+await c.close();

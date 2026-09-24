@@ -9,6 +9,7 @@ const GOOD = {
   technicianRef: 'ben-shelton',
   telegramUserId: '5801703167',
   timezone: 'America/Los_Angeles',
+  tier: 'technician',
 };
 
 function fake(status: number, body: unknown, seen: { url?: string; auth?: string } = {}): FetchLike {
@@ -35,6 +36,7 @@ describe('fetchWhoami', () => {
       technicianRef: 'ben-shelton',
       telegramUserId: 5801703167,
       tz: 'America/Los_Angeles',
+      tier: 'technician',
     });
   });
 
@@ -53,5 +55,14 @@ describe('fetchWhoami', () => {
     await expect(
       fetchWhoami('https://spine.example/', TOKEN, fake(200, { ...GOOD, technicianRef: '' })),
     ).rejects.toThrow('technicianRef');
+  });
+
+  it('reads the tier, and refuses a missing or unknown one (fail closed: a pre-2a Render)', async () => {
+    const mgr = await fetchWhoami('https://spine.example/', TOKEN, fake(200, { ...GOOD, tier: 'manager' }));
+    expect(mgr.tier).toBe('manager');
+    const { tier: _omit, ...noTier } = GOOD;
+    void _omit;
+    await expect(fetchWhoami('https://spine.example/', TOKEN, fake(200, noTier))).rejects.toThrow('tier');
+    await expect(fetchWhoami('https://spine.example/', TOKEN, fake(200, { ...GOOD, tier: 'owner' }))).rejects.toThrow('tier');
   });
 });

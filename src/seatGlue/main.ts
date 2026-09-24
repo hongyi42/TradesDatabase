@@ -30,6 +30,7 @@ export function engineConfig(cfg: SeatConfig, who: SeatWho): EngineConfig {
     openrouterKey: cfg.openrouterKey,
     spineUrl: cfg.spineUrl,
     seatToken: cfg.seatToken,
+    tier: who.tier,
   };
 }
 
@@ -63,7 +64,7 @@ export function seatDeps(
   });
   return {
     telegram,
-    openSession: (id) => openSession(client, engineConfig(cfg, who), policy, id),
+    openSession: (id, hooks) => openSession(client, engineConfig(cfg, who), policy, id, hooks),
     policy,
     costLog,
     transcribe: (buf, mime) => transcribe(buf, mime, { openrouterKey: cfg.openrouterKey }),

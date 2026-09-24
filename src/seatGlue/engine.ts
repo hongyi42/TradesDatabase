@@ -1,5 +1,5 @@
 import { seatHeaders } from './identity.js';
-import { TECHNICIAN_DOCTRINE } from './doctrine.js';
+import { MANAGER_DOCTRINE, TECHNICIAN_DOCTRINE } from './doctrine.js';
 import type { TurnPolicy } from './turnPolicy.js';
 
 // The ONLY file that loads @github/copilot-sdk (1.0.14). The SDK is not a
@@ -22,6 +22,13 @@ export interface BlobAttachment {
 
 export interface EngineSession {
   readonly sessionId: string;
+  /**
+   * The session's RPC surface — only the mode switch the manager seat uses
+   * (1.0.14 generated/rpc.d.ts:24776-24791, @experimental). OPTIONAL so a fake
+   * session without it still type-checks; the glue treats its absence as
+   * "cannot switch", never as an error.
+   */
+  readonly rpc?: { mode: { set(p: { mode: 'plan' | 'interactive' }): Promise<unknown>; get(): Promise<string> } };
   send(options: { prompt: string; mode?: 'enqueue' | 'immediate'; attachments?: BlobAttachment[] }): Promise<string>;
   abort(): Promise<void>;
   disconnect(): Promise<void>;
@@ -33,6 +40,34 @@ interface PermissionRequestLike {
   serverName?: string;
   toolName?: string;
   toolCallId?: string;
+}
+
+/** 1.0.14 types.d.ts:990-1022 (UserInputRequest / UserInputResponse). */
+export interface UserInputRequestLike {
+  question: string;
+  choices?: string[];
+  allowFreeform?: boolean;
+}
+export interface UserInputResponseLike {
+  answer: string;
+  wasFreeform: boolean;
+}
+/** 1.0.14 types.d.ts:1023-1051 (ExitPlanModeRequest / ExitPlanModeResult). */
+export interface ExitPlanRequestLike {
+  summary: string;
+  planContent?: string;
+  actions: string[];
+  recommendedAction: string;
+}
+export interface ExitPlanResultLike {
+  approved: boolean;
+  selectedAction?: string;
+  feedback?: string;
+}
+/** What the Seat hands the engine for a manager: how to ask its person, and how to show a plan. */
+export interface SeatHooks {
+  onUserInput(req: UserInputRequestLike): Promise<UserInputResponseLike>;
+  onExitPlan(req: ExitPlanRequestLike): Promise<ExitPlanResultLike>;
 }
 
 interface EngineClient {
@@ -55,13 +90,23 @@ export interface EngineConfig {
   openrouterKey: string;
   spineUrl: string;
   seatToken: string;
+  /** From /seat/whoami (step 2a): picks the rulebook, Composio and the two built-ins. */
+  tier: 'manager' | 'technician';
 }
 
-// The types do not say whether a permission request's serverName is the key in
-// mcpServers ('spine') or the server's self-reported name ('trades-spine',
-// src/mcp/server.ts). Both are accepted; the first live call logs which it is.
-export const SPINE_NAMES = new Set(['spine', 'trades-spine']);
+// The tool servers a seat may call. serverName is the mcpServers KEY (measured
+// live, step 1: 'spine'); 'trades-spine' (the server's self-reported name) stays
+// accepted. 'composio' is the manager seat's second server (step 2a): the Render
+// /composio relay, same seat token. Every call to any of them is pending from
+// the permission handler (turnPolicy rule 2), so a Composio call is never
+// aborted mid-flight either.
+export const TOOL_SERVERS = new Set(['spine', 'trades-spine', 'composio']);
+// Built-in tools a manager seat allows (availableTools). Whether the engine asks
+// permission for them at all is UNMEASURED (plan 2a review): if it does, approve
+// them by name here rather than let the default reject hide the buttons.
+export const MANAGER_BUILTINS = new Set(['ask_user', 'exit_plan_mode']);
 let loggedServerName = false;
+let loggedNonMcpKind = false;
 
 export async function startEngine(opts: { baseDirectory: string; tz: string }): Promise<EngineClient> {
   const sdk = (await import(SDK_SPECIFIER)) as SdkModule;
@@ -78,7 +123,18 @@ export async function startEngine(opts: { baseDirectory: string; tz: string }): 
   return client;
 }
 
-export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy): Record<string, unknown> {
+export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy, hooks?: SeatHooks): Record<string, unknown> {
+  const manager = cfg.tier === 'manager';
+  const spine = {
+    type: 'http',
+    url: cfg.spineUrl,
+    tools: ['*'],
+    // ask_team_lead becomes the whole office, with up to 240 s to answer
+    // (desk→office merge). The SDK's own default is 60 s — at that the seat
+    // would give up while the office keeps working and its answer is lost.
+    timeout: 300_000,
+    headers: { ...seatHeaders(cfg.seatToken) },
+  };
   return {
     model: cfg.model,
     provider: {
@@ -104,34 +160,42 @@ export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy): Record<str
     // ("**Title** I am …") as message text before every tool call regardless.
     // The only defence is seat.ts holding back text from any model call that
     // ends in a tool request. Do not remove that hold on the strength of a setting.
-    systemMessage: { mode: 'replace', content: TECHNICIAN_DOCTRINE },
-    availableTools: ['mcp:*'],
+    systemMessage: { mode: 'replace', content: manager ? MANAGER_DOCTRINE : TECHNICIAN_DOCTRINE },
+    // All tools loaded, tool search OFF (measured 2026-09-23: a wash at ~49 tools).
+    availableTools: manager ? ['mcp:*', 'builtin:ask_user', 'builtin:exit_plan_mode'] : ['mcp:*'],
     toolSearch: { enabled: false },
-    mcpServers: {
-      spine: {
-        type: 'http',
-        url: cfg.spineUrl,
-        tools: ['*'],
-        // ask_team_lead becomes the whole office, with up to 240 s to answer
-        // (desk→office merge). The SDK's own default is 60 s — at that the seat
-        // would give up while the office keeps working and its answer is lost.
-        timeout: 300_000,
-        headers: { ...seatHeaders(cfg.seatToken) },
-      },
-    },
+    mcpServers: manager
+      ? {
+          spine,
+          // The Render /composio relay (src/composio/relayHandler.ts) accepts the
+          // seat token and pins the person's own Composio session.
+          composio: { ...spine, url: new URL('/composio', cfg.spineUrl).toString() },
+        }
+      : { spine },
     onPermissionRequest: (r: PermissionRequestLike) => {
       if (r.kind === 'mcp' && !loggedServerName) {
         loggedServerName = true;
         console.log(`seat-glue: first MCP permission request — serverName=${JSON.stringify(r.serverName)}`);
       }
-      if (r.kind === 'mcp' && r.serverName && SPINE_NAMES.has(r.serverName)) {
+      if (r.kind === 'mcp' && r.serverName && TOOL_SERVERS.has(r.serverName)) {
         // Pending from HERE, before the call goes out (turnPolicy rule 2).
         policy.onToolPending(r.toolCallId, r.toolName);
         return { kind: 'approve-once' };
       }
+      if (r.kind !== 'mcp' && !loggedNonMcpKind) {
+        loggedNonMcpKind = true;
+        console.log(`seat-glue: first non-MCP permission request — kind=${r.kind} tool=${JSON.stringify(r.toolName)}`);
+      }
+      if (manager && r.kind !== 'mcp' && r.toolName && MANAGER_BUILTINS.has(r.toolName)) return { kind: 'approve-once' };
       console.error(`seat-glue: refused a ${r.kind} permission request (${r.serverName ?? r.toolName ?? '?'})`);
       return { kind: 'reject' };
     },
+    ...(manager && hooks
+      ? {
+          onUserInputRequest: (req: UserInputRequestLike) => hooks.onUserInput(req),
+          onExitPlanModeRequest: (req: ExitPlanRequestLike) => hooks.onExitPlan(req),
+        }
+      : {}),
   };
 }
 
@@ -145,8 +209,9 @@ export async function openSession(
   cfg: EngineConfig,
   policy: TurnPolicy,
   sessionId: string | null,
+  hooks?: SeatHooks,
 ): Promise<EngineSession> {
-  const config = sessionConfig(cfg, policy);
+  const config = sessionConfig(cfg, policy, hooks);
   if (sessionId) {
     try {
       return await client.resumeSession(sessionId, config);

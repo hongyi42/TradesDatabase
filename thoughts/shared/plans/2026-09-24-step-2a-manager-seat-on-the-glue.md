@@ -129,10 +129,10 @@ passes its hooks at `start()`, the reopen in `deliver()`, and `startFresh()` (`s
 `seatDeps` threads `hooks` to `openSession` (`main.ts:68`); `seat.test.ts` `setup()` updated.
 
 ### Automated verification
-- [ ] `engine.test.ts` (new, pure): manager config has two servers + built-ins + manager doctrine;
+- [x] `engine.test.ts` (new, pure): manager config has two servers + built-ins + manager doctrine;
   technician config is deep-equal to today's; `composio` is approved and other servers rejected
-- [ ] `doctrine.test.ts`: every ported block appears in the manager doctrine; `whoami.test.ts` tier cases
-- [ ] typecheck, lint, `npm test`
+- [x] `doctrine.test.ts`: every ported block appears in the manager doctrine; `whoami.test.ts` tier cases
+- [x] typecheck, lint, `npm test`
 
 ## Phase 3: buttons and waiting prompts
 

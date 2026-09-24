@@ -1,5 +1,5 @@
 import type { CallRef } from './costLog.js';
-import type { BlobAttachment, EngineEvent, EngineSession } from './engine.js';
+import type { BlobAttachment, EngineEvent, EngineSession, SeatHooks } from './engine.js';
 import { classify, type Inbound } from './inbound.js';
 import type { SeatState } from './state.js';
 import { TelegramConflictError, type TelegramApi, type TgUpdate } from './telegram.js';
@@ -24,8 +24,8 @@ export const TEXT = {
 
 export interface SeatDeps {
   telegram: TelegramApi;
-  /** Resume the given conversation, or start one when null. */
-  openSession(sessionId: string | null): Promise<EngineSession>;
+  /** Resume the given conversation, or start one when null. `hooks` = how a manager seat asks its person. */
+  openSession(sessionId: string | null, hooks?: SeatHooks): Promise<EngineSession>;
   policy: TurnPolicy;
   costLog: { record(ref: CallRef): Promise<unknown> };
   transcribe(buf: Buffer, mime: string): Promise<{ text: string; generationId: string | null }>;
@@ -70,6 +70,8 @@ export class Seat {
   private stopped = false;
   private processing = 0;
   private readonly log: (msg: string) => void;
+  /** Set by a manager seat (step 2a phase 3); passed to every openSession. */
+  protected hooks: SeatHooks | undefined = undefined;
 
   constructor(private readonly deps: SeatDeps) {
     this.log = deps.log ?? ((m) => console.log(`seat-glue: ${m}`));
@@ -95,7 +97,7 @@ export class Seat {
 
   async start(): Promise<void> {
     this.state = await this.deps.readState();
-    await this.attach(await this.deps.openSession(this.state.sessionId));
+    await this.attach(await this.deps.openSession(this.state.sessionId, this.hooks));
     await this.sweep();
     this.sweepTimer = setInterval(() => void this.sweep(), this.deps.sweepEveryMs ?? 3_600_000);
     this.sweepTimer.unref?.();
@@ -209,7 +211,7 @@ export class Seat {
     // or a fresh one, rather than going silent until a restart.
     if (!this.session) {
       try {
-        await this.attach(await this.deps.openSession(this.state.sessionId));
+        await this.attach(await this.deps.openSession(this.state.sessionId, this.hooks));
       } catch (err) {
         this.log(`could not open a conversation: ${errText(err)}`);
         return this.say(TEXT.replyFailed);
@@ -314,7 +316,7 @@ export class Seat {
     this.session = null;
     await old?.disconnect().catch((err: unknown) => this.log(`disconnect failed: ${errText(err)}`));
     try {
-      await this.attach(await this.deps.openSession(null));
+      await this.attach(await this.deps.openSession(null, this.hooks));
     } catch (err) {
       this.log(`could not start a fresh conversation: ${errText(err)}`);
       return this.say(TEXT.replyFailed);

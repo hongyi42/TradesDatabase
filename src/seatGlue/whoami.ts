@@ -15,6 +15,8 @@ export interface SeatWho {
   telegramUserId: number;
   /** The firm's IANA timezone — the engine process's TZ. */
   tz: string;
+  /** Picks the rulebook and the manager-only tools (step 2a). Fail closed on anything else. */
+  tier: 'manager' | 'technician';
 }
 
 export async function fetchWhoami(spineUrl: string, token: string, fetchFn: FetchLike = defaultFetch): Promise<SeatWho> {
@@ -40,11 +42,16 @@ export async function fetchWhoami(spineUrl: string, token: string, fetchFn: Fetc
   } catch {
     throw new Error(`seat-glue: the firm's timezone "${tz}" is not a valid IANA timezone`);
   }
+  const tier = body.tier;
+  if (tier !== 'manager' && tier !== 'technician') {
+    throw new Error(`seat-glue: whoami returned no usable tier (${JSON.stringify(tier)}) — is Render on the step 2a deploy?`);
+  }
   return {
     seatRef: text('seatRef'),
     tenantId: text('tenantId'),
     technicianRef: text('technicianRef'),
     telegramUserId: Number(idText),
     tz,
+    tier,
   };
 }

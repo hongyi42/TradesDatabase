@@ -1199,6 +1199,7 @@ describe('seat tokens: POST /control/seat-token, GET /seat/whoami, /mcp', () => 
       technicianRef: 'seat-probe',
       telegramUserId: 5801703167,
       tz,
+      tier: 'technician',
     });
   });
 

@@ -73,6 +73,7 @@ const SCHEMAS: ForcedToolSpec[] = [
   'write_job_note',
   'record_caller',
   'get_customer_context',
+  'read_conversation',
 ].map((name) => ({ name, description: name, inputSchema: { type: 'object', properties: {} } }));
 
 const TECH = { kind: 'technician' as const, technicianId: 'tech-1', ref: 'ben-shelton' };
@@ -249,6 +250,8 @@ describe('officeToolsFor — the tier gate is the tool list', () => {
       'write_memory',
       'read_job_note',
       'write_job_note',
+      // Step 3: what a team member said to their own assistant.
+      'read_conversation',
     ]);
   });
 });
@@ -465,6 +468,13 @@ describe('answerAsOffice — who is facing it decides the tools', () => {
     await answerAsOffice({ ...q, askerTier: 'manager', managerDesk: true }, questionDeps({}, seen));
     expect(seen.tools!.map((t) => t.name)).toEqual([...MANAGER_FACING_TOOLS, 'answer']);
     expect(seen.req!.user).not.toContain(OFFICE_NARROW_REMINDER);
+  });
+
+  // Step 3 (operator, 2026-09-23): a manager may be told what a team member said
+  // to their assistant; one technician must never read another's chat.
+  test("read_conversation is handed to a manager's door and never to a technician's", () => {
+    expect(officeToolsFor({ kind: 'manager' }, SCHEMAS).map((t) => t.name)).toContain('read_conversation');
+    expect(officeToolsFor(TECH, SCHEMAS).map((t) => t.name)).not.toContain('read_conversation');
   });
 });
 

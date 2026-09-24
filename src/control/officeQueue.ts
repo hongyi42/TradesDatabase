@@ -1,4 +1,4 @@
-import type { QueuedOfficeMessageForHost } from '../db/index.js';
+import type { QueuedOfficeMessageForHost, QueueScope } from '../db/index.js';
 import {
   getQueuedOfficeMessageForHost,
   getTechnician,
@@ -88,6 +88,8 @@ export function wrapOfficeMessage(
 export async function buildOfficeDelivery(
   hostId: string,
   deps: OfficeQueueDeps = {},
+  // Step 3: one glue seat's person, or every person except live glue seats.
+  scope: QueueScope = {},
 ): Promise<{ messages: OfficeDeliveryItem[] }> {
   const listQueued = deps.listQueued ?? listQueuedOfficeMessagesForHost;
   const serveCount = deps.serveCount ?? setOfficeMessageServeCount;
@@ -96,7 +98,7 @@ export async function buildOfficeDelivery(
   // 'assistant' ONLY (build 6.5 Phase 4). A chat row rides the NUDGE pull, and
   // serving it here as well would inject it as a silent agent turn AND text it
   // — the same words arriving twice by two routes.
-  const rows = await listQueued(hostId, 'assistant');
+  const rows = await listQueued(hostId, 'assistant', scope);
   const items: OfficeDeliveryItem[] = [];
   for (const row of rows) {
     try {
@@ -161,6 +163,8 @@ export async function completeOfficeDelivery(
   report: 'delivered' | 'failed',
   detail: string | null,
   deps: OfficeQueueDeps = {},
+  // Step 3: a glue seat settles only its own person's rows (hosts are shared).
+  scope: QueueScope = {},
 ): Promise<OfficeReportResult> {
   const getQueued = deps.getQueued ?? getQueuedOfficeMessageForHost;
   const attempts = deps.attempts ?? setOfficeMessageAttempts;
@@ -168,6 +172,7 @@ export async function completeOfficeDelivery(
 
   const row = await getQueued(id, hostId);
   if (!row) return 'ignored'; // unknown id, wrong host, or already moved
+  if (scope.onlyTechnicianId && row.technician_id !== scope.onlyTechnicianId) return 'ignored';
 
   if (report === 'delivered') {
     const moved = await delivery(

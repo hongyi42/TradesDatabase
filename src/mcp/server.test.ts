@@ -7889,6 +7889,85 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     expect(tech.text).toContain("team lead's own tool");
   });
 
+  // ── read_conversation: the office reads a seat's chat (step 3) ─────────────
+  test('read_conversation dispatches for the team lead, names a real person, and says when there is nothing', async () => {
+    const { client: c, callWith } = await clientFor({ tenantId, technicianRef: 'spine:team-lead' });
+    try {
+      const res = await callWith('read_conversation', { person: 'tech-mcp', days: 400, limit: 999 });
+      expect(res.isError).toBe(false);
+      expect(res.data.status).toBe('ok');
+      expect(res.data.person).toBe('tech-mcp');
+      expect(res.data.days).toBe(90); // clamped to the retention window
+      expect(res.data.turns).toEqual([]);
+      expect(res.data.note).toContain('absence here is not absence from the record');
+      const nobody = await callWith('read_conversation', { person: 'no-such-person' });
+      expect(nobody.isError).toBe(true);
+      expect(nobody.text).toContain('no team member');
+    } finally {
+      await c.close();
+    }
+  });
+
+  test("read_conversation returns the person's turns as short snippets, newest first", async () => {
+    const host = await createHost('read-conv-host', 'f'.repeat(64));
+    const techId = (
+      await pg.query<{ id: string }>('select id from technicians where tenant_id = $1 and ref = $2', [tenantId, 'tech-mcp'])
+    ).rows[0].id;
+    const seat = await createSeat({ tenantId, technicianId: techId, hostId: host.id, seatRef: 'g_readconv', botRef: null });
+    try {
+      await pg.query(
+        `insert into seat_turns (id, tenant_id, technician_id, seat_id, session_id, at, role, text, tool, args, ok) values
+           (gen_random_uuid(), $1, $2, $3, 's', now() - interval '2 hours', 'person', $4, null, null, null),
+           (gen_random_uuid(), $1, $2, $3, 's', now() - interval '1 hour', 'tool', null, 'record_field_note', '{"jobId":"j1"}', true)`,
+        [tenantId, techId, seat.id, `the Smith freezer ${'x'.repeat(400)}`],
+      );
+      const { client: c, callWith } = await clientFor({ tenantId, technicianRef: 'spine:team-lead' });
+      try {
+        const all = await callWith('read_conversation', { person: 'tech-mcp' });
+        expect(all.data.turns.map((t: { role: string }) => t.role)).toEqual(['tool', 'person']);
+        expect(all.data.turns[0]).toMatchObject({ tool: 'record_field_note', ok: true });
+        expect(all.data.turns[0].args).toBeUndefined(); // arguments stay in the table
+        expect(all.data.turns[1].snippet.length).toBeLessThanOrEqual(301);
+        const hit = await callWith('read_conversation', { person: 'tech-mcp', query: 'Smith' });
+        expect(hit.data.turns).toHaveLength(1);
+      } finally {
+        await c.close();
+      }
+    } finally {
+      await pg.query('delete from hosts where id = $1', [host.id]); // cascades the seat and its turns
+    }
+  });
+
+  test("another firm's office cannot read this firm's people", async () => {
+    const other = await createTenant('read-conv-other-firm', { technicianSeats: 1 });
+    try {
+      const { client: c, callWith } = await clientFor({ tenantId: other.id, technicianRef: 'spine:team-lead' });
+      try {
+        const res = await callWith('read_conversation', { person: 'tech-mcp' });
+        expect(res.isError).toBe(true);
+        expect(res.text).toContain('no team member');
+      } finally {
+        await c.close();
+      }
+    } finally {
+      await pg.query('delete from tenants where id = $1', [other.id]);
+    }
+  });
+
+  test('read_conversation is refused to managers and technicians — the office reads, badges do not', async () => {
+    const mgrC = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const res = await mgrC.callWith('read_conversation', { person: 'tech-mcp' });
+      expect(res.isError).toBe(true);
+      expect(res.text).toContain("team lead's own tool");
+    } finally {
+      await mgrC.client.close();
+    }
+    const tech = await call('read_conversation', { person: 'mgr-test' });
+    expect(tech.isError).toBe(true);
+    expect(tech.text).toContain("team lead's own tool");
+  });
+
   test('query_spine is now refused to the team lead — the dead allowlist entry is gone', async () => {
     const { client: c, callWith } = await clientFor({ tenantId, technicianRef: 'spine:team-lead' });
     try {
@@ -7915,6 +7994,8 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
       'write_job_note',
       // RUNG 10B — the first verb that writes the customer record itself.
       'record_caller',
+      // STEP 3 — the office reads a seat's conversation instead of asking it.
+      'read_conversation',
     ]);
     const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
     // the catalog — seventeen, matching querySpine.test.ts's grant list; the

@@ -97,6 +97,10 @@ export const MANAGER_FACING_TOOLS: ReadonlySet<string> = new Set([
   'write_memory',
   'read_job_note',
   'write_job_note',
+  // Step 3 (operator, 2026-09-23): a manager may be told what a team member said
+  // to their assistant. NEVER on TECHNICIAN_FACING_TOOLS — one technician must
+  // not read another's chat through the office.
+  'read_conversation',
 ]);
 export const TECHNICIAN_FACING_TOOLS: ReadonlySet<string> = new Set([
   'read_memory',

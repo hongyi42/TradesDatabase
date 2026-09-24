@@ -126,7 +126,9 @@ async function main(argv: string[]): Promise<void> {
   const who = await whoAmI(cfg);
   const client = await startEngine({ baseDirectory: join(cfg.stateDir, 'engine'), tz: who.tz });
   const tg = new ScriptedTelegram(who.telegramUserId, (await readState(cfg.stateDir)).offset);
-  const deps = seatDeps(cfg, who, client, tg, new TurnPolicy());
+  // No office (step 3): a driven run must never drain the person's real inbox,
+  // send the office notice to a fake, or upload scripted turns as their chat.
+  const deps = seatDeps(cfg, who, client, tg, new TurnPolicy(), { office: false });
   const seat = new Seat(deps);
   const loop = seat.run().catch((err: unknown) => {
     console.error(`seat loop failed: ${err instanceof Error ? err.message : String(err)}`);

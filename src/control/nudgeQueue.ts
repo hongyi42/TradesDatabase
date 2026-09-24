@@ -1,4 +1,4 @@
-import type { QueuedNudgeForHost } from '../db/index.js';
+import type { QueuedNudgeForHost, QueueScope } from '../db/index.js';
 import {
   getQueuedNudgeForHost,
   getQueuedOfficeMessageForHost,
@@ -110,11 +110,14 @@ export interface NudgeQueueDeps {
 export async function buildNudgeDelivery(
   hostId: string,
   deps: NudgeQueueDeps = {},
+  // Step 3: a glue seat's own person (onlyTechnicianId), or the box's runners
+  // skipping every person whose glue is pulling (skipTechnicianIds).
+  scope: QueueScope = {},
 ): Promise<{ nudges: NudgeDeliveryItem[] }> {
   const listQueued = deps.listQueued ?? listQueuedNudgesForHost;
   const serveCount = deps.serveCount ?? setNudgeServeCount;
 
-  const rows = await listQueued(hostId);
+  const rows = await listQueued(hostId, scope);
   const items: NudgeDeliveryItem[] = [];
   // ONE ITEM PER GROUP (plan 2026-08-25, Phase 2). An ungrouped row is its own
   // group of one, so the ungrouped path below is byte-for-byte what shipped
@@ -231,7 +234,7 @@ export async function buildNudgeDelivery(
   // that is not about a gap has nothing to group.
   const listChat = deps.listQueuedChat ?? listQueuedOfficeMessagesForHost;
   const chatServe = deps.chatServeCount ?? setOfficeMessageServeCount;
-  for (const row of await listChat(hostId, 'chat')) {
+  for (const row of await listChat(hostId, 'chat', scope)) {
     try {
       const tech = row.technicians;
       // The SAME freeze doctrine, and the same liveness re-check at serve
@@ -284,7 +287,7 @@ export async function buildNudgeDelivery(
   // groups: a push is one row to one person.
   const listPush = deps.listQueuedPush ?? listQueuedPersonPushesForHost;
   const pushServe = deps.pushServeCount ?? setPersonPushServeCount;
-  for (const row of await listPush(hostId)) {
+  for (const row of await listPush(hostId, scope)) {
     try {
       const tech = row.technicians;
       if (!tech || isInactiveState(tech.state) || !tech.sandbox_ref || !tech.telegram_user_id) {
@@ -337,13 +340,20 @@ export async function completeNudgeDelivery(
   report: 'delivered' | 'failed',
   detail: string | null,
   deps: NudgeQueueDeps = {},
+  // Step 3: a glue seat may settle only ITS person's rows. The point-reads are
+  // host-scoped, and two glue seats can share a host, so the report is checked
+  // against the seat's technician as well.
+  scope: QueueScope = {},
 ): Promise<DeliveryReportResult> {
   const getQueued = deps.getQueued ?? getQueuedNudgeForHost;
+  const foreign = (technicianId: string | null): boolean =>
+    !!scope.onlyTechnicianId && technicianId !== scope.onlyTechnicianId;
   const asked = deps.asked ?? markNudgeAskedGroup;
   const groupMembers = deps.groupMembers ?? listQueuedNudgesInGroupForHost;
   const attempts = deps.attempts ?? setNudgeDeliveryAttempts;
 
   const row = await getQueued(id, hostId);
+  if (row && foreign(row.technician_id)) return 'ignored';
   if (!row) {
     // ── A CHAT MESSAGE'S REPORT (build 6.5 Phase 4), tried FIRST ────────────
     // The box posts {id, outcome} and never says which table the id came from,
@@ -361,6 +371,7 @@ export async function completeNudgeDelivery(
     // non-delivered report and swallows the rest.
     const getPush = deps.getQueuedPush ?? getQueuedPersonPushForHost;
     const push = await getPush(id, hostId);
+    if (push && foreign(push.technician_id)) return 'ignored';
     if (push) {
       if (report === 'delivered') {
         const settle = deps.pushDelivered ?? setPersonPushDelivered;
@@ -378,6 +389,7 @@ export async function completeNudgeDelivery(
 
     const getChat = deps.getQueuedChat ?? getQueuedOfficeMessageForHost;
     const chat = await getChat(id, hostId);
+    if (chat && foreign(chat.technician_id)) return 'ignored';
     if (chat) {
       if (report === 'delivered') {
         const settle = deps.chatDelivery ?? setOfficeMessageDelivery;
@@ -418,6 +430,7 @@ export async function completeNudgeDelivery(
       return 'ignored';
     }
     if (survivors.length === 0) return 'ignored'; // unknown id, wrong host, or truly moved
+    if (survivors.some((m) => foreign(m.technician_id))) return 'ignored';
     const moved = await asked(survivors[0].id, survivors[0].tenant_id, id);
     return moved.length > 0 ? 'asked' : 'ignored';
   }

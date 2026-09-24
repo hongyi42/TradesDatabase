@@ -1,5 +1,6 @@
 import type { Database, Json } from './database.types.js';
 import { getClient } from './client.js';
+import { scopeQueueQuery, type QueueScope } from './queueScope.js';
 import { isUniqueViolation } from './rawCaptures.js';
 import type { ReviewKind } from './reviewItems.js';
 import type { Technician } from './technicians.js';
@@ -197,13 +198,18 @@ export type QueuedNudgeForHost = Nudge & {
 const HOST_QUEUE_SELECT =
   '*, technicians!inner(id,ref,state,sandbox_ref,telegram_user_id,host_id,tenant_id)';
 
-export async function listQueuedNudgesForHost(hostId: string): Promise<QueuedNudgeForHost[]> {
-  const { data, error } = await getClient()
-    .from('nudges')
-    .select(HOST_QUEUE_SELECT)
-    .eq('status', 'queued')
-    .eq('technicians.host_id', hostId)
-    .order('created_at', { ascending: true });
+export async function listQueuedNudgesForHost(
+  hostId: string,
+  scope: QueueScope = {},
+): Promise<QueuedNudgeForHost[]> {
+  const { data, error } = await scopeQueueQuery(
+    getClient()
+      .from('nudges')
+      .select(HOST_QUEUE_SELECT)
+      .eq('status', 'queued')
+      .eq('technicians.host_id', hostId),
+    scope,
+  ).order('created_at', { ascending: true });
   if (error) throw new Error(`listQueuedNudgesForHost failed: ${error.message}`);
   return (data ?? []) as QueuedNudgeForHost[];
 }

@@ -80,7 +80,9 @@ const OFFICE_DOCTRINE_POINTER: readonly string[] = [
 
 const OFFICE_AUDIENCE: readonly string[] = [
   'WHO YOU ARE TALKING TO. Your briefing says whether the person asking is a MANAGER or not.',
-  'A manager may be told anything the firm knows. Anybody else is a colleague asking through their',
+  'A manager may be told anything the firm knows, including what a team member told their own',
+  'assistant (read it with read_conversation, and say it in your own words as what they told their',
+  'assistant, not as the record). Anybody else is a colleague asking through their',
   'own assistant, and two rules govern what you tell them:',
   '  THEIR VIEW. A technician sees the work they are on and nothing else, unless a manager opened',
   '    more. The catalog you can look things up in gives you the firm\'s customers and jobs as',

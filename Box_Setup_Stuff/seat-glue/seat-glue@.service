@@ -8,6 +8,12 @@
 # rather than fighting every 10 s (RestartPreventExitStatus=3): find the other
 # poller — most likely the openclaw container revived by gateway-heal or the
 # token medic — and remove ITS token (cutover.sh), then restart this unit.
+#
+# Exit 4 = the seat is gone (step 3): Render's inbox said its person was
+# deactivated or no Telegram account is bound. Restarting would only loop into a
+# whoami that refuses it, so the unit stays down. Rebind or reactivate the person,
+# then `systemctl restart seat-glue@<seat>`. (A refused TOKEN is a normal restart,
+# not 4: install.sh rotates it and restarts the unit itself.)
 [Unit]
 Description=Technician seat glue for %i (Copilot SDK engine)
 After=network-online.target
@@ -24,7 +30,7 @@ WorkingDirectory=/var/lib/seat-glue/%i
 ExecStart=/usr/local/bin/node /opt/seat-glue/app/main.js
 Restart=always
 RestartSec=10
-RestartPreventExitStatus=3
+RestartPreventExitStatus=3 4
 # ProtectSystem=strict leaves no writable /tmp for the engine without this.
 PrivateTmp=true
 ProtectSystem=strict

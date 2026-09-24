@@ -88,6 +88,47 @@ export async function retireSeatByHostRef(hostId: string, seatRef: string): Prom
   if (error) throw new Error(`retireSeatByHostRef failed: ${error.message}`);
 }
 
+// Step 3: a glue seat's inbox pull stamps it live. The box's bash runners skip
+// a person whose glue pulled within the last two minutes, so one queued item is
+// never served twice — and a stopped glue (rollback.sh) ages out on its own and
+// hands its person back to openclaw. See 20260924120000_seat_inbox.sql.
+// Written only when the stamp is 30 s stale: a pull every 10 s per seat would
+// otherwise rewrite the row (and its index entry) every time for nothing — the
+// runners' window is 120 s, so a 30 s-old stamp is still plainly live.
+export const SEAT_PULL_STAMP_EVERY_MS = 30_000;
+export async function touchSeatPull(seatId: string): Promise<void> {
+  const now = Date.now();
+  const stale = new Date(now - SEAT_PULL_STAMP_EVERY_MS).toISOString();
+  const { error } = await getClient()
+    .from('seats')
+    .update({ last_pulled_at: new Date(now).toISOString() })
+    .eq('id', seatId)
+    .is('retired_at', null)
+    .or(`last_pulled_at.is.null,last_pulled_at.lt.${stale}`);
+  if (error) throw new Error(`touchSeatPull failed: ${error.message}`);
+}
+
+// The people on a host whose glue pulled at or after `sinceIso` — the host
+// pulls' skip list. SCHEMA-BEHIND-CODE is a normal deploy order: until the
+// column is migrated in, no seat is live and the runners behave exactly as
+// before (the listLiveSeatBotIds idiom below).
+export async function listLiveGlueTechnicianIds(
+  hostId: string,
+  sinceIso: string,
+): Promise<string[]> {
+  const { data, error } = await getClient()
+    .from('seats')
+    .select('technician_id')
+    .eq('host_id', hostId)
+    .is('retired_at', null)
+    .gte('last_pulled_at', sinceIso);
+  if (error) {
+    if (error.code === '42703' || error.code === 'PGRST204' || error.code === '42P01') return [];
+    throw new Error(`listLiveGlueTechnicianIds failed: ${error.message}`);
+  }
+  return [...new Set((data ?? []).map((r) => r.technician_id))];
+}
+
 // Store a freshly minted token's fingerprint. Overwrites any previous one: that
 // IS rotation — the old token stops resolving on its very next request.
 export async function mintSeatToken(seatId: string, tokenHash: string): Promise<Seat> {

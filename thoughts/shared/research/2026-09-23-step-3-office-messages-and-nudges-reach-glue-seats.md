@@ -332,8 +332,18 @@ and typing, and every text the model writes without a tool call is sent to Teleg
 ## Open Questions
 
 1. **Can the Copilot SDK add a message to a session's history without running a model turn?**
-   `engine.ts` types only `send` (`enqueue`/`immediate`); the 1.0.14 `.d.ts` files would answer
-   it. This decides DP 3 and DP 4. Check the vendor docs/types before planning.
+   *Answered 2026-09-23 from the published 1.0.14 package's type files (`npm pack
+   @github/copilot-sdk@1.0.14`, `dist/types.d.ts`, `dist/generated/rpc.d.ts`):* **no documented
+   way.** What exists:
+   - `MessageOptions.source` (`types.d.ts:2742-2753`): `"user" | "system" | agent-<id>`, "Use
+     'system' for application-generated context". It labels a message as not from the person,
+     but it still starts a turn.
+   - `session.sendMessages` (`rpc.d.ts:17504-17575`, @experimental): several messages in one
+     turn, where "earlier messages provide context, not separate runs or replies". It still runs
+     one loop.
+   - `session.sendSystemNotification` (`rpc.d.ts:17645-17665`) is described as an "Internal request",
+     with opaque `options` including a "passive policy". It is undocumented and could change silently.
+   - The rest is history management (`history.truncate/compact/rewind`), not append.
 2. **Did openclaw's `message send` format Markdown, or send raw?** Decides whether the glue's
    HTML conversion changes a "verbatim" nudge (Constraint 13). A driven send on a non-glue
    seat would show it.

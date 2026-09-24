@@ -81,7 +81,7 @@ a local `hosts` row; manager-sam's `host_id` + `sandbox_ref=s2` + a bound `teleg
 ## Phase 1: Render: the tier in whoami, and seat memory
 
 **`src/mcp/httpServer.ts`** `handleSeatWhoami` (line 341, 200 body ~375): add `tier: person.tier`.
-**`supabase/migrations/20260924120000_seat_memory.sql`** (new): `seat_memory(tenant_id → tenants
+**`supabase/migrations/20260924140000_seat_memory.sql`** (new): `seat_memory(tenant_id → tenants
 on delete cascade, technician_ref text, path text check (planner_memory's regex), content text,
 created_at, updated_at, primary key (tenant_id, technician_ref, path))` + `set_updated_at` trigger;
 `seat_memory_versions(... technician_ref text not null ..., replaced_at)` indexed on `(tenant_id,
@@ -214,7 +214,7 @@ manager approving the plan as it stands?". 3 s timeout; any failure → `{plan:f
 ## Phase 5: install and cut over s2
 
 No code. Steps, in order:
-1. Operator: apply `20260924120000_seat_memory.sql` to the pilot (never `db push`), then deploy the
+1. Operator: apply `20260924140000_seat_memory.sql` to the pilot (never `db push`), then deploy the
    web service (it does not auto-deploy).
 1b. **Gate:** confirm the live deploy serves `tier`, via an s5 token whoami (or the Render dashboard
    commit containing Phase 1). Stop if not: since the final review a missing `tier` falls back to technician with a warning (an unknown one still throws), so an old deploy would run s2 as a plain technician seat, quietly.

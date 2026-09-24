@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { FetchLike } from './http.js';
 import { fetchWhoami } from './whoami.js';
 
@@ -57,12 +57,14 @@ describe('fetchWhoami', () => {
     ).rejects.toThrow('technicianRef');
   });
 
-  it('reads the tier, and refuses a missing or unknown one (fail closed: a pre-2a Render)', async () => {
+  it('reads the tier; a missing one runs as a technician, an unknown one refuses', async () => {
     const mgr = await fetchWhoami('https://spine.example/', TOKEN, fake(200, { ...GOOD, tier: 'manager' }));
     expect(mgr.tier).toBe('manager');
     const { tier: _omit, ...noTier } = GOOD;
     void _omit;
-    await expect(fetchWhoami('https://spine.example/', TOKEN, fake(200, noTier))).rejects.toThrow('tier');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect((await fetchWhoami('https://spine.example/', TOKEN, fake(200, noTier))).tier).toBe('technician');
+    expect(warn).toHaveBeenCalled();
     await expect(fetchWhoami('https://spine.example/', TOKEN, fake(200, { ...GOOD, tier: 'owner' }))).rejects.toThrow('tier');
   });
 });

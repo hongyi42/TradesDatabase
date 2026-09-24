@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { FetchLike, HttpInit } from './http.js';
-import { JEV_MODEL, PLAN_Q, approvesPlan, needsPlan } from './jev.js';
+import { ANSWER_Q, JEV_MODEL, PLAN_Q, answersPrompt, approvesPlan, needsPlan } from './jev.js';
 
 function fake(p: number | null, status = 200, seen: { url?: string; body?: Record<string, unknown>; auth?: string } = {}): FetchLike {
   return async (url: string, init?: HttpInit) => {
@@ -52,5 +52,15 @@ describe('jev.approvesPlan', () => {
     expect(await approvesPlan(opts(fake(0.9)), 'yes go', 'plan')).toBe(true);
     expect(await approvesPlan(opts(fake(0.59)), 'maybe', 'plan')).toBe(false);
     expect(await approvesPlan(opts(fake(0.9, 503)), 'yes', 'plan')).toBe(false);
+  });
+});
+
+describe('jev.answersPrompt', () => {
+  it('sends the question, its options and the reply; ≥ 0.5 answers; failure counts as an answer', async () => {
+    const seen: { url?: string; body?: Record<string, unknown>; auth?: string } = {};
+    expect(await answersPrompt(opts(fake(0.8, 200, seen)), 'the furnace one', 'Which job?', ['Furnace', 'AC'])).toBe(true);
+    expect(seen.body).toMatchObject({ state: { question: 'Which job?', options: ['Furnace', 'AC'], reply: 'the furnace one' }, questions: { q: { instructions: ANSWER_Q } } });
+    expect(await answersPrompt(opts(fake(0.2)), 'send Mrs Lee her invoice', 'Which job?', [])).toBe(false);
+    expect(await answersPrompt(opts(fake(0.2, 500)), 'x', 'q', [])).toBe(true);
   });
 });

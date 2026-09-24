@@ -63,4 +63,9 @@ describe('list/read/write_my_memory', () => {
     await expect(call(MGR, 'write_my_memory', { path: 'Prefs.txt', content: 'a' })).rejects.toThrow(/not a usable path/);
     await expect(call(MGR, 'write_my_memory', { path: 'p.md', content: ['a'] })).rejects.toThrow(/content must be text/);
   });
+
+  test('every note, MEMORY.md included, holds 4000 characters (the seat rule, not the planner index budget)', async () => {
+    expect(await call(MGR, 'write_my_memory', { path: 'MEMORY.md', content: 'x'.repeat(3500) })).toMatchObject({ action: 'saved' });
+    await expect(call(MGR, 'write_my_memory', { path: 'MEMORY.md', content: 'x'.repeat(4001) })).rejects.toThrow(/at most 4000/);
+  });
 });

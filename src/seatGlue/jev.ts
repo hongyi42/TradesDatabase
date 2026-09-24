@@ -1,11 +1,12 @@
 import { defaultFetch, type FetchLike } from './http.js';
 
 // Jev (TypeSafe's calibrated classifier, typesafe/jev-1.13 through OpenRouter's
-// decisions endpoint) answers two yes/no questions for a manager seat (step 2a
-// phase 4; operator 2026-09-23: "plan mode ON, chosen by Jev"):
+// decisions endpoint) answers three yes/no questions for a manager seat (step 2a
+// phase 4; operator 2026-09-23: "plan mode ON, chosen by Jev"; 2026-09-24):
 //
-//   needsPlan    — should this message get a plan the manager approves first?
-//   approvesPlan — does a TYPED reply to a plan approve it as it stands?
+//   needsPlan     — should this message get a plan the manager approves first?
+//   approvesPlan  — does a TYPED reply to a plan approve it as it stands?
+//   answersPrompt — does a reply while a question waits answer it, or start something new?
 //
 // Measured before it was built (thoughts/shared/research/2026-09-23-plan-mode-
 // and-jev-tool-search-tests.md): 48/48 right and stable on 12 manager messages,
@@ -77,5 +78,28 @@ export async function approvesPlan(opts: JevOptions, reply: string, planSummary:
   } catch (err) {
     opts.log?.(`jev approvesPlan failed (${err instanceof Error ? err.message : String(err)}) — treated as a change request`);
     return false;
+  }
+}
+
+export const ANSWER_Q =
+  'An AI assistant asked a trades business manager a question and is waiting for the answer. Then the manager sent this message. Is the message an answer to that question?';
+export const ANSWER_CRITERIA = {
+  true: 'It answers the question: it picks or names one of the options, says yes or no, gives the detail that was asked for, or corrects the question (even a short reply like "the second one", "Furnace", "yes", "not that one").',
+  false: 'It is a new, unrelated request or topic that does not respond to the question at all (for example asking for something else to be done).',
+};
+
+/**
+ * A typed or spoken reply while a question or plan waits (operator 2026-09-24:
+ * "just put jev in then"): does it answer the waiting prompt, or is it a NEW
+ * request that should start its own turn — with its own plan check? Threshold
+ * 0.5. Failure → it counts as the answer (the behaviour before this check).
+ */
+export async function answersPrompt(opts: JevOptions, reply: string, question: string, choices: string[]): Promise<boolean> {
+  try {
+    const p = await noul(opts, { question, ...(choices.length ? { options: choices } : {}), reply }, ANSWER_Q, ANSWER_CRITERIA);
+    return p === null || p >= 0.5;
+  } catch (err) {
+    opts.log?.(`jev answersPrompt failed (${err instanceof Error ? err.message : String(err)}) — treated as the answer`);
+    return true;
   }
 }

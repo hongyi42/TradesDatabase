@@ -870,4 +870,152 @@ describe('Seat — Jev chooses plan mode per message (step 2a phase 4)', () => {
     await t.seat.handleUpdate(upd({ text: 'what is on tomorrow?' }));
     expect(t.session().sends.at(-1)?.prompt).toBe('what is on tomorrow?');
   });
+
+});
+
+describe('Seat — a reply while a prompt waits (final review, operator 2026-09-24)', () => {
+  const chooser = (seen: string[]) => async (m: string) => {
+    seen.push(m);
+    return { plan: false, p: 0.1 };
+  };
+
+  it('Jev says NEW request: the question closes unanswered and the text starts its own turn, with its own plan check', async () => {
+    const seen: string[] = [];
+    const t = setup({ manager: true, planChooser: chooser(seen), answersPrompt: async () => false });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'cancel the beckers' }));
+    const asked = t.hooks()!.onUserInput({ question: 'Which job?', choices: ['Furnace', 'AC'] });
+    await tick();
+    await t.seat.handleUpdate(upd({ text: 'send Mrs. Lee her invoice' }));
+    expect((await asked).answer).toMatch(/moved on to a new request/);
+    expect(seen).toEqual(['cancel the beckers', 'send Mrs. Lee her invoice']);
+    expect(t.session().sends.at(-1)?.prompt).toBe('send Mrs. Lee her invoice');
+  });
+
+  it('Jev says it answers: it goes to the question, not to a new turn', async () => {
+    const seen: string[] = [];
+    const t = setup({ manager: true, planChooser: chooser(seen), answersPrompt: async () => true });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'cancel the beckers' }));
+    const asked = t.hooks()!.onUserInput({ question: 'Which job?', choices: ['Furnace', 'AC'] });
+    await tick();
+    await t.seat.handleUpdate(upd({ text: 'the furnace one' }));
+    expect(await asked).toEqual({ answer: 'the furnace one', wasFreeform: true });
+    expect(seen).toEqual(['cancel the beckers']);
+  });
+
+  it('"What should change?" is answered by the next text without asking Jev', async () => {
+    let asks = 0;
+    const t = setup({ manager: true, answersPrompt: async () => ((asks += 1), false) });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'invoice last month' }));
+    const plan = t.hooks()!.onExitPlan({ summary: 'plan', actions: [], recommendedAction: 'autopilot' });
+    await tick();
+    await t.seat.handleUpdate(tap(dataOf(t, 1)));
+    await tick();
+    await t.seat.handleUpdate(upd({ text: 'skip Acme' }));
+    expect(await plan).toEqual({ approved: false, feedback: 'skip Acme' });
+    expect(asks).toBe(0);
+  });
+
+  it('a buttons-only question: typed text naming no button gets a nudge and the question stays open', async () => {
+    const t = setup({ manager: true });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'which job?' }));
+    const asked = t.hooks()!.onUserInput({ question: 'Which?', choices: ['Job 12', 'Job 14'], allowFreeform: false });
+    await tick();
+    await t.seat.handleUpdate(upd({ text: 'the other one' }));
+    await tick();
+    expect(t.telegram.sent).toContain(TEXT.tapAnOption);
+    expect(t.seat.promptOpen).toBe(true);
+    await t.seat.handleUpdate(upd({ text: 'Job 14' }));
+    expect(await asked).toEqual({ answer: 'Job 14', wasFreeform: false });
+  });
+
+  it('a photo instead of answering a plan tells the model why, not just "stopped"', async () => {
+    const t = setup({ manager: true });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'invoice last month' }));
+    const plan = t.hooks()!.onExitPlan({ summary: 'plan', actions: [], recommendedAction: 'autopilot' });
+    await tick();
+    await t.seat.handleUpdate(upd({ photo: [{ file_id: 'p1', width: 10, height: 10 }] }));
+    const r = await plan;
+    expect(r.approved).toBe(false);
+    expect(r.feedback).toMatch(/photo/);
+  });
+
+  it('no go-ahead nudge when the approved turn ended on an error', async () => {
+    const t = setup({ manager: true, errorIdleWaitMs: 60_000 });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'invoice last month' }));
+    const plan = t.hooks()!.onExitPlan({ summary: 'plan', actions: [], recommendedAction: 'autopilot' });
+    await tick();
+    await t.seat.handleUpdate(tap(dataOf(t, 0)));
+    await plan;
+    t.session().emit('session.error', { errorType: 'rate_limit', message: '429' });
+    t.session().emit('session.idle', {});
+    await tick();
+    expect(t.session().sends.map((x) => x.prompt)).toEqual(['invoice last month']);
+  });
+
+  it('typing shows before Jev answers', async () => {
+    let release: (v: { plan: boolean; p: number }) => void = () => {};
+    const t = setup({ manager: true, planChooser: () => new Promise((r) => (release = r)) });
+    await t.seat.start();
+    const pending = t.seat.handleUpdate(upd({ text: 'invoice last month' }));
+    await tick();
+    expect(t.telegram.typingCalls).toBe(1);
+    release({ plan: false, p: 0.1 });
+    await pending;
+  });
+
+  it('a voice note says the button: the transcript "Job 14." answers a buttons-only question', async () => {
+    const t = setup({ manager: true, answersPrompt: async () => true, transcribe: async () => ({ text: 'Job 14.', generationId: 'g' }) });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'which job?' }));
+    const asked = t.hooks()!.onUserInput({ question: 'Which?', choices: ['Job 12', 'Job 14'], allowFreeform: false });
+    await tick();
+    await t.seat.handleUpdate(upd({ voice: { file_id: 'v1', mime_type: 'audio/ogg' } }));
+    expect(await asked).toEqual({ answer: 'Job 14', wasFreeform: false });
+  });
+
+  it('a voice note Jev calls a new request starts its own turn, marked as voice', async () => {
+    const t = setup({ manager: true, answersPrompt: async () => false });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'cancel the beckers' }));
+    const asked = t.hooks()!.onUserInput({ question: 'Which job?', choices: ['Furnace', 'AC'] });
+    await tick();
+    await t.seat.handleUpdate(upd({ voice: { file_id: 'v1', mime_type: 'audio/ogg' } }));
+    expect((await asked).answer).toMatch(/moved on/);
+    expect(t.session().sends.at(-1)?.prompt).toBe('[voice note] fan swapped, parts 180');
+  });
+
+  it('a new request also ends a queued second question, so no handler waits', async () => {
+    const t = setup({ manager: true, answersPrompt: async () => false });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'cancel the beckers' }));
+    const q1 = t.hooks()!.onUserInput({ question: 'Which job?', choices: ['Furnace'] });
+    const q2 = t.hooks()!.onUserInput({ question: 'Refund?', choices: ['Yes', 'No'] });
+    await tick();
+    await t.seat.handleUpdate(upd({ text: 'send Mrs. Lee her invoice' }));
+    expect((await q1).answer).toMatch(/moved on/);
+    expect((await q2).answer).toMatch(/moved on/);
+  });
+
+  it('the question closes while Jev decides: the reply goes in as a message, not an answer', async () => {
+    let release: (v: boolean) => void = () => {};
+    const t = setup({ manager: true, answersPrompt: () => new Promise((r) => (release = r)) });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'cancel the beckers' }));
+    const asked = t.hooks()!.onUserInput({ question: 'Which job?', choices: ['Furnace'] });
+    await tick();
+    const pending = t.seat.handleUpdate(upd({ text: 'the furnace one' }));
+    await tick();
+    t.session().emit('session.idle', {});
+    await tick();
+    expect((await asked).answer).not.toBe('the furnace one');
+    release(true);
+    await pending;
+    expect(t.session().sends.at(-1)?.prompt).toBe('the furnace one');
+  });
 });

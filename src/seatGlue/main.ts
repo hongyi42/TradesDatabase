@@ -11,7 +11,7 @@ import { readState, writeState } from './state.js';
 import { TelegramClient, TelegramConflictError, type TelegramApi } from './telegram.js';
 import { TurnPolicy } from './turnPolicy.js';
 import { transcribe } from './voice.js';
-import { approvesPlan, needsPlan } from './jev.js';
+import { answersPrompt, approvesPlan, needsPlan } from './jev.js';
 import { fetchWhoami, type SeatWho } from './whoami.js';
 
 // The seat glue's entry point on trades-box-1: `node app/main.js`, run by
@@ -83,6 +83,8 @@ export function seatDeps(
             needsPlan({ openrouterKey: cfg.openrouterKey, log: (m) => console.log(`seat-glue: ${m}`) }, message, previous),
           approvesPlan: (reply: string, summary: string) =>
             approvesPlan({ openrouterKey: cfg.openrouterKey, log: (m) => console.log(`seat-glue: ${m}`) }, reply, summary),
+          answersPrompt: (reply: string, question: string, choices: string[]) =>
+            answersPrompt({ openrouterKey: cfg.openrouterKey, log: (m) => console.log(`seat-glue: ${m}`) }, reply, question, choices),
         }
       : {}),
   };

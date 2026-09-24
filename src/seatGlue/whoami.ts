@@ -42,9 +42,18 @@ export async function fetchWhoami(spineUrl: string, token: string, fetchFn: Fetc
   } catch {
     throw new Error(`seat-glue: the firm's timezone "${tz}" is not a valid IANA timezone`);
   }
-  const tier = body.tier;
+  // A MISSING tier is a Render still on a pre-2a build (the web service does not
+  // auto-deploy): run as a technician — the least-powerful rulebook, no Composio,
+  // no built-ins; Render's own gates decide what the seat may do anyway — rather
+  // than take every seat on the box down with it (final review finding). An
+  // UNKNOWN value is a real disagreement: refuse to start.
+  let tier = body.tier;
+  if (tier === undefined || tier === null) {
+    console.warn('seat-glue: whoami returned no tier — Render is on a pre-2a build; running as a technician');
+    tier = 'technician';
+  }
   if (tier !== 'manager' && tier !== 'technician') {
-    throw new Error(`seat-glue: whoami returned no usable tier (${JSON.stringify(tier)}) — is Render on the step 2a deploy?`);
+    throw new Error(`seat-glue: whoami returned an unknown tier (${JSON.stringify(tier)})`);
   }
   return {
     seatRef: text('seatRef'),

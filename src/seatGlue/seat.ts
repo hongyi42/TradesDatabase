@@ -25,6 +25,8 @@ export const TEXT = {
   whatShouldChange: 'What should change?',
   /** Sent once when an approved plan was followed by nothing at all (measured 1/10). */
   goAhead: 'Go ahead with the plan.',
+  /** A typed reply to a buttons-only question that names no button. */
+  tapAnOption: 'Please tap one of the options above, or type stop.',
 } as const;
 
 /** How long a typed plan reply may wait on Jev before it counts as a change request. */
@@ -67,6 +69,12 @@ export interface SeatDeps {
    * Absent (technicians) = the mode is never touched.
    */
   planChooser?(message: string, previous: { user: string; assistant: string } | null): Promise<{ plan: boolean; p: number | null }>;
+  /**
+   * A typed or spoken reply while a question or plan waits: does it answer it, or
+   * is it a NEW request that should start its own turn (with its own plan check)?
+   * (Jev; operator 2026-09-24.) Absent = every reply answers.
+   */
+  answersPrompt?(reply: string, question: string, choices: string[]): Promise<boolean>;
 }
 
 export class Seat {
@@ -100,7 +108,7 @@ export class Seat {
   private lastUser = '';
   private lastReply = '';
   /** After a plan's Go: did anything follow? (the go-ahead nudge, phase 4). */
-  private afterApproval: { tools: number; replied: boolean; nudged: boolean } | null = null;
+  private afterApproval: { tools: number; replied: boolean; nudged: boolean; errored: boolean } | null = null;
   /** A typed plan reply is with Jev: later texts are held here, never sent (review round 2). */
   private deciding: { buffer: string[]; cancelled: boolean } | null = null;
 
@@ -209,18 +217,11 @@ export class Seat {
     // A WAITING PROMPT (step 2a): only the person's own text, voice or tap answers
     // it — never delivered as a new message (no abort, no steer). A photo, Stop or
     // /new ends it first, so the engine's handler is never left waiting.
-    // Jev is judging a typed reply to a plan: a text arriving now is part of that
-    // reply — held, and it turns the answer into a change request.
-    if (this.deciding && !this.prompts.isOpen && msg.kind === 'text') {
-      this.deciding.buffer.push(msg.text);
-      return;
-    }
     // Stop, /new or a photo end a decision in progress too (the plan comes back as
     // stopped), so nothing sent afterwards is swallowed into a dead loop's feedback.
     if (msg.kind === 'stop' || msg.kind === 'new' || msg.kind === 'photo') this.endDeciding();
     if (this.prompts.isOpen) {
-      if (msg.kind === 'text') return this.answerPrompt(msg.text);
-      if (msg.kind === 'photo') this.cancelPrompts('the manager sent a photo instead of answering');
+      if (msg.kind === 'photo') this.cancelPrompts('the manager sent a photo instead, which follows as their next message');
       if (msg.kind === 'stop') this.cancelPrompts('the manager pressed Stop');
       if (msg.kind === 'new') this.cancelPrompts('the manager started a new conversation');
     }
@@ -236,7 +237,7 @@ export class Seat {
       case 'new':
         return this.startFresh();
       case 'text':
-        return this.deliver(msg.text);
+        return this.routeReply(msg.text, false);
       case 'photo': {
         const buf = await this.deps.telegram.download(msg.fileId);
         await this.keepCopy(buf, 'jpg');
@@ -264,15 +265,42 @@ export class Seat {
             kind: 'transcribe',
           });
         }
-        // A spoken answer to a waiting prompt answers it, like typed text.
-        if (this.deciding && !this.prompts.isOpen) {
-          this.deciding.buffer.push(transcript.text);
-          return;
-        }
-        if (this.prompts.isOpen) return this.answerPrompt(transcript.text);
-        return this.deliver(`[voice note] ${transcript.text}`);
+        return this.routeReply(transcript.text, true);
       }
     }
+  }
+
+  /**
+   * Where a typed or spoken message goes (step 2a). While Jev judges a typed plan
+   * reply it is HELD (it turns the reply into a change request). While a question
+   * or plan waits it ANSWERS it — unless Jev says it is a new request, which then
+   * closes the prompt unanswered and starts its own turn with its own plan check.
+   * Otherwise it is a normal message.
+   */
+  private async routeReply(text: string, voice: boolean): Promise<void> {
+    const asMessage = voice ? `[voice note] ${text}` : text;
+    if (this.deciding && !this.prompts.isOpen) {
+      this.deciding.buffer.push(text);
+      return;
+    }
+    const spec = this.prompts.current;
+    if (spec) {
+      // "What should change?" was asked BY the Change tap: the next text answers it.
+      if (spec.kind !== 'plan-feedback' && this.deps.answersPrompt) {
+        const answers = await this.deps.answersPrompt(text, spec.text, spec.choices);
+        // The verdict is about THAT prompt. If it closed while Jev decided (the
+        // turn ended, or a failed post handed over to a queued one), the reply is
+        // a normal message — never an answer to a question it was not judged against.
+        if (this.prompts.current?.id !== spec.id) return this.deliver(asMessage);
+        if (!answers) {
+          this.log('a reply while a prompt waits is a new request — closing the prompt, starting a new turn');
+          this.cancelPrompts('the manager moved on to a new request, which follows as their next message');
+          return this.deliver(asMessage);
+        }
+      }
+      if (this.prompts.isOpen) return this.answerPrompt(text);
+    }
+    return this.deliver(asMessage);
   }
 
   /** Send a message into the conversation, per the turn policy. */
@@ -307,6 +335,8 @@ export class Seat {
     // a label — measured). A steer joins a running reply, and the nudge must not
     // re-plan, so neither is classified. A failing Jev or mode switch never blocks.
     if (this.deps.planChooser && route !== 'steer' && !opts.nudge) {
+      // Show typing at once: Jev can take up to 3 s before the turn starts.
+      if (!policy.isBusy) this.startTyping();
       const previous = this.lastUser ? { user: this.lastUser, assistant: this.lastReply } : null;
       const { plan, p } = await this.deps.planChooser(prompt, previous);
       this.log(`plan ${plan ? 'yes' : 'no'} p=${p === null ? 'n/a' : p.toFixed(2)}`);
@@ -460,7 +490,7 @@ export class Seat {
         let nudge = false;
         if (result === 'idle' && this.afterApproval) {
           const a = this.afterApproval;
-          if (!a.nudged && a.tools === 0 && !a.replied) {
+          if (!a.nudged && !a.errored && a.tools === 0 && !a.replied) {
             a.nudged = true;
             nudge = true;
           } else this.afterApproval = null;
@@ -505,6 +535,9 @@ export class Seat {
         return;
       case 'session.error': {
         this.log(`session error: ${String(data.errorType ?? '')} ${String(data.message ?? '')}`.trim());
+        // An approved plan that died on an error (a 429, the key's cap) is not
+        // "nothing followed": the nudge would only fail again.
+        if (this.afterApproval) this.afterApproval.errored = true;
         // An OpenRouter 429 or the key's monthly cap otherwise leaves the person
         // with silence. Once per reply.
         const reply = policy.isBusy ? policy.currentReplyId() : null;
@@ -551,8 +584,8 @@ export class Seat {
     else if (choices.length && req.allowFreeform !== false) text += '\n\n(Or type your answer.)';
     if (all.length > 10) this.log(`ask_user offered ${all.length} choices; ${extra.length} listed as text`);
     const r = await this.prompts.ask(
-      'question',
-      choices,
+      // Every choice, buttons and listed alike, so a typed one matches (buttons-only questions).
+      { kind: 'question', choices: all, text, allowFreeform: req.allowFreeform !== false },
       (id) => this.postPrompt(text, choices.map((c, i) => [{ text: c.slice(0, 60), data: `p:${id}:${i}` }])),
       (mid) => this.clearPromptButtons(mid),
     );
@@ -564,15 +597,17 @@ export class Seat {
   /** The engine's exit_plan_mode: the plan with [Go][Change]; Change asks what should change. */
   private async showPlan(req: ExitPlanRequestLike): Promise<ExitPlanResultLike> {
     const stopped: ExitPlanResultLike = { approved: false, feedback: 'The manager stopped this plan. Do not carry it out.' };
+    // Not approved, and why — the model reads it (a photo or a new request may follow).
+    const notApproved = (reason?: string): ExitPlanResultLike =>
+      reason ? { approved: false, feedback: `The manager did not approve this plan (${reason}). Do not carry it out.` } : stopped;
     const body = planText(req);
     const r = await this.prompts.ask(
-      'plan',
-      ['Go', 'Change'],
+      { kind: 'plan', choices: ['Go', 'Change'], text: body, allowFreeform: true },
       (id) => this.postPrompt(body, [[{ text: 'Go', data: `p:${id}:0` }, { text: 'Change', data: `p:${id}:1` }]]),
       (mid) => this.clearPromptButtons(mid),
     );
     const go: ExitPlanResultLike = { approved: true, selectedAction: req.recommendedAction };
-    if (r.cancelled) return this.resumed(stopped);
+    if (r.cancelled) return this.resumed(notApproved(r.reason));
     if (!r.freeform && r.index === 0) return this.approved(go);
     if (r.freeform) {
       // A typed reply instead of a tap: "yes go" approves; anything else is a
@@ -591,8 +626,11 @@ export class Seat {
       if (deciding.buffer.length) return this.resumed({ approved: false, feedback: [r.answer, ...deciding.buffer].join('\n') });
       return yes ? this.approved(go) : this.resumed({ approved: false, feedback: r.answer });
     }
-    const f = await this.prompts.ask('plan-feedback', [], () => this.postPrompt(TEXT.whatShouldChange, []));
-    return this.resumed(f.cancelled ? stopped : { approved: false, feedback: f.answer });
+    const f = await this.prompts.ask(
+      { kind: 'plan-feedback', choices: [], text: TEXT.whatShouldChange, allowFreeform: true },
+      () => this.postPrompt(TEXT.whatShouldChange, []),
+    );
+    return this.resumed(f.cancelled ? notApproved(f.reason) : { approved: false, feedback: f.answer });
   }
 
   /** End a typed-reply decision in progress: the plan answers "stopped". */
@@ -604,7 +642,7 @@ export class Seat {
 
   /** Go: the plan runs — and the glue watches that something actually follows. */
   private approved(value: ExitPlanResultLike): ExitPlanResultLike {
-    this.afterApproval = { tools: 0, replied: false, nudged: false };
+    this.afterApproval = { tools: 0, replied: false, nudged: false, errored: false };
     return this.resumed(value);
   }
 
@@ -636,6 +674,11 @@ export class Seat {
 
   private answerPrompt(text: string): void {
     const r = this.prompts.resolveText(text);
+    // A buttons-only question: text that names no button leaves it open.
+    if (r?.rejected) {
+      void this.say(TEXT.tapAnOption);
+      return;
+    }
     if (r?.messageId != null) this.clearPromptButtons(r.messageId);
   }
 

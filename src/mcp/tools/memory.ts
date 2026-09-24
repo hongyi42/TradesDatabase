@@ -14,7 +14,7 @@ import {
   readSeatMemoryFile,
   writeSeatMemoryFile,
 } from '../../db/index.js';
-import { validateMemoryContent, validateMemoryPath } from '../../teamLead/memory.js';
+import { MEMORY_FILE_MAX, validateMemoryPath } from '../../teamLead/memory.js';
 import type { DomainTools, ToolContext } from './types.js';
 
 const PATH_HELP =
@@ -98,10 +98,16 @@ async function handleWrite(toolCtx: ToolContext): Promise<unknown> {
       note: existed ? 'Deleted. Its last content is kept as a version.' : 'There was no such note.',
     };
   }
-  const sized = validateMemoryContent(checked.path, content);
-  if ('refused' in sized) throw new Error(sized.refused);
-  await writeSeatMemoryFile(tenantId, identity.technicianRef, checked.path, sized.content);
-  return { status: 'ok', path: checked.path, action: 'saved', chars: sized.content.length };
+  // The seat's own size rule: every file, MEMORY.md included, gets MEMORY_FILE_MAX.
+  // (validateMemoryContent gives the PLANNER's MEMORY.md a smaller index budget
+  // and planner-only advice — final review finding.)
+  if (content.length > MEMORY_FILE_MAX) {
+    throw new Error(
+      `that is ${content.length} characters and a note holds at most ${MEMORY_FILE_MAX} — split it into two notes, or drop what is no longer true`,
+    );
+  }
+  await writeSeatMemoryFile(tenantId, identity.technicianRef, checked.path, content);
+  return { status: 'ok', path: checked.path, action: 'saved', chars: content.length };
 }
 
 export const memoryTools = {

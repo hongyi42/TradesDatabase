@@ -7,9 +7,11 @@ import { randomBytes } from 'node:crypto';
 // HERE, never into the conversation as a new message.
 //
 // ONE open prompt at a time; a second ask queues behind it (the model can ask two
-// questions in one step). cancelAll ends the open one AND everything queued, so
-// Stop, /new, a photo that aborts the turn, or the turn ending by itself can
-// never leave a handler waiting on a prompt nobody will answer.
+// questions in one step). The hand-over is SYNCHRONOUS: finish() makes the next
+// queued prompt the open one in the same step, so no new ask can slip in between
+// and be overwritten (final review finding). cancelAll ends the open one AND
+// everything queued, so Stop, /new, a photo that aborts the turn, or the turn
+// ending by itself can never leave a handler waiting on a prompt nobody answers.
 
 export type PromptKind = 'question' | 'plan' | 'plan-feedback';
 
@@ -24,20 +26,38 @@ export interface PromptAnswer {
   reason?: string;
 }
 
-interface Open {
-  id: string;
+export interface PromptSpec {
   kind: PromptKind;
   choices: string[];
+  /** What the person was asked (Jev reads it to tell an answer from a new request). */
+  text: string;
+  /** false = buttons only: typed text counts only when it matches a button. */
+  allowFreeform: boolean;
+}
+
+interface Open extends PromptSpec {
+  id: string;
   messageId: number | null;
   resolve: (a: PromptAnswer) => void;
 }
+
+interface Queued extends PromptSpec {
+  post: (id: string) => Promise<number | null>;
+  onOrphan?: (messageId: number) => void;
+  resolve: (a: PromptAnswer) => void;
+}
+
+// A voice transcript comes back as "Job 14." — case, edge spaces and trailing
+// punctuation never decide whether a typed or spoken reply names a button.
+const norm = (s: string) => s.trim().toLowerCase().replace(/[\s.,!?;:'"]+$/u, '').replace(/^[\s'"]+/u, '');
+const sameChoice = (choice: string, text: string) => norm(choice) === norm(text);
 
 /** The callback_data a button carries: `p:<8 hex>:<index>` (Telegram allows 64 bytes). */
 export const PROMPT_DATA = /^p:([0-9a-f]{8}):(\d{1,2})$/;
 
 export class PendingPrompts {
   private open: Open | null = null;
-  private readonly queue: Array<{ start: () => void; cancel: (reason: string) => void }> = [];
+  private readonly queue: Queued[] = [];
 
   constructor(private readonly newId: () => string = () => randomBytes(4).toString('hex')) {}
 
@@ -45,42 +65,27 @@ export class PendingPrompts {
     return this.open !== null;
   }
 
-  get openKind(): PromptKind | null {
-    return this.open?.kind ?? null;
+  /** The open prompt's id, question and choices (for Jev), or null. */
+  get current(): (PromptSpec & { id: string }) | null {
+    const o = this.open;
+    return o ? { id: o.id, kind: o.kind, choices: o.choices, text: o.text, allowFreeform: o.allowFreeform } : null;
   }
 
   /**
-   * Wait for any open prompt to finish, post this one (`post` returns the
-   * Telegram message id carrying the buttons, or null), then wait for the answer.
+   * Post this prompt (`post` returns the Telegram message id carrying the
+   * buttons, or null) once nothing else is open, then wait for the answer.
    */
-  async ask(
-    kind: PromptKind,
-    choices: string[],
+  ask(
+    spec: PromptSpec,
     post: (id: string) => Promise<number | null>,
     /** Called with the posted message id when the prompt was already answered or cancelled before it went out. */
     onOrphan?: (messageId: number) => void,
   ): Promise<PromptAnswer> {
-    if (this.open) {
-      const cancelledWhileQueued = await new Promise<string | null>((resolve) => {
-        this.queue.push({ start: () => resolve(null), cancel: (reason) => resolve(reason) });
-      });
-      if (cancelledWhileQueued !== null) return { answer: '', freeform: true, cancelled: true, reason: cancelledWhileQueued };
-    }
-    const id = this.newId();
-    let resolve: (a: PromptAnswer) => void = () => {};
-    const answered = new Promise<PromptAnswer>((r) => (resolve = r));
-    this.open = { id, kind, choices, messageId: null, resolve };
-    try {
-      const messageId = await post(id);
-      if (this.open?.id === id) this.open.messageId = messageId;
-      // Answered (or cancelled) while the post was still queued: its buttons
-      // arrived after their own answer — take them straight back down.
-      else if (messageId != null) onOrphan?.(messageId);
-    } catch (err) {
-      // Could not even show it: end it now rather than wait forever.
-      this.finish(id, { answer: '', freeform: true, cancelled: true, reason: `could not post: ${err instanceof Error ? err.message : String(err)}` });
-    }
-    return answered;
+    return new Promise<PromptAnswer>((resolve) => {
+      const q: Queued = { ...spec, post, onOrphan, resolve };
+      if (this.open || this.queue.length) this.queue.push(q);
+      else this.activate(q);
+    });
   }
 
   /** A button tap. Returns the message id whose buttons should be cleared, or null if it matched nothing open. */
@@ -92,23 +97,50 @@ export class PendingPrompts {
     return { messageId };
   }
 
-  /** Typed or spoken text answers the open prompt. Returns the message id to clear, or undefined if nothing was open. */
-  resolveText(text: string): { messageId: number | null } | undefined {
+  /**
+   * Typed or spoken text answers the open prompt. A buttons-only prompt accepts
+   * text only when it names a button (case-insensitive); otherwise it stays open
+   * and `rejected` says so. undefined = nothing was open.
+   */
+  resolveText(text: string): { messageId: number | null; rejected?: boolean } | undefined {
     const o = this.open;
     if (!o) return undefined;
     const messageId = o.messageId;
+    if (!o.allowFreeform) {
+      const index = o.choices.findIndex((c) => sameChoice(c, text));
+      if (index < 0) return { messageId, rejected: true };
+      this.finish(o.id, { answer: o.choices[index], freeform: false, index });
+      return { messageId };
+    }
     this.finish(o.id, { answer: text, freeform: true });
     return { messageId };
   }
 
   /** End the open prompt and everything queued. Returns the open prompt's message id (to clear its buttons). */
   cancelAll(reason: string): number | null {
-    const queued = this.queue.splice(0);
-    for (const q of queued) q.cancel(reason);
+    const cancelled: PromptAnswer = { answer: '', freeform: true, cancelled: true, reason };
+    for (const q of this.queue.splice(0)) q.resolve(cancelled);
     const o = this.open;
     if (!o) return null;
-    this.finish(o.id, { answer: '', freeform: true, cancelled: true, reason });
+    this.finish(o.id, cancelled);
     return o.messageId;
+  }
+
+  private activate(q: Queued): void {
+    const id = this.newId();
+    this.open = { kind: q.kind, choices: q.choices, text: q.text, allowFreeform: q.allowFreeform, id, messageId: null, resolve: q.resolve };
+    q.post(id).then(
+      (messageId) => {
+        if (this.open?.id === id) this.open.messageId = messageId;
+        // Answered (or cancelled) while the post was still queued: its buttons
+        // arrived after their own answer — take them straight back down.
+        else if (messageId != null) q.onOrphan?.(messageId);
+      },
+      (err: unknown) => {
+        // Could not even show it: end it now rather than wait forever.
+        this.finish(id, { answer: '', freeform: true, cancelled: true, reason: `could not post: ${err instanceof Error ? err.message : String(err)}` });
+      },
+    );
   }
 
   private finish(id: string, a: PromptAnswer): void {
@@ -116,6 +148,7 @@ export class PendingPrompts {
     if (!o || o.id !== id) return;
     this.open = null;
     o.resolve(a);
-    this.queue.shift()?.start();
+    const next = this.queue.shift();
+    if (next) this.activate(next);
   }
 }

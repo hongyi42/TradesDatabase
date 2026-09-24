@@ -89,6 +89,7 @@ export const TEAM_LEAD_TOOLS_EXPECTED = [
   'read_job_note',
   'write_job_note',
   'record_caller',
+  'read_conversation',
 ] as const;
 
 /**

@@ -110,6 +110,9 @@ export const SEND: readonly string[] = [
   '           assistant\'s voice — they will see it. "assistant" lands quietly in their',
   '           assistant\'s session: nobody\'s phone buzzes, and that assistant decides for',
   '           itself whether its person ever hears about it, so it may never arrive at all.',
+  '           It may not even be read until that person next writes to their assistant. To',
+  '           learn what someone already told their assistant, or what it was told, read it',
+  '           with `read_conversation` rather than sending their assistant a question.',
   '  MONEY    A technician is never told an AMOUNT — not the invoice, not the balance, not what',
   '           anything cost, in a text or a quiet note. Say where it stands in words ("invoiced,',
   '           not yet paid", "she has paid") and nothing more, or tell them to ask a manager, who',
@@ -630,7 +633,8 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
                 "For 'send': HOW it arrives. \"chat\" is delivered to their phone word for " +
                 "word, in their own assistant's voice — they will see it. \"assistant\" lands " +
                 "quietly in their assistant's session; nothing pings them, and their assistant " +
-                'decides whether to pass it on, so it may never reach them at all. Required for ' +
+                'decides whether to pass it on, so it may never reach them at all, and it may ' +
+                'not be read until they next write to their assistant. Required for ' +
                 'send; ignored for every other action.',
             },
             countsAsTheAsk: {

@@ -77,4 +77,8 @@ export const TEAM_LEAD_TOOL_NAMES: ReadonlySet<string> = new Set([
   // reading what already cites it (L1-pinned rows can never be deleted, so a
   // retry that minted twins would be permanent). BOTH LISTS, together.
   'record_caller',
+  // STEP 3 (plan 2026-09-23-step-3-office-reaches-glue-seats) — read a team
+  // member's conversation with their own assistant, instead of asking the
+  // assistant. Read-only, tenant-scoped, snippets only. BOTH LISTS, together.
+  'read_conversation',
 ]);

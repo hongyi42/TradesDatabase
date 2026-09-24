@@ -29,7 +29,8 @@ const TEAM_LEAD_TOOLS = [
       'sending their assistant a question. It is evidence of what was SAID, not the record: quote ' +
       'it only as "they told their assistant …", and check the record before relying on a fact. ' +
       'Newest first, as short snippets. Only people on the new assistants appear here; for anyone ' +
-      'else it comes back empty.',
+      "else it comes back empty. A MANAGER's conversation is private and never readable: to learn " +
+      'what a manager knows, ask them directly.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -72,6 +73,15 @@ async function handleReadConversation(toolCtx: ToolContext): Promise<unknown> {
   // Tenant-scoped: a ref from another firm resolves to nobody here.
   const person = await getTechnician(tenantId, ref);
   if (!person) throw new Error(`no team member "${ref}" in this firm — copy the ref exactly from THE TEAM`);
+  // Operator, 2026-09-24: a manager's chat with their assistant is private.
+  // Not an error — the answer the office needs is WHERE to go instead.
+  if (person.tier === 'manager') {
+    return {
+      status: 'private',
+      person: ref,
+      note: `${ref} is a manager: their conversation with their assistant is private and cannot be read. Ask them directly (send, as "chat").`,
+    };
+  }
   // The retention window is the ceiling: nothing older exists (seatTurnRetentionDays).
   const days = clamp(typeof args.days === 'string' ? Number(args.days) : args.days, DAYS_DEFAULT, seatTurnRetentionDays());
   const limit = clamp(args.limit, LIMIT_DEFAULT, LIMIT_MAX);

@@ -90,9 +90,13 @@ export function seatDeps(
             fetch: () => fetchInbox(cfg.spineUrl, cfg.seatToken),
             report: (r) => reportInbox(cfg.spineUrl, cfg.seatToken, r),
           },
-          who: { telegramUserId: who.telegramUserId, tz: who.tz },
+          who: { telegramUserId: who.telegramUserId, tz: who.tz, shareConversation: who.shareConversation },
           onSeatChanged: opts.onSeatChanged,
-          transcript: new Transcript({ spineUrl: cfg.spineUrl, seatToken: cfg.seatToken, stateDir: cfg.stateDir }),
+          // A manager's conversation is private (operator, 2026-09-24): no
+          // recorder at all, so nothing of it can leave the box.
+          ...(who.shareConversation
+            ? { transcript: new Transcript({ spineUrl: cfg.spineUrl, seatToken: cfg.seatToken, stateDir: cfg.stateDir }) }
+            : {}),
         }),
   };
 }

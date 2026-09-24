@@ -1176,6 +1176,7 @@ describe('seat tokens: POST /control/seat-token, GET /seat/whoami, /mcp', () => 
       technicianRef: 'seat-probe',
       telegramUserId: '5801703167',
       timezone: tz,
+      shareConversation: true, // a technician's chat is shared; a manager's never
     });
     const hmac = await fetch(`${base}/seat/whoami`, {
       headers: {
@@ -1197,6 +1198,7 @@ describe('seat tokens: POST /control/seat-token, GET /seat/whoami, /mcp', () => 
       technicianRef: 'seat-probe',
       telegramUserId: 5801703167,
       tz,
+      shareConversation: true,
     });
   });
 
@@ -1354,7 +1356,7 @@ describe('GET/POST /seat/inbox (step 3)', () => {
       items: Array<{ id: string; leg: string; text: string }>;
     };
     const tz = (await pg.query('select timezone from tenants where id = $1', [tenantId])).rows[0].timezone;
-    expect(body.seat).toEqual({ telegramUserId: '7000000001', timezone: tz });
+    expect(body.seat).toEqual({ telegramUserId: '7000000001', timezone: tz, shareConversation: true });
     const byId = new Map(body.items.map((i) => [i.id, i]));
     expect(byId.get(ids.nudgeA)).toEqual({ id: ids.nudgeA, leg: 'phone', text: 'How did the Smith visit go?' });
     expect(byId.get(ids.chatA)).toEqual({ id: ids.chatA, leg: 'phone', text: 'Van service is due Friday.' });
@@ -1512,6 +1514,30 @@ describe('POST /seat/conversation (step 3)', () => {
     expect(rows.rows.find((r) => r.args)?.args).toEqual({ note: 'ab', lit: '\\u0000' });
     const long = rows.rows.find((r) => r.text?.startsWith('😀'))!;
     expect(Array.from(long.text!)).toHaveLength(8000);
+  });
+
+  test("a manager's seat: whoami and the inbox say private, and an upload is accepted but never stored", async () => {
+    await pg.query("update technicians set tier = 'manager' where id = $1", [techD]);
+    const res = await fetch(`${base}/control/seat-token`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ seatRef: 'g_conv000d' }),
+    });
+    const tokenD = ((await res.json()) as { token: string }).token;
+    const who = (await (await fetch(`${base}/seat/whoami`, { headers: { authorization: `Bearer ${tokenD}` } })).json()) as {
+      shareConversation: boolean;
+    };
+    expect(who.shareConversation).toBe(false);
+    const inbox = (await (await fetch(`${base}/seat/inbox`, { headers: { authorization: `Bearer ${tokenD}` } })).json()) as {
+      seat: { shareConversation: boolean };
+    };
+    expect(inbox.seat.shareConversation).toBe(false);
+    const up = await upload(tokenD, {
+      turns: [{ id: uuid(), sessionId: 's', at: new Date().toISOString(), role: 'person', text: 'private words' }],
+    });
+    expect(await up.json()).toEqual({ stored: 0, private: true });
+    const rows = await pg.query('select count(*)::int as n from seat_turns where technician_id = $1', [techD]);
+    expect(rows.rows[0].n).toBe(0);
   });
 
   test('malformed bodies are 400s; an oversized body is 413', async () => {

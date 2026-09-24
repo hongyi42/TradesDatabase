@@ -386,6 +386,7 @@ async function handleSeatWhoami(req: http.IncomingMessage, res: http.ServerRespo
       technicianRef: identity.technicianRef,
       telegramUserId: person.telegram_user_id,
       timezone: tenant?.timezone ?? 'UTC',
+      shareConversation: sharesConversation(person),
     });
   } catch {
     if (!res.headersSent) {
@@ -403,6 +404,12 @@ export const LIVE_GLUE_WINDOW_MS = 120_000;
 const liveGlueSince = (): string => new Date(Date.now() - LIVE_GLUE_WINDOW_MS).toISOString();
 
 const UUID = UUID_RE;
+
+// A MANAGER's conversation with their assistant is private (operator,
+// 2026-09-24): it is never uploaded, never read by the office, and the seat
+// sends no "the office can read our chats" notice. The office asks a manager
+// directly instead. Everyone else's is shared (operator, 2026-09-23).
+export const sharesConversation = (person: Pick<Technician, 'tier'>): boolean => person.tier !== 'manager';
 
 // The seat a request's token names, and its person — the /seat/whoami posture:
 // no or unknown token → 401, a deactivated or missing person → 403, a database
@@ -481,7 +488,12 @@ async function handleSeatInboxPull(req: http.IncomingMessage, res: http.ServerRe
       })),
     ];
     json(200, {
-      seat: { telegramUserId: person.telegram_user_id, timezone: tenant?.timezone ?? 'UTC' },
+      seat: {
+        telegramUserId: person.telegram_user_id,
+        timezone: tenant?.timezone ?? 'UTC',
+        // A promotion or demotion reaches a running glue here; it restarts on it.
+        shareConversation: sharesConversation(person),
+      },
       items,
     });
   } catch {
@@ -672,6 +684,13 @@ async function handleSeatConversation(req: http.IncomingMessage, res: http.Serve
     const rows = seatTurnsFromBody(body, who.seat);
     if (!rows) {
       json(400, { error: `turns must be an array of at most ${SEAT_CONVERSATION_MAX_TURNS}` });
+      return;
+    }
+    // The second guard for a manager's privacy (the first: their glue never
+    // uploads). Accepted and dropped, so a glue that has not yet restarted on a
+    // promotion clears its outbox instead of retrying forever.
+    if (!sharesConversation(who.person)) {
+      json(200, { stored: 0, private: true });
       return;
     }
     const { stored, dropped } = await insertSeatTurnsTolerant(rows);

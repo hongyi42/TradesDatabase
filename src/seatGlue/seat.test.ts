@@ -578,7 +578,7 @@ class FlakyTelegram extends FakeTelegram {
 }
 
 function office(over: Partial<SeatDeps> = {}) {
-  let next: InboxResult | Error = { seat: { telegramUserId: String(BEN), timezone: TZ }, items: [] };
+  let next: InboxResult | Error = { seat: { telegramUserId: String(BEN), timezone: TZ, shareConversation: true }, items: [] };
   const reports: Array<{ id: string; leg: string; outcome: string; detail?: string }> = [];
   const changed: number[] = [];
   const telegram = new FlakyTelegram();
@@ -592,7 +592,7 @@ function office(over: Partial<SeatDeps> = {}) {
       },
       report: async (r) => void reports.push(r),
     },
-    who: { telegramUserId: BEN, tz: TZ },
+    who: { telegramUserId: BEN, tz: TZ, shareConversation: true },
     onSeatChanged: (c) => void changed.push(c),
     pollInboxMs: 3_600_000,
     readState: async () => stored,
@@ -601,8 +601,11 @@ function office(over: Partial<SeatDeps> = {}) {
     },
     ...over,
   });
-  const serve = (items: InboxItem[], seat = { telegramUserId: String(BEN) as string | null, timezone: TZ }) => {
-    next = { seat, items };
+  const serve = (
+    items: InboxItem[],
+    seat: Partial<InboxResult['seat']> = {},
+  ) => {
+    next = { seat: { telegramUserId: String(BEN), timezone: TZ, shareConversation: true, ...seat }, items };
   };
   const refuse = (e: Error) => {
     next = e;
@@ -727,11 +730,11 @@ describe('Seat — office items (step 3)', () => {
     const t = office();
     await t.seat.start();
     await tick();
-    t.serve([], { telegramUserId: '999', timezone: TZ });
+    t.serve([], { telegramUserId: '999' });
     await t.seat.pollInbox();
-    t.serve([], { telegramUserId: String(BEN), timezone: 'Europe/London' });
+    t.serve([], { timezone: 'Europe/London' });
     await t.seat.pollInbox();
-    t.serve([], { telegramUserId: null, timezone: TZ });
+    t.serve([], { telegramUserId: null });
     await t.seat.pollInbox();
     t.refuse(new InboxRefused(403));
     await t.seat.pollInbox();
@@ -910,3 +913,23 @@ describe('Seat — the conversation for the office (step 3)', () => {
     expect(settled).toBe(1);
   });
 });
+
+// Operator, 2026-09-24: a MANAGER's conversation is private.
+describe('Seat — a manager seat shares nothing (step 3)', () => {
+  it('sends no office notice, and a promotion or demotion restarts the glue', async () => {
+    const t = office({ who: { telegramUserId: BEN, tz: TZ, shareConversation: false } });
+    await t.seat.start();
+    await tick();
+    expect(t.telegram.sent).not.toContain(TEXT.disclosure);
+    // Office items still arrive (the office asks a manager directly).
+    t.serve([phone(40, 'Can you approve the Jones quote?')], { shareConversation: false });
+    await t.seat.pollInbox();
+    expect(t.telegram.sent).toContain('Can you approve the Jones quote?');
+    expect(t.changed).toEqual([]);
+    // Render now says this seat shares (a demotion): restart to pick it up.
+    t.serve([], { shareConversation: true });
+    await t.seat.pollInbox();
+    expect(t.changed).toEqual([0]);
+  });
+});
+

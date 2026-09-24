@@ -20,6 +20,11 @@
 # placeholder or nothing — so the only live proof is the glue polling without
 # a 409, which step 4 shows.
 #
+# STEP 4: install.sh now needs the seat's `seats` row on Render before it can
+# mint the token (scripts/assign-host.mjs add-glue-seat ref=<ref> host=<h>
+# seat=<seat>), so record it first. The glue then learns who it is from Render
+# (/seat/whoami); nothing about the person is typed on the box.
+#
 # KNOWN GAP, accepted by the operator (decision 5 = C): the nudge and office
 # runners deliver by exec INSIDE this container. Until step 3 builds their
 # replacement, this seat's planner questions, office notes and pushes report

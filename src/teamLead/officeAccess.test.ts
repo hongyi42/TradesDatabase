@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import type { Customer, Job, Observation, OfficeMessage, PersonPush, Technician } from '../db/index.js';
 import type { ToolLoopResult } from '../model/toolLoop.js';
+import { officeSystemFor } from './officePrompt.js';
 import {
   routeAccessAsOffice,
   type AccessDoorDeps as AccessDeskDeps,
@@ -463,9 +464,10 @@ describe('the access desk — who may ask, and for what', () => {
 // who was texted, what was filed, what the words were — never on the model.
 
 type Exec = (name: string, args: Record<string, unknown>) => Promise<unknown>;
-const decides = (args: Record<string, unknown>, seen: { user?: string } = {}) =>
-  (async (req: { user: string }, _tools: unknown, exec: Exec): Promise<ToolLoopResult> => {
+const decides = (args: Record<string, unknown>, seen: { user?: string; system?: string } = {}) =>
+  (async (req: { user: string; system: string }, _tools: unknown, exec: Exec): Promise<ToolLoopResult> => {
     seen.user = req.user;
+    seen.system = req.system;
     await exec('route_access', args);
     return { text: '', turns: 1, calls: [], stalledWarnings: 0 };
   }) as unknown as NonNullable<AccessDeskDeps['runLoop']>;
@@ -517,6 +519,13 @@ describe('the office decides — code applies', () => {
       await routeAccessAsOffice(ask({ jobId: undefined, customerId: CUST_ID }), deps);
       expect(rec.requests[0].context.jobId).toBe(expected);
     }
+  });
+
+  test("the access door runs on its own prompt, not the call doctrine (rung 10c)", async () => {
+    const seen: { user?: string; system?: string } = {};
+    const { deps } = stub({ runLoop: decides(askSam, seen) });
+    await routeAccessAsOffice(ask({ jobId: undefined, customerId: CUST_ID }), deps);
+    expect(seen.system).toBe(officeSystemFor('access'));
   });
 
   test('the office is shown the catalog as ids and marks — never a job title', async () => {

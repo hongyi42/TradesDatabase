@@ -1600,6 +1600,7 @@ export type Database = {
           kind: string
           message_group_id: string | null
           nudge_id: string | null
+          pinged_at: string | null
           read_at: string | null
           serve_count: number
           status: string
@@ -1622,6 +1623,7 @@ export type Database = {
           kind: string
           message_group_id?: string | null
           nudge_id?: string | null
+          pinged_at?: string | null
           read_at?: string | null
           serve_count?: number
           status?: string
@@ -1644,6 +1646,7 @@ export type Database = {
           kind?: string
           message_group_id?: string | null
           nudge_id?: string | null
+          pinged_at?: string | null
           read_at?: string | null
           serve_count?: number
           status?: string
@@ -2451,6 +2454,119 @@ export type Database = {
           },
           {
             foreignKeyName: "schedule_events_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      seat_bots: {
+        Row: {
+          bot_id: string | null
+          bot_username: string
+          created_at: string
+          host_id: string
+          id: string
+          retired_at: string | null
+          tenant_id: string | null
+        }
+        Insert: {
+          bot_id?: string | null
+          bot_username: string
+          created_at?: string
+          host_id: string
+          id?: string
+          retired_at?: string | null
+          tenant_id?: string | null
+        }
+        Update: {
+          bot_id?: string | null
+          bot_username?: string
+          created_at?: string
+          host_id?: string
+          id?: string
+          retired_at?: string | null
+          tenant_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "seat_bots_host_id_fkey"
+            columns: ["host_id"]
+            isOneToOne: false
+            referencedRelation: "hosts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "seat_bots_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      seats: {
+        Row: {
+          bot_ref: string | null
+          created_at: string
+          host_id: string
+          id: string
+          retired_at: string | null
+          seat_ref: string
+          technician_id: string
+          tenant_id: string
+          token_hash: string | null
+          token_minted_at: string | null
+        }
+        Insert: {
+          bot_ref?: string | null
+          created_at?: string
+          host_id: string
+          id?: string
+          retired_at?: string | null
+          seat_ref: string
+          technician_id: string
+          tenant_id: string
+          token_hash?: string | null
+          token_minted_at?: string | null
+        }
+        Update: {
+          bot_ref?: string | null
+          created_at?: string
+          host_id?: string
+          id?: string
+          retired_at?: string | null
+          seat_ref?: string
+          technician_id?: string
+          tenant_id?: string
+          token_hash?: string | null
+          token_minted_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "seats_bot_ref_fkey"
+            columns: ["bot_ref"]
+            isOneToOne: false
+            referencedRelation: "seat_bots"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "seats_host_id_fkey"
+            columns: ["host_id"]
+            isOneToOne: false
+            referencedRelation: "hosts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "seats_technician_id_fkey"
+            columns: ["technician_id"]
+            isOneToOne: false
+            referencedRelation: "technicians"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "seats_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
             referencedRelation: "tenants"

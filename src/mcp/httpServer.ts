@@ -2,14 +2,14 @@ import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer } from './server.js';
-import { resolveIdentityFromHeaders } from './identity.js';
+import { resolveIdentity, seatTokenOf } from './identity.js';
 import { handleInboundWebhook } from '../inbound/webhook.js';
 import {
   handleRecordingWebhook,
   handleVoiceWebhook,
   type RecordingStatus,
 } from '../inbound/phoneWebhook.js';
-import { sha256hex } from '../control/badges.js';
+import { newSeatToken, sha256hex } from '../control/badges.js';
 import { buildBadgeResponse } from '../control/badgeFile.js';
 import { buildNudgeDelivery, completeNudgeDelivery } from '../control/nudgeQueue.js';
 import { buildOfficeDelivery, completeOfficeDelivery } from '../control/officeQueue.js';
@@ -17,8 +17,16 @@ import {
   clearSandboxAssignmentIfRef,
   completeSandboxRecycle,
   getHostByTokenHash,
+  getSeatBotUsername,
+  getSeatByHostRef,
+  getTechnician,
+  getTechnicianById,
+  getTenant,
+  isInactiveState,
   listPoolRowsForHost,
+  mintSeatToken,
   pingDb,
+  retireSeatByHostRef,
   setSandboxBotId,
 } from '../db/index.js';
 import { isValidService, recordOpsEvent } from '../db/opsEvents.js';
@@ -257,6 +265,119 @@ async function handleBadgePull(req: http.IncomingMessage, res: http.ServerRespon
     const body = await buildBadgeResponse(host.id);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(body));
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
+// Mint a seat's token (step 4, delivery "C"): the box's install.sh calls this
+// with its HOST token and gets the plaintext back exactly once — it writes it
+// straight into the seat's env file, never to a terminal. Host-scoped: a box can
+// only mint for a seat recorded on THAT box, so a host token cannot reach
+// another box's people (the same trust it already has over its own badges).
+// Every mint REPLACES the fingerprint, which is rotation: the previous token
+// stops working on its very next request. Before allowed(), like every control
+// route; an unauthenticated probe gets a bare 401.
+async function handleSeatToken(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const json = (code: number, body: unknown) => {
+    res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '');
+    const host = m ? await getHostByTokenHash(sha256hex(m[1].trim())) : null;
+    if (!host) {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
+    let body: unknown;
+    try {
+      body = await readBody(req);
+    } catch {
+      json(400, { error: 'malformed JSON body' });
+      return;
+    }
+    const seatRef = (body as { seatRef?: unknown })?.seatRef;
+    if (typeof seatRef !== 'string' || !/^[a-z0-9_]+$/.test(seatRef)) {
+      json(400, { error: 'seatRef must match ^[a-z0-9_]+$' });
+      return;
+    }
+    const seat = await getSeatByHostRef(host.id, seatRef);
+    if (!seat) {
+      json(404, { error: `no live seat ${seatRef} on this host` });
+      return;
+    }
+    const person = await getTechnicianById(seat.technician_id, seat.tenant_id);
+    if (!person || isInactiveState(person.state)) {
+      json(409, { error: 'this seat belongs to a deactivated or missing team member' });
+      return;
+    }
+    const minted = newSeatToken();
+    await mintSeatToken(seat.id, minted.hash);
+    json(200, {
+      token: minted.badge,
+      seatRef: seat.seat_ref,
+      tenantId: seat.tenant_id,
+      technicianRef: person.ref,
+      botUsername: await getSeatBotUsername(seat),
+    });
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
+// "Who am I?" — a glue seat asks this at start (step 4). Its token IS the
+// answer: firm, person, Telegram account and the firm's timezone, so the box
+// keeps no identity of its own to drift. Seat tokens only — the HMAC headers
+// prove a person, not a seat. A deactivated person gets 403, and the glue then
+// refuses to start rather than run on a guessed identity.
+async function handleSeatWhoami(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const json = (code: number, body: unknown) => {
+    res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    if (!seatTokenOf(req.headers)) {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
+    let identity;
+    try {
+      identity = await resolveIdentity(req.headers);
+    } catch (err) {
+      // An unknown token is the caller's fault (401); a DB outage is ours and
+      // falls through to the 500 below, so the glue reads it as "retry", not
+      // "your token is bad".
+      if (err instanceof Error && err.message === 'unknown seat token') {
+        res.writeHead(401);
+        res.end();
+        return;
+      }
+      throw err;
+    }
+    const [person, tenant] = await Promise.all([
+      getTechnician(identity.tenantId, identity.technicianRef),
+      getTenant(identity.tenantId),
+    ]);
+    if (!person || isInactiveState(person.state)) {
+      json(403, { error: 'this seat belongs to a deactivated or missing team member' });
+      return;
+    }
+    json(200, {
+      seatRef: identity.seatRef,
+      tenantId: identity.tenantId,
+      technicianRef: identity.technicianRef,
+      telegramUserId: person.telegram_user_id,
+      timezone: tenant?.timezone ?? 'UTC',
+    });
   } catch {
     if (!res.headersSent) {
       res.writeHead(500);
@@ -599,6 +720,10 @@ async function handleSandboxReport(
     let rosterCleared: boolean | null = null;
     if (result.retiredTechnicianId) {
       try {
+        // A glue seat backed by the destroyed sandbox (s5, or any seat step 5
+        // moved) dies with it, or the person's next bind would "recover" a
+        // ref the pool has just handed to someone else. Same retry contract.
+        await retireSeatByHostRef(host.id, retiredSandboxRef);
         await clearSandboxAssignmentIfRef(result.retiredTechnicianId, retiredSandboxRef, host.id);
         rosterCleared = true;
       } catch {
@@ -851,6 +976,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       await handleSeatBotReport(req, res);
       return;
     }
+    // Step 4: the box mints a seat's token (host token), and a glue seat asks
+    // who it is (seat token). Both before allowed(): box egress IPs rotate.
+    if (req.url === '/control/seat-token' && req.method === 'POST') {
+      await handleSeatToken(req, res);
+      return;
+    }
+    if (req.url === '/seat/whoami' && req.method === 'GET') {
+      await handleSeatWhoami(req, res);
+      return;
+    }
     // The voice's outbox: nudge pull + delivery report — same host-token gate
     // + pre-allowlist placement (the box calling in).
     if (req.url === '/control/nudges' && req.method === 'GET') {
@@ -981,15 +1116,17 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // Read+parse the body ourselves and pass it to handleRequest, so the transport
     // does not try to re-read the already-consumed stream.
     const body = await readBody(req);
-    const identity = resolveIdentityFromHeaders(req.headers);
+    const identity = await resolveIdentity(req.headers);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     const mcp = createServer({ identity, signal: hangUpSignal(res) });
     await mcp.connect(transport);
     await transport.handleRequest(req, res, body);
-  } catch {
+  } catch (err) {
     // Identity/parse/allowlist failures are rejected without leaking detail.
+    // Except OUR outage while looking a seat token up: that is a 503, so the
+    // seat's engine reads "retry", not "your token is bad".
     if (!res.headersSent) {
-      res.writeHead(401);
+      res.writeHead((err as { code?: string }).code === 'IDENTITY_UNAVAILABLE' ? 503 : 401);
       res.end();
     }
   }

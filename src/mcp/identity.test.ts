@@ -1,6 +1,6 @@
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
-import { resolveIdentityFromHeaders } from './identity.js';
+import { resolveIdentity, resolveIdentityFromHeaders, seatTokenOf } from './identity.js';
 
 const SECRET = 'test-gateway-secret';
 
@@ -75,5 +75,59 @@ describe('resolveIdentityFromHeaders', () => {
     } finally {
       process.env.GATEWAY_IDENTITY_SECRET = SECRET;
     }
+  });
+});
+
+// Step 4: resolveIdentity puts the seat token first and leaves the HMAC path
+// exactly as it was. A found token is covered end to end in httpServer.test.ts
+// (mint → whoami → /mcp) and the lookup itself in src/db/seats.test.ts.
+describe('resolveIdentity', () => {
+  const TOKEN = `st_${'ab'.repeat(32)}`;
+  let prevSecret: string | undefined;
+  beforeAll(() => {
+    prevSecret = process.env.GATEWAY_IDENTITY_SECRET;
+    process.env.GATEWAY_IDENTITY_SECRET = SECRET;
+  });
+  afterAll(() => {
+    if (prevSecret === undefined) delete process.env.GATEWAY_IDENTITY_SECRET;
+    else process.env.GATEWAY_IDENTITY_SECRET = prevSecret;
+  });
+
+  test('no seat token → the HMAC path, unchanged', async () => {
+    expect(await resolveIdentity(headers())).toEqual({ tenantId: 'firm-A', technicianRef: 'tech-bob' });
+    await expect(resolveIdentity(headers({ 'x-identity-signature': 'abcd' }))).rejects.toThrow();
+  });
+
+  test('only an st_ bearer is a seat token; any other Authorization falls to HMAC', () => {
+    expect(seatTokenOf({ authorization: `Bearer ${TOKEN}` })).toBe(TOKEN);
+    expect(seatTokenOf({ authorization: 'Bearer some-badge' })).toBeNull();
+    expect(seatTokenOf({ authorization: `Bearer st_short` })).toBeNull();
+    // Minted lowercase and hashed as sent: an upper-cased token could never
+    // match, so it is not a seat token at all (falls to HMAC, which refuses it).
+    expect(seatTokenOf({ authorization: `Bearer ${TOKEN.toUpperCase()}` })).toBeNull();
+    expect(seatTokenOf({ authorization: `bearer ${TOKEN}` })).toBe(TOKEN);
+    expect(seatTokenOf({})).toBeNull();
+  });
+
+  test('an unknown seat token is rejected, even alongside valid HMAC headers (the token wins)', async () => {
+    await expect(
+      resolveIdentity({ ...headers(), authorization: `Bearer ${TOKEN}` }),
+    ).rejects.toThrow(/unknown seat token/);
+  });
+});
+
+describe('resolveIdentity when the seat lookup itself fails', () => {
+  test('is marked IDENTITY_UNAVAILABLE (HTTP 503, "retry"), not an unknown token (401)', async () => {
+    vi.resetModules();
+    vi.doMock('../db/index.js', () => ({
+      getSeatIdentityByTokenHash: async () => {
+        throw new Error('getSeatIdentityByTokenHash failed: connection reset');
+      },
+    }));
+    const { resolveIdentity: fresh } = await import('./identity.js');
+    await expect(fresh({ authorization: `Bearer st_${'ab'.repeat(32)}` })).rejects.toMatchObject({
+      code: 'IDENTITY_UNAVAILABLE',
+    });
+    vi.doUnmock('../db/index.js');
   });
 });

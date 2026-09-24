@@ -22,6 +22,7 @@ import {
 } from '../teamLead/planner.js';
 import { runPlannerPass } from './plannerPass.js';
 import { PINGED_KINDS, hasFreshUnpingedObservation } from '../db/observations.js';
+import { PINGED_MESSAGE_KINDS, hasFreshUnpingedOfficeMessage } from '../db/officeMessages.js';
 import { hasModelCredentials, assertSpineModelAllowed } from '../model/forcedTool.js';
 
 // The lifecycle heartbeat — the ONE scheduled entrypoint (Render Cron Job,
@@ -78,6 +79,24 @@ import { hasModelCredentials, assertSpineModelAllowed } from '../model/forcedToo
 // try/caught to FALSE: a failed read must not start planning every firm.
 const PING_FALLBACK_WINDOW_MS = 35 * 60_000;
 
+// THE SAME FALLBACK for a seat's message (rung 10c): an unread inform the
+// message loop has not claimed means the Calls worker is down, and the office
+// should not wait for the half hour. Same window, same false-on-failure.
+async function freshUnclaimedMessage(
+  nowIso: string,
+  deps: { listFreshMessagePings?: typeof hasFreshUnpingedOfficeMessage },
+): Promise<boolean> {
+  try {
+    return await (deps.listFreshMessagePings ?? hasFreshUnpingedOfficeMessage)(
+      PINGED_MESSAGE_KINDS,
+      new Date(Date.parse(nowIso) - PING_FALLBACK_WINDOW_MS).toISOString(),
+    );
+  } catch (err) {
+    console.error('[lifecycle] the unclaimed-message probe failed — treating as none', err);
+    return false;
+  }
+}
+
 async function freshUnclaimedObservation(
   nowIso: string,
   deps: { listFreshPings?: typeof hasFreshUnpingedObservation },
@@ -109,6 +128,7 @@ export interface LifecycleDeps {
   // the heartbeat its fallback when that process is down. Injected like every
   // other reader so a unit test never touches the database.
   listFreshPings?: typeof hasFreshUnpingedObservation;
+  listFreshMessagePings?: typeof hasFreshUnpingedOfficeMessage;
   prune?: typeof pruneLifecycleRuns;
   // Seam so the skip branch is testable without setting a real key.
   hasModelKey?: () => boolean;
@@ -527,8 +547,14 @@ export async function runLifecycle(
     ok = false;
   } else if (plannerMode === 'off') {
     teamLeadPlanner = { skipped: "PLANNER_MODE 'off'" };
-  } else if (!plannerTick && !(await freshUnclaimedObservation(nowIso, deps))) {
-    teamLeadPlanner = { skipped: 'off-cadence tick (no firm due, no unclaimed observation)' };
+  } else if (
+    !plannerTick &&
+    !(await freshUnclaimedObservation(nowIso, deps)) &&
+    !(await freshUnclaimedMessage(nowIso, deps))
+  ) {
+    teamLeadPlanner = {
+      skipped: 'off-cadence tick (no firm due, no unclaimed observation or message)',
+    };
   } else if (!(deps.hasModelKey ?? hasModelCredentials)()) {
     teamLeadPlanner = { skipped: 'no inference credentials' };
   } else {

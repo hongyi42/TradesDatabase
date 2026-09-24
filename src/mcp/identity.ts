@@ -1,4 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { sha256hex } from '../control/badges.js';
+import { getSeatIdentityByTokenHash } from '../db/index.js';
 
 // The per-request identity the MCP server acts on: which firm (tenant) and which
 // technician a tool call is for. It is established at the boundary — never read
@@ -14,6 +16,8 @@ export interface RequestIdentity {
   tenantId: string;
   technicianRef: string;
   scopes?: string[];
+  /** Set only when a seat token proved the identity (step 4). */
+  seatRef?: string;
 }
 
 // The single-identity source for the stdio entrypoint: read once at startup from
@@ -60,4 +64,43 @@ export function resolveIdentityFromHeaders(
   }
 
   return { tenantId, technicianRef };
+}
+
+// The seat-token prefix: what makes a bearer a SEAT token rather than anything
+// else a caller might send (src/control/badges.ts newSeatToken).
+const SEAT_BEARER = /^[Bb]earer\s+(st_[0-9a-f]{64})$/;
+
+// The seat token proven by a request, or null when it carries none.
+export function seatTokenOf(headers: NodeJS.Dict<string | string[]>): string | null {
+  return SEAT_BEARER.exec(header(headers, 'authorization') ?? '')?.[1] ?? null;
+}
+
+// Every HTTP request's identity (step 4, plan 2026-09-23-step-4-per-seat-tokens).
+// A seat token (Authorization: Bearer st_…) wins: its fingerprint names ONE live
+// seat, and that seat names one person in one firm — the token cannot act as
+// anyone else, and re-minting or retiring the seat kills it on the next call (no
+// cache on purpose). Otherwise the gateway's HMAC headers, unchanged: the doorman
+// still speaks them for every OpenClaw seat until step 5. Nothing sends an
+// Authorization header to /mcp today (the doorman rebuilds headers), so the
+// branch cannot misread an existing caller.
+export async function resolveIdentity(
+  headers: NodeJS.Dict<string | string[]>,
+): Promise<RequestIdentity> {
+  const token = seatTokenOf(headers);
+  if (!token) return resolveIdentityFromHeaders(headers);
+  let found;
+  try {
+    found = await getSeatIdentityByTokenHash(sha256hex(token));
+  } catch (err) {
+    // Our outage, not the caller's fault: marked so the HTTP layer answers 503.
+    throw Object.assign(new Error(`seat token lookup failed: ${err instanceof Error ? err.message : String(err)}`), {
+      code: 'IDENTITY_UNAVAILABLE',
+    });
+  }
+  if (!found) throw new Error('unknown seat token');
+  return {
+    tenantId: found.seat.tenant_id,
+    technicianRef: found.technicianRef,
+    seatRef: found.seat.seat_ref,
+  };
 }

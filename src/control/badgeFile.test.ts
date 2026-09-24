@@ -60,7 +60,7 @@ function poolRow(over: Partial<SandboxPoolRow>): SandboxPoolRow {
 // live default would hit the DB with this file's fake host id.
 function stubs(
   rows: Technician[],
-  opts: { failIds?: string[]; retirements?: SandboxPoolRow[] } = {},
+  opts: { failIds?: string[]; retirements?: SandboxPoolRow[]; poolless?: string[] } = {},
 ) {
   const claims: Array<{ id: string; hash: string }> = [];
   return {
@@ -75,6 +75,9 @@ function stubs(
       return target;
     },
     listRetirements: async () => opts.retirements ?? [],
+    // Glue seats with no pool sandbox (step 4). Stubbed like listRetirements:
+    // the live default would hit the DB with this file's fake host id.
+    listPoolless: async () => opts.poolless ?? [],
   };
 }
 
@@ -126,6 +129,7 @@ describe('buildBadgeResponse', () => {
       list: async () => [snapshot],
       claim,
       listRetirements: async () => [],
+      listPoolless: async () => [],
     });
     expect(lost.newBadges).toHaveLength(0); // loser hands out NO plaintextâ€¦
     expect(Object.keys(lost.badgesFile)).toHaveLength(0); // â€¦and no stale-guess entry
@@ -135,6 +139,7 @@ describe('buildBadgeResponse', () => {
       list: async () => [row({ id: 'a', ref: 'contested', badge_hash: winner })],
       claim,
       listRetirements: async () => [],
+      listPoolless: async () => [],
     });
     expect(healed.newBadges).toHaveLength(0);
     expect(healed.badgesFile[winner]).toMatchObject({ technicianRef: 'contested' });
@@ -244,5 +249,32 @@ describe('buildBadgeResponse retirements (recycler)', () => {
   test('no pending retirements → empty array (key always present for the box)', async () => {
     const result = await buildBadgeResponse(HOST, stubs([row({ id: 'a' })]));
     expect(result.retirements).toEqual([]);
+  });
+});
+
+describe('buildBadgeResponse and glue seats (step 4)', () => {
+  test('a glue seat with no pool sandbox ships nothing: no binding, no mint, no badges.json entry', async () => {
+    const rows = [
+      row({ id: 'g', ref: 'new-hire', sandbox_ref: 'g_1a2b3c4d', telegram_user_id: '7770001' }),
+      row({ id: 'o', ref: 'openclaw', sandbox_ref: 's3', telegram_user_id: '7770002' }),
+    ];
+    const s = stubs(rows, { poolless: ['g_1a2b3c4d'] });
+    const result = await buildBadgeResponse(HOST, s);
+    expect(result.bindings.map((b) => b.ref)).toEqual(['openclaw']);
+    expect(result.newBadges.map((b) => b.ref)).toEqual(['openclaw']);
+    expect(Object.values(result.badgesFile).map((e) => e.technicianRef)).toEqual(['openclaw']);
+    expect(s.claims.map((c) => c.id)).toEqual(['o']); // never even minted for the glue seat
+  });
+
+  test('a glue seat that still has its pool sandbox (s5) keeps its badge and binding', async () => {
+    const hash = 'e'.repeat(64);
+    const result = await buildBadgeResponse(
+      HOST,
+      stubs([row({ id: 'b', ref: 'ben', sandbox_ref: 's5', telegram_user_id: '999', badge_hash: hash })], {
+        poolless: [], // s5 has a live pool row, so it is not pool-less
+      }),
+    );
+    expect(result.badgesFile[hash]).toMatchObject({ technicianRef: 'ben', revoked: false });
+    expect(result.bindings).toEqual([{ ref: 'ben', sandboxRef: 's5', telegramUserId: '999' }]);
   });
 });

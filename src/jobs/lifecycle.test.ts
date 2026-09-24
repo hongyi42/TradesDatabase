@@ -810,6 +810,8 @@ describe('the planner gate', () => {
     // reader — unstubbed it is a live database read from a unit test, and it
     // decides whether an off-cadence tick plans at all.
     listFreshPings: async () => false,
+    // RUNG 10C: the unclaimed-message probe, stubbed for the same reason.
+    listFreshMessagePings: async () => false,
   };
 
   const planned = (over: Record<string, unknown> = {}) => {
@@ -903,7 +905,26 @@ describe('the planner gate', () => {
     const s = await runLifecycle('2026-07-02T12:10:00.000Z', broken.deps);
     expect(broken.calls.length).toBe(0);
     expect(s.teamLeadPlanner).toEqual({
-      skipped: 'off-cadence tick (no firm due, no unclaimed observation)',
+      skipped: 'off-cadence tick (no firm due, no unclaimed observation or message)',
+    });
+  });
+
+  test('an UNCLAIMED seat inform makes an off-cadence tick plan anyway (rung 10c)', async () => {
+    process.env.PLANNER_MODE = 'shadow';
+    const waiting = planned({ listFreshMessagePings: async () => true });
+    await runLifecycle('2026-07-02T12:10:00.000Z', waiting.deps);
+    expect(waiting.calls.length).toBe(1);
+
+    // Both probes false (or failing) → skipped, with the new text.
+    const broken = planned({
+      listFreshMessagePings: async () => {
+        throw new Error('database down');
+      },
+    });
+    const s = await runLifecycle('2026-07-02T12:10:00.000Z', broken.deps);
+    expect(broken.calls.length).toBe(0);
+    expect(s.teamLeadPlanner).toEqual({
+      skipped: 'off-cadence tick (no firm due, no unclaimed observation or message)',
     });
   });
 
@@ -933,7 +954,7 @@ describe('the planner gate', () => {
       expect(calls.length, `minute :${minute}`).toBe(shouldRun ? 1 : 0);
       if (!shouldRun) {
         expect(s.teamLeadPlanner).toEqual({
-          skipped: 'off-cadence tick (no firm due, no unclaimed observation)',
+          skipped: 'off-cadence tick (no firm due, no unclaimed observation or message)',
         });
       }
     }

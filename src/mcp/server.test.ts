@@ -24,6 +24,7 @@ import {
 } from '../db/technicians.js';
 import { createHost } from '../db/hosts.js';
 import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
+import { createSeat, registerSeatBot } from '../db/seats.js';
 import { createTenant, getTenant, setTenantSeats } from '../db/tenants.js';
 import { servedDayPhrase } from '../schedule/dateResolve.js';
 import { getTechnicianViewRule, insertAccessGrant, setTechnicianViewRule } from '../db/technicianView.js';
@@ -2147,6 +2148,104 @@ describe('bind_telegram (manager tool + cold-pool auto-allocation)', () => {
         [tenantId],
       );
       await pg.query("delete from hosts where name = 'tg-host'");
+      await setTenantSeats(tenantId, {
+        managerSeats: seatsBefore.manager_seats,
+        technicianSeats: seatsBefore.technician_seats,
+      });
+    }
+  });
+});
+
+describe('bind_telegram glue seats (step 4: a seat without the pool)', () => {
+  test('a free seat bot gives a new hire a glue seat; taken bot → pool; half-written bind reused; rebind keeps the seat', { timeout: 30_000 }, async () => {
+    const seatsBefore = (
+      await pg.query<{ manager_seats: number; technician_seats: number }>(
+        'select manager_seats, technician_seats from tenants where id=$1',
+        [tenantId],
+      )
+    ).rows[0];
+    await pg.query("delete from hosts where name = 'tg-glue-host'"); // cascades seats, seat_bots, pool
+    await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 10 });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' }, {});
+    try {
+      const host = await createHost('tg-glue-host', 'e'.repeat(64));
+      await registerSeatBot({ hostId: host.id, tenantId, botId: '9100001', botUsername: '@glue_one_bot' });
+
+      // (c) a free seat bot → a g_ glue seat, the roster mirror in ONE write.
+      const a = await insertTechnician({ tenantId, ref: 'glue-a', displayName: 'Glue A' });
+      const bound = await callWith('bind_telegram', { ref: 'glue-a', telegramUserId: '9200001' });
+      expect(bound.data).toMatchObject({ status: 'bound', botUsername: '@glue_one_bot' });
+      expect(bound.data.sandboxRef).toMatch(/^g_[0-9a-f]{8}$/);
+      expect(bound.data.note).toContain(`install.sh ${bound.data.sandboxRef}`);
+      expect(bound.data.note).toContain('@glue_one_bot');
+      const mirror = await pg.query(
+        'select host_id, sandbox_ref, telegram_user_id from technicians where id = $1',
+        [a.id],
+      );
+      expect(mirror.rows[0]).toEqual({
+        host_id: host.id,
+        sandbox_ref: bound.data.sandboxRef,
+        telegram_user_id: '9200001',
+      });
+      const seat = await pg.query('select seat_ref, host_id from seats where technician_id = $1 and retired_at is null', [a.id]);
+      expect(seat.rows[0]).toEqual({ seat_ref: bound.data.sandboxRef, host_id: host.id });
+
+      // (d) the only bot is taken → today's pool claim, untouched.
+      await registerSandbox({ tenantId, hostId: host.id, sandboxRef: 'pool-g', botUsername: '@poolg_bot' });
+      await insertTechnician({ tenantId, ref: 'glue-b', displayName: 'Glue B' });
+      const pooled = await callWith('bind_telegram', { ref: 'glue-b', telegramUserId: '9200002' });
+      expect(pooled.data).toMatchObject({ sandboxRef: 'pool-g', botUsername: '@poolg_bot' });
+      expect(pooled.data.note).toContain('within ~5 minutes');
+
+      // (a) a half-written bind: the seat exists but the roster write never
+      // landed. A retry reuses THAT seat (never a second one) and writes the mirror.
+      const bot2 = await registerSeatBot({ hostId: host.id, tenantId, botId: '9100002', botUsername: '@glue_two_bot' });
+      const c = await insertTechnician({ tenantId, ref: 'glue-c', displayName: 'Glue C' });
+      await createSeat({ tenantId, technicianId: c.id, hostId: host.id, seatRef: 'g_halfdone', botRef: bot2.id });
+      const retried = await callWith('bind_telegram', { ref: 'glue-c', telegramUserId: '9200003' });
+      expect(retried.data).toMatchObject({ sandboxRef: 'g_halfdone', botUsername: '@glue_two_bot' });
+      const cSeats = await pg.query('select count(*)::int as n from seats where technician_id = $1', [c.id]);
+      expect(cSeats.rows[0].n).toBe(1);
+
+      // A rebind keeps the seat; a running glue learns the new id on restart.
+      const rebound = await callWith('bind_telegram', { ref: 'glue-a', telegramUserId: '9200009' });
+      expect(rebound.data).toMatchObject({
+        status: 'rebound',
+        sandboxRef: bound.data.sandboxRef,
+        botUsername: '@glue_one_bot',
+        previousTelegramUserId: '9200001',
+      });
+      expect(rebound.data.note).toContain('restarts the assistant');
+
+      // Two binds racing for ONE free bot (the index is the referee): one gets
+      // the glue seat, the other falls through to the pool — never two people
+      // on one bot, never a second assistant.
+      await registerSeatBot({ hostId: host.id, tenantId, botId: '9100003', botUsername: '@glue_race_bot' });
+      await registerSandbox({ tenantId, hostId: host.id, sandboxRef: 'pool-r', botUsername: '@poolr_bot' });
+      await insertTechnician({ tenantId, ref: 'glue-r1', displayName: 'R1' });
+      await insertTechnician({ tenantId, ref: 'glue-r2', displayName: 'R2' });
+      const [r1, r2] = await Promise.all([
+        callWith('bind_telegram', { ref: 'glue-r1', telegramUserId: '9200011' }),
+        callWith('bind_telegram', { ref: 'glue-r2', telegramUserId: '9200012' }),
+      ]);
+      expect([r1.data.botUsername, r2.data.botUsername].sort()).toEqual(['@glue_race_bot', '@poolr_bot']);
+      const raceBot = await pg.query(
+        "select count(*)::int as n from seats s join seat_bots b on b.id = s.bot_ref where b.bot_username = '@glue_race_bot' and s.retired_at is null",
+      );
+      expect(raceBot.rows[0].n).toBe(1);
+
+      // list_team shows the seat bot's handle.
+      const team = await callWith('list_team', {});
+      const aRow = team.data.team.find((t: { ref: string }) => t.ref === 'glue-a');
+      expect(aRow).toMatchObject({ sandboxRef: bound.data.sandboxRef, botUsername: '@glue_one_bot' });
+    } finally {
+      await mgrClient.close();
+      await pg.query("delete from sandbox_pool where host_id in (select id from hosts where name='tg-glue-host')");
+      await pg.query(
+        "delete from technicians where tenant_id=$1 and ref in ('glue-a','glue-b','glue-c','glue-r1','glue-r2')",
+        [tenantId],
+      );
+      await pg.query("delete from hosts where name = 'tg-glue-host'");
       await setTenantSeats(tenantId, {
         managerSeats: seatsBefore.manager_seats,
         technicianSeats: seatsBefore.technician_seats,
@@ -10105,7 +10204,9 @@ describe('the access tools', () => {
     // rows in two shared tables. Not truncating them leaked 6 pushes into the
     // next describe, where they read as "every manager was texted six times".
     await pg.query('truncate table person_pushes');
-    await pg.query("delete from office_messages where kind = 'inform'");
+    // 'news' is the office's copy of each decision (rung 10c); 'inform' is the
+    // note to the technician's seat.
+    await pg.query("delete from office_messages where kind in ('inform', 'news')");
     await setTechnicianViewRule(tenantId, null, 'server.test');
   });
 
@@ -10324,7 +10425,8 @@ describe('the access request flow', () => {
   // informs the planner in several of them), so the access lines are cleared
   // around each test rather than counted against whatever else has run.
   const clearInbox = () =>
-    pg.query("delete from office_messages where kind = 'inform' and from_ref = 'mgr-test'");
+    // 'news' is the office's copy (rung 10c); 'inform' is the note to her seat.
+    pg.query("delete from office_messages where kind in ('inform', 'news') and from_ref = 'mgr-test'");
 
   beforeEach(async () => {
     await clearInbox();
@@ -10646,7 +10748,7 @@ describe('the access request flow', () => {
     // …and the office has one line about it.
     const inbox = await pg.query(
       "select kind, from_ref, to_ref, body from office_messages " +
-        "where kind = 'inform' and from_ref = 'mgr-test' and direction = 'to_planner'",
+        "where kind = 'news' and from_ref = 'mgr-test' and direction = 'to_planner'",
     );
     expect(inbox.rows).toHaveLength(1);
     expect(inbox.rows[0].to_ref).toBe(TEAM_LEAD_REF);
@@ -10734,7 +10836,7 @@ describe('the access request flow', () => {
     expect(revoked.data.revoked).toBe(true);
     expect(revoked.data.stillOpen).toBe(false);
     const inbox = await pg.query(
-      "select body from office_messages where kind = 'inform' and from_ref = 'mgr-test' " +
+      "select body from office_messages where kind = 'news' and from_ref = 'mgr-test' " +
         "and direction = 'to_planner'",
     );
     expect(inbox.rows).toHaveLength(1);

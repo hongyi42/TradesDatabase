@@ -1,7 +1,11 @@
 // The seat glue's settings, read once at startup from the unit's env file
 // (/etc/seat-glue/<seat>.env on trades-box-1). Every required value is checked
-// here so a missing key stops the process before it polls Telegram or signs a
-// single header — fail closed, the doorman's posture.
+// here so a missing key stops the process before it polls Telegram or sends a
+// single request — fail closed, the doorman's posture.
+//
+// SECRETS AND THE SEAT'S NAME ONLY (step 4). Who the seat is — firm, person,
+// Telegram account, timezone — is NOT here: the glue asks Render at start with
+// its token (whoami.ts), so the box holds no identity of its own to drift.
 //
 // SELF-CONTAINED: nothing under src/seatGlue imports another src/ module (only
 // node:* and the Copilot SDK), because only dist/seatGlue/ ships to the box.
@@ -10,12 +14,8 @@
 export interface SeatConfig {
   botToken: string;
   seatRef: string;
-  tenantId: string;
-  technicianRef: string;
-  telegramUserId: number;
-  /** The firm's IANA timezone. Hand-set for step 1; retire when step 4 has Render send it. */
-  tz: string;
-  secret: string;
+  /** This seat's bearer token (`st_…`), minted by install.sh. Revocable, one seat only. */
+  seatToken: string;
   spineUrl: string;
   openrouterKey: string;
   model: string;
@@ -23,17 +23,7 @@ export interface SeatConfig {
   mediaRetentionDays: number;
 }
 
-const REQUIRED = [
-  'TELEGRAM_BOT_TOKEN',
-  'SEAT_REF',
-  'SEAT_TENANT_ID',
-  'SEAT_TECHNICIAN_REF',
-  'SEAT_TELEGRAM_USER_ID',
-  'SEAT_TZ',
-  'GATEWAY_IDENTITY_SECRET',
-  'SPINE_MCP_URL',
-  'OPENROUTER_API_KEY',
-] as const;
+const REQUIRED = ['TELEGRAM_BOT_TOKEN', 'SEAT_REF', 'SEAT_TOKEN', 'SPINE_MCP_URL', 'OPENROUTER_API_KEY'] as const;
 
 const LOOPBACK = ['127.0.0.1', 'localhost', '[::1]', '::1'];
 
@@ -43,21 +33,14 @@ export function loadConfig(env: NodeJS.ProcessEnv): SeatConfig {
   if (missing.length) throw new Error(`seat-glue: missing ${missing.join(', ')}`);
   const get = (k: (typeof REQUIRED)[number]) => (env[k] as string).trim();
 
-  // Same shape the roster's bind_telegram accepts (src/mcp/tools/roster.ts).
-  const idText = get('SEAT_TELEGRAM_USER_ID');
-  if (!/^[1-9][0-9]{4,19}$/.test(idText)) {
-    throw new Error('seat-glue: SEAT_TELEGRAM_USER_ID must be a Telegram user id (digits)');
-  }
-
-  const tz = get('SEAT_TZ');
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tz });
-  } catch {
-    throw new Error(`seat-glue: SEAT_TZ "${tz}" is not a valid IANA timezone`);
+  // Shape only, never echoed: the token is a secret.
+  const seatToken = get('SEAT_TOKEN');
+  if (!/^st_[0-9a-f]{64}$/.test(seatToken)) {
+    throw new Error('seat-glue: SEAT_TOKEN is not a seat token (expected st_ + 64 hex)');
   }
 
   // The doorman's rule: a real upstream is https; plain http only toward loopback
-  // (the local E2E), so a typo cannot send signed identities in plaintext.
+  // (the local E2E), so a typo cannot send the seat's token in plaintext.
   const spineUrl = get('SPINE_MCP_URL');
   let url: URL;
   try {
@@ -72,11 +55,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): SeatConfig {
   return {
     botToken: get('TELEGRAM_BOT_TOKEN'),
     seatRef: get('SEAT_REF'),
-    tenantId: get('SEAT_TENANT_ID'),
-    technicianRef: get('SEAT_TECHNICIAN_REF'),
-    telegramUserId: Number(idText),
-    tz,
-    secret: get('GATEWAY_IDENTITY_SECRET'),
+    seatToken,
     spineUrl,
     openrouterKey: get('OPENROUTER_API_KEY'),
     model: env.SEAT_MODEL?.trim() || '@preset/trades-seats',

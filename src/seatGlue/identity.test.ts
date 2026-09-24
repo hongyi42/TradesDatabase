@@ -1,28 +1,22 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { resolveIdentityFromHeaders } from '../mcp/identity.js';
-import { signedHeaders } from './identity.js';
+import { describe, expect, it } from 'vitest';
+import { seatTokenOf } from '../mcp/identity.js';
+import { seatHeaders } from './identity.js';
 
-// The glue signs what the doorman signed; Render's own verifier is the judge.
-describe('signedHeaders', () => {
-  const prev = process.env.GATEWAY_IDENTITY_SECRET;
-  afterEach(() => {
-    if (prev === undefined) delete process.env.GATEWAY_IDENTITY_SECRET;
-    else process.env.GATEWAY_IDENTITY_SECRET = prev;
+// The glue sends what Render recognises as a seat token; Render's own
+// recogniser is the judge (the lookup itself: src/db/seats.test.ts, and the
+// whole mint → whoami → /mcp path: src/mcp/httpServer.test.ts).
+describe('seatHeaders', () => {
+  const TOKEN = `st_${'ab'.repeat(32)}`;
+
+  it("is read by Render's seatTokenOf as this exact token", () => {
+    expect(seatTokenOf({ ...seatHeaders(TOKEN) })).toBe(TOKEN);
   });
 
-  it("passes Render's resolveIdentityFromHeaders", () => {
-    process.env.GATEWAY_IDENTITY_SECRET = 'glue-test-secret';
-    const h = signedHeaders('glue-test-secret', 'tenant-1', 'ben-shelton');
-    expect(resolveIdentityFromHeaders({ ...h })).toEqual({ tenantId: 'tenant-1', technicianRef: 'ben-shelton' });
+  it('carries nothing but the bearer — no identity headers to forge', () => {
+    expect(Object.keys(seatHeaders(TOKEN))).toEqual(['authorization']);
   });
 
-  it('is rejected by Render under a different secret', () => {
-    process.env.GATEWAY_IDENTITY_SECRET = 'the-real-secret';
-    const h = signedHeaders('a-wrong-secret', 'tenant-1', 'ben-shelton');
-    expect(() => resolveIdentityFromHeaders({ ...h })).toThrow('bad identity signature');
-  });
-
-  it('refuses an empty secret', () => {
-    expect(() => signedHeaders('', 't', 'r')).toThrow();
+  it('refuses an empty token', () => {
+    expect(() => seatHeaders('')).toThrow();
   });
 });

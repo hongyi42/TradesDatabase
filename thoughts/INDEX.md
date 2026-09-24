@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 293 documents · 279 live · 14 superseded.
+Regenerate with `npm run decisions:index`. 294 documents · 280 live · 14 superseded.
 
 ## Superseded — do not build on these
 
@@ -53,6 +53,7 @@ Regenerate with `npm run decisions:index`. 293 documents · 279 live · 14 super
 
 ## Live
 
+- `2026-09-24` `plan` [2026-09-24-step-2a-manager-seat-on-the-glue](shared/plans/2026-09-24-step-2a-manager-seat-on-the-glue.md) `describes 4 deleted files` · _draft_ — Step 2a — the owner's manager seat (s2) runs on the seat glue: manager rulebook, Composio, answer buttons, Je…
 - `2026-09-23` `finding` [2026-09-23-step-4-per-seat-tokens-replace-the-doorm](shared/findings/2026-09-23-step-4-per-seat-tokens-replace-the-doorm.md) — Step 4: per-seat tokens replace the doorman's badges — Render mints one token per seat (with its firm timezon…
 - `2026-09-23` `plan` [2026-09-23-step-4-per-seat-tokens](shared/plans/2026-09-23-step-4-per-seat-tokens.md) — Step 4 (4a + 4b) — per-seat tokens replace the glue's shared secret; a glue seat exists without the sandbox p…
 - `2026-09-23` `research` [2026-09-23-plan-mode-and-jev-tool-search-tests](shared/research/2026-09-23-plan-mode-and-jev-tool-search-tests.md) `not landed` — Step 2 measured — the Copilot SDK's plan mode, Jev choosing plan mode per message, and Jev as the manager sea…

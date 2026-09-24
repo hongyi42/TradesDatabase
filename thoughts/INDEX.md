@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 291 documents · 277 live · 14 superseded.
+Regenerate with `npm run decisions:index`. 292 documents · 278 live · 14 superseded.
 
 ## Superseded — do not build on these
 
@@ -54,6 +54,7 @@ Regenerate with `npm run decisions:index`. 291 documents · 277 live · 14 super
 ## Live
 
 - `2026-09-23` `finding` [2026-09-23-step-4-per-seat-tokens-replace-the-doorm](shared/findings/2026-09-23-step-4-per-seat-tokens-replace-the-doorm.md) — Step 4: per-seat tokens replace the doorman's badges — Render mints one token per seat (with its firm timezon…
+- `2026-09-23` `plan` [2026-09-23-step-3-office-reaches-glue-seats](shared/plans/2026-09-23-step-3-office-reaches-glue-seats.md) `describes 4 deleted files` · _draft_ — Step 3 — office messages, nudges and pushes reach glue seats with zero seat model calls; the office reads sea…
 - `2026-09-23` `plan` [2026-09-23-step-4-per-seat-tokens](shared/plans/2026-09-23-step-4-per-seat-tokens.md) — Step 4 (4a + 4b) — per-seat tokens replace the glue's shared secret; a glue seat exists without the sandbox p…
 - `2026-09-23` `research` [2026-09-23-step-3-office-messages-and-nudges-reach-glue-seats](shared/research/2026-09-23-step-3-office-messages-and-nudges-reach-glue-seats.md) `landed` — Step 3 of the openclaw retirement — how office messages, planner questions and pushes reach a seat today, and…
 - `2026-09-23` `research` [2026-09-23-step-4-seat-identity-doorman-badges-sandbox-pool](shared/research/2026-09-23-step-4-seat-identity-doorman-badges-sandbox-pool.md) `landed` — Step 4 — how a seat proves who it is to the spine today (doorman, badges, HMAC headers, sandbox_pool, hosts),…

@@ -209,13 +209,15 @@ manager approving the plan as it stands?". 3 s timeout; any failure → `{plan:f
   **Done 2026-09-24:** plan shown 16:31:18Z, Go tapped 16:41:18Z, the writes ran at 16:41:24Z and landed.
   The engine does NOT time out a pending plan approval within 10 minutes.
 
+**Final review gate:** done — `/code-review` findings fixed plus Jev answersPrompt (operator 2026-09-24), re-reviewed (2 more fixed), commit 5b907b0; full suite 3747 passed.
+
 ## Phase 5: install and cut over s2
 
 No code. Steps, in order:
 1. Operator: apply `20260924120000_seat_memory.sql` to the pilot (never `db push`), then deploy the
    web service (it does not auto-deploy).
 1b. **Gate:** confirm the live deploy serves `tier`, via an s5 token whoami (or the Render dashboard
-   commit containing Phase 1). Stop if not: `tier` is fail-closed, and both seats would refuse to start.
+   commit containing Phase 1). Stop if not: since the final review a missing `tier` falls back to technician with a warning (an unknown one still throws), so an old deploy would run s2 as a plain technician seat, quietly.
 2. Operator, from the main checkout after `npm run build`: `node scripts/assign-host.mjs add-glue-seat
    ref=manager-sam host=<host NAME of trades-box-1> seat=s2` (pilot only, by design).
 3. `stage.sh` → box → `sudo bash install.sh s2`; then `sudo systemctl restart seat-glue@s5` (install

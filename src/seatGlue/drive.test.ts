@@ -42,6 +42,7 @@ describe('seatDeps office wiring', () => {
     const deps = seatDeps(cfg, who, client, new ScriptedTelegram(1), new TurnPolicy());
     expect(deps.inbox).toBeDefined();
     expect(deps.who).toEqual({ telegramUserId: 5801703167, tz: 'UTC' });
+    expect(deps.transcript).toBeDefined();
   });
 
   it('office:false leaves it out entirely', () => {
@@ -49,5 +50,6 @@ describe('seatDeps office wiring', () => {
     expect(deps.inbox).toBeUndefined();
     expect(deps.who).toBeUndefined();
     expect(deps.onSeatChanged).toBeUndefined();
+    expect(deps.transcript).toBeUndefined();
   });
 });

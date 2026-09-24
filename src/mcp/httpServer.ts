@@ -20,6 +20,7 @@ import {
   getSeatBotUsername,
   getSeatByHostRef,
   getSeatIdentityByTokenHash,
+  insertSeatTurns,
   getTechnician,
   getTechnicianById,
   getTenant,
@@ -31,7 +32,9 @@ import {
   retireSeatByHostRef,
   setSandboxBotId,
   touchSeatPull,
+  type Json,
   type Seat,
+  type SeatTurnInsert,
   type Technician,
 } from '../db/index.js';
 import { isValidService, recordOpsEvent } from '../db/opsEvents.js';
@@ -523,6 +526,136 @@ async function handleSeatInboxReport(
         ? await completeNudgeDelivery(seat.host_id, id, b.outcome, detail, {}, scope)
         : await completeOfficeDelivery(seat.host_id, id, b.outcome, detail, {}, scope);
     json(200, { result });
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
+// STEP 3 — a glue seat uploads its conversation (plan 2026-09-23-step-3-office-
+// reaches-glue-seats), so the office reads what an assistant knows instead of
+// asking it. Tenant, person and seat come from the TOKEN; the body names only
+// the turns. A turn is cut rather than refused where it can be (the office
+// body idiom: the words already exist) and skipped only when it is not a turn.
+export const SEAT_TURN_TEXT_MAX = 8000;
+export const SEAT_TURN_ARGS_MAX = 4000;
+const SEAT_CONVERSATION_BODY_CAP = 256 * 1024;
+const SEAT_CONVERSATION_MAX_TURNS = 200;
+
+// Postgres text refuses NUL, and a cut through the middle of an emoji would
+// leave half a character: cut on whole characters, NULs gone.
+function cleanTurnText(s: string, max: number): string {
+  const chars = Array.from(s.replace(/\u0000/g, ''));
+  return chars.length <= max ? chars.join('') : chars.slice(0, max).join('');
+}
+
+// A batch the database refuses for its DATA (22xxx bad value, 23xxx constraint)
+// is stored row by row, dropping only the rows it refuses — otherwise one bad
+// turn would be re-sent, oldest first, and block every turn after it forever.
+// Any other failure (an outage) stays a 500, and the glue keeps the batch.
+async function insertSeatTurnsTolerant(rows: SeatTurnInsert[]): Promise<{ stored: number; dropped: number }> {
+  try {
+    return { stored: await insertSeatTurns(rows), dropped: 0 };
+  } catch (err) {
+    const code = String(((err as { cause?: { code?: unknown } }).cause?.code as string | undefined) ?? '');
+    if (!/^2[23]/.test(code)) throw err;
+    let stored = 0;
+    let dropped = 0;
+    for (const row of rows) {
+      try {
+        stored += await insertSeatTurns([row]);
+      } catch (rowErr) {
+        const rowCode = String(((rowErr as { cause?: { code?: unknown } }).cause?.code as string | undefined) ?? '');
+        if (!/^2[23]/.test(rowCode)) throw rowErr;
+        dropped += 1;
+      }
+    }
+    console.error(`[seat/conversation] dropped ${dropped} turn(s) the database refused (${code})`);
+    return { stored, dropped };
+  }
+}
+
+export function seatTurnsFromBody(
+  body: unknown,
+  seat: Pick<Seat, 'id' | 'tenant_id' | 'technician_id'>,
+): SeatTurnInsert[] | null {
+  const turns = (body as { turns?: unknown })?.turns;
+  if (!Array.isArray(turns) || turns.length > SEAT_CONVERSATION_MAX_TURNS) return null;
+  const out: SeatTurnInsert[] = [];
+  for (const raw of turns as Array<Record<string, unknown>>) {
+    if (!raw || typeof raw.id !== 'string' || !UUID.test(raw.id)) continue;
+    if (raw.role !== 'person' && raw.role !== 'assistant' && raw.role !== 'tool') continue;
+    if (typeof raw.at !== 'string' || Number.isNaN(Date.parse(raw.at))) continue;
+    if (typeof raw.sessionId !== 'string' || !raw.sessionId || raw.sessionId.length > 200) continue;
+    const text = typeof raw.text === 'string' ? cleanTurnText(raw.text, SEAT_TURN_TEXT_MAX) : null;
+    const tool = typeof raw.tool === 'string' ? cleanTurnText(raw.tool, 200) : null;
+    let args: Json | null = null;
+    if (raw.args !== undefined && raw.args !== null) {
+      // jsonb refuses a NUL anywhere, even escaped: drop it from every string
+      // value as it is encoded (never by editing the encoded text, which would
+      // break a string that merely CONTAINS the characters backslash-u-0000).
+      const encoded = JSON.stringify(raw.args, (_k, v: unknown) =>
+        typeof v === 'string' ? v.replace(/\u0000/g, '') : v,
+      );
+      args = encoded.length <= SEAT_TURN_ARGS_MAX ? (JSON.parse(encoded) as Json) : { truncated: true };
+    }
+    out.push({
+      id: raw.id,
+      tenantId: seat.tenant_id,
+      technicianId: seat.technician_id,
+      seatId: seat.id,
+      sessionId: raw.sessionId,
+      at: new Date(raw.at).toISOString(),
+      role: raw.role,
+      text,
+      tool,
+      args,
+      ok: typeof raw.ok === 'boolean' ? raw.ok : null,
+    });
+  }
+  return out;
+}
+
+async function handleSeatConversation(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const json = (code: number, body: unknown) => {
+    res.writeHead(code, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    const who = await seatOfRequest(req);
+    if ('status' in who) {
+      res.writeHead(who.status);
+      res.end();
+      return;
+    }
+    // An honest oversized client gets a clean 413 from its Content-Length before
+    // any read (the board's idiom); a length-less flood is cut off by the cap.
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > SEAT_CONVERSATION_BODY_CAP) {
+      json(413, { error: 'body too large' });
+      return;
+    }
+    let body: unknown;
+    try {
+      const raw = await readRawBody(req, SEAT_CONVERSATION_BODY_CAP);
+      body = raw.length ? JSON.parse(raw) : undefined;
+    } catch (err) {
+      if ((err as { code?: string }).code === 'BODY_TOO_LARGE') {
+        json(413, { error: 'body too large' });
+        return;
+      }
+      json(400, { error: 'malformed JSON body' });
+      return;
+    }
+    const rows = seatTurnsFromBody(body, who.seat);
+    if (!rows) {
+      json(400, { error: `turns must be an array of at most ${SEAT_CONVERSATION_MAX_TURNS}` });
+      return;
+    }
+    const { stored, dropped } = await insertSeatTurnsTolerant(rows);
+    json(200, dropped ? { stored, dropped } : { stored });
   } catch {
     if (!res.headersSent) {
       res.writeHead(500);
@@ -1143,6 +1276,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     if (req.url === '/seat/inbox' && req.method === 'POST') {
       await handleSeatInboxReport(req, res);
+      return;
+    }
+    // Step 3: the glue's conversation upload — before allowed() too, since box
+    // egress IPs rotate and an upload refused there is a conversation lost.
+    if (req.url === '/seat/conversation' && req.method === 'POST') {
+      await handleSeatConversation(req, res);
       return;
     }
     // The voice's outbox: nudge pull + delivery report — same host-token gate

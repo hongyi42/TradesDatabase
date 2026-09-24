@@ -1424,3 +1424,101 @@ describe('GET/POST /seat/inbox (step 3)', () => {
     }
   });
 });
+
+// STEP 3: the glue uploads its conversation; the token decides whose it is.
+describe('POST /seat/conversation (step 3)', () => {
+  let techC: string;
+  let techD: string;
+  let tokenC: string;
+  const upload = (token: string, body: unknown) =>
+    fetch(`${base}/seat/conversation`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    });
+  const uuid = () => crypto.randomUUID();
+
+  beforeAll(async () => {
+    await setTenantSeats(tenantId, { managerSeats: 1, technicianSeats: 12 });
+    const hostId = (await pg.query<{ id: string }>('select id from hosts where name = $1', [HOST_NAME])).rows[0].id;
+    const mk = async (ref: string, seatRef: string) => {
+      const t = await insertTechnician({ tenantId, ref, displayName: ref });
+      await updateTechnician(t.id, { host_id: hostId, sandbox_ref: seatRef, state: 'active', telegram_user_id: '7000000009' });
+      await createSeat({ tenantId, technicianId: t.id, hostId, seatRef, botRef: null });
+      return t.id;
+    };
+    techC = await mk('conv-c', 'g_conv000c');
+    techD = await mk('conv-d', 'g_conv000d');
+    const res = await fetch(`${base}/control/seat-token`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ seatRef: 'g_conv000c' }),
+    });
+    tokenC = ((await res.json()) as { token: string }).token;
+  });
+
+  afterAll(async () => {
+    await pg.query('delete from seat_turns where technician_id = any($1)', [[techC, techD]]);
+  });
+
+  test('no token → bare 401', async () => {
+    const res = await fetch(`${base}/seat/conversation`, { method: 'POST', body: '{"turns":[]}' });
+    expect(res.status).toBe(401);
+    expect(await res.text()).toBe('');
+  });
+
+  test("stores under the TOKEN's person even when the body names another; idempotent; cuts, never refuses", async () => {
+    const id = uuid();
+    const turns = [
+      { id, sessionId: 'g_conv000c-1', at: new Date().toISOString(), role: 'person', text: 'x'.repeat(9000), technicianId: techD, tenantId: 'nope' },
+      { id: uuid(), sessionId: 'g_conv000c-1', at: new Date().toISOString(), role: 'tool', tool: 'record_field_note', args: { note: 'y'.repeat(5000) }, ok: true },
+      { id: 'not-a-uuid', sessionId: 's', at: new Date().toISOString(), role: 'person', text: 'skipped' },
+      { id: uuid(), sessionId: 's', at: 'yesterday', role: 'person', text: 'skipped' },
+    ];
+    const res = await upload(tokenC, { turns });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ stored: 2 });
+    const rows = await pg.query<{ technician_id: string; text: string | null; args: unknown; ok: boolean | null }>(
+      'select technician_id, text, args, ok from seat_turns where technician_id = any($1) order by role',
+      [[techC, techD]],
+    );
+    expect(rows.rows.every((r) => r.technician_id === techC)).toBe(true);
+    const person = rows.rows.find((r) => r.text !== null)!;
+    expect(person.text).toHaveLength(8000);
+    const tool = rows.rows.find((r) => r.text === null)!;
+    expect(tool.args).toEqual({ truncated: true });
+    expect(tool.ok).toBe(true);
+    // A re-send after a lost response stores nothing twice.
+    expect(await (await upload(tokenC, { turns: turns.slice(0, 1) })).json()).toEqual({ stored: 0 });
+  });
+
+  test('a NUL or a cut through an emoji never blocks the upload: cleaned, and stored', async () => {
+    const at = new Date().toISOString();
+    const emoji = '😀'.repeat(8000); // 16000 UTF-16 units; the cut is on whole characters
+    const res = await upload(tokenC, {
+      turns: [
+        { id: uuid(), sessionId: 's', at, role: 'person', text: 'nul\u0000here' },
+        { id: uuid(), sessionId: 's', at, role: 'tool', tool: 'x', args: { note: 'a\u0000b', lit: '\\u0000' }, ok: true },
+        { id: uuid(), sessionId: 's', at, role: 'person', text: emoji },
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ stored: 3 });
+    const rows = await pg.query<{ text: string | null; args: Record<string, string> | null }>(
+      "select text, args from seat_turns where technician_id = $1 and session_id = 's' order by role, created_at",
+      [techC],
+    );
+    expect(rows.rows.some((r) => r.text === 'nulhere')).toBe(true);
+    expect(rows.rows.find((r) => r.args)?.args).toEqual({ note: 'ab', lit: '\\u0000' });
+    const long = rows.rows.find((r) => r.text?.startsWith('😀'))!;
+    expect(Array.from(long.text!)).toHaveLength(8000);
+  });
+
+  test('malformed bodies are 400s; an oversized body is 413', async () => {
+    expect((await upload(tokenC, '{nope')).status).toBe(400);
+    expect((await upload(tokenC, { turns: 'x' })).status).toBe(400);
+    const many = Array.from({ length: 201 }, () => ({ id: uuid(), sessionId: 's', at: new Date().toISOString(), role: 'person', text: 'a' }));
+    expect((await upload(tokenC, { turns: many })).status).toBe(400);
+    expect((await upload(tokenC, 'x'.repeat(300 * 1024))).status).toBe(413);
+  });
+});

@@ -1,5 +1,5 @@
 import type { CallRef } from './costLog.js';
-import type { BlobAttachment, EngineEvent, EngineSession } from './engine.js';
+import { SPINE_NAMES, type BlobAttachment, type EngineEvent, type EngineSession } from './engine.js';
 import { classify, type Inbound } from './inbound.js';
 import { InboxRefused, type InboxItem, type InboxResult } from './inbox.js';
 import { HANDLED_IDS_KEPT, type PendingItem, type SeatState } from './state.js';
@@ -72,6 +72,18 @@ export interface SeatDeps {
    */
   onSeatChanged?: (code: 0 | 1 | 4) => void;
   pollInboxMs?: number;
+  /**
+   * Step 3: the conversation, uploaded for the office to read (transcript.ts).
+   * Absent = nothing recorded (tests, the local driver).
+   */
+  transcript?: {
+    person(text: string, sessionId: string | null): void;
+    assistant(text: string, sessionId: string | null): void;
+    toolStart(callId: string, tool: string, args: unknown, sessionId: string | null): void;
+    toolDone(callId: string, ok: boolean): void;
+    settleOpenTools(): void;
+    flush(): Promise<void>;
+  };
 }
 
 export class Seat {
@@ -135,7 +147,11 @@ export class Seat {
       this.disclosing = this.disclose();
       await this.disclosing;
       void this.pollInbox();
-      this.inboxTimer = setInterval(() => void this.pollInbox(), this.deps.pollInboxMs ?? 10_000);
+      this.inboxTimer = setInterval(() => {
+        void this.pollInbox();
+        // The retry for an upload that failed at the end of a reply.
+        void this.deps.transcript?.flush();
+      }, this.deps.pollInboxMs ?? 10_000);
       this.inboxTimer.unref?.();
     }
     this.readyGate.resolve();
@@ -220,6 +236,7 @@ export class Seat {
       case 'new':
         return this.startFresh();
       case 'text':
+        this.deps.transcript?.person(msg.text, this.sessionId);
         return this.deliver(msg.text);
       case 'photo': {
         const buf = await this.deps.telegram.download(msg.fileId);
@@ -227,6 +244,7 @@ export class Seat {
         // Bytes only. The saved path never goes near the model: L1 is permanent
         // and the file is deleted in a week.
         const photo: BlobAttachment = { type: 'blob', data: buf.toString('base64'), mimeType: 'image/jpeg', displayName: 'photo.jpg' };
+        this.deps.transcript?.person(msg.caption ?? '(photo)', this.sessionId);
         return this.deliver(msg.caption ?? '(photo)', [photo]);
       }
       case 'voice': {
@@ -248,6 +266,7 @@ export class Seat {
             kind: 'transcribe',
           });
         }
+        this.deps.transcript?.person(`[voice note] ${transcript.text}`, this.sessionId);
         return this.deliver(`[voice note] ${transcript.text}`);
       }
     }
@@ -529,6 +548,7 @@ export class Seat {
     switch (e.type) {
       case 'tool.execution_complete':
         this.activityCount += 1;
+        if (typeof data.toolCallId === 'string') this.deps.transcript?.toolDone(data.toolCallId, data.success === true);
         policy.onToolComplete(typeof data.toolCallId === 'string' ? data.toolCallId : undefined);
         this.releaseToolWaiters();
         return;
@@ -542,10 +562,19 @@ export class Seat {
         return;
       case 'tool.execution_start':
         this.activityCount += 1;
+        // Spine tools only, told apart by SERVER name (SPINE_NAMES holds server
+        // names, never tool names). mcpToolName is the tool's own name, without
+        // the engine's `spine-` prefix.
+        if (typeof data.toolCallId === 'string' && typeof data.mcpServerName === 'string' && SPINE_NAMES.has(data.mcpServerName)) {
+          const name = typeof data.mcpToolName === 'string' ? data.mcpToolName : String(data.toolName ?? '');
+          this.deps.transcript?.toolStart(data.toolCallId, name, data.arguments, this.sessionId);
+        }
         return;
       case 'session.idle': {
         this.idleCount += 1;
         this.releaseHeldText();
+        this.deps.transcript?.settleOpenTools();
+        void this.deps.transcript?.flush();
         const result = policy.onIdle(data.aborted === true);
         if (result === 'idle') this.stopWorking();
         // Idle clears pending tools even when no completion named them (an
@@ -630,7 +659,10 @@ export class Seat {
     // The answer is here: the "Working…" line goes first (through the same
     // ordered outbox), typing carries on until the reply really ends.
     if (texts.length) this.clearWorkingLine();
-    for (const text of texts) void this.say(text);
+    for (const text of texts) {
+      this.deps.transcript?.assistant(text, this.sessionId);
+      void this.say(text);
+    }
   }
 
   private say(text: string): Promise<void> {

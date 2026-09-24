@@ -116,7 +116,7 @@ describe('seats', () => {
   });
 
   test('free bots are firm-or-any, live, unclaimed, oldest first; handles and ids', async () => {
-    await pg.query('truncate table seats, seat_bots');
+    await pg.query('truncate table seat_turns, seats, seat_bots');
     const own = await registerSeatBot({ hostId, tenantId, botId: '700010', botUsername: '@own_bot' });
     const any = await registerSeatBot({ hostId, tenantId: null, botId: '700011', botUsername: '@any_bot' });
     await registerSeatBot({ hostId, tenantId: otherTenantId, botId: '700012', botUsername: '@theirs_bot' });
@@ -147,7 +147,7 @@ describe('seats', () => {
   });
 
   test('retireSeatByHostRef retires only that live seat, and is idempotent', async () => {
-    await pg.query('truncate table seats, seat_bots');
+    await pg.query('truncate table seat_turns, seats, seat_bots');
     const t = await insertTechnician({ tenantId, ref: 'seat-recycled', displayName: 'Recycled' });
     const seat = await createSeat({ tenantId, technicianId: t.id, hostId, seatRef: 's9', botRef: null });
     await retireSeatByHostRef(otherHostId, 's9'); // another box's s9: untouched
@@ -158,7 +158,7 @@ describe('seats', () => {
   });
 
   test('pool-less seat refs exclude a seat backed by a live pool sandbox', async () => {
-    await pg.query('truncate table seats, seat_bots');
+    await pg.query('truncate table seat_turns, seats, seat_bots');
     const backed = await insertTechnician({ tenantId, ref: 'seat-backed', displayName: 'Backed' });
     const bare = await insertTechnician({ tenantId, ref: 'seat-bare', displayName: 'Bare' });
     await registerSandbox({ tenantId, hostId, sandboxRef: 's5' });

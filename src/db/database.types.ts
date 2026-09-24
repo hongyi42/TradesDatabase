@@ -2506,6 +2506,73 @@ export type Database = {
           },
         ]
       }
+      seat_turns: {
+        Row: {
+          args: Json | null
+          at: string
+          created_at: string
+          id: string
+          ok: boolean | null
+          role: string
+          seat_id: string
+          session_id: string
+          technician_id: string
+          tenant_id: string
+          text: string | null
+          tool: string | null
+        }
+        Insert: {
+          args?: Json | null
+          at: string
+          created_at?: string
+          id: string
+          ok?: boolean | null
+          role: string
+          seat_id: string
+          session_id: string
+          technician_id: string
+          tenant_id: string
+          text?: string | null
+          tool?: string | null
+        }
+        Update: {
+          args?: Json | null
+          at?: string
+          created_at?: string
+          id?: string
+          ok?: boolean | null
+          role?: string
+          seat_id?: string
+          session_id?: string
+          technician_id?: string
+          tenant_id?: string
+          text?: string | null
+          tool?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "seat_turns_seat_id_fkey"
+            columns: ["seat_id"]
+            isOneToOne: false
+            referencedRelation: "seats"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "seat_turns_technician_id_fkey"
+            columns: ["technician_id"]
+            isOneToOne: false
+            referencedRelation: "technicians"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "seat_turns_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       seats: {
         Row: {
           bot_ref: string | null

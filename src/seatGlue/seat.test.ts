@@ -799,3 +799,79 @@ describe('Seat — office items (step 3)', () => {
   });
 });
 
+describe('Seat — the conversation for the office (step 3)', () => {
+  function recorder() {
+    const turns: Array<[string, string | undefined, unknown?]> = [];
+    let flushes = 0;
+    const transcript = {
+      person: (text: string) => void turns.push(['person', text]),
+      assistant: (text: string) => void turns.push(['assistant', text]),
+      toolStart: (_id: string, tool: string, args: unknown) => void turns.push(['tool', tool, args]),
+      toolDone: (id: string, ok: boolean) => void turns.push(['done', id, ok]),
+      settleOpenTools: () => void turns.push(['settle', undefined]),
+      flush: async () => {
+        flushes += 1;
+      },
+    };
+    return { transcript, turns, flushes: () => flushes };
+  }
+
+  it("records the person's words, the spine tool call and the reply — never the office block", async () => {
+    const r = recorder();
+    const t = office({ transcript: r.transcript });
+    await t.seat.start();
+    await tick();
+    t.serve([note(20, 'OFFICE NOTE (…): Smith is open to them')]);
+    await t.seat.pollInbox();
+    await t.seat.handleUpdate(upd({ text: 'fan swapped at the Smiths' }));
+    // The engine names the server; SPINE_NAMES holds server names.
+    t.session().emit('tool.execution_start', {
+      toolCallId: 'c1',
+      toolName: 'spine-record_field_note',
+      mcpServerName: 'spine',
+      mcpToolName: 'record_field_note',
+      arguments: { jobId: 'j1' },
+    });
+    // Not a spine tool: never recorded.
+    t.session().emit('tool.execution_start', { toolCallId: 'c2', toolName: 'view', mcpServerName: 'other' });
+    t.session().emit('tool.execution_complete', { toolCallId: 'c1', success: true });
+    t.session().emit('assistant.message', { content: 'Got that recorded.' });
+    t.session().emit('session.idle', {});
+    await t.seat.whenIdle(1);
+    expect(r.turns).toEqual([
+      ['person', 'fan swapped at the Smiths'],
+      ['tool', 'record_field_note', { jobId: 'j1' }],
+      ['done', 'c1', true],
+      ['assistant', 'Got that recorded.'],
+      ['settle', undefined],
+    ]);
+    expect(r.flushes()).toBeGreaterThan(0);
+  });
+
+  it('a double text records each message once, even when it aborts and resends', async () => {
+    const r = recorder();
+    const t = office({ transcript: r.transcript });
+    await t.seat.start();
+    await tick();
+    await t.seat.handleUpdate(upd({ text: 'finished the Hendricks job' }));
+    await t.seat.handleUpdate(upd({ text: 'parts were $180' }));
+    expect(r.turns.filter(([k]) => k === 'person')).toEqual([
+      ['person', 'finished the Hendricks job'],
+      ['person', 'parts were $180'],
+    ]);
+  });
+
+  it('a voice note is recorded as its transcript; a photo as its caption, never bytes', async () => {
+    const r = recorder();
+    const t = office({ transcript: r.transcript });
+    await t.seat.start();
+    await tick();
+    await t.seat.handleUpdate(upd({ voice: { file_id: 'v', mime_type: 'audio/ogg' } }));
+    await t.seat.handleUpdate(upd({ photo: [{ file_id: 'p', width: 10, height: 10 }] }));
+    expect(r.turns.filter(([k]) => k === 'person')).toEqual([
+      ['person', '[voice note] fan swapped, parts 180'],
+      ['person', '(photo)'],
+    ]);
+  });
+});
+

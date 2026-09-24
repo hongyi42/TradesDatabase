@@ -171,13 +171,13 @@ deploy before the migration without breaking the runners (the `listLiveSeatBotId
 - Route both next to `/seat/whoami` (:985), before `allowed()`.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass
-- [ ] `src/control/nudgeQueue.test.ts` / `officeQueue.test.ts`: scope reaches every list call, and
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass
+- [x] `src/control/nudgeQueue.test.ts` / `officeQueue.test.ts`: scope reaches every list call, and
       a report for another technician's row returns `'ignored'` on all four paths
-- [ ] `src/db/seats.test.ts` (local stack): `listLiveGlueTechnicianIds` includes a seat stamped 30
+- [x] `src/db/seats.test.ts` (local stack): `listLiveGlueTechnicianIds` includes a seat stamped 30
       s ago, excludes 5 minutes ago, excludes retired, and scopes by host. `src/db/nudges.test.ts`:
       the scoped and skipped lists return the right rows
-- [ ] `src/mcp/httpServer.test.ts`:
+- [x] `src/mcp/httpServer.test.ts`:
   - `/seat/inbox` returns 401 with no token and 403 for an inactive person.
   - It returns only the seat's own phone and note items, and stamps `last_pulled_at`.
   - A host `/control/nudges` pull made right after that excludes those items.
@@ -266,9 +266,9 @@ disclosure to a fake, or upload scripted turns as their conversation (review 3).
 line for 4. **`cutover.sh:28-31`**: replace the KNOWN GAP comment with one line naming step 3.
 
 ### Automated verification
-- [ ] typecheck / lint / test; `selfContained.test.ts` stays green (inbox.ts imports only siblings)
-- [ ] `src/seatGlue/inbox.test.ts`: parses a good body; throws on a bad shape; 401/403 → `InboxRefused`
-- [ ] `src/seatGlue/seat.test.ts` (fake Telegram + engine + inbox):
+- [x] typecheck / lint / test; `selfContained.test.ts` stays green (inbox.ts imports only siblings)
+- [x] `src/seatGlue/inbox.test.ts`: parses a good body; throws on a bad shape; 401/403 → `InboxRefused`
+- [x] `src/seatGlue/seat.test.ts` (fake Telegram + engine + inbox):
   - A phone item is sent once and reported `delivered`. A second serve of the same id is
     re-acked, not re-sent.
   - A note is never sent to Telegram and never triggers `session.send`.
@@ -283,9 +283,9 @@ line for 4. **`cutover.sh:28-31`**: replace the KNOWN GAP comment with one line 
   - The disclosure is NOT marked sent when Telegram rejects it.
   - A poll that lands while an update is mid-flight leaves both the offset and `pending` in
     `state.json`, with neither write lost.
-- [ ] `drive.test.ts` (or a `main.ts` unit test): `seatDeps(..., { office: false })` has no
+- [x] `drive.test.ts` (or a `main.ts` unit test): `seatDeps(..., { office: false })` has no
       `inbox` or `transcript`
-- [ ] `src/seatGlue/state.test.ts`: an old-shape `state.json` reads with the three defaults
+- [x] `src/seatGlue/state.test.ts`: an old-shape `state.json` reads with the three defaults
 
 ## Phase 3: Conversation upload and the 90-day prune
 
@@ -350,16 +350,16 @@ renumbered).
   every lifecycle test runs a real DELETE (review 9).
 
 ### Automated verification
-- [ ] typecheck / lint / test / `npm run build`
-- [ ] `src/db/seatTurns.test.ts` (local): insert is idempotent on id; search is scoped to
+- [x] typecheck / lint / test / `npm run build`
+- [x] `src/db/seatTurns.test.ts` (local): insert is idempotent on id; search is scoped to
       tenant + technician, honours days, matches a tool name, and escapes `%`; prune counts
-- [ ] `httpServer.test.ts`: `/seat/conversation` stores under the token's technician even when
+- [x] `httpServer.test.ts`: `/seat/conversation` stores under the token's technician even when
       the body names another; 401 without a token; 413 over the cap
-- [ ] `src/seatGlue/transcript.test.ts`: flush drops on 2xx and keeps on 5xx; the outbox survives
+- [x] `src/seatGlue/transcript.test.ts`: flush drops on 2xx and keeps on 5xx; the outbox survives
       a new instance; the cap drops the oldest
-- [ ] `seat.test.ts`: a reply with one spine tool call yields person → tool(ok) → assistant turns,
+- [x] `seat.test.ts`: a reply with one spine tool call yields person → tool(ok) → assistant turns,
       and no "[Since …]" text is recorded as the person's
-- [ ] `src/jobs/lifecycle.test.ts`: the prune runs with a 90-day cutoff and `skipped` on a missing table
+- [x] `src/jobs/lifecycle.test.ts`: the prune runs with a 90-day cutoff and `skipped` on a missing table
 
 ## Phase 4: The office reads conversations
 
@@ -404,13 +404,13 @@ moved. Never re-baseline the hash.
 what a technician said to their assistant, from `read_conversation`, in the office's own words.
 
 ### Automated verification
-- [ ] typecheck / lint / test
-- [ ] `server.test.ts`: the surface pins pass with the new name. A technician badge and a
+- [x] typecheck / lint / test
+- [x] `server.test.ts`: the surface pins pass with the new name. A technician badge and a
       manager badge calling `read_conversation` are refused (the `spine:`-only gate, :666).
       The team-lead identity reads only its own tenant's rows.
-- [ ] `src/teamLead/office.test.ts`: `officeToolsFor({kind:'manager'})` includes it;
+- [x] `src/teamLead/office.test.ts`: `officeToolsFor({kind:'manager'})` includes it;
       `{kind:'technician'}` does not
-- [ ] the identity/schema pairing test in `src/mcp/server.test.ts` (near :7846, which pins
+- [x] the identity/schema pairing test in `src/mcp/server.test.ts` (near :7846, which pins
       `TEAM_LEAD_TOOL_NAMES` ⇄ `TEAM_LEAD_TOOLS`) passes
 
 ## Phase 5: Roll out on s5 and drive the gate

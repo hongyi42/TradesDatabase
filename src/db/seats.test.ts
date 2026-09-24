@@ -16,6 +16,7 @@ import {
   listSeatBotHandles,
   mintSeatToken,
   registerSeatBot,
+  retireSeatByHostRef,
 } from './seats.js';
 
 // Integration against the LOCAL stack (pattern: sandboxPool.test.ts). The seat
@@ -139,8 +140,19 @@ describe('seats', () => {
       registerSeatBot({ hostId, tenantId, botId: '700099', botUsername: '@renamed_bot' }),
     ).rejects.toThrow(/pool sandbox pool-owned/);
     await expect(
-      registerSeatBot({ hostId, tenantId, botId: null, botUsername: '@pooled_bot' }),
-    ).rejects.toThrow(/pool sandbox pool-owned/);
+      registerSeatBot({ hostId, tenantId, botId: null, botUsername: '@POOLED_bot' }),
+    ).rejects.toThrow(/pool sandbox pool-owned/); // handles are case-insensitive
+  });
+
+  test('retireSeatByHostRef retires only that live seat, and is idempotent', async () => {
+    await pg.query('truncate table seats, seat_bots');
+    const t = await insertTechnician({ tenantId, ref: 'seat-recycled', displayName: 'Recycled' });
+    const seat = await createSeat({ tenantId, technicianId: t.id, hostId, seatRef: 's9', botRef: null });
+    await retireSeatByHostRef(otherHostId, 's9'); // another box's s9: untouched
+    expect((await getSeatByTechnician(t.id))?.id).toBe(seat.id);
+    await retireSeatByHostRef(hostId, 's9');
+    await retireSeatByHostRef(hostId, 's9');
+    expect(await getSeatByTechnician(t.id)).toBeNull();
   });
 
   test('pool-less seat refs exclude a seat backed by a live pool sandbox', async () => {

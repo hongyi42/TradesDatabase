@@ -73,6 +73,21 @@ export async function getSeatBotUsername(seat: Seat): Promise<string | null> {
   return (await getPoolRowByTechnician(seat.technician_id))?.bot_username ?? null;
 }
 
+// Retire the live seat a box knows by this ref — its token dies and its person
+// and bot are freed. Called when the box reports the pool sandbox behind that
+// ref destroyed (a completed recycle): a seat pointing at a destroyed sandbox
+// would otherwise be "recovered" by the next bind_telegram of that person and
+// put them on a ref the pool has since handed to someone else. Idempotent.
+export async function retireSeatByHostRef(hostId: string, seatRef: string): Promise<void> {
+  const { error } = await getClient()
+    .from('seats')
+    .update({ retired_at: new Date().toISOString() })
+    .eq('host_id', hostId)
+    .eq('seat_ref', seatRef)
+    .is('retired_at', null);
+  if (error) throw new Error(`retireSeatByHostRef failed: ${error.message}`);
+}
+
 // Store a freshly minted token's fingerprint. Overwrites any previous one: that
 // IS rotation — the old token stops resolving on its very next request.
 export async function mintSeatToken(seatId: string, tokenHash: string): Promise<Seat> {
@@ -209,24 +224,21 @@ export async function registerSeatBot(input: {
   }
   // A bot an OpenClaw pool sandbox still answers must never become a seat bot:
   // the next glue bind would put a second person on it (Telegram allows ONE
-  // poller per bot). Checked by id and by handle — a pool row may have either.
-  let owned = getClient()
+  // poller per bot). Matched by id, or by handle CASE-INSENSITIVELY (Telegram
+  // handles are; pool rows were typed by hand). Compared here rather than in a
+  // PostgREST filter string, so no value is ever spliced into a query.
+  const { data: pool, error: poolError } = await getClient()
     .from('sandbox_pool')
-    .select('sandbox_ref')
-    .is('retired_at', null)
-    .eq('bot_username', input.botUsername);
-  if (input.botId !== null) {
-    owned = getClient()
-      .from('sandbox_pool')
-      .select('sandbox_ref')
-      .is('retired_at', null)
-      .or(`bot_id.eq.${input.botId},bot_username.eq.${input.botUsername}`);
-  }
-  const { data: pool, error: poolError } = await owned.limit(1);
+    .select('sandbox_ref, bot_id, bot_username')
+    .is('retired_at', null);
   if (poolError) throw new Error(`registerSeatBot failed: ${poolError.message}`);
-  if (pool?.length) {
+  const handle = input.botUsername.toLowerCase();
+  const owner = (pool ?? []).find(
+    (r) => (input.botId !== null && r.bot_id === input.botId) || r.bot_username?.toLowerCase() === handle,
+  );
+  if (owner) {
     throw new Error(
-      `registerSeatBot: ${input.botUsername} is pool sandbox ${pool[0].sandbox_ref}'s bot — a seat bot needs a bot of its own`,
+      `registerSeatBot: ${input.botUsername} is pool sandbox ${owner.sandbox_ref}'s bot — a seat bot needs a bot of its own`,
     );
   }
   const { data, error } = await getClient()

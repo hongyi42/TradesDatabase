@@ -94,6 +94,13 @@ orkey="$(val /etc/nemoclaw/openrouter.env OPENROUTER_API_KEY)"
 for pair in "HOST_PULL_TOKEN:$hosttok" "PULL_URL:$pullurl" "SPINE_MCP_URL:$spine" "OPENROUTER_API_KEY:$orkey"; do
   [ -n "${pair#*:}" ] || { echo "install: ${pair%%:*} not found on this box" >&2; exit 1; }
 done
+# Refuse BEFORE minting when no bot token can possibly be found — the mint
+# rotates, and a run that dies after it leaves a running glue on a dead token.
+# (Which /root/bots file applies is only known from the mint's reply.)
+if [ ! -s "/root/seats/${SEAT}.env" ] && ! compgen -G '/root/bots/*.env' >/dev/null; then
+  echo "install: no bot token on this box for ${SEAT} (/root/seats/${SEAT}.env or /root/bots/<handle>.env). Nothing changed." >&2
+  exit 1
+fi
 resp="$(curl -sS --max-time 30 -w '\n%{http_code}' -X POST \
   -H @<(printf 'Authorization: Bearer %s\n' "$hosttok") \
   -H 'content-type: application/json' \

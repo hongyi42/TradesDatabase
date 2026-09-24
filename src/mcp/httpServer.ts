@@ -26,6 +26,7 @@ import {
   listPoolRowsForHost,
   mintSeatToken,
   pingDb,
+  retireSeatByHostRef,
   setSandboxBotId,
 } from '../db/index.js';
 import { isValidService, recordOpsEvent } from '../db/opsEvents.js';
@@ -362,7 +363,10 @@ async function handleSeatWhoami(req: http.IncomingMessage, res: http.ServerRespo
       }
       throw err;
     }
-    const person = await getTechnician(identity.tenantId, identity.technicianRef);
+    const [person, tenant] = await Promise.all([
+      getTechnician(identity.tenantId, identity.technicianRef),
+      getTenant(identity.tenantId),
+    ]);
     if (!person || isInactiveState(person.state)) {
       json(403, { error: 'this seat belongs to a deactivated or missing team member' });
       return;
@@ -372,7 +376,7 @@ async function handleSeatWhoami(req: http.IncomingMessage, res: http.ServerRespo
       tenantId: identity.tenantId,
       technicianRef: identity.technicianRef,
       telegramUserId: person.telegram_user_id,
-      timezone: (await getTenant(identity.tenantId))?.timezone ?? 'UTC',
+      timezone: tenant?.timezone ?? 'UTC',
     });
   } catch {
     if (!res.headersSent) {
@@ -716,6 +720,10 @@ async function handleSandboxReport(
     let rosterCleared: boolean | null = null;
     if (result.retiredTechnicianId) {
       try {
+        // A glue seat backed by the destroyed sandbox (s5, or any seat step 5
+        // moved) dies with it, or the person's next bind would "recover" a
+        // ref the pool has just handed to someone else. Same retry contract.
+        await retireSeatByHostRef(host.id, retiredSandboxRef);
         await clearSandboxAssignmentIfRef(result.retiredTechnicianId, retiredSandboxRef, host.id);
         rosterCleared = true;
       } catch {
@@ -1113,10 +1121,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const mcp = createServer({ identity, signal: hangUpSignal(res) });
     await mcp.connect(transport);
     await transport.handleRequest(req, res, body);
-  } catch {
+  } catch (err) {
     // Identity/parse/allowlist failures are rejected without leaking detail.
+    // Except OUR outage while looking a seat token up: that is a 503, so the
+    // seat's engine reads "retry", not "your token is bad".
     if (!res.headersSent) {
-      res.writeHead(401);
+      res.writeHead((err as { code?: string }).code === 'IDENTITY_UNAVAILABLE' ? 503 : 401);
       res.end();
     }
   }

@@ -161,13 +161,13 @@ before `route()`; only the manager's own text/voice/tap answers it (step 3's off
 timeout) and `{tap:n}` (a `callback_query` update with the open prompt's `p:` data).
 
 ### Automated verification
-- [ ] `prompts.test.ts`: one open, FIFO queue, tap/text resolve, cancelAll
-- [ ] `seat.test.ts` (fake engine): ask_user → buttons → tap resolves; a text or a voice while
+- [x] `prompts.test.ts`: one open, FIFO queue, tap/text resolve, cancelAll
+- [x] `seat.test.ts` (fake engine): ask_user → buttons → tap resolves; a text or a voice while
   waiting resolves it and is never delivered; a photo cancels then delivers; idle cancels; Stop
   cancels; plan Go; Change + feedback; `inbound.test.ts`: `p:` callbacks from others are ignored
-- [ ] typecheck, lint, `npm test`
-- [ ] Local driver (local seat): `{"text":"cancel the beckers"}`, `{"waitPrompt":true}`, `{"tap":0}`,
-  `{"waitIdle":true}` → the same turn ends in a reply; the transcript is the evidence
+- [x] typecheck, lint, `npm test`
+- [x] Local driver (local seat): `{"text":"cancel the beckers"}`, `{"waitPrompt":true}`, `{"tap":0}`,
+  `{"waitIdle":true}` → the same turn ends in a reply; the transcript is the evidence. **Done 2026-09-24:** the real engine asked "cancel the whole job, or take a visit off?" with 4 buttons, the tap came back into the same turn, the seat staged cancel_job and replied (run 2); run 1 asked the confirmation as a second button question. ~$0.21.
 
 ## Phase 4: Jev chooses plan mode per message
 

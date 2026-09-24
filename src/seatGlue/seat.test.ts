@@ -3,10 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CostLog, type CallRef } from './costLog.js';
-import type { BlobAttachment, EngineEvent, EngineSession } from './engine.js';
+import type { BlobAttachment, EngineEvent, EngineSession, SeatHooks } from './engine.js';
 import { Seat, TEXT, type SeatDeps } from './seat.js';
 import type { SeatState } from './state.js';
-import { TelegramConflictError, type TelegramApi, type TgMessage, type TgUpdate } from './telegram.js';
+import { TelegramConflictError, type ButtonRow, type TelegramApi, type TgMessage, type TgUpdate } from './telegram.js';
 import { TurnPolicy } from './turnPolicy.js';
 
 const BEN = 8991633730;
@@ -75,6 +75,17 @@ class FakeTelegram implements TelegramApi {
   async answerCallback(id: string, text?: string): Promise<void> {
     this.callbacks.push({ id, text });
   }
+  /** Prompts posted with buttons (step 2a), and the message ids whose buttons were cleared. */
+  readonly buttons: Array<{ text: string; rows: ButtonRow[]; id: number }> = [];
+  readonly cleared: number[] = [];
+  async sendButtons(_chat: number, text: string, rows: ButtonRow[]): Promise<number> {
+    const id = this.nextId++;
+    this.buttons.push({ text, rows, id });
+    return id;
+  }
+  async clearButtons(_chat: number, id: number): Promise<void> {
+    this.cleared.push(id);
+  }
 }
 
 let n = 0;
@@ -90,11 +101,13 @@ function setup(over: Partial<SeatDeps> = {}) {
   const policy = new TurnPolicy();
   const records: CallRef[] = [];
   const states: SeatState[] = [];
+  const hooks: Array<SeatHooks | undefined> = [];
   const deps: SeatDeps = {
     telegram,
-    openSession: async (id) => {
+    openSession: async (id, h) => {
       const s = new FakeSession(id ?? `s5-${sessions.length + 1}`);
       sessions.push(s);
+      hooks.push(h);
       return s;
     },
     policy,
@@ -112,7 +125,7 @@ function setup(over: Partial<SeatDeps> = {}) {
   };
   const seat = new Seat(deps);
   const session = () => sessions[sessions.length - 1];
-  return { seat, deps, telegram, policy, records, states, sessions, session };
+  return { seat, deps, telegram, policy, records, states, sessions, session, hooks: () => hooks.at(-1) };
 }
 
 describe('Seat', () => {
@@ -557,5 +570,175 @@ describe('Seat', () => {
       throw new TelegramConflictError();
     };
     await expect(t.seat.run()).rejects.toBeInstanceOf(TelegramConflictError);
+  });
+});
+
+// ── a manager seat's waiting prompts (step 2a phase 3) ─────────────────────────
+const tap = (data: string, id = 'cbq'): TgUpdate => ({
+  update_id: ++n,
+  callback_query: { id, from: { id: BEN }, data, message: { message_id: 1, chat: { id: BEN, type: 'private' } } },
+});
+const dataOf = (t: ReturnType<typeof setup>, i: number) => t.telegram.buttons.at(-1)!.rows.flat()[i].data;
+
+describe('Seat — a manager seat asks with buttons (step 2a)', () => {
+  it('a technician seat has no hooks; a manager seat hands them to the engine', async () => {
+    const tech = setup();
+    await tech.seat.start();
+    expect(tech.hooks()).toBeUndefined();
+    const mgr = setup({ manager: true });
+    await mgr.seat.start();
+    expect(typeof mgr.hooks()?.onUserInput).toBe('function');
+  });
+
+  it('ask_user: the question goes out with its choices as buttons; a tap answers and clears them', async () => {
+    const t = setup({ manager: true });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'cancel the beckers' }));
+    const asked = t.hooks()!.onUserInput({ question: 'Which job?', choices: ['Furnace', 'AC'] });
+    await tick();
+    const posted = t.telegram.buttons.at(-1)!;
+    expect(posted.text).toContain('Which job?');
+    expect(posted.rows.flat().map((b) => b.text)).toEqual(['Furnace', 'AC']);
+    expect(t.telegram.working.size).toBe(0); // nothing is running while it waits
+    await t.seat.handleUpdate(tap(dataOf(t, 1)));
+    expect(await asked).toEqual({ answer: 'AC', wasFreeform: false });
+    expect(t.telegram.cleared).toEqual([posted.id]);
+    expect(t.telegram.working.size).toBe(1); // the reply carries on: Stop is back
+  });
+
+  it('a text while a prompt waits answers it and is never sent to the engine as a new message', async () => {
+    const t = setup({ manager: true });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'cancel the beckers' }));
+    const asked = t.hooks()!.onUserInput({ question: 'Which job?', choices: ['Furnace', 'AC'] });
+    await tick();
+    await t.seat.handleUpdate(upd({ text: 'the furnace one' }));
+    expect(await asked).toEqual({ answer: 'the furnace one', wasFreeform: true });
+    expect(t.session().sends).toHaveLength(1);
+    expect(t.session().aborts).toBe(0);
+  });
+
+  it('a voice note while a prompt waits answers it with the transcript', async () => {
+    const t = setup({ manager: true });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'cancel the beckers' }));
+    const asked = t.hooks()!.onUserInput({ question: 'Which job?', choices: ['Furnace', 'AC'] });
+    await tick();
+    await t.seat.handleUpdate(upd({ voice: { file_id: 'v1', mime_type: 'audio/ogg' } }));
+    expect(await asked).toEqual({ answer: 'fan swapped, parts 180', wasFreeform: true });
+    expect(t.session().sends).toHaveLength(1);
+  });
+
+  it('a photo while a prompt waits ends it, then goes to the engine', async () => {
+    const t = setup({ manager: true });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'cancel the beckers' }));
+    const asked = t.hooks()!.onUserInput({ question: 'Which job?', choices: ['Furnace', 'AC'] });
+    await tick();
+    await t.seat.handleUpdate(upd({ photo: [{ file_id: 'p1', width: 10, height: 10 }] }));
+    expect((await asked).answer).toMatch(/no answer/);
+    expect(t.session().sends.at(-1)?.prompt).toBe('(photo)');
+  });
+
+  it('Stop while a prompt waits ends it before the reply is stopped', async () => {
+    const t = setup({ manager: true });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'cancel the beckers' }));
+    const asked = t.hooks()!.onUserInput({ question: 'Which job?', choices: ['Furnace', 'AC'] });
+    await tick();
+    await t.seat.handleUpdate(upd({ text: 'stop' }));
+    expect((await asked).answer).toMatch(/Stop/);
+    expect(t.session().aborts).toBe(1);
+  });
+
+  it('the turn ending (session.idle) closes a prompt nobody can answer any more', async () => {
+    const t = setup({ manager: true });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'cancel the beckers' }));
+    const asked = t.hooks()!.onUserInput({ question: 'Which job?', choices: ['Furnace', 'AC'] });
+    await tick();
+    t.session().emit('session.idle', {});
+    expect((await asked).answer).toMatch(/no answer/);
+    expect(t.seat.promptOpen).toBe(false);
+    await t.seat.handleUpdate(upd({ text: 'thanks' }));
+    expect(t.session().sends.at(-1)?.prompt).toBe('thanks');
+  });
+
+  it('a tap on a closed prompt is acknowledged and changes nothing', async () => {
+    const t = setup({ manager: true });
+    await t.seat.start();
+    await t.seat.handleUpdate(tap('p:0000abcd:0', 'old'));
+    expect(t.telegram.callbacks).toEqual([{ id: 'old', text: TEXT.promptClosed }]);
+  });
+
+  it('plan: Go approves with the recommended action', async () => {
+    const t = setup({ manager: true });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'invoice last month' }));
+    const plan = t.hooks()!.onExitPlan({ summary: '- draw 3 invoices', actions: ['autopilot', 'interactive'], recommendedAction: 'autopilot' });
+    await tick();
+    expect(t.telegram.buttons.at(-1)!.text).toContain('draw 3 invoices');
+    expect(t.telegram.buttons.at(-1)!.rows.flat().map((b) => b.text)).toEqual(['Go', 'Change']);
+    await t.seat.handleUpdate(tap(dataOf(t, 0)));
+    expect(await plan).toEqual({ approved: true, selectedAction: 'autopilot' });
+  });
+
+  it('plan: Change asks what should change, and the next text is the feedback', async () => {
+    const t = setup({ manager: true });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'invoice last month' }));
+    const plan = t.hooks()!.onExitPlan({ summary: '- draw 3 invoices', actions: [], recommendedAction: 'autopilot' });
+    await tick();
+    await t.seat.handleUpdate(tap(dataOf(t, 1)));
+    await tick();
+    expect(t.telegram.sent.at(-1)).toBe(TEXT.whatShouldChange);
+    await t.seat.handleUpdate(upd({ text: 'skip the Acme one' }));
+    expect(await plan).toEqual({ approved: false, feedback: 'skip the Acme one' });
+  });
+
+  it('plan: a typed reply without approvesPlan is feedback; with it, "yes go" approves', async () => {
+    const t = setup({ manager: true });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'invoice last month' }));
+    const p1 = t.hooks()!.onExitPlan({ summary: 'plan', actions: [], recommendedAction: 'autopilot' });
+    await tick();
+    await t.seat.handleUpdate(upd({ text: 'yes go' }));
+    expect(await p1).toEqual({ approved: false, feedback: 'yes go' });
+
+    const y = setup({ manager: true, approvesPlan: async (reply) => /yes/.test(reply) });
+    await y.seat.start();
+    await y.seat.handleUpdate(upd({ text: 'invoice last month' }));
+    const p2 = y.hooks()!.onExitPlan({ summary: 'plan', actions: [], recommendedAction: 'autopilot' });
+    await tick();
+    await y.seat.handleUpdate(upd({ text: 'yes go' }));
+    expect(await p2).toEqual({ approved: true, selectedAction: 'autopilot' });
+  });
+
+  it("a stale idle from an old aborted loop does not close the running reply's question", async () => {
+    const t = setup({ manager: true });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'cancel the beckers' }));
+    // An earlier abort whose idle never came in time: one aborted idle is still owed.
+    t.policy.beginAbort();
+    t.policy.cancelAbort(true);
+    const asked = t.hooks()!.onUserInput({ question: 'Which job?', choices: ['Furnace', 'AC'] });
+    await tick();
+    t.session().emit('session.idle', { aborted: true });
+    await tick();
+    expect(t.seat.promptOpen).toBe(true);
+    await t.seat.handleUpdate(tap(dataOf(t, 0)));
+    expect(await asked).toEqual({ answer: 'Furnace', wasFreeform: false });
+  });
+
+  it('empty choices are dropped; past ten, the rest are listed in the text', async () => {
+    const t = setup({ manager: true });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'which tech?' }));
+    const many = [' ', ...Array.from({ length: 12 }, (_, i) => `T${i}`)];
+    void t.hooks()!.onUserInput({ question: 'Who?', choices: many });
+    await tick();
+    const posted = t.telegram.buttons.at(-1)!;
+    expect(posted.rows.flat().map((b) => b.text)).toEqual(['T0', 'T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8', 'T9']);
+    expect(posted.text).toContain('Also possible (type it): T10; T11');
   });
 });

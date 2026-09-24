@@ -1,8 +1,9 @@
 import type { CallRef } from './costLog.js';
-import type { BlobAttachment, EngineEvent, EngineSession, SeatHooks } from './engine.js';
+import type { BlobAttachment, EngineEvent, EngineSession, ExitPlanRequestLike, ExitPlanResultLike, SeatHooks, UserInputRequestLike, UserInputResponseLike } from './engine.js';
 import { classify, type Inbound } from './inbound.js';
+import { PendingPrompts } from './prompts.js';
 import type { SeatState } from './state.js';
-import { TelegramConflictError, type TelegramApi, type TgUpdate } from './telegram.js';
+import { TelegramConflictError, type ButtonRow, type TelegramApi, type TgUpdate } from './telegram.js';
 import type { TurnPolicy } from './turnPolicy.js';
 
 // One technician seat: Telegram in, the Copilot engine in the middle, Telegram
@@ -20,7 +21,12 @@ export const TEXT = {
   unsupported: 'I can read texts, photos and voice notes.',
   voiceFailed: "I couldn't make out that voice note. Could you type it?",
   replyFailed: "I couldn't answer that just now. Try again in a minute.",
+  promptClosed: 'This question has closed.',
+  whatShouldChange: 'What should change?',
 } as const;
+
+/** Plan text shown with Go/Change — kept well inside one Telegram message. */
+export const PLAN_TEXT_MAX = 3_500;
 
 export interface SeatDeps {
   telegram: TelegramApi;
@@ -46,6 +52,10 @@ export interface SeatDeps {
   errorIdleWaitMs?: number;
   /** How long a Stop or /new waits for an in-flight spine tool. */
   toolWaitMs?: number;
+  /** A manager seat (step 2a): questions and plans reach the person with buttons. */
+  manager?: boolean;
+  /** Does a TYPED reply to a plan approve it as it stands? (Jev, phase 4.) Absent = never. */
+  approvesPlan?(reply: string, planSummary: string): Promise<boolean>;
 }
 
 export class Seat {
@@ -70,8 +80,11 @@ export class Seat {
   private stopped = false;
   private processing = 0;
   private readonly log: (msg: string) => void;
-  /** Set by a manager seat (step 2a phase 3); passed to every openSession. */
+  /** A manager seat's hooks (step 2a phase 3); passed to every openSession. */
   protected hooks: SeatHooks | undefined = undefined;
+  /** The one waiting question/plan at a time; the person's next tap, text or voice answers it. */
+  private readonly prompts = new PendingPrompts();
+  private promptCount = 0;
 
   constructor(private readonly deps: SeatDeps) {
     this.log = deps.log ?? ((m) => console.log(`seat-glue: ${m}`));
@@ -80,6 +93,19 @@ export class Seat {
     let resolve = () => {};
     const promise = new Promise<void>((r) => (resolve = r));
     this.readyGate = { promise, resolve };
+    if (deps.manager) {
+      this.hooks = { onUserInput: (r) => this.askUser(r), onExitPlan: (r) => this.showPlan(r) };
+    }
+  }
+
+  /** A prompt is waiting on the person. */
+  get promptOpen(): boolean {
+    return this.prompts.isOpen;
+  }
+
+  /** How many prompts this seat has posted — the driver's waitPrompt step waits for it to grow. */
+  get promptsPosted(): number {
+    return this.promptCount;
   }
 
   /** Resolves once the conversation is open and the seat is taking updates. */
@@ -162,6 +188,15 @@ export class Seat {
   }
 
   private async handle(msg: Inbound): Promise<void> {
+    // A WAITING PROMPT (step 2a): only the person's own text, voice or tap answers
+    // it — never delivered as a new message (no abort, no steer). A photo, Stop or
+    // /new ends it first, so the engine's handler is never left waiting.
+    if (this.prompts.isOpen) {
+      if (msg.kind === 'text') return this.answerPrompt(msg.text);
+      if (msg.kind === 'photo') this.cancelPrompts('the manager sent a photo instead of answering');
+      if (msg.kind === 'stop') this.cancelPrompts('the manager pressed Stop');
+      if (msg.kind === 'new') this.cancelPrompts('the manager started a new conversation');
+    }
     switch (msg.kind) {
       case 'ignored':
         return;
@@ -169,6 +204,8 @@ export class Seat {
         return this.say(TEXT.unsupported);
       case 'stop':
         return this.stopReply(msg.callbackQueryId, msg.workingMessageId);
+      case 'tap':
+        return this.tapPrompt(msg.promptId, msg.index, msg.callbackQueryId);
       case 'new':
         return this.startFresh();
       case 'text':
@@ -200,6 +237,8 @@ export class Seat {
             kind: 'transcribe',
           });
         }
+        // A spoken answer to a waiting prompt answers it, like typed text.
+        if (this.prompts.isOpen) return this.answerPrompt(transcript.text);
         return this.deliver(`[voice note] ${transcript.text}`);
       }
     }
@@ -357,6 +396,10 @@ export class Seat {
         this.idleCount += 1;
         this.releaseHeldText();
         const result = policy.onIdle(data.aborted === true);
+        // A finished (or aborted) turn has no handler left waiting: close any
+        // prompt — but NOT on a stale idle, which belongs to an old, dead loop
+        // while the reply now running may be waiting on its person.
+        if (result !== 'stale' && this.prompts.isOpen) this.cancelPrompts('the turn ended');
         if (result === 'idle') this.stopWorking();
         // Idle clears pending tools even when no completion named them (an
         // id-less permission request), so a waiting Stop or /new moves on here too.
@@ -410,6 +453,8 @@ export class Seat {
             const quiet = this.idleCount === idlesAtError && this.activityCount === activityAtError;
             if (quiet && policy.isBusy && policy.currentReplyId() === reply && !policy.toolPending) {
               this.log('no idle after the error — ending the reply');
+              // A prompt left open by the dead loop would swallow the next text.
+              this.cancelPrompts('the turn ended');
               policy.finish();
               this.stopWorking();
             }
@@ -419,6 +464,97 @@ export class Seat {
         return;
       }
     }
+  }
+
+  // ── waiting prompts (step 2a phase 3) ──────────────────────────────────────
+
+  /** The engine's ask_user: the question with its choices as buttons; the turn waits here. */
+  private async askUser(req: UserInputRequestLike): Promise<UserInputResponseLike> {
+    // Empty choices make Telegram refuse the whole message; past 10 the keyboard
+    // gets unwieldy, so the rest are listed in the text for typing.
+    const all = (req.choices ?? []).map((c) => c.trim()).filter(Boolean);
+    const choices = all.slice(0, 10);
+    const extra = all.slice(10);
+    let text = req.question;
+    if (extra.length) text += `\n\nAlso possible (type it): ${extra.join('; ')}`;
+    else if (choices.length && req.allowFreeform !== false) text += '\n\n(Or type your answer.)';
+    if (all.length > 10) this.log(`ask_user offered ${all.length} choices; ${extra.length} listed as text`);
+    const r = await this.prompts.ask(
+      'question',
+      choices,
+      (id) => this.postPrompt(text, choices.map((c, i) => [{ text: c.slice(0, 60), data: `p:${id}:${i}` }])),
+      (mid) => this.clearPromptButtons(mid),
+    );
+    this.resumeWorking();
+    if (r.cancelled) return { answer: `(no answer: ${r.reason ?? 'cancelled'})`, wasFreeform: true };
+    return { answer: r.answer, wasFreeform: r.freeform };
+  }
+
+  /** The engine's exit_plan_mode: the plan with [Go][Change]; Change asks what should change. */
+  private async showPlan(req: ExitPlanRequestLike): Promise<ExitPlanResultLike> {
+    const stopped: ExitPlanResultLike = { approved: false, feedback: 'The manager stopped this plan. Do not carry it out.' };
+    const body = planText(req);
+    const r = await this.prompts.ask(
+      'plan',
+      ['Go', 'Change'],
+      (id) => this.postPrompt(body, [[{ text: 'Go', data: `p:${id}:0` }, { text: 'Change', data: `p:${id}:1` }]]),
+      (mid) => this.clearPromptButtons(mid),
+    );
+    if (r.cancelled) return this.resumed(stopped);
+    if (!r.freeform && r.index === 0) return this.resumed({ approved: true, selectedAction: req.recommendedAction });
+    if (r.freeform) {
+      // A typed reply instead of a tap: "yes go" approves; anything else is a change request.
+      const yes = this.deps.approvesPlan ? await this.deps.approvesPlan(r.answer, req.summary).catch(() => false) : false;
+      return this.resumed(yes ? { approved: true, selectedAction: req.recommendedAction } : { approved: false, feedback: r.answer });
+    }
+    const f = await this.prompts.ask('plan-feedback', [], () => this.postPrompt(TEXT.whatShouldChange, []));
+    return this.resumed(f.cancelled ? stopped : { approved: false, feedback: f.answer });
+  }
+
+  private resumed<T>(value: T): T {
+    this.resumeWorking();
+    return value;
+  }
+
+  /** Post a prompt through the ordered outbox; the Working line and typing pause while it waits. */
+  private postPrompt(text: string, rows: ButtonRow[]): Promise<number | null> {
+    this.promptCount += 1;
+    this.stopWorking();
+    const posted = this.outbox.then(() =>
+      rows.length
+        ? this.deps.telegram.sendButtons(this.chatId, text, rows)
+        : this.deps.telegram.send(this.chatId, text).then(() => null),
+    );
+    this.outbox = posted.then(
+      () => undefined,
+      (err: unknown) => this.log(`could not post a prompt: ${errText(err)}`),
+    );
+    return posted;
+  }
+
+  /** The prompt was answered: the reply carries on, so typing and the Stop line come back. */
+  private resumeWorking(): void {
+    if (this.deps.policy.isBusy && !this.prompts.isOpen) this.startWorking();
+  }
+
+  private answerPrompt(text: string): void {
+    const r = this.prompts.resolveText(text);
+    if (r?.messageId != null) this.clearPromptButtons(r.messageId);
+  }
+
+  private tapPrompt(promptId: string, index: number, callbackQueryId: string): void {
+    const r = this.prompts.resolveTap(promptId, index);
+    void this.deps.telegram.answerCallback(callbackQueryId, r ? undefined : TEXT.promptClosed).catch(() => {});
+    if (r?.messageId != null) this.clearPromptButtons(r.messageId);
+  }
+
+  private cancelPrompts(reason: string): void {
+    const messageId = this.prompts.cancelAll(reason);
+    if (messageId != null) this.clearPromptButtons(messageId);
+  }
+
+  private clearPromptButtons(messageId: number): void {
+    void this.deps.telegram.clearButtons(this.chatId, messageId).catch((err: unknown) => this.log(`could not clear buttons: ${errText(err)}`));
   }
 
   /** The 7-day box copy is a convenience: failing to keep it must never lose the message. */
@@ -535,3 +671,10 @@ export class Seat {
 }
 
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/** The plan as the manager reads it, inside PLAN_TEXT_MAX. */
+export function planText(req: ExitPlanRequestLike): string {
+  const parts = ["Here's the plan:", req.summary.trim(), (req.planContent ?? '').trim()].filter(Boolean);
+  const text = parts.join('\n\n');
+  return text.length <= PLAN_TEXT_MAX ? text : `${text.slice(0, PLAN_TEXT_MAX - 1).trimEnd()}…`;
+}

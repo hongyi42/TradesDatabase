@@ -6,7 +6,7 @@ import { startEngine } from './engine.js';
 import { seatDeps, whoAmI } from './main.js';
 import { Seat } from './seat.js';
 import { readState } from './state.js';
-import { STOP_TEXT, type TelegramApi, type TgMessage, type TgUpdate } from './telegram.js';
+import { STOP_TEXT, type ButtonRow, type TelegramApi, type TgMessage, type TgUpdate } from './telegram.js';
 import { TurnPolicy } from './turnPolicy.js';
 
 // The local driver: the real seat loop and the real engine, with a script
@@ -22,6 +22,8 @@ import { TurnPolicy } from './turnPolicy.js';
 //   {"stop": true} | {"new": true}
 //   {"waitMs": 1500}          pause before the next step (a double text mid-answer)
 //   {"waitIdle": true}        wait until the seat is idle and its replies went out
+//   {"waitPrompt": true}      wait until the seat posts a question or plan with buttons (120 s)
+//   {"tap": 0}                tap button n of the open prompt (a callback_query update)
 // The driver waits for idle and for the cost log before it exits.
 export type Step =
   | { text: string }
@@ -30,13 +32,17 @@ export type Step =
   | { stop: true }
   | { new: true }
   | { waitMs: number }
-  | { waitIdle: true };
+  | { waitIdle: true }
+  | { waitPrompt: true }
+  | { tap: number };
 
 export class ScriptedTelegram implements TelegramApi {
   private queue: TgUpdate[] = [];
   private nextId: number;
   private waiters: Array<() => void> = [];
   readonly sent: string[] = [];
+  /** The last prompt the seat posted with buttons: its callback data, in order. */
+  lastPrompt: { data: string[] } | null = null;
 
   // Numbering starts at the seat's saved offset: a driver restarted on the same
   // state dir must hand out ids the seat has not already moved past.
@@ -54,6 +60,25 @@ export class ScriptedTelegram implements TelegramApi {
     });
     for (const w of this.waiters.splice(0)) w();
   }
+
+  /** A tap on a button, as Telegram delivers it. */
+  pushTap(data: string, messageId: number): void {
+    this.queue.push({
+      update_id: this.nextId++,
+      callback_query: { id: `cb${this.nextId}`, from: { id: this.userId }, data, message: { message_id: messageId, chat: { id: this.userId, type: 'private' } } },
+    });
+    for (const w of this.waiters.splice(0)) w();
+  }
+
+  async sendButtons(_chatId: number, text: string, rows: ButtonRow[]): Promise<number> {
+    const data = rows.flat().map((b) => b.data);
+    console.log(`\n<< SEAT: ${text}\n   [${rows.flat().map((b, i) => `${i}:${b.text}`).join('] [')}]\n`);
+    this.sent.push(text);
+    this.lastPrompt = { data };
+    return this.nextMessageId++;
+  }
+
+  async clearButtons(): Promise<void> {}
 
   async getUpdates(offset: number): Promise<TgUpdate[]> {
     const ready = () => this.queue.filter((u) => u.update_id >= offset);
@@ -88,7 +113,26 @@ export class ScriptedTelegram implements TelegramApi {
 }
 
 export async function drive(steps: Step[], seat: Seat, tg: ScriptedTelegram): Promise<void> {
+  let promptsSeen = 0;
   for (const step of steps) {
+    if ('waitPrompt' in step) {
+      // Any prompt, with or without buttons ("What should change?" has none).
+      const deadline = Date.now() + 120_000;
+      while (seat.promptsPosted <= promptsSeen) {
+        if (Date.now() > deadline) throw new Error('no prompt within 120000 ms');
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      promptsSeen = seat.promptsPosted;
+      continue;
+    }
+    if ('tap' in step) {
+      const data = tg.lastPrompt?.data[step.tap];
+      if (!data) throw new Error(`tap ${step.tap}: no such button on the last prompt`);
+      console.log(`>> TAP: ${step.tap}`);
+      tg.pushTap(data, 0);
+      await new Promise((r) => setTimeout(r, 200));
+      continue;
+    }
     if ('waitMs' in step) await new Promise((r) => setTimeout(r, step.waitMs));
     else if ('waitIdle' in step) await seat.whenIdle();
     else if ('text' in step) {

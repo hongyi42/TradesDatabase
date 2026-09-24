@@ -73,6 +73,8 @@ export function seatDeps(
     readState: () => readState(cfg.stateDir),
     writeState: (s) => writeState(cfg.stateDir, s),
     allowedUserId: who.telegramUserId,
+    // Step 2a: a manager seat asks with buttons and shows plans (Seat hooks).
+    manager: who.tier === 'manager',
   };
 }
 

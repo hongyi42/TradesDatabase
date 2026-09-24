@@ -25,6 +25,11 @@ import { randomUUID } from 'node:crypto';
 //    session.idle a few ms later; if that idle freed the policy after the new
 //    text was sent, the next double text would go out as a plain send. The
 //    glue awaits the abort's idle (beginAbort) before sending.
+//
+// A WAITING PROMPT (step 2a) never reaches route(): while a manager seat's
+// question or plan waits on its person (ask_user / exit_plan_mode), seat.ts
+// answers it with the person's own next text, voice note or tap, before any
+// routing. Only the person answers a prompt — step 3's office items queue behind.
 export type Route = 'send' | 'steer' | 'abort-then-send';
 
 // Tools a Stop or /new may interrupt mid-call. ask_team_lead is the office,

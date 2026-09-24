@@ -99,6 +99,8 @@ export class Seat {
   private writeChain: Promise<void> = Promise.resolve();
   private inboxTimer: ReturnType<typeof setInterval> | null = null;
   private polling = false;
+  /** The one-time office notice while it is being sent and saved. */
+  private disclosing: Promise<void> = Promise.resolve();
   private readonly log: (msg: string) => void;
 
   constructor(private readonly deps: SeatDeps) {
@@ -130,7 +132,8 @@ export class Seat {
     this.sweepTimer = setInterval(() => void this.sweep(), this.deps.sweepEveryMs ?? 3_600_000);
     this.sweepTimer.unref?.();
     if (this.deps.inbox) {
-      await this.disclose();
+      this.disclosing = this.disclose();
+      await this.disclosing;
       void this.pollInbox();
       this.inboxTimer = setInterval(() => void this.pollInbox(), this.deps.pollInboxMs ?? 10_000);
       this.inboxTimer.unref?.();
@@ -164,6 +167,7 @@ export class Seat {
    * out and its id being saved would text the person again after the restart.
    */
   async settle(pollMs = 50): Promise<void> {
+    await this.disclosing; // never rejects: disclose() catches its own failure
     while (this.polling) await new Promise((r) => setTimeout(r, pollMs));
     await this.writeChain;
   }

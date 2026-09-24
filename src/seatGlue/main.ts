@@ -133,8 +133,10 @@ async function main(argv: string[]): Promise<void> {
     stopping = true;
     seat.stop();
     // The office item in hand first (step 3): a text that went out must have its
-    // id saved, or the restarted glue texts it again. Bounded, like the flush.
-    await Promise.race([seat.settle(), new Promise((r) => setTimeout(r, 10_000))]);
+    // id saved, or the restarted glue texts it again. Bounded above one Telegram
+    // send (20 s timeout) plus the outbox ahead of it; with the flush below this
+    // stays inside systemd's 90 s stop timeout.
+    await Promise.race([seat.settle(), new Promise((r) => setTimeout(r, 30_000))]);
     await Promise.race([deps.costLog.flush(), new Promise((r) => setTimeout(r, 20_000))]);
     await client.stop().catch(() => []);
     process.exit(code);

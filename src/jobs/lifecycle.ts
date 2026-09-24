@@ -2,12 +2,13 @@ import { fileURLToPath } from 'node:url';
 import {
   backfillBraveCostEvents,
   isMissingCostLedger,
+  isMissingRelation,
   latestBraveCostEventAt,
   listTechniciansInStates,
   rollupCosts,
 } from '../db/index.js';
 import { insertLifecycleRun, pruneLifecycleRuns } from '../db/lifecycleRuns.js';
-import { pruneSeatTurns } from '../db/seatTurns.js';
+import { pruneSeatTurns, seatTurnRetentionDays } from '../db/seatTurns.js';
 import type { Json } from '../db/database.types.js';
 import { checkPairing } from '../composio/pairing.js';
 import { expireOffboarding, type ExpireResult } from '../composio/offboarding.js';
@@ -198,14 +199,6 @@ const runRetentionDays = (): number => {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_RUN_RETENTION_DAYS;
 };
 
-// How long a glue seat's uploaded conversation is kept (operator, 2026-09-23).
-// Same fail-closed parse as the run records: a bad value keeps 90 days rather
-// than deleting everything.
-const DEFAULT_SEAT_TURN_RETENTION_DAYS = 90;
-const seatTurnRetentionDays = (): number => {
-  const raw = Number(process.env.SEAT_TURN_RETENTION_DAYS);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SEAT_TURN_RETENTION_DAYS;
-};
 
 // How much of a step's error text the run record keeps. The stdout line carries
 // it in full; this is a durable row, and an unbounded provider stack trace has
@@ -496,10 +489,10 @@ export async function runLifecycle(
     ).toISOString();
     seatTurns = { pruned: await (deps.pruneSeatTurns ?? pruneSeatTurns)(before), before };
   } catch (err) {
-    seatTurns = isMissingCostLedger(err)
+    seatTurns = isMissingRelation(err)
       ? { skipped: 'seat_turns not migrated here yet' }
       : { stepError: msg(err) };
-    if (!isMissingCostLedger(err)) ok = false;
+    if (!isMissingRelation(err)) ok = false;
   }
   } // end of the steps 1-7 heavy-tick block
 

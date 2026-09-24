@@ -202,6 +202,20 @@ describe('live glue seats (step 3)', () => {
     expect(await listLiveGlueTechnicianIds(otherHostId, since)).toEqual([elsewhere.t.id]);
   });
 
+  test('a fresh stamp is not rewritten; a stale one is', async () => {
+    const t = await insertTechnician({ tenantId, ref: 'live-quiet', displayName: 'Quiet' });
+    const seat = await createSeat({ tenantId, technicianId: t.id, hostId, seatRef: 'g_live0007', botRef: null });
+    await pg.query("update seats set last_pulled_at = now() - interval '10 seconds' where id = $1", [seat.id]);
+    const before = (await pg.query('select last_pulled_at from seats where id = $1', [seat.id])).rows[0].last_pulled_at;
+    await touchSeatPull(seat.id);
+    const same = (await pg.query('select last_pulled_at from seats where id = $1', [seat.id])).rows[0].last_pulled_at;
+    expect(same).toEqual(before);
+    await pg.query("update seats set last_pulled_at = now() - interval '45 seconds' where id = $1", [seat.id]);
+    await touchSeatPull(seat.id);
+    const moved = (await pg.query('select last_pulled_at from seats where id = $1', [seat.id])).rows[0].last_pulled_at as Date;
+    expect(Date.now() - moved.getTime()).toBeLessThan(5_000);
+  });
+
   test('touching a retired seat stamps nothing', async () => {
     const t = await insertTechnician({ tenantId, ref: 'live-gone', displayName: 'Gone' });
     const seat = await createSeat({ tenantId, technicianId: t.id, hostId, seatRef: 'g_live0006', botRef: null });

@@ -97,6 +97,8 @@ describe('seat_turns', () => {
     expect(pct.map((r) => r.text)).toEqual(['parts came to 100% of the quote, (roughly)']);
     const comma = await searchSeatTurns({ tenantId, technicianId: ben.tech, query: 'quote, (roughly', days: 7, limit: 20 });
     expect(comma).toHaveLength(1);
+    // `*` is PostgREST's stand-in for %: it must never widen into "anything".
+    expect(await searchSeatTurns({ tenantId, technicianId: ben.tech, query: 'parts*dollars', days: 7, limit: 20 })).toEqual([]);
     const tool = await searchSeatTurns({ tenantId, technicianId: ben.tech, query: 'field_note', days: 7, limit: 20 });
     expect(tool.map((r) => r.tool)).toEqual(['record_field_note']);
     expect(tool[0].args).toEqual({ jobId: 'j1' });

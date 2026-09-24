@@ -44,6 +44,7 @@ import { handleComposioRelay, isRelayPath } from '../composio/relayHandler.js';
 import { handleBoardRequest, isBoardPath } from '../telegram/boardApi.js';
 import { handleConsoleRequest, isConsolePath } from '../console/consoleApi.js';
 import { handleAdminRequest, isAdminPath } from '../admin/adminApi.js';
+import { UUID_RE } from './tools/shared.js';
 
 // Central HTTP entrypoint (Architecture A). Every NemoClaw bot reaches this one
 // server through the gateway. It runs STATELESS (sessionIdGenerator: undefined):
@@ -401,7 +402,7 @@ async function handleSeatWhoami(req: http.IncomingMessage, res: http.ServerRespo
 export const LIVE_GLUE_WINDOW_MS = 120_000;
 const liveGlueSince = (): string => new Date(Date.now() - LIVE_GLUE_WINDOW_MS).toISOString();
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID = UUID_RE;
 
 // The seat a request's token names, and its person — the /seat/whoami posture:
 // no or unknown token → 401, a deactivated or missing person → 403, a database
@@ -451,17 +452,33 @@ async function handleSeatInboxPull(req: http.IncomingMessage, res: http.ServerRe
     // add-glue-seat records the seat on the person's host. If they ever
     // diverged, this inbox would come back empty and the runners would not skip
     // the person — so the two must move together.
+    // The timezone FIRST: it is the one read that fails the whole pull, and it
+    // must fail before either builder has counted a serve it will not deliver.
+    const tenant = await getTenant(seat.tenant_id);
     await touchSeatPull(seat.id);
     const scope = { onlyTechnicianId: seat.technician_id };
-    const [phone, notes, tenant] = await Promise.all([
+    // Each leg on its own: a builder counts its serves as it goes, so one leg
+    // failing must never throw away the other leg's already-counted items — ten
+    // such pulls would freeze rows that never left Render.
+    const [phone, notes] = await Promise.allSettled([
       buildNudgeDelivery(seat.host_id, {}, scope),
       buildOfficeDelivery(seat.host_id, {}, scope),
-      getTenant(seat.tenant_id),
     ]);
+    for (const leg of [phone, notes]) {
+      if (leg.status === 'rejected') console.error('[seat/inbox] one leg of the pull failed', leg.reason);
+    }
     const decode = (b64: string) => Buffer.from(b64, 'base64').toString('utf8');
     const items: SeatInboxItem[] = [
-      ...phone.nudges.map((n) => ({ id: n.id, leg: 'phone' as const, text: decode(n.directMessageB64) })),
-      ...notes.messages.map((m) => ({ id: m.id, leg: 'note' as const, text: decode(m.directMessageB64) })),
+      ...(phone.status === 'fulfilled' ? phone.value.nudges : []).map((n) => ({
+        id: n.id,
+        leg: 'phone' as const,
+        text: decode(n.directMessageB64),
+      })),
+      ...(notes.status === 'fulfilled' ? notes.value.messages : []).map((m) => ({
+        id: m.id,
+        leg: 'note' as const,
+        text: decode(m.directMessageB64),
+      })),
     ];
     json(200, {
       seat: { telegramUserId: person.telegram_user_id, timezone: tenant?.timezone ?? 'UTC' },
@@ -520,6 +537,9 @@ async function handleSeatInboxReport(
     }
     const detail = typeof b.detail === 'string' ? b.detail.slice(0, 300) : null;
     const { seat } = who;
+    // A report is proof of life too: one long pull (slow Telegram, many items)
+    // must not age the seat out and hand its person back to the runners mid-pull.
+    await touchSeatPull(seat.id);
     const scope = { onlyTechnicianId: seat.technician_id };
     const result =
       b.leg === 'phone'

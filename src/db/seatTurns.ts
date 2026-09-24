@@ -7,6 +7,16 @@ import { getClient } from './client.js';
 // ONLY — `src/db/` is an import leaf.
 
 export type SeatTurn = Database['public']['Tables']['seat_turns']['Row'];
+
+// How long a conversation is kept (operator, 2026-09-23): the lifecycle prune
+// AND the office's read both use this, so what the office may ask for is what
+// exists. Same fail-closed parse as the run records: a bad value keeps 90 days
+// rather than deleting everything.
+export const DEFAULT_SEAT_TURN_RETENTION_DAYS = 90;
+export function seatTurnRetentionDays(): number {
+  const raw = Number(process.env.SEAT_TURN_RETENTION_DAYS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SEAT_TURN_RETENTION_DAYS;
+}
 export type SeatTurnRole = 'person' | 'assistant' | 'tool';
 
 export interface SeatTurnInsert {
@@ -50,7 +60,10 @@ export async function insertSeatTurns(rows: SeatTurnInsert[]): Promise<number> {
 }
 
 // LIKE's own wildcards and escape, escaped: a query is words, never a pattern.
-const likeEscape = (s: string): string => s.replace(/[\\%_]/g, (c) => `\\${c}`);
+// PostgREST also reads `*` as `%`, and a `*` cannot be escaped through it, so
+// it becomes `_` (any ONE character): it still matches the literal `*`, and
+// never widens into "anything".
+const likeEscape = (s: string): string => s.replace(/[\\%_]/g, (c) => `\\${c}`).replace(/\*/g, '_');
 
 /**
  * One person's recent turns, newest first — the office's read. TENANT and

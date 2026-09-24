@@ -873,5 +873,40 @@ describe('Seat — the conversation for the office (step 3)', () => {
       ['person', '(photo)'],
     ]);
   });
-});
 
+  it('a long office question keeps the reply id at its end when it waits for the next message', async () => {
+    const t = office();
+    await t.seat.start();
+    await tick();
+    const id = OID(30);
+    const long = `OFFICE QUESTION (from the office record system, not a person): ${'x'.repeat(2000)} — reply via inform_team_lead and mention this id: ${id}`;
+    t.serve([{ id, leg: 'note', text: long }]);
+    await t.seat.pollInbox();
+    await t.seat.handleUpdate(upd({ text: 'ok' }));
+    expect(t.session().sends[0].prompt).toContain(`mention this id: ${id}`);
+  });
+
+  it('a reply ended by an error with no idle closes its open tool turns', async () => {
+    let settled = 0;
+    const t = office({
+      errorIdleWaitMs: 5,
+      transcript: {
+        person: () => {},
+        assistant: () => {},
+        toolStart: () => {},
+        toolDone: () => {},
+        settleOpenTools: () => {
+          settled += 1;
+        },
+        flush: async () => {},
+      },
+    });
+    await t.seat.start();
+    await tick();
+    await t.seat.handleUpdate(upd({ text: 'file it' }));
+    t.session().emit('session.error', { errorType: 'rate_limit', message: '429' });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(t.policy.isBusy).toBe(false);
+    expect(settled).toBe(1);
+  });
+});

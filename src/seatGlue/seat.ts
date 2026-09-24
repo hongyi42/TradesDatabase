@@ -28,8 +28,13 @@ export const TEXT = {
 
 /** Office items kept for the person's next message (oldest dropped past this). */
 export const PENDING_KEPT = 30;
-/** Each waiting item's text is cut here: the block rides every next message. */
-export const PENDING_TEXT_MAX = 1_000;
+/**
+ * Each waiting item's text is cut here: the block rides every next message.
+ * Sized to fit the LONGEST office message whole (a 2000-character body plus its
+ * framing and the reply id at the END), so a cut can never drop the id an office
+ * question tells the assistant to mention.
+ */
+export const PENDING_TEXT_MAX = 2_500;
 
 export interface SeatDeps {
   telegram: TelegramApi;
@@ -445,7 +450,9 @@ export class Seat {
         this.deps.onSeatChanged?.(4);
         return;
       }
-      if (got.seat.telegramUserId !== String(who.telegramUserId) || got.seat.timezone !== who.tz) {
+      // Compared as numbers: whoami parsed the same text with Number(), so an id
+      // too long for exact integers still compares equal to itself.
+      if (Number(got.seat.telegramUserId) !== who.telegramUserId || got.seat.timezone !== who.tz) {
         this.log('this seat changed on Render (Telegram account or timezone) — restarting to pick it up');
         this.deps.onSeatChanged?.(0);
         return;
@@ -631,6 +638,9 @@ export class Seat {
               this.log('no idle after the error — ending the reply');
               policy.finish();
               this.stopWorking();
+              // The reply is over without an idle: close its tool turns too, or
+              // the conversation upload waits on them for good.
+              this.deps.transcript?.settleOpenTools();
             }
           }, this.deps.errorIdleWaitMs ?? 5_000);
           timer.unref?.();

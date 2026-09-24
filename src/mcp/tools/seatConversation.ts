@@ -11,12 +11,11 @@
 // Snippets, never a transcript: a turn's text is cut to a short line, so the
 // office gets a table of contents it can quote from, not a dump of someone's
 // chat (the customer-context rule).
-import { getTechnician, searchSeatTurns } from '../../db/index.js';
+import { getTechnician, searchSeatTurns, seatTurnRetentionDays } from '../../db/index.js';
 import type { DomainTools, ToolContext } from './types.js';
 
 export const CONVERSATION_SNIPPET_MAX = 300;
 const DAYS_DEFAULT = 7;
-const DAYS_MAX = 90; // the retention window: nothing older exists
 const LIMIT_DEFAULT = 20;
 const LIMIT_MAX = 40;
 
@@ -46,7 +45,7 @@ const TEAM_LEAD_TOOLS = [
         },
         days: {
           type: 'number',
-          description: `How many days back to look — a count, never a date. Default ${DAYS_DEFAULT}, at most ${DAYS_MAX}.`,
+          description: `How many days back to look — a count, never a date. Default ${DAYS_DEFAULT}; nothing older than the retention window exists.`,
         },
         limit: {
           type: 'number',
@@ -73,7 +72,8 @@ async function handleReadConversation(toolCtx: ToolContext): Promise<unknown> {
   // Tenant-scoped: a ref from another firm resolves to nobody here.
   const person = await getTechnician(tenantId, ref);
   if (!person) throw new Error(`no team member "${ref}" in this firm — copy the ref exactly from THE TEAM`);
-  const days = clamp(args.days, DAYS_DEFAULT, DAYS_MAX);
+  // The retention window is the ceiling: nothing older exists (seatTurnRetentionDays).
+  const days = clamp(typeof args.days === 'string' ? Number(args.days) : args.days, DAYS_DEFAULT, seatTurnRetentionDays());
   const limit = clamp(args.limit, LIMIT_DEFAULT, LIMIT_MAX);
   const query = str('query')?.trim() || undefined;
   const rows = await searchSeatTurns({ tenantId, technicianId: person.id, query, days, limit });

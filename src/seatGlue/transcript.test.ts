@@ -127,5 +127,38 @@ describe('Transcript', () => {
     ]);
     expect(next.pending).toBe(0);
   });
+
+  it('caps what it records, and sizes each upload by bytes so no batch is refused as too large', async () => {
+    const s = server([200]);
+    const t = make(s.fetch);
+    t.person('é'.repeat(9_000), 's'); // 9000 characters, two bytes each
+    t.toolStart('c', 'record_field_note', { note: 'x'.repeat(5_000) }, 's');
+    t.toolDone('c', true);
+    for (let i = 0; i < 60; i++) t.person('ü'.repeat(7_000), 's');
+    await t.flush();
+    const first = s.posts[0];
+    expect(Array.from(first[0].text!)).toHaveLength(8_000);
+    expect(first[1].args).toEqual({ truncated: true });
+    for (const batch of s.posts) {
+      expect(Buffer.byteLength(JSON.stringify({ turns: batch }))).toBeLessThan(256 * 1024);
+    }
+    expect(s.posts.flat()).toHaveLength(62);
+    expect(t.pending).toBe(0);
+  });
+
+  it('a single turn Render refuses as too large is dropped, never retried forever', async () => {
+    const t = make(server([413]).fetch);
+    t.person('one', 's');
+    await t.flush();
+    expect(t.pending).toBe(0);
+  });
+
+  it('a multi-turn batch refused as too large is kept (the byte sizing prevents it)', async () => {
+    const t = make(server([413]).fetch);
+    t.person('one', 's');
+    t.person('two', 's');
+    await t.flush();
+    expect(t.pending).toBe(2);
+  });
 });
 

@@ -36,6 +36,11 @@ export interface TurnRecord {
 export const OUTBOX_KEPT = 2_000;
 /** Render takes at most this many turns per upload. */
 export const UPLOAD_BATCH = 200;
+/** …and at most 256 KiB per upload: batches stay under this, with room to spare. */
+export const UPLOAD_MAX_BYTES = 200 * 1024;
+/** Render's own caps (httpServer.ts), applied here too so no turn can outgrow a batch. */
+export const TURN_TEXT_MAX = 8_000;
+export const TURN_ARGS_MAX = 4_000;
 const FILE = 'transcript-outbox.json';
 
 export interface TranscriptConfig {
@@ -92,15 +97,16 @@ export class Transcript {
   }
 
   person(text: string, sessionId: string | null): void {
-    this.add({ role: 'person', text }, sessionId);
+    this.add({ role: 'person', text: capText(text, TURN_TEXT_MAX) }, sessionId);
   }
 
   assistant(text: string, sessionId: string | null): void {
-    this.add({ role: 'assistant', text }, sessionId);
+    this.add({ role: 'assistant', text: capText(text, TURN_TEXT_MAX) }, sessionId);
   }
 
   toolStart(callId: string, tool: string, args: unknown, sessionId: string | null): void {
-    const turn = this.add({ role: 'tool', tool, ...(args === undefined ? {} : { args }) }, sessionId);
+    const capped = args === undefined ? undefined : capArgs(args);
+    const turn = this.add({ role: 'tool', tool: capText(tool, 200), ...(capped === undefined ? {} : { args: capped }) }, sessionId);
     this.toolTurns.set(callId, turn);
   }
 
@@ -139,7 +145,7 @@ export class Transcript {
     for (;;) {
       const running = this.queue.findIndex((t) => t.role === 'tool' && t.ok === undefined);
       const ready = running === -1 ? this.queue : this.queue.slice(0, running);
-      const batch = ready.slice(0, UPLOAD_BATCH);
+      const batch = sizedBatch(ready);
       if (!batch.length) return;
       try {
         const res = await this.fetchFn(new URL('/seat/conversation', this.cfg.spineUrl).toString(), {
@@ -148,7 +154,11 @@ export class Transcript {
           body: JSON.stringify({ turns: batch }),
           signal: AbortSignal.timeout(30_000),
         });
-        if (!res.ok) {
+        if (res.status === 413 && batch.length === 1) {
+          // Cannot happen with the caps above; if it ever does, one turn must not
+          // block every turn after it for good.
+          this.log('one conversation turn is too large to upload — dropped');
+        } else if (!res.ok) {
           this.log(`conversation upload refused (HTTP ${res.status}) — kept for the next try`);
           return;
         }
@@ -197,4 +207,34 @@ export class Transcript {
   saved(): Promise<void> {
     return this.writeChain;
   }
+}
+
+// Whole characters, like Render's own cut: never half an emoji.
+function capText(s: string, max: number): string {
+  const chars = Array.from(s);
+  return chars.length <= max ? s : chars.slice(0, max).join('');
+}
+
+// Arguments past Render's cap are stored as { truncated: true } there anyway.
+function capArgs(args: unknown): unknown {
+  try {
+    return JSON.stringify(args).length <= TURN_ARGS_MAX ? args : { truncated: true };
+  } catch {
+    return { truncated: true };
+  }
+}
+
+// The leading turns that fit one upload: at most UPLOAD_BATCH of them and
+// UPLOAD_MAX_BYTES of JSON — always at least one, so a queue can never stall.
+function sizedBatch(ready: TurnRecord[]): TurnRecord[] {
+  const out: TurnRecord[] = [];
+  let bytes = 0;
+  for (const t of ready) {
+    if (out.length >= UPLOAD_BATCH) break;
+    const size = Buffer.byteLength(JSON.stringify(t)) + 1;
+    if (out.length && bytes + size > UPLOAD_MAX_BYTES) break;
+    out.push(t);
+    bytes += size;
+  }
+  return out;
 }

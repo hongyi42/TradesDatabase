@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { resolveIdentity, resolveIdentityFromHeaders, seatTokenOf } from './identity.js';
 
@@ -102,6 +102,10 @@ describe('resolveIdentity', () => {
     expect(seatTokenOf({ authorization: `Bearer ${TOKEN}` })).toBe(TOKEN);
     expect(seatTokenOf({ authorization: 'Bearer some-badge' })).toBeNull();
     expect(seatTokenOf({ authorization: `Bearer st_short` })).toBeNull();
+    // Minted lowercase and hashed as sent: an upper-cased token could never
+    // match, so it is not a seat token at all (falls to HMAC, which refuses it).
+    expect(seatTokenOf({ authorization: `Bearer ${TOKEN.toUpperCase()}` })).toBeNull();
+    expect(seatTokenOf({ authorization: `bearer ${TOKEN}` })).toBe(TOKEN);
     expect(seatTokenOf({})).toBeNull();
   });
 
@@ -109,5 +113,21 @@ describe('resolveIdentity', () => {
     await expect(
       resolveIdentity({ ...headers(), authorization: `Bearer ${TOKEN}` }),
     ).rejects.toThrow(/unknown seat token/);
+  });
+});
+
+describe('resolveIdentity when the seat lookup itself fails', () => {
+  test('is marked IDENTITY_UNAVAILABLE (HTTP 503, "retry"), not an unknown token (401)', async () => {
+    vi.resetModules();
+    vi.doMock('../db/index.js', () => ({
+      getSeatIdentityByTokenHash: async () => {
+        throw new Error('getSeatIdentityByTokenHash failed: connection reset');
+      },
+    }));
+    const { resolveIdentity: fresh } = await import('./identity.js');
+    await expect(fresh({ authorization: `Bearer st_${'ab'.repeat(32)}` })).rejects.toMatchObject({
+      code: 'IDENTITY_UNAVAILABLE',
+    });
+    vi.doUnmock('../db/index.js');
   });
 });

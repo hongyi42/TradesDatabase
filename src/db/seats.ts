@@ -73,6 +73,21 @@ export async function getSeatBotUsername(seat: Seat): Promise<string | null> {
   return (await getPoolRowByTechnician(seat.technician_id))?.bot_username ?? null;
 }
 
+// Retire the live seat a box knows by this ref — its token dies and its person
+// and bot are freed. Called when the box reports the pool sandbox behind that
+// ref destroyed (a completed recycle): a seat pointing at a destroyed sandbox
+// would otherwise be "recovered" by the next bind_telegram of that person and
+// put them on a ref the pool has since handed to someone else. Idempotent.
+export async function retireSeatByHostRef(hostId: string, seatRef: string): Promise<void> {
+  const { error } = await getClient()
+    .from('seats')
+    .update({ retired_at: new Date().toISOString() })
+    .eq('host_id', hostId)
+    .eq('seat_ref', seatRef)
+    .is('retired_at', null);
+  if (error) throw new Error(`retireSeatByHostRef failed: ${error.message}`);
+}
+
 // Store a freshly minted token's fingerprint. Overwrites any previous one: that
 // IS rotation — the old token stops resolving on its very next request.
 export async function mintSeatToken(seatId: string, tokenHash: string): Promise<Seat> {
@@ -157,8 +172,8 @@ export async function listSeatBotHandles(tenantId: string): Promise<Map<string, 
   return out;
 }
 
-// The seat bots' half of the Mini App allowlist (listLiveBotIds unions it with
-// the pool's). SCHEMA-BEHIND-CODE is a normal deploy order: until this table is
+// The seat bots' half of the Mini App allowlist (src/telegram/botIds.ts unions
+// it with the pool's listLiveBotIds). SCHEMA-BEHIND-CODE is a normal deploy order: until this table is
 // migrated in, it contributes nothing — it must never throw the whole union and
 // leave every assistant launch refused once the stale list ages out.
 export async function listLiveSeatBotIds(): Promise<string[]> {
@@ -206,6 +221,25 @@ export async function registerSeatBot(input: {
 }): Promise<SeatBot> {
   if (input.botId !== null && !/^[0-9]{1,20}$/.test(input.botId)) {
     throw new Error('registerSeatBot: botId must be the numeric id, not the token');
+  }
+  // A bot an OpenClaw pool sandbox still answers must never become a seat bot:
+  // the next glue bind would put a second person on it (Telegram allows ONE
+  // poller per bot). Matched by id, or by handle CASE-INSENSITIVELY (Telegram
+  // handles are; pool rows were typed by hand). Compared here rather than in a
+  // PostgREST filter string, so no value is ever spliced into a query.
+  const { data: pool, error: poolError } = await getClient()
+    .from('sandbox_pool')
+    .select('sandbox_ref, bot_id, bot_username')
+    .is('retired_at', null);
+  if (poolError) throw new Error(`registerSeatBot failed: ${poolError.message}`);
+  const handle = input.botUsername.toLowerCase();
+  const owner = (pool ?? []).find(
+    (r) => (input.botId !== null && r.bot_id === input.botId) || r.bot_username?.toLowerCase() === handle,
+  );
+  if (owner) {
+    throw new Error(
+      `registerSeatBot: ${input.botUsername} is pool sandbox ${owner.sandbox_ref}'s bot — a seat bot needs a bot of its own`,
+    );
   }
   const { data, error } = await getClient()
     .from('seat_bots')

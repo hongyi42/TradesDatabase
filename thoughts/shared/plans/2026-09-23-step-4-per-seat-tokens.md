@@ -2,7 +2,7 @@
 date: 2026-09-23
 task: Step 4 (4a + 4b) — per-seat tokens replace the glue's shared secret; a glue seat exists without the sandbox pool
 research: thoughts/shared/research/2026-09-23-step-4-seat-identity-doorman-badges-sandbox-pool.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -51,6 +51,9 @@ the pool keep serving s1-s4 untouched; their removal moves into step 5 (operator
 - **Foreign keys cascade** (review 5, 14, 15): `seats` → tenants/technicians/hosts and `seat_bots`
   → hosts `on delete cascade`; `seats.bot_ref` → `seat_bots` `on delete set null`, so existing test
   cleanups and the eval resets keep working.
+- **A running glue learns of a deactivation/rebind only on restart** (operator, final review
+  2026-09-23): Render cannot call the box, so the fix rides STEP 3's pull ("your seat changed" in
+  the office/nudge answer). Rejected: a polling timer in the glue now; an open long-lived line.
 - **Named holes** (accepted, build fast): a glue seat gets no nudges/office notes until step 3
   (same as s5 today; items report `failed`); deactivating a glue seat keeps its bot (bot recovery
   decided with the bot model in step 5); a manager bound onto a glue seat runs technician doctrine
@@ -251,13 +254,13 @@ bad zone, fetch injected); every test building a `SeatConfig`/`seatDeps` updated
 ### Live verification (agent-executable)
 - Prerequisites: Render MCP; `ssh tradesbox` (check `who` for other operators before `sudo`);
   Phase 1 applied on the pilot and s5's row created.
-- [ ] merge, deploy the web service (autoDeploy is off); `/health` `commit` = the merge commit
-- [ ] `stage.sh`, copy, `sudo bash install.sh s5`; `sudo grep -c GATEWAY_IDENTITY_SECRET
+- [x] merge, deploy the web service (autoDeploy is off); `/health` `commit` = the merge commit
+- [x] `stage.sh`, copy, `sudo bash install.sh s5`; `sudo grep -c GATEWAY_IDENTITY_SECRET
   /etc/seat-glue/s5.env` → 0; journal `seat-glue: s5 polling Telegram (…, tz America/Los_Angeles)`
-- [ ] pilot: `select token_minted_at from seats where seat_ref='s5'` → just now
+- [x] pilot: `select token_minted_at from seats where seat_ref='s5'` → just now
 
 ### Manual verification
-- [ ] operator asks Ben's bot "what's on my schedule tomorrow?"; the reply names real visits;
+- [x] operator asks Ben's bot "what's on my schedule tomorrow?"; the reply names real visits;
   Render logs show the spine call as `ben-shelton`
 
 ---
@@ -293,12 +296,12 @@ from env, `getMe` (reuse `wire-bot`'s :276-300), `registerSeatBot`; prints the h
 token goes on the box (`/root/bots/<handle>.env`, 0600 root).
 
 ### Automated verification
-- [ ] gates pass
-- [ ] `src/mcp/server.test.ts` (bind_telegram, `tg-host` fixtures :2027-2496): existing cases
+- [x] gates pass
+- [x] `src/mcp/server.test.ts` (bind_telegram, `tg-host` fixtures :2027-2496): existing cases
   unchanged (`tg-a` legacy, `rcy-s2` recycle); free seat bot → `g_…` seat + mirror; two binds on one
   bot → second takes the next bot or the pool; half-written glue seat reused; no bots → pool path
-- [ ] `list_team` shows the seat bot handle; `botIds` admits a seat bot id
-- [ ] `badgeFile.test.ts`: a pool-less glue seat ships nothing; a glue seat with a pool row (s5)
+- [x] `list_team` shows the seat bot handle; `botIds` admits a seat bot id
+- [x] `badgeFile.test.ts`: a pool-less glue seat ships nothing; a glue seat with a pool row (s5)
   still ships its badge and binding
 
 ---

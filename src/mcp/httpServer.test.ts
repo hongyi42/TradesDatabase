@@ -287,32 +287,41 @@ describe('POST /control/sandboxes (recycle-completion report)', () => {
     const old = await registerSandbox({
       tenantId,
       hostId: host,
-      sandboxRef: 'rep-s4',
+      sandboxRef: 'rep_s4',
       botUsername: '@reps4_bot',
     });
     await claimSandbox(old.id, tech.id);
-    await updateTechnician(tech.id, { sandbox_ref: 'rep-s4', host_id: host });
+    await updateTechnician(tech.id, { sandbox_ref: 'rep_s4', host_id: host });
+    // This person was also moved to the seat glue (step 4) on that same sandbox.
+    await createSeat({ tenantId, technicianId: tech.id, hostId: host, seatRef: 'rep_s4', botRef: null });
     await requestSandboxRetirement(tech.id);
 
     // GET serves the retirement until the box reports completion.
-    expect((await pull()).retirements).toContainEqual({ sandboxRef: 'rep-s4' });
+    expect((await pull()).retirements).toContainEqual({ sandboxRef: 'rep_s4' });
 
     const done = await report({
-      retiredSandboxRef: 'rep-s4',
+      retiredSandboxRef: 'rep_s4',
       newSandboxRef: 'rep-s5',
       botUsername: '@reps4_bot',
     });
     expect(done.status).toBe(200);
     expect(await done.json()).toEqual({ retired: true, registered: true, rosterCleared: true });
+    // The glue seat on the destroyed sandbox dies with it — a later bind must
+    // never "recover" a ref the pool has just handed to someone else.
+    const liveSeat = await pg.query(
+      'select count(*)::int as n from seats where technician_id = $1 and retired_at is null',
+      [tech.id],
+    );
+    expect(liveSeat.rows[0].n).toBe(0);
 
     // GET no longer serves it; the blank is a FREE pool row; the destroyed row
     // released its claim; the roster no longer points at the dead sandbox.
-    expect((await pull()).retirements).not.toContainEqual({ sandboxRef: 'rep-s4' });
+    expect((await pull()).retirements).not.toContainEqual({ sandboxRef: 'rep_s4' });
     const rows = await pg.query(
-      "select sandbox_ref, technician_id, retired_at, retired_technician_id, bot_username from sandbox_pool where sandbox_ref in ('rep-s4','rep-s5') order by sandbox_ref",
+      "select sandbox_ref, technician_id, retired_at, retired_technician_id, bot_username from sandbox_pool where sandbox_ref in ('rep_s4','rep-s5') order by sandbox_ref",
     );
     expect(rows.rows[0]).toMatchObject({
-      sandbox_ref: 'rep-s4',
+      sandbox_ref: 'rep_s4',
       technician_id: null,
       retired_technician_id: tech.id,
     });
@@ -328,7 +337,7 @@ describe('POST /control/sandboxes (recycle-completion report)', () => {
 
     // Retry (box lost the 200): idempotent, still 200-shaped, no second blank.
     const retry = await report({
-      retiredSandboxRef: 'rep-s4',
+      retiredSandboxRef: 'rep_s4',
       newSandboxRef: 'rep-s5',
       botUsername: '@reps4_bot',
     });

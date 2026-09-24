@@ -68,7 +68,7 @@ export function resolveIdentityFromHeaders(
 
 // The seat-token prefix: what makes a bearer a SEAT token rather than anything
 // else a caller might send (src/control/badges.ts newSeatToken).
-const SEAT_BEARER = /^Bearer\s+(st_[0-9a-f]{64})$/i;
+const SEAT_BEARER = /^[Bb]earer\s+(st_[0-9a-f]{64})$/;
 
 // The seat token proven by a request, or null when it carries none.
 export function seatTokenOf(headers: NodeJS.Dict<string | string[]>): string | null {
@@ -88,7 +88,15 @@ export async function resolveIdentity(
 ): Promise<RequestIdentity> {
   const token = seatTokenOf(headers);
   if (!token) return resolveIdentityFromHeaders(headers);
-  const found = await getSeatIdentityByTokenHash(sha256hex(token));
+  let found;
+  try {
+    found = await getSeatIdentityByTokenHash(sha256hex(token));
+  } catch (err) {
+    // Our outage, not the caller's fault: marked so the HTTP layer answers 503.
+    throw Object.assign(new Error(`seat token lookup failed: ${err instanceof Error ? err.message : String(err)}`), {
+      code: 'IDENTITY_UNAVAILABLE',
+    });
+  }
   if (!found) throw new Error('unknown seat token');
   return {
     tenantId: found.seat.tenant_id,

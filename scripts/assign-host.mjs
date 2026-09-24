@@ -75,6 +75,12 @@
 //         it records a fact, never invents an assignment. No bot is linked — the
 //         seat's bot stays on its pool row. New hires get glue seats through
 //         bind_telegram instead.
+//   SANDBOX_BOT_TOKEN=<token> scripts/assign-host.mjs register-bot host=<h> [tenant=<uuid>]
+//       → A BOT FOR GLUE SEATS (step 4). Asks Telegram who the bot is (getMe) and
+//         records it in seat_bots on that host — for one firm with tenant=, for
+//         any firm without. bind_telegram gives the next new hire with no seat a
+//         glue seat on it. The token is read from the environment and stored
+//         nowhere here: put it on the box at /root/bots/<handle>.env yourself.
 //   scripts/assign-host.mjs rotate-badge ref=<ref> [tenant=<uuid>]
 //       → THE leaked-badge procedure: clears the fingerprint, so the next pull
 //         drops the old badge (403 within one poll) and mints a replacement.
@@ -87,6 +93,7 @@ import {
   createHost,
   createSeat,
   getSeatByTechnician,
+  registerSeatBot,
   findTechnicianByTelegramUserId,
   getHostByName,
   getTechnician,
@@ -122,6 +129,7 @@ const KNOWN_KEYS = {
   'set-badge': ['ref', 'hash', 'tenant'],
   'rotate-badge': ['ref', 'tenant'],
   'add-glue-seat': ['ref', 'host', 'seat', 'tenant'],
+  'register-bot': ['host', 'tenant'],
 };
 if (!command || !(command in KNOWN_KEYS)) {
   console.error(
@@ -131,7 +139,7 @@ if (!command || !(command in KNOWN_KEYS)) {
       `| bind-telegram ref=<r> telegramUserId=<numeric> ` +
       `| claim-sandbox host=<h> sandbox=<s> tech=<r> ` +
       `| set-badge ref=<r> hash=<sha256> ` +
-      `| rotate-badge ref=<r> | add-glue-seat ref=<r> host=<h> seat=<s>   (each: [tenant=<uuid>])`,
+      `| rotate-badge ref=<r> | add-glue-seat ref=<r> host=<h> seat=<s> | register-bot host=<h>   (each: [tenant=<uuid>])`,
   );
   process.exit(1);
 }
@@ -493,6 +501,47 @@ if (command === 'create-host') {
     `Recorded bot id ${args.id}${botUsername ? ` (${botUsername})` : ''} for sandbox ` +
       `'${args.sandbox}' on ${host.name}: launches from it now verify. The menu button is ` +
       `the box script's job — this command holds no token.`,
+  );
+} else if (command === 'register-bot') {
+  // A bot for GLUE seats (step 4): bind_telegram gives the next new hire of
+  // this firm (or of any firm, without tenant=) a glue seat on it. Same token
+  // rule as wire-bot: read from the environment, asked of Telegram, never stored.
+  const token = process.env.SANDBOX_BOT_TOKEN;
+  if (!token) {
+    console.error('register-bot needs the bot token in SANDBOX_BOT_TOKEN (never as an argument).');
+    process.exit(1);
+  }
+  if (!args.host) {
+    console.error('register-bot requires host=<host-name> [tenant=<uuid>].');
+    process.exit(1);
+  }
+  if (args.tenant && !/^[0-9a-f-]{36}$/.test(args.tenant)) {
+    console.error('tenant= must be a tenant uuid.');
+    process.exit(1);
+  }
+  const host = await getHostByName(args.host);
+  if (!host) {
+    console.error(`Host '${args.host}' not found.`);
+    process.exit(1);
+  }
+  const meResp = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+  const me = await meResp.json().catch(() => null);
+  if (!me?.ok) {
+    console.error(`getMe failed: ${me?.description ?? `HTTP ${meResp.status}`}. Wrong token?`);
+    process.exit(1);
+  }
+  const handle = `@${me.result.username}`;
+  const bot = await registerSeatBot({
+    hostId: host.id,
+    tenantId: args.tenant || null,
+    botId: String(me.result.id),
+    botUsername: handle,
+  });
+  console.log(
+    `Registered seat bot ${bot.bot_username} (id ${bot.bot_id}) on ${host.name}` +
+      `${bot.tenant_id ? ` for tenant ${bot.tenant_id}` : ' for any firm'}. ` +
+      `Now put its token on the box: /root/bots/${me.result.username}.env ` +
+      `(TELEGRAM_BOT_TOKEN=..., root, 0600). The next bind_telegram claims it.`,
   );
 } else {
   const tenantId = args.tenant || '82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18'; // Default Tenant (test)

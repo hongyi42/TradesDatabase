@@ -251,13 +251,13 @@ bad zone, fetch injected); every test building a `SeatConfig`/`seatDeps` updated
 ### Live verification (agent-executable)
 - Prerequisites: Render MCP; `ssh tradesbox` (check `who` for other operators before `sudo`);
   Phase 1 applied on the pilot and s5's row created.
-- [ ] merge, deploy the web service (autoDeploy is off); `/health` `commit` = the merge commit
-- [ ] `stage.sh`, copy, `sudo bash install.sh s5`; `sudo grep -c GATEWAY_IDENTITY_SECRET
+- [x] merge, deploy the web service (autoDeploy is off); `/health` `commit` = the merge commit
+- [x] `stage.sh`, copy, `sudo bash install.sh s5`; `sudo grep -c GATEWAY_IDENTITY_SECRET
   /etc/seat-glue/s5.env` → 0; journal `seat-glue: s5 polling Telegram (…, tz America/Los_Angeles)`
-- [ ] pilot: `select token_minted_at from seats where seat_ref='s5'` → just now
+- [x] pilot: `select token_minted_at from seats where seat_ref='s5'` → just now
 
 ### Manual verification
-- [ ] operator asks Ben's bot "what's on my schedule tomorrow?"; the reply names real visits;
+- [x] operator asks Ben's bot "what's on my schedule tomorrow?"; the reply names real visits;
   Render logs show the spine call as `ben-shelton`
 
 ---

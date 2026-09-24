@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 289 documents · 275 live · 14 superseded.
+Regenerate with `npm run decisions:index`. 290 documents · 276 live · 14 superseded.
 
 ## Superseded — do not build on these
 
@@ -94,6 +94,7 @@ Regenerate with `npm run decisions:index`. 289 documents · 275 live · 14 super
 - `2026-09-14` `research` [2026-09-14-customer-context-becomes-a-table-of-contents](shared/research/2026-09-14-customer-context-becomes-a-table-of-contents.md) `landed` `describes 4 deleted files` `drift 73` — Customer context becomes a table of contents + search — how a customer's record reaches a model today, what r…
 - `2026-09-14` `research` [2026-09-14-the-task-board-is-the-operators](shared/research/2026-09-14-the-task-board-is-the-operators.md) `landed` — The task board is the operator's — every place that teaches a session to park, what parking does mechanically…
 - `2026-09-12` `finding` [2026-09-12-an-ambiguous-non-commitment-reply-is-inv](shared/findings/2026-09-12-an-ambiguous-non-commitment-reply-is-inv.md) — an ambiguous non-commitment reply is invisible to the gap-closing evidence reader, so a scheduling gap can st…
+- `2026-09-12` `finding` [2026-09-12-rung-10c-a-seat-s-inform-wakes-the-plann](shared/findings/2026-09-12-rung-10c-a-seat-s-inform-wakes-the-plann.md) `drift 22` — rung 10c: a seat's inform wakes the planner — office messages need their own claim column
 - `2026-09-12` `finding` [2026-09-12-the-model-names-the-job-on-the-ambiguous](shared/findings/2026-09-12-the-model-names-the-job-on-the-ambiguous.md) `describes 1 deleted file` `drift 19` — the model names the job: on the ambiguous branch a chooser picks one of the customer's jobs, or says none, an…
 - `2026-09-11` `finding` [2026-09-11-a-session-that-enters-a-worktree-writes](shared/findings/2026-09-11-a-session-that-enters-a-worktree-writes.md) — a session that enters a worktree writes its transcript under the MAIN checkout's project folder
 - `2026-09-11` `finding` [2026-09-11-four-concurrent-supabase-stacks-do-not-f](shared/findings/2026-09-11-four-concurrent-supabase-stacks-do-not-f.md) — four concurrent Supabase stacks do not fit in the Docker VM, and the suite stops being a signal

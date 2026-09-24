@@ -702,7 +702,136 @@ describe('the guards round-2 review found untested', () => {
     expect(result).toBe('ignored');
     expect(called).toBe(false);
   });
-
-
-
 });
+
+// STEP 3 (plan 2026-09-23-step-3-office-reaches-glue-seats): a glue seat pulls
+// ONE person's rows with its seat token; the box's runners pull everyone on the
+// host except people whose glue is live. Same serve semantics either way.
+describe('queue scope (step 3)', () => {
+  test('the scope reaches all three legs of the pull', async () => {
+    const seen: unknown[] = [];
+    const scope = { onlyTechnicianId: 'tech-1' };
+    await buildNudgeDelivery(
+      'host-1',
+      {
+        ...baseDeps(),
+        listQueued: async (hostId, sc) => {
+          seen.push(['nudges', hostId, sc]);
+          return [];
+        },
+        listQueuedChat: async (hostId, via, sc) => {
+          seen.push(['chat', hostId, via, sc]);
+          return [];
+        },
+        listQueuedPush: async (hostId, sc) => {
+          seen.push(['push', hostId, sc]);
+          return [];
+        },
+      },
+      scope,
+    );
+    expect(seen).toEqual([
+      ['nudges', 'host-1', scope],
+      ['chat', 'host-1', 'chat', scope],
+      ['push', 'host-1', scope],
+    ]);
+  });
+
+  test('no scope = the whole host, exactly as before', async () => {
+    const seen: unknown[] = [];
+    await buildNudgeDelivery('host-1', {
+      ...baseDeps(),
+      listQueued: async (_h, sc) => {
+        seen.push(sc);
+        return [];
+      },
+    });
+    expect(seen).toEqual([{}]);
+  });
+
+  const other = { onlyTechnicianId: 'tech-OTHER' };
+
+  test("a seat's report on ANOTHER person's nudge is ignored and moves nothing", async () => {
+    let moved = false;
+    const deps = {
+      ...baseDeps(),
+      asked: async () => {
+        moved = true;
+        return [];
+      },
+      attempts: async () => {
+        moved = true;
+        return null;
+      },
+    };
+    expect(await completeNudgeDelivery('host-1', 'n1', 'delivered', null, deps, other)).toBe('ignored');
+    expect(await completeNudgeDelivery('host-1', 'n1', 'failed', 'x', deps, other)).toBe('ignored');
+    expect(moved).toBe(false);
+    // Its own person's row still settles.
+    expect(
+      await completeNudgeDelivery('host-1', 'n1', 'delivered', null, baseDeps(), {
+        onlyTechnicianId: 'tech-1',
+      }),
+    ).toBe('asked');
+  });
+
+  test("a seat's report on another person's push or chat row is ignored", async () => {
+    let moved = false;
+    const mark = async () => {
+      moved = true;
+      return null;
+    };
+    const push = await completeNudgeDelivery(
+      'host-1',
+      'push-1',
+      'delivered',
+      null,
+      {
+        ...baseDeps(),
+        getQueued: async () => null,
+        getQueuedPush: async () => pushRow({ technician_id: 'tech-1' }),
+        pushDelivered: mark as never,
+      },
+      other,
+    );
+    const chat = await completeNudgeDelivery(
+      'host-1',
+      'msg-1',
+      'delivered',
+      null,
+      {
+        ...baseDeps(),
+        getQueued: async () => null,
+        getQueuedPush: async () => null,
+        getQueuedChat: async () => chatRow({ technician_id: 'tech-1' }),
+        chatDelivery: mark as never,
+      },
+      other,
+    );
+    expect([push, chat]).toEqual(['ignored', 'ignored']);
+    expect(moved).toBe(false);
+  });
+
+  test("a closed lead's survivors belonging to another person are not moved", async () => {
+    let moved = false;
+    const result = await completeNudgeDelivery(
+      'host-1',
+      'lead-gone',
+      'delivered',
+      null,
+      {
+        ...baseDeps(),
+        getQueued: async () => null,
+        groupMembers: async () => [queuedRow({ id: 'survivor', ask_group_id: 'lead-gone' })],
+        asked: async () => {
+          moved = true;
+          return [];
+        },
+      },
+      other,
+    );
+    expect(result).toBe('ignored');
+    expect(moved).toBe(false);
+  });
+});
+

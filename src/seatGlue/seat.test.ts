@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CostLog, type CallRef } from './costLog.js';
 import type { BlobAttachment, EngineEvent, EngineSession, SeatHooks } from './engine.js';
+import { InboxRefused, type InboxItem, type InboxResult } from './inbox.js';
 import { Seat, TEXT, type SeatDeps } from './seat.js';
 import type { SeatState } from './state.js';
 import { TelegramConflictError, type ButtonRow, type TelegramApi, type TgMessage, type TgUpdate } from './telegram.js';
@@ -1019,3 +1020,377 @@ describe('Seat — a reply while a prompt waits (final review, operator 2026-09-
     expect(t.session().sends.at(-1)?.prompt).toBe('the furnace one');
   });
 });
+
+// ── STEP 3: the office's items (plan 2026-09-23-step-3-office-reaches-glue-seats) ──
+
+const TZ = 'America/Vancouver';
+const OID = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+
+class FlakyTelegram extends FakeTelegram {
+  failNext = 0;
+  async send(chat: number, text: string): Promise<void> {
+    if (this.failNext > 0) {
+      this.failNext -= 1;
+      throw new Error('telegram: sendMessage failed (HTTP 400)');
+    }
+    return super.send(chat, text);
+  }
+}
+
+function office(over: Partial<SeatDeps> = {}) {
+  let next: InboxResult | Error = { seat: { telegramUserId: String(BEN), timezone: TZ, shareConversation: true }, items: [] };
+  const reports: Array<{ id: string; leg: string; outcome: string; detail?: string }> = [];
+  const changed: number[] = [];
+  const telegram = new FlakyTelegram();
+  let stored: SeatState = { sessionId: null, offset: 0 };
+  const t = setup({
+    telegram,
+    inbox: {
+      fetch: async () => {
+        if (next instanceof Error) throw next;
+        return next;
+      },
+      report: async (r) => void reports.push(r),
+    },
+    who: { telegramUserId: BEN, tz: TZ, shareConversation: true },
+    onSeatChanged: (c) => void changed.push(c),
+    pollInboxMs: 3_600_000,
+    readState: async () => stored,
+    writeState: async (st) => {
+      stored = JSON.parse(JSON.stringify(st)) as SeatState;
+    },
+    ...over,
+  });
+  const serve = (
+    items: InboxItem[],
+    seat: Partial<InboxResult['seat']> = {},
+  ) => {
+    next = { seat: { telegramUserId: String(BEN), timezone: TZ, shareConversation: true, ...seat }, items };
+  };
+  const refuse = (e: Error) => {
+    next = e;
+  };
+  return { ...t, telegram, reports, changed, serve, refuse, stored: () => stored };
+}
+
+const phone = (n: number, text: string): InboxItem => ({ id: OID(n), leg: 'phone', text });
+const note = (n: number, text: string): InboxItem => ({ id: OID(n), leg: 'note', text });
+
+describe('Seat — office items (step 3)', () => {
+  it('texts a phone item once, reports it delivered, and re-acks a second serve without re-sending', async () => {
+    const t = office();
+    await t.seat.start();
+    await tick();
+    t.serve([phone(1, 'How did the Smith visit go?')]);
+    await t.seat.pollInbox();
+    await t.seat.pollInbox(); // Render re-served it: the report was lost
+    expect(t.telegram.sent.filter((x) => x === 'How did the Smith visit go?')).toHaveLength(1);
+    expect(t.reports).toEqual([
+      { id: OID(1), leg: 'phone', outcome: 'delivered' },
+      { id: OID(1), leg: 'phone', outcome: 'delivered' },
+    ]);
+    expect(t.stored().handledIds).toEqual([OID(1)]);
+  });
+
+  it('a note is never texted and never starts a model turn', async () => {
+    const t = office();
+    await t.seat.start();
+    await tick();
+    t.serve([note(2, 'OFFICE NOTE (from the office record system, not a person): the Smith job is open')]);
+    await t.seat.pollInbox();
+    expect(t.telegram.sent).toEqual([TEXT.disclosure]);
+    expect(t.session().sends).toEqual([]);
+    expect(t.reports).toEqual([{ id: OID(2), leg: 'note', outcome: 'delivered' }]);
+  });
+
+  it("the person's next message carries both items on top, once, and the list empties", async () => {
+    const t = office();
+    await t.seat.start();
+    await tick();
+    t.serve([phone(3, 'What did the parts cost?'), note(4, 'OFFICE NOTE (…): Smith is open to them')]);
+    await t.seat.pollInbox();
+    await t.seat.handleUpdate(upd({ text: 'about two hundred' }));
+    const sent = t.session().sends[0].prompt;
+    expect(sent.startsWith('[Since your person last wrote — for you, not from them]')).toBe(true);
+    expect(sent).toMatch(/- You texted them \(\d\d:\d\d\): "What did the parts cost\?"/);
+    expect(sent).toContain('- OFFICE NOTE (…): Smith is open to them');
+    expect(sent.endsWith('[Their message]\nabout two hundred')).toBe(true);
+    expect(t.stored().pending).toEqual([]);
+    await t.seat.handleUpdate(upd({ text: 'thanks' }));
+    expect(t.session().sends.at(-1)?.prompt).toBe('thanks');
+  });
+
+  it('the texted time is firm-local, never UTC', async () => {
+    const t = office();
+    await t.seat.start();
+    await tick();
+    t.serve([phone(5, 'x')]);
+    await t.seat.pollInbox();
+    const at = t.stored().pending?.[0].at as string;
+    const local = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(at));
+    await t.seat.handleUpdate(upd({ text: 'ok' }));
+    expect(t.session().sends[0].prompt).toContain(`You texted them (${local})`);
+  });
+
+  it('a text Telegram rejects is reported failed and never waits for the next message', async () => {
+    const t = office();
+    await t.seat.start();
+    await tick();
+    t.telegram.failNext = 1;
+    t.serve([phone(6, 'How did it go?')]);
+    await t.seat.pollInbox();
+    expect(t.reports).toEqual([{ id: OID(6), leg: 'phone', outcome: 'failed', detail: 'telegram send failed' }]);
+    expect(t.stored().pending ?? []).toEqual([]);
+    expect(t.stored().handledIds ?? []).toEqual([]);
+  });
+
+  it('items stay waiting when the engine send fails', async () => {
+    const t = office();
+    await t.seat.start();
+    await tick();
+    t.serve([note(7, 'OFFICE NOTE (…): hold the Jones job')]);
+    await t.seat.pollInbox();
+    t.session().send = async () => {
+      throw new Error('engine down');
+    };
+    await t.seat.handleUpdate(upd({ text: 'what is next?' }));
+    expect(t.stored().pending?.map((p) => p.id)).toEqual([OID(7)]);
+  });
+
+  it('abort-then-send carries the block exactly once', async () => {
+    const t = office();
+    await t.seat.start();
+    await tick();
+    await t.seat.handleUpdate(upd({ text: 'finished the Hendricks job' }));
+    t.serve([phone(8, 'Was the part in stock?')]);
+    await t.seat.pollInbox();
+    await t.seat.handleUpdate(upd({ text: 'parts were $180' })); // mid-answer: abort, then send
+    const last = t.session().sends.at(-1)?.prompt ?? '';
+    expect(last.split('[Since your person last wrote').length - 1).toBe(1);
+    expect(last.endsWith('[Their message]\nparts were $180')).toBe(true);
+  });
+
+  it('the office notice goes out once across restarts, and is not marked sent when Telegram rejects it', async () => {
+    const t = office();
+    t.telegram.failNext = 1;
+    await t.seat.start();
+    expect(t.stored().disclosed ?? false).toBe(false);
+    t.seat.stop();
+    const again = new Seat(t.deps);
+    await again.start();
+    again.stop();
+    const third = new Seat(t.deps);
+    await third.start();
+    third.stop();
+    expect(t.telegram.sent.filter((x) => x === TEXT.disclosure)).toHaveLength(1);
+    expect(t.stored().disclosed).toBe(true);
+  });
+
+  it('the seat changed: a rebind or timezone restarts (0); deactivated or unbound stops (4); a refused token restarts (1)', async () => {
+    const t = office();
+    await t.seat.start();
+    await tick();
+    t.serve([], { telegramUserId: '999' });
+    await t.seat.pollInbox();
+    t.serve([], { timezone: 'Europe/London' });
+    await t.seat.pollInbox();
+    t.serve([], { telegramUserId: null });
+    await t.seat.pollInbox();
+    t.refuse(new InboxRefused(403));
+    await t.seat.pollInbox();
+    t.refuse(new InboxRefused(401));
+    await t.seat.pollInbox();
+    expect(t.changed).toEqual([0, 0, 4, 4, 1]);
+    // A network blip is none of these.
+    t.refuse(new Error('fetch failed'));
+    await t.seat.pollInbox();
+    expect(t.changed).toHaveLength(5);
+  });
+
+  it('a poll landing mid-update loses neither the offset nor the waiting item', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const t = office({
+      transcribe: async () => {
+        await gate; // the voice note is still being transcribed
+        return { text: 'done at the Smiths', generationId: null };
+      },
+    });
+    await t.seat.start();
+    await tick();
+    const update = upd({ voice: { file_id: 'v1', mime_type: 'audio/ogg' } });
+    const handling = t.seat.handleUpdate(update);
+    await tick();
+    t.serve([note(9, 'OFFICE NOTE (…): Smith is closed')]);
+    await t.seat.pollInbox();
+    release();
+    await handling;
+    expect(t.stored().offset).toBe(update.update_id + 1);
+    expect(t.stored().handledIds).toEqual([OID(9)]);
+  });
+
+  it('with no inbox wired (tests, the local driver) nothing office-related happens', async () => {
+    const t = setup();
+    await t.seat.start();
+    await t.seat.pollInbox();
+    expect(t.telegram.sent).toEqual([]);
+  });
+
+  it('settle() waits for a pull in flight and its state write', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    let stored: SeatState = { sessionId: null, offset: 0 };
+    const t = office({
+      writeState: async (st) => {
+        if (st.handledIds?.length) await gate;
+        stored = JSON.parse(JSON.stringify(st)) as SeatState;
+      },
+    });
+    await t.seat.start();
+    await tick();
+    t.serve([phone(10, 'Is the van back?')]);
+    const poll = t.seat.pollInbox();
+    await tick();
+    let settled = false;
+    const done = t.seat.settle(1).then(() => (settled = true));
+    await tick();
+    expect(settled).toBe(false);
+    release();
+    await done;
+    await poll;
+    expect(stored.handledIds).toEqual([OID(10)]);
+  });
+});
+
+describe('Seat — the conversation for the office (step 3)', () => {
+  function recorder() {
+    const turns: Array<[string, string | undefined, unknown?]> = [];
+    let flushes = 0;
+    const transcript = {
+      person: (text: string) => void turns.push(['person', text]),
+      assistant: (text: string) => void turns.push(['assistant', text]),
+      toolStart: (_id: string, tool: string, args: unknown) => void turns.push(['tool', tool, args]),
+      toolDone: (id: string, ok: boolean) => void turns.push(['done', id, ok]),
+      settleOpenTools: () => void turns.push(['settle', undefined]),
+      flush: async () => {
+        flushes += 1;
+      },
+    };
+    return { transcript, turns, flushes: () => flushes };
+  }
+
+  it("records the person's words, the spine tool call and the reply — never the office block", async () => {
+    const r = recorder();
+    const t = office({ transcript: r.transcript });
+    await t.seat.start();
+    await tick();
+    t.serve([note(20, 'OFFICE NOTE (…): Smith is open to them')]);
+    await t.seat.pollInbox();
+    await t.seat.handleUpdate(upd({ text: 'fan swapped at the Smiths' }));
+    // The engine names the server; SPINE_NAMES holds server names.
+    t.session().emit('tool.execution_start', {
+      toolCallId: 'c1',
+      toolName: 'spine-record_field_note',
+      mcpServerName: 'spine',
+      mcpToolName: 'record_field_note',
+      arguments: { jobId: 'j1' },
+    });
+    // Not a spine tool: never recorded.
+    t.session().emit('tool.execution_start', { toolCallId: 'c2', toolName: 'view', mcpServerName: 'other' });
+    t.session().emit('tool.execution_complete', { toolCallId: 'c1', success: true });
+    t.session().emit('assistant.message', { content: 'Got that recorded.' });
+    t.session().emit('session.idle', {});
+    await t.seat.whenIdle(1);
+    expect(r.turns).toEqual([
+      ['person', 'fan swapped at the Smiths'],
+      ['tool', 'record_field_note', { jobId: 'j1' }],
+      ['done', 'c1', true],
+      ['assistant', 'Got that recorded.'],
+      ['settle', undefined],
+    ]);
+    expect(r.flushes()).toBeGreaterThan(0);
+  });
+
+  it('a double text records each message once, even when it aborts and resends', async () => {
+    const r = recorder();
+    const t = office({ transcript: r.transcript });
+    await t.seat.start();
+    await tick();
+    await t.seat.handleUpdate(upd({ text: 'finished the Hendricks job' }));
+    await t.seat.handleUpdate(upd({ text: 'parts were $180' }));
+    expect(r.turns.filter(([k]) => k === 'person')).toEqual([
+      ['person', 'finished the Hendricks job'],
+      ['person', 'parts were $180'],
+    ]);
+  });
+
+  it('a voice note is recorded as its transcript; a photo as its caption, never bytes', async () => {
+    const r = recorder();
+    const t = office({ transcript: r.transcript });
+    await t.seat.start();
+    await tick();
+    await t.seat.handleUpdate(upd({ voice: { file_id: 'v', mime_type: 'audio/ogg' } }));
+    await t.seat.handleUpdate(upd({ photo: [{ file_id: 'p', width: 10, height: 10 }] }));
+    expect(r.turns.filter(([k]) => k === 'person')).toEqual([
+      ['person', '[voice note] fan swapped, parts 180'],
+      ['person', '(photo)'],
+    ]);
+  });
+
+  it('a long office question keeps the reply id at its end when it waits for the next message', async () => {
+    const t = office();
+    await t.seat.start();
+    await tick();
+    const id = OID(30);
+    const long = `OFFICE QUESTION (from the office record system, not a person): ${'x'.repeat(2000)} — reply via inform_team_lead and mention this id: ${id}`;
+    t.serve([{ id, leg: 'note', text: long }]);
+    await t.seat.pollInbox();
+    await t.seat.handleUpdate(upd({ text: 'ok' }));
+    expect(t.session().sends[0].prompt).toContain(`mention this id: ${id}`);
+  });
+
+  it('a reply ended by an error with no idle closes its open tool turns', async () => {
+    let settled = 0;
+    const t = office({
+      errorIdleWaitMs: 5,
+      transcript: {
+        person: () => {},
+        assistant: () => {},
+        toolStart: () => {},
+        toolDone: () => {},
+        settleOpenTools: () => {
+          settled += 1;
+        },
+        flush: async () => {},
+      },
+    });
+    await t.seat.start();
+    await tick();
+    await t.seat.handleUpdate(upd({ text: 'file it' }));
+    t.session().emit('session.error', { errorType: 'rate_limit', message: '429' });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(t.policy.isBusy).toBe(false);
+    expect(settled).toBe(1);
+  });
+});
+
+// Operator, 2026-09-24: a MANAGER's conversation is private.
+describe('Seat — a manager seat shares nothing (step 3)', () => {
+  it('sends no office notice, and a promotion or demotion restarts the glue', async () => {
+    const t = office({ who: { telegramUserId: BEN, tz: TZ, shareConversation: false } });
+    // Office items still arrive (the office asks a manager directly) — and START
+    // polls for a manager too, never only a hand-called pollInbox (step 2a merge).
+    t.serve([phone(40, 'Can you approve the Jones quote?')], { shareConversation: false });
+    await t.seat.start();
+    await tick();
+    await tick();
+    expect(t.telegram.sent).not.toContain(TEXT.disclosure);
+    expect(t.telegram.sent).toContain('Can you approve the Jones quote?');
+    expect(t.changed).toEqual([]);
+    // Render now says this seat shares (a demotion): restart to pick it up.
+    t.serve([], { shareConversation: true });
+    await t.seat.pollInbox();
+    expect(t.changed).toEqual([0]);
+  });
+});
+

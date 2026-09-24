@@ -76,6 +76,8 @@ const COST_STUBS = {
   // Not a cost step, but the same hazard and the same fix: pruneLifecycleRuns
   // is a real DELETE against whatever stack DATABASE_URL points at.
   prune: async () => 0,
+  // Step 3: the conversation prune is a real DELETE too.
+  pruneSeatTurns: async () => 0,
 };
 
 describe('runLifecycle', () => {
@@ -157,6 +159,39 @@ describe('runLifecycle', () => {
       const on = await runLifecycle(NOW, deps);
       expect(pruned).toBe(1);
       expect(on.lifecycleRuns).toMatchObject({ pruned: 0 });
+    });
+
+    // Step 3: glue seats' conversations, the same contract.
+    test('the conversation prune: 90 days before the tick, skipped when unmigrated, loud on a real failure', async () => {
+      const seen: string[] = [];
+      const base = { ...COST_STUBS, listInStates: async () => [], expire: async () => EXPIRE_OK };
+      const on = await runLifecycle(NOW, {
+        ...base,
+        pruneSeatTurns: async (before: string) => {
+          seen.push(before);
+          return 3;
+        },
+      });
+      expect(on.seatTurns).toEqual({ pruned: 3, before: '2026-04-03T12:00:00.000Z' });
+      expect(seen).toEqual(['2026-04-03T12:00:00.000Z']);
+      const missing = await runLifecycle(NOW, {
+        ...base,
+        pruneSeatTurns: async () => {
+          throw missingTable;
+        },
+      });
+      expect(missing.seatTurns).toEqual({ skipped: 'seat_turns not migrated here yet' });
+      expect(missing.ok).toBe(true);
+      const broken = await runLifecycle(NOW, {
+        ...base,
+        pruneSeatTurns: async () => {
+          throw new Error('connection reset');
+        },
+      });
+      expect(broken.seatTurns).toEqual({ stepError: 'connection reset' });
+      expect(broken.ok).toBe(false);
+      const off = await runLifecycle('2026-07-02T12:05:00.000Z', base);
+      expect(off.seatTurns).toEqual({ skipped: 'off-cadence tick' });
     });
 
     // 90 days back from the tick's own clock — not from "now", which on a

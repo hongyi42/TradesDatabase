@@ -18,13 +18,27 @@ const NEW_ACCESS_HEAD = [
   'the moment it is made: the office puts it to the manager who looks after them, and only a',
   'manager can open anything. It never reaches this list and there is nothing here for you to do',
 ].join('\n');
+// Step 3 (plan 2026-09-23-step-3-office-reaches-glue-seats): the quiet note may
+// wait for the person's next message, and the office READS an assistant's
+// conversation instead of asking it. Remove these lines and the hash must hold.
+const OLD_SEND_HOW_TAIL = "           itself whether its person ever hears about it, so it may never arrive at all.";
+const NEW_SEND_HOW_TAIL = [
+  OLD_SEND_HOW_TAIL,
+  '           It may not even be read until that person next writes to their assistant. To',
+  '           learn what someone already told their assistant, or what it was told, read it',
+  '           with `read_conversation` rather than sending their assistant a question.',
+].join('\n');
 // sha256 of PLANNER_SYSTEM at 532720f, before the split.
 const PRE_SPLIT_SHA256 = '4b5fda2b3abfce787f0c692ec2f0d167ccd46398e405fd74fc5d4b6e4c4f75bb';
 
 describe('PLANNER_SYSTEM — split into sections without changing it', () => {
-  test('only the ACCESS paragraph differs from the pre-split prompt', () => {
+  test('only the ACCESS paragraph and the step 3 SEND lines differ from the pre-split prompt', () => {
     expect(prompt.PLANNER_SYSTEM).toContain(NEW_ACCESS_HEAD);
-    const restored = prompt.PLANNER_SYSTEM.replace(NEW_ACCESS_HEAD, OLD_ACCESS_HEAD);
+    expect(prompt.PLANNER_SYSTEM).toContain(NEW_SEND_HOW_TAIL);
+    const restored = prompt.PLANNER_SYSTEM.replace(NEW_ACCESS_HEAD, OLD_ACCESS_HEAD).replace(
+      NEW_SEND_HOW_TAIL,
+      OLD_SEND_HOW_TAIL,
+    );
     expect(createHash('sha256').update(restored).digest('hex')).toBe(PRE_SPLIT_SHA256);
   });
 

@@ -33,6 +33,19 @@ export const SEAT_PREAMBLE = [
   'People send several texts in a row. When a new message interrupts your reply, answer everything they',
   'have sent since your last finished reply, not only the newest message: an earlier request (a note to',
   'file, a question) is still waiting.',
+  '',
+  // Step 3 (plan 2026-09-23-step-3-office-reaches-glue-seats): on this engine
+  // office traffic never runs a turn of its own — it rides the next message.
+  'Messages from the office reach you on top of your person\'s next message, in a block that starts',
+  '"[Since your person last wrote — for you, not from them]" and ends at "[Their message]". A line',
+  'saying "You texted them" is a message that already went to them in your voice: treat it as your own',
+  'earlier text, so a short reply ("about two hundred") is their answer to it. The other lines are notes',
+  'for you only (OFFICE QUESTION, OFFICE NOTE, NOTE FROM …): the rules below about messages to and from',
+  'the office apply to them exactly as written, so an OFFICE QUESTION is still answered with',
+  '`inform_team_lead`. Never show your person the block itself.',
+  '',
+  'The office can read your conversations with your person, including which tools you use. If they ask',
+  'whether anyone else sees these chats, say so plainly.',
 ].join('\n');
 
 /** Headings of the ported blocks, in order — doctrine.test.ts matches them against bootstrap-box.sh. */

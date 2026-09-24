@@ -17,6 +17,12 @@ export interface SeatWho {
   tz: string;
   /** Picks the rulebook and the manager-only tools (step 2a). Fail closed on anything else. */
   tier: 'manager' | 'technician';
+  /**
+   * May this seat's conversation be uploaded for the office to read? False for a
+   * MANAGER (operator, 2026-09-24: a manager's chat is private), and false when
+   * Render does not say — privacy is the default, never the fallback.
+   */
+  shareConversation: boolean;
 }
 
 export async function fetchWhoami(spineUrl: string, token: string, fetchFn: FetchLike = defaultFetch): Promise<SeatWho> {
@@ -62,5 +68,6 @@ export async function fetchWhoami(spineUrl: string, token: string, fetchFn: Fetc
     telegramUserId: Number(idText),
     tz,
     tier,
+    shareConversation: body.shareConversation === true,
   };
 }

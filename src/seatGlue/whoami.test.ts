@@ -37,7 +37,16 @@ describe('fetchWhoami', () => {
       telegramUserId: 5801703167,
       tz: 'America/Los_Angeles',
       tier: 'technician',
+      // GOOD carries no shareConversation: privacy is the default.
+      shareConversation: false,
     });
+  });
+
+  it('shareConversation is true only when Render says exactly true', async () => {
+    const yes = await fetchWhoami('https://spine.example/', TOKEN, fake(200, { ...GOOD, shareConversation: true }));
+    expect(yes.shareConversation).toBe(true);
+    const odd = await fetchWhoami('https://spine.example/', TOKEN, fake(200, { ...GOOD, shareConversation: 'yes' }));
+    expect(odd.shareConversation).toBe(false);
   });
 
   it('a refused token (401) or a deactivated person (403) stops the seat, never guessing', async () => {

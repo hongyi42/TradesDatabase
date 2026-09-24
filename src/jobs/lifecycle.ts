@@ -2,11 +2,13 @@ import { fileURLToPath } from 'node:url';
 import {
   backfillBraveCostEvents,
   isMissingCostLedger,
+  isMissingRelation,
   latestBraveCostEventAt,
   listTechniciansInStates,
   rollupCosts,
 } from '../db/index.js';
 import { insertLifecycleRun, pruneLifecycleRuns } from '../db/lifecycleRuns.js';
+import { pruneSeatTurns, seatTurnRetentionDays } from '../db/seatTurns.js';
 import type { Json } from '../db/database.types.js';
 import { checkPairing } from '../composio/pairing.js';
 import { expireOffboarding, type ExpireResult } from '../composio/offboarding.js';
@@ -130,6 +132,9 @@ export interface LifecycleDeps {
   listFreshPings?: typeof hasFreshUnpingedObservation;
   listFreshMessagePings?: typeof hasFreshUnpingedOfficeMessage;
   prune?: typeof pruneLifecycleRuns;
+  // Step 3: the 90-day prune of glue seats' uploaded conversations — a real
+  // DELETE, so injected like the run-record prune above.
+  pruneSeatTurns?: typeof pruneSeatTurns;
   // Seam so the skip branch is testable without setting a real key.
   hasModelKey?: () => boolean;
 }
@@ -154,6 +159,12 @@ export interface LifecycleSummary {
   // step so a prune that has been quietly failing is visible in the same place
   // the rows it prunes are read from.
   lifecycleRuns:
+    | { pruned: number; before: string }
+    | { skipped: string }
+    | { stepError: string };
+  // Step 3: glue seats' uploaded conversations older than 90 days (operator,
+  // 2026-09-23). Counts only — never a word of what was said.
+  seatTurns:
     | { pruned: number; before: string }
     | { skipped: string }
     | { stepError: string };
@@ -187,6 +198,7 @@ const runRetentionDays = (): number => {
   const raw = Number(process.env.LIFECYCLE_RUN_RETENTION_DAYS);
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_RUN_RETENTION_DAYS;
 };
+
 
 // How much of a step's error text the run record keeps. The stdout line carries
 // it in full; this is a durable row, and an unbounded provider stack trace has
@@ -298,6 +310,7 @@ export async function runLifecycle(
   let braveBackfill: LifecycleSummary['braveBackfill'] = OFF_CADENCE;
   let costRollup: LifecycleSummary['costRollup'] = OFF_CADENCE;
   let lifecycleRuns: LifecycleSummary['lifecycleRuns'] = OFF_CADENCE;
+  let seatTurns: LifecycleSummary['seatTurns'] = OFF_CADENCE;
 
   if (heavyTick) {
   // 1. Pairing sweep — only rows a link was ever issued for (checkPairing
@@ -466,6 +479,20 @@ export async function runLifecycle(
       ? { skipped: 'lifecycle_runs not migrated here yet' }
       : { stepError: msg(err) };
     if (!isMissingCostLedger(err)) ok = false;
+  }
+  // Step 3: the conversation prune, beside the run-record prune and for the
+  // same reasons — a slow sweep on the heavy cadence, and a missing table
+  // (code deployed before its migration) is skipped, never red.
+  try {
+    const before = new Date(
+      Date.parse(nowIso) - seatTurnRetentionDays() * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    seatTurns = { pruned: await (deps.pruneSeatTurns ?? pruneSeatTurns)(before), before };
+  } catch (err) {
+    seatTurns = isMissingRelation(err)
+      ? { skipped: 'seat_turns not migrated here yet' }
+      : { stepError: msg(err) };
+    if (!isMissingRelation(err)) ok = false;
   }
   } // end of the steps 1-7 heavy-tick block
 
@@ -661,6 +688,7 @@ export async function runLifecycle(
     braveBackfill,
     costRollup,
     lifecycleRuns,
+    seatTurns,
     watchers,
     teamLeadPlanner,
     ...(ladderMute ? { ladderMute } : {}),

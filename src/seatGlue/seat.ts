@@ -1,8 +1,10 @@
 import type { CallRef } from './costLog.js';
 import type { BlobAttachment, EngineEvent, EngineSession, ExitPlanRequestLike, ExitPlanResultLike, SeatHooks, UserInputRequestLike, UserInputResponseLike } from './engine.js';
+import { SPINE_NAMES } from './engine.js';
 import { classify, type Inbound } from './inbound.js';
+import { InboxRefused, type InboxItem, type InboxResult } from './inbox.js';
 import { PendingPrompts } from './prompts.js';
-import type { SeatState } from './state.js';
+import { HANDLED_IDS_KEPT, type PendingItem, type SeatState } from './state.js';
 import { TelegramConflictError, type ButtonRow, type TelegramApi, type TgUpdate } from './telegram.js';
 import type { TurnPolicy } from './turnPolicy.js';
 
@@ -27,6 +29,9 @@ export const TEXT = {
   goAhead: 'Go ahead with the plan.',
   /** A typed reply to a buttons-only question that names no button. */
   tapAnOption: 'Please tap one of the options above, or type stop.',
+  // Step 3 (operator, 2026-09-23): sent once per seat, the first time the glue
+  // runs with the office wired in. No em dashes; names AI (customer-facing copy).
+  disclosure: 'Heads up from your AI assistant: the office can read our chats here, and your managers can ask it about them.',
 } as const;
 
 /** How long a typed plan reply may wait on Jev before it counts as a change request. */
@@ -34,6 +39,16 @@ export const APPROVE_WAIT_MS = 3_500;
 
 /** Plan text shown with Go/Change — kept well inside one Telegram message. */
 export const PLAN_TEXT_MAX = 3_500;
+
+/** Office items kept for the person's next message (oldest dropped past this). */
+export const PENDING_KEPT = 30;
+/**
+ * Each waiting item's text is cut here: the block rides every next message.
+ * Sized to fit the LONGEST office message whole (a 2000-character body plus its
+ * framing and the reply id at the END), so a cut can never drop the id an office
+ * question tells the assistant to mention.
+ */
+export const PENDING_TEXT_MAX = 2_500;
 
 export interface SeatDeps {
   telegram: TelegramApi;
@@ -75,6 +90,35 @@ export interface SeatDeps {
    * (Jev; operator 2026-09-24.) Absent = every reply answers.
    */
   answersPrompt?(reply: string, question: string, choices: string[]): Promise<boolean>;
+  /**
+   * Step 3: the seat's inbox on Render. Absent = no office traffic (tests, and
+   * the local driver, which must never drain a real person's inbox).
+   */
+  inbox?: {
+    fetch(): Promise<InboxResult>;
+    report(r: { id: string; leg: InboxItem['leg']; outcome: 'delivered' | 'failed'; detail?: string }): Promise<void>;
+  };
+  /** Who the seat was at start (whoami): an inbox pull that disagrees means the seat changed. */
+  who?: { telegramUserId: number; tz: string; shareConversation?: boolean };
+  /**
+   * The seat changed under the running glue. 0 = rebind or timezone (restart and
+   * ask whoami again); 1 = token refused (restart: a reinstall rotated it);
+   * 4 = deactivated or unbound (stay down).
+   */
+  onSeatChanged?: (code: 0 | 1 | 4) => void;
+  pollInboxMs?: number;
+  /**
+   * Step 3: the conversation, uploaded for the office to read (transcript.ts).
+   * Absent = nothing recorded (tests, the local driver).
+   */
+  transcript?: {
+    person(text: string, sessionId: string | null): void;
+    assistant(text: string, sessionId: string | null): void;
+    toolStart(callId: string, tool: string, args: unknown, sessionId: string | null): void;
+    toolDone(callId: string, ok: boolean): void;
+    settleOpenTools(): void;
+    flush(): Promise<void>;
+  };
 }
 
 export class Seat {
@@ -98,6 +142,12 @@ export class Seat {
   private errorToldFor: string | null = null;
   private stopped = false;
   private processing = 0;
+  /** Every state write, in order: the update loop and the inbox poller both write. */
+  private writeChain: Promise<void> = Promise.resolve();
+  private inboxTimer: ReturnType<typeof setInterval> | null = null;
+  private polling = false;
+  /** The one-time office notice while it is being sent and saved. */
+  private disclosing: Promise<void> = Promise.resolve();
   private readonly log: (msg: string) => void;
   /** A manager seat's hooks (step 2a phase 3); passed to every openSession. */
   protected hooks: SeatHooks | undefined = undefined;
@@ -153,6 +203,21 @@ export class Seat {
     await this.sweep();
     this.sweepTimer = setInterval(() => void this.sweep(), this.deps.sweepEveryMs ?? 3_600_000);
     this.sweepTimer.unref?.();
+    if (this.deps.inbox) {
+      // The notice only where it is true: a manager's chat is never shared. The
+      // inbox itself runs for everyone — the office still asks a manager directly.
+      if (this.deps.who?.shareConversation) {
+        this.disclosing = this.disclose();
+        await this.disclosing;
+      }
+      void this.pollInbox();
+      this.inboxTimer = setInterval(() => {
+        void this.pollInbox();
+        // The retry for an upload that failed at the end of a reply.
+        void this.deps.transcript?.flush();
+      }, this.deps.pollInboxMs ?? 10_000);
+      this.inboxTimer.unref?.();
+    }
     this.readyGate.resolve();
   }
 
@@ -176,10 +241,22 @@ export class Seat {
     }
   }
 
+  /**
+   * Resolves once an inbox pull in flight has finished and every state write
+   * has landed. The shutdown waits on it: exiting between an office text going
+   * out and its id being saved would text the person again after the restart.
+   */
+  async settle(pollMs = 50): Promise<void> {
+    await this.disclosing; // never rejects: disclose() catches its own failure
+    while (this.polling) await new Promise((r) => setTimeout(r, pollMs));
+    await this.writeChain;
+  }
+
   stop(): void {
     this.stopped = true;
     this.stopWorking();
     if (this.sweepTimer) clearInterval(this.sweepTimer);
+    if (this.inboxTimer) clearInterval(this.inboxTimer);
   }
 
   /**
@@ -192,8 +269,7 @@ export class Seat {
   async handleUpdate(update: TgUpdate): Promise<void> {
     this.processing += 1;
     try {
-      this.state = { ...this.state, offset: update.update_id + 1 };
-      await this.deps.writeState(this.state);
+      await this.persist({ offset: update.update_id + 1 });
       await this.handle(classify(update, this.deps.allowedUserId));
     } catch (err) {
       this.log(`update ${update.update_id} failed: ${errText(err)}`);
@@ -237,6 +313,7 @@ export class Seat {
       case 'new':
         return this.startFresh();
       case 'text':
+        this.deps.transcript?.person(msg.text, this.sessionId);
         return this.routeReply(msg.text, false);
       case 'photo': {
         const buf = await this.deps.telegram.download(msg.fileId);
@@ -244,6 +321,7 @@ export class Seat {
         // Bytes only. The saved path never goes near the model: L1 is permanent
         // and the file is deleted in a week.
         const photo: BlobAttachment = { type: 'blob', data: buf.toString('base64'), mimeType: 'image/jpeg', displayName: 'photo.jpg' };
+        this.deps.transcript?.person(msg.caption ?? '(photo)', this.sessionId);
         return this.deliver(msg.caption ?? '(photo)', [photo]);
       }
       case 'voice': {
@@ -265,6 +343,7 @@ export class Seat {
             kind: 'transcribe',
           });
         }
+        this.deps.transcript?.person(`[voice note] ${transcript.text}`, this.sessionId);
         return this.routeReply(transcript.text, true);
       }
     }
@@ -356,12 +435,17 @@ export class Seat {
       this.errorToldFor = null;
       this.startWorking();
     }
+    // Office items ride HERE, at the send, and nowhere earlier: the abort-then-
+    // send recursion above re-enters with the RAW prompt, so the block is never
+    // doubled, and it is cleared only once a send has carried it.
+    const carried = this.state.pending ?? [];
     try {
       await session.send({
-        prompt,
+        prompt: this.withPending(prompt, carried),
         ...(attachments ? { attachments } : {}),
         ...(route === 'steer' ? { mode: 'immediate' as const } : {}),
       });
+      if (carried.length) await this.clearPending(carried);
       if (route === 'steer') this.log('double text mid-tool: steered into the running reply');
     } catch (err) {
       this.log(`send failed: ${errText(err)}`);
@@ -449,9 +533,152 @@ export class Seat {
   private async attach(session: EngineSession): Promise<void> {
     this.session = session;
     this.unsubscribe = session.on((e) => this.onEvent(e));
-    if (this.state.sessionId !== session.sessionId) {
-      this.state = { ...this.state, sessionId: session.sessionId };
-      await this.deps.writeState(this.state);
+    if (this.state.sessionId !== session.sessionId) await this.persist({ sessionId: session.sessionId });
+  }
+
+  /**
+   * Merge into the state and write it — every write through ONE chain, so the
+   * inbox poller and the update loop never write over each other with a stale
+   * copy. The patch is applied synchronously; the write that follows carries
+   * everything merged so far. A failed write rejects to its caller only.
+   */
+  private persist(patch: Partial<SeatState> | ((s: SeatState) => Partial<SeatState>)): Promise<void> {
+    this.state = { ...this.state, ...(typeof patch === 'function' ? patch(this.state) : patch) };
+    const snapshot = this.state;
+    const run = this.writeChain.then(() => this.deps.writeState(snapshot));
+    this.writeChain = run.catch(() => {});
+    return run;
+  }
+
+  // ── step 3: the office's items ────────────────────────────────────────────
+
+  /** One pull of the inbox. Public so a test can drive it without a timer. */
+  async pollInbox(): Promise<void> {
+    const { inbox, who } = this.deps;
+    if (!inbox || !who || this.polling || this.stopped) return;
+    this.polling = true;
+    try {
+      let got: InboxResult;
+      try {
+        got = await inbox.fetch();
+      } catch (err) {
+        if (err instanceof InboxRefused) {
+          this.log(
+            err.status === 403
+              ? 'Render says this seat\'s person is deactivated — stopping'
+              : 'Render refused this seat\'s token (rotated by a reinstall?) — restarting',
+          );
+          this.deps.onSeatChanged?.(err.status === 403 ? 4 : 1);
+          return;
+        }
+        this.log(`inbox pull failed: ${errText(err)}`);
+        return;
+      }
+      if (got.seat.telegramUserId === null) {
+        this.log('this seat has no Telegram account bound any more — stopping');
+        this.deps.onSeatChanged?.(4);
+        return;
+      }
+      // Compared as numbers: whoami parsed the same text with Number(), so an id
+      // too long for exact integers still compares equal to itself.
+      if (
+        Number(got.seat.telegramUserId) !== who.telegramUserId ||
+        got.seat.timezone !== who.tz ||
+        got.seat.shareConversation !== (who.shareConversation ?? false)
+      ) {
+        this.log('this seat changed on Render (Telegram account, timezone or tier) — restarting to pick it up');
+        this.deps.onSeatChanged?.(0);
+        return;
+      }
+      for (const item of got.items) {
+        if (this.stopped) return;
+        await this.takeItem(item);
+      }
+    } finally {
+      this.polling = false;
+    }
+  }
+
+  /**
+   * A phone item goes to Telegram first; every item then waits for the person's
+   * next message. An id already handled is re-acked and never re-sent — the
+   * report was lost, not the message (the runners' sent-marker rule).
+   */
+  private async takeItem(item: InboxItem): Promise<void> {
+    if ((this.state.handledIds ?? []).includes(item.id)) return this.reportItem(item, 'delivered');
+    if (item.leg === 'phone') {
+      try {
+        await this.sendOrThrow(item.text);
+      } catch (err) {
+        this.log(`office text ${item.id} did not send: ${errText(err)}`);
+        return this.reportItem(item, 'failed', 'telegram send failed');
+      }
+    }
+    const waiting: PendingItem = {
+      id: item.id,
+      leg: item.leg,
+      text: item.text.length > PENDING_TEXT_MAX ? `${item.text.slice(0, PENDING_TEXT_MAX)}…` : item.text,
+      at: new Date().toISOString(),
+    };
+    try {
+      await this.persist((st) => {
+        const pending = [...(st.pending ?? []), waiting];
+        if (pending.length > PENDING_KEPT) {
+          this.log(`${pending.length - PENDING_KEPT} office item(s) dropped from the waiting list (over ${PENDING_KEPT})`);
+        }
+        return {
+          pending: pending.slice(-PENDING_KEPT),
+          handledIds: [...(st.handledIds ?? []), item.id].slice(-HANDLED_IDS_KEPT),
+        };
+      });
+    } catch (err) {
+      // The text already went out: settle it anyway rather than text it twice.
+      this.log(`could not save office item ${item.id}: ${errText(err)}`);
+    }
+    await this.reportItem(item, 'delivered');
+  }
+
+  private async reportItem(item: InboxItem, outcome: 'delivered' | 'failed', detail?: string): Promise<void> {
+    try {
+      await this.deps.inbox?.report({ id: item.id, leg: item.leg, outcome, ...(detail ? { detail } : {}) });
+    } catch (err) {
+      // Render re-serves an unacked item; the handled list re-acks it then.
+      this.log(`inbox report for ${item.id} failed: ${errText(err)}`);
+    }
+  }
+
+  /** The one-time notice that the office can read these chats (operator, 2026-09-23). */
+  private async disclose(): Promise<void> {
+    if (this.state.disclosed) return;
+    try {
+      await this.sendOrThrow(TEXT.disclosure);
+      await this.persist({ disclosed: true });
+    } catch (err) {
+      this.log(`the office notice did not go out (${errText(err)}) — trying again at the next start`);
+    }
+  }
+
+  /** Office items since the person last wrote, on top of their message. */
+  private withPending(prompt: string, items: PendingItem[]): string {
+    if (!items.length) return prompt;
+    const time = new Intl.DateTimeFormat('en-GB', {
+      timeZone: this.deps.who?.tz ?? 'UTC',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    const lines = items.map((p) =>
+      p.leg === 'phone' ? `- You texted them (${time.format(new Date(p.at))}): "${p.text}"` : `- ${p.text}`,
+    );
+    return ['[Since your person last wrote — for you, not from them]', ...lines, '[Their message]', prompt].join('\n');
+  }
+
+  private async clearPending(carried: PendingItem[]): Promise<void> {
+    const ids = new Set(carried.map((p) => p.id));
+    try {
+      await this.persist((st) => ({ pending: (st.pending ?? []).filter((p) => !ids.has(p.id)) }));
+    } catch (err) {
+      this.log(`could not clear the office items just shown: ${errText(err)}`);
     }
   }
 
@@ -461,6 +688,7 @@ export class Seat {
     switch (e.type) {
       case 'tool.execution_complete':
         this.activityCount += 1;
+        if (typeof data.toolCallId === 'string') this.deps.transcript?.toolDone(data.toolCallId, data.success === true);
         policy.onToolComplete(typeof data.toolCallId === 'string' ? data.toolCallId : undefined);
         this.releaseToolWaiters();
         return;
@@ -475,10 +703,19 @@ export class Seat {
       case 'tool.execution_start':
         this.activityCount += 1;
         if (this.afterApproval && data.toolName !== 'exit_plan_mode') this.afterApproval.tools += 1;
+        // Spine tools only, told apart by SERVER name (SPINE_NAMES holds server
+        // names, never tool names). mcpToolName is the tool's own name, without
+        // the engine's `spine-` prefix.
+        if (typeof data.toolCallId === 'string' && typeof data.mcpServerName === 'string' && SPINE_NAMES.has(data.mcpServerName)) {
+          const name = typeof data.mcpToolName === 'string' ? data.mcpToolName : String(data.toolName ?? '');
+          this.deps.transcript?.toolStart(data.toolCallId, name, data.arguments, this.sessionId);
+        }
         return;
       case 'session.idle': {
         this.idleCount += 1;
         this.releaseHeldText();
+        this.deps.transcript?.settleOpenTools();
+        void this.deps.transcript?.flush();
         const result = policy.onIdle(data.aborted === true);
         // A finished (or aborted) turn has no handler left waiting: close any
         // prompt — but NOT on a stale idle, which belongs to an old, dead loop
@@ -561,6 +798,9 @@ export class Seat {
               this.cancelPrompts('the turn ended');
               policy.finish();
               this.stopWorking();
+              // The reply is over without an idle: close its tool turns too, or
+              // the conversation upload waits on them for good.
+              this.deps.transcript?.settleOpenTools();
             }
           }, this.deps.errorIdleWaitMs ?? 5_000);
           timer.unref?.();
@@ -720,7 +960,10 @@ export class Seat {
       this.lastReply = texts.join('\n');
       if (this.afterApproval) this.afterApproval.replied = true;
     }
-    for (const text of texts) void this.say(text);
+    for (const text of texts) {
+      this.deps.transcript?.assistant(text, this.sessionId);
+      void this.say(text);
+    }
   }
 
   private say(text: string): Promise<void> {
@@ -728,6 +971,18 @@ export class Seat {
       .then(() => this.deps.telegram.send(this.chatId, text))
       .catch((err: unknown) => this.log(`send to Telegram failed: ${errText(err)}`));
     return this.outbox;
+  }
+
+  /**
+   * In order with every other message, like say() — but the caller SEES a
+   * failure: an office text that did not go out must be reported failed, and a
+   * notice that did not go out must not be marked sent. The outbox itself
+   * carries on either way.
+   */
+  private sendOrThrow(text: string): Promise<void> {
+    const run = this.outbox.then(() => this.deps.telegram.send(this.chatId, text));
+    this.outbox = run.catch((err: unknown) => this.log(`send to Telegram failed: ${errText(err)}`));
+    return run;
   }
 
   /** A reply started: typing, plus the "Working…" line with its Stop button. */

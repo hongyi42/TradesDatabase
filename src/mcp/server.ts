@@ -51,6 +51,7 @@ import { moneyTools } from './tools/money.js';
 import { officeTools } from './tools/office.js';
 import { rosterTools } from './tools/roster.js';
 import { scheduleTools } from './tools/schedule.js';
+import { seatConversationTools } from './tools/seatConversation.js';
 import type { ToolHandler } from './tools/types.js';
 import { capToolResult } from './resultCap.js';
 
@@ -441,6 +442,8 @@ const TEAM_LEAD_TOOLS = [
   ...officeTools.teamLead,
   ...capturesTools.teamLead,
   ...customersTools.teamLead,
+  // Step 3: LAST, so the cached prefix of the planner's tool list is unchanged.
+  ...seatConversationTools.teamLead,
 ];
 
 // Handed to the team-lead loop as its tool schemas. Exported (the array itself is
@@ -580,6 +583,7 @@ const DOMAIN_HANDLERS: Record<string, ToolHandler> = {
   ...officeTools.handlers,
   ...rosterTools.handlers,
   ...scheduleTools.handlers,
+  ...seatConversationTools.handlers,
 };
 
 export async function dispatchForIdentity(

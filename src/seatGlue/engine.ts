@@ -100,7 +100,9 @@ export interface EngineConfig {
 // /composio relay, same seat token. Every call to any of them is pending from
 // the permission handler (turnPolicy rule 2), so a Composio call is never
 // aborted mid-flight either.
-export const TOOL_SERVERS = new Set(['spine', 'trades-spine', 'composio']);
+export const SPINE_NAMES = new Set(['spine', 'trades-spine']);
+/** SPINE_NAMES are the spine alone (step 3's transcript records only its calls). */
+export const TOOL_SERVERS = new Set([...SPINE_NAMES, 'composio']);
 // Built-in tools a manager seat allows (availableTools). Whether the engine asks
 // permission for them at all is UNMEASURED (plan 2a review): if it does, approve
 // them by name here rather than let the default reject hide the buttons.

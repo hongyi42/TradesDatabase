@@ -1,5 +1,6 @@
 import type { Database } from './database.types.js';
 import { getClient } from './client.js';
+import { scopeQueueQuery, type QueueScope } from './queueScope.js';
 import type { Technician } from './technicians.js';
 
 // The person_pushes queue (plan 2026-09-09 one-bot-per-person, phase 2).
@@ -63,14 +64,19 @@ const PAGE = 500;
 // starve every younger message.
 export async function listQueuedPersonPushesForHost(
   hostId: string,
+  // Step 3: one glue seat's person, or everyone except live glue seats.
+  scope: QueueScope = {},
 ): Promise<QueuedPersonPushForHost[]> {
   const out: QueuedPersonPushForHost[] = [];
   for (let from = 0; ; from += PAGE) {
-    const { data, error } = await getClient()
-      .from('person_pushes')
-      .select(HOST_QUEUE_SELECT)
-      .eq('status', 'queued')
-      .eq('technicians.host_id', hostId)
+    const { data, error } = await scopeQueueQuery(
+      getClient()
+        .from('person_pushes')
+        .select(HOST_QUEUE_SELECT)
+        .eq('status', 'queued')
+        .eq('technicians.host_id', hostId),
+      scope,
+    )
       .order('created_at', { ascending: true })
       .order('id', { ascending: true }) // deterministic paging tiebreak
       .range(from, from + PAGE - 1);

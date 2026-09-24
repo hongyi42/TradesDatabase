@@ -253,3 +253,41 @@ describe('completeOfficeDelivery', () => {
     expect(delivery).not.toHaveBeenCalled();
   });
 });
+
+// STEP 3 (plan 2026-09-23-step-3-office-reaches-glue-seats).
+describe('queue scope (step 3)', () => {
+  test('the scope reaches the read, with the assistant leg', async () => {
+    const seen: unknown[] = [];
+    const scope = { skipTechnicianIds: ['tech-9'] };
+    await buildOfficeDelivery(
+      'host-1',
+      baseDeps({
+        listQueued: async (hostId, via, sc) => {
+          seen.push([hostId, via, sc]);
+          return [];
+        },
+      }),
+      scope,
+    );
+    expect(seen).toEqual([['host-1', 'assistant', scope]]);
+  });
+
+  test("a seat's report on another person's message is ignored and moves nothing", async () => {
+    const delivery = vi.fn();
+    const attempts = vi.fn();
+    const deps = baseDeps({
+      delivery: delivery as unknown as OfficeQueueDeps['delivery'],
+      attempts: attempts as unknown as OfficeQueueDeps['attempts'],
+    });
+    const other = { onlyTechnicianId: 'tech-OTHER' };
+    expect(await completeOfficeDelivery('host-1', 'm1', 'delivered', null, deps, other)).toBe('ignored');
+    expect(await completeOfficeDelivery('host-1', 'm1', 'failed', 'x', deps, other)).toBe('ignored');
+    expect(delivery).not.toHaveBeenCalled();
+    expect(attempts).not.toHaveBeenCalled();
+    expect(
+      await completeOfficeDelivery('host-1', 'm1', 'delivered', null, baseDeps(), {
+        onlyTechnicianId: 'tech-1',
+      }),
+    ).toBe('delivered');
+  });
+});

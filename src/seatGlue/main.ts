@@ -5,11 +5,13 @@ import { pathToFileURL } from 'node:url';
 import { loadConfig, type SeatConfig } from './config.js';
 import { CostLog } from './costLog.js';
 import { openSession, startEngine, type EngineClient, type EngineConfig } from './engine.js';
+import { fetchInbox, reportInbox } from './inbox.js';
 import { saveMedia, sweepMedia } from './media.js';
 import { Seat, type SeatDeps } from './seat.js';
 import { readState, writeState } from './state.js';
 import { TelegramClient, TelegramConflictError, type TelegramApi } from './telegram.js';
 import { TurnPolicy } from './turnPolicy.js';
+import { Transcript } from './transcript.js';
 import { transcribe } from './voice.js';
 import { answersPrompt, approvesPlan, needsPlan } from './jev.js';
 import { fetchWhoami, type SeatWho } from './whoami.js';
@@ -21,6 +23,11 @@ import { fetchWhoami, type SeatWho } from './whoami.js';
 // RestartPreventExitStatus=3: two pollers make both deaf, so the glue stops and
 // says so rather than fighting every 10 seconds.
 export const EXIT_CONFLICT = 3;
+// Exit 4 = the seat is gone for good: its person was deactivated, or no Telegram
+// account is bound any more (step 3, learned from the inbox pull). The unit has
+// RestartPreventExitStatus=3 4, so it stays down instead of restarting every
+// 10 s into a whoami that refuses it.
+export const EXIT_SEAT_GONE = 4;
 
 export function engineConfig(cfg: SeatConfig, who: SeatWho): EngineConfig {
   return {
@@ -55,7 +62,11 @@ export function seatDeps(
   client: EngineClient,
   telegram: TelegramApi,
   policy: TurnPolicy,
-): SeatDeps & { costLog: CostLog } {
+  // office:false leaves the office out (inbox, disclosure): the local driver runs
+  // the REAL seat token against a scripted Telegram, and must never drain the
+  // person's real inbox or tell a fake that the office reads the chat.
+  opts: { office?: boolean; onSeatChanged?: (code: 0 | 1 | 4) => void } = {},
+): SeatDeps & { costLog: CostLog; transcript?: Transcript } {
   const costLog = new CostLog({
     seat: cfg.seatRef,
     tenantId: who.tenantId,
@@ -87,6 +98,21 @@ export function seatDeps(
             answersPrompt({ openrouterKey: cfg.openrouterKey, log: (m) => console.log(`seat-glue: ${m}`) }, reply, question, choices),
         }
       : {}),
+    ...(opts.office === false
+      ? {}
+      : {
+          inbox: {
+            fetch: () => fetchInbox(cfg.spineUrl, cfg.seatToken),
+            report: (r) => reportInbox(cfg.spineUrl, cfg.seatToken, r),
+          },
+          who: { telegramUserId: who.telegramUserId, tz: who.tz, shareConversation: who.shareConversation },
+          onSeatChanged: opts.onSeatChanged,
+          // A manager's conversation is private (operator, 2026-09-24): no
+          // recorder at all, so nothing of it can leave the box.
+          ...(who.shareConversation
+            ? { transcript: new Transcript({ spineUrl: cfg.spineUrl, seatToken: cfg.seatToken, stateDir: cfg.stateDir }) }
+            : {}),
+        }),
   };
 }
 
@@ -112,7 +138,13 @@ async function main(argv: string[]): Promise<void> {
   // exits non-zero and systemd retries — it never runs on a guessed identity.
   const who = await whoAmI(cfg);
   const client = await startEngine({ baseDirectory: join(cfg.stateDir, 'engine'), tz: who.tz });
-  const deps = seatDeps(cfg, who, client, new TelegramClient(cfg.botToken), new TurnPolicy());
+  // shutdown is declared below and needs the seat; the seat needs to call it.
+  let onSeatChanged: (code: 0 | 1 | 4) => void = () => {};
+  const deps = seatDeps(cfg, who, client, new TelegramClient(cfg.botToken), new TurnPolicy(), {
+    onSeatChanged: (code) => onSeatChanged(code),
+  });
+  // Turns a previous run could not upload go first.
+  await deps.transcript?.load();
   const seat = new Seat(deps);
 
   // A restart (an upgrade, systemd) must not drop the last reply's cost lines:
@@ -123,10 +155,24 @@ async function main(argv: string[]): Promise<void> {
     if (stopping) return;
     stopping = true;
     seat.stop();
+    // The office item in hand first (step 3): a text that went out must have its
+    // id saved, or the restarted glue texts it again. Bounded above one Telegram
+    // send (20 s timeout) plus the outbox ahead of it; with the flush below this
+    // stays inside systemd's 90 s stop timeout.
+    await Promise.race([seat.settle(), new Promise((r) => setTimeout(r, 30_000))]);
     await Promise.race([deps.costLog.flush(), new Promise((r) => setTimeout(r, 20_000))]);
+    // The last reply's turns: one more upload try, then the outbox on disk
+    // (whatever did not upload goes on the next start).
+    if (deps.transcript) {
+      const transcript = deps.transcript;
+      transcript.settleOpenTools();
+      await Promise.race([transcript.flush(), new Promise((r) => setTimeout(r, 5_000))]);
+      await transcript.saved();
+    }
     await client.stop().catch(() => []);
     process.exit(code);
   };
+  onSeatChanged = (code) => void shutdown(code);
   process.on('SIGTERM', () => void shutdown(0));
   process.on('SIGINT', () => void shutdown(0));
 

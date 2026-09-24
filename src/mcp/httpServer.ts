@@ -19,15 +19,23 @@ import {
   getHostByTokenHash,
   getSeatBotUsername,
   getSeatByHostRef,
+  getSeatIdentityByTokenHash,
+  insertSeatTurns,
   getTechnician,
   getTechnicianById,
   getTenant,
   isInactiveState,
+  listLiveGlueTechnicianIds,
   listPoolRowsForHost,
   mintSeatToken,
   pingDb,
   retireSeatByHostRef,
   setSandboxBotId,
+  touchSeatPull,
+  type Json,
+  type Seat,
+  type SeatTurnInsert,
+  type Technician,
 } from '../db/index.js';
 import { isValidService, recordOpsEvent } from '../db/opsEvents.js';
 import { recordHostMetrics } from '../db/hostMetrics.js';
@@ -36,6 +44,7 @@ import { handleComposioRelay, isRelayPath } from '../composio/relayHandler.js';
 import { handleBoardRequest, isBoardPath } from '../telegram/boardApi.js';
 import { handleConsoleRequest, isConsolePath } from '../console/consoleApi.js';
 import { handleAdminRequest, isAdminPath } from '../admin/adminApi.js';
+import { UUID_RE } from './tools/shared.js';
 
 // Central HTTP entrypoint (Architecture A). Every NemoClaw bot reaches this one
 // server through the gateway. It runs STATELESS (sessionIdGenerator: undefined):
@@ -379,7 +388,315 @@ async function handleSeatWhoami(req: http.IncomingMessage, res: http.ServerRespo
       timezone: tenant?.timezone ?? 'UTC',
       // Step 2a: the glue picks the manager or technician rulebook from this.
       tier: person.tier,
+      shareConversation: sharesConversation(person),
     });
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
+// STEP 3: a glue seat that pulled its inbox this recently is LIVE, and the box's
+// bash runners skip its person. Twelve missed 10 s polls: long enough that a
+// slow Render response never flaps a seat back to the runners, short enough that
+// a stopped glue (rollback.sh) hands its person back to openclaw in two minutes.
+export const LIVE_GLUE_WINDOW_MS = 120_000;
+const liveGlueSince = (): string => new Date(Date.now() - LIVE_GLUE_WINDOW_MS).toISOString();
+
+const UUID = UUID_RE;
+
+// A MANAGER's conversation with their assistant is private (operator,
+// 2026-09-24): it is never uploaded, never read by the office, and the seat
+// sends no "the office can read our chats" notice. The office asks a manager
+// directly instead. Everyone else's is shared (operator, 2026-09-23).
+export const sharesConversation = (person: Pick<Technician, 'tier'>): boolean => person.tier !== 'manager';
+
+// The seat a request's token names, and its person — the /seat/whoami posture:
+// no or unknown token → 401, a deactivated or missing person → 403, a database
+// failure → thrown (the caller's 500, which the glue reads as "retry").
+async function seatOfRequest(
+  req: http.IncomingMessage,
+): Promise<{ seat: Seat; person: Technician } | { status: 401 | 403 }> {
+  const token = seatTokenOf(req.headers);
+  if (!token) return { status: 401 };
+  const found = await getSeatIdentityByTokenHash(sha256hex(token));
+  if (!found) return { status: 401 };
+  const person = await getTechnicianById(found.seat.technician_id, found.seat.tenant_id);
+  if (!person || isInactiveState(person.state)) return { status: 403 };
+  return { seat: found.seat, person };
+}
+
+/** One inbox item: `phone` is texted to the person word for word; `note` is for their assistant. */
+export interface SeatInboxItem {
+  id: string;
+  leg: 'phone' | 'note';
+  text: string;
+}
+
+// STEP 3 — a glue seat's inbox (plan 2026-09-23-step-3-office-reaches-glue-seats).
+// The glue pulls with its SEAT token and gets only its own person's rows: the
+// phone leg (nudges, chat office rows, pushes) and the note leg (assistant
+// office rows), exactly as the box's two runners would have been served them —
+// same serve counting, same freezes. The pull stamps the seat live, which takes
+// its person out of the runners' host pulls. It also carries who the seat is,
+// so a running glue learns of a rebind or a timezone change without a restart.
+async function handleSeatInboxPull(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const json = (code: number, body: unknown) => {
+    res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    const who = await seatOfRequest(req);
+    if ('status' in who) {
+      res.writeHead(who.status);
+      res.end();
+      return;
+    }
+    const { seat, person } = who;
+    // seat.host_id stands in for the person's technicians.host_id, which is what
+    // the queue reads filter on. They agree by construction: bind_telegram writes
+    // the roster's host FROM the seat (roster.ts), and assign-host's
+    // add-glue-seat records the seat on the person's host. If they ever
+    // diverged, this inbox would come back empty and the runners would not skip
+    // the person — so the two must move together.
+    // The timezone FIRST: it is the one read that fails the whole pull, and it
+    // must fail before either builder has counted a serve it will not deliver.
+    const tenant = await getTenant(seat.tenant_id);
+    await touchSeatPull(seat.id);
+    const scope = { onlyTechnicianId: seat.technician_id };
+    // Each leg on its own: a builder counts its serves as it goes, so one leg
+    // failing must never throw away the other leg's already-counted items — ten
+    // such pulls would freeze rows that never left Render.
+    const [phone, notes] = await Promise.allSettled([
+      buildNudgeDelivery(seat.host_id, {}, scope),
+      buildOfficeDelivery(seat.host_id, {}, scope),
+    ]);
+    for (const leg of [phone, notes]) {
+      if (leg.status === 'rejected') console.error('[seat/inbox] one leg of the pull failed', leg.reason);
+    }
+    const decode = (b64: string) => Buffer.from(b64, 'base64').toString('utf8');
+    const items: SeatInboxItem[] = [
+      ...(phone.status === 'fulfilled' ? phone.value.nudges : []).map((n) => ({
+        id: n.id,
+        leg: 'phone' as const,
+        text: decode(n.directMessageB64),
+      })),
+      ...(notes.status === 'fulfilled' ? notes.value.messages : []).map((m) => ({
+        id: m.id,
+        leg: 'note' as const,
+        text: decode(m.directMessageB64),
+      })),
+    ];
+    json(200, {
+      seat: {
+        telegramUserId: person.telegram_user_id,
+        timezone: tenant?.timezone ?? 'UTC',
+        // A promotion or demotion reaches a running glue here; it restarts on it.
+        shareConversation: sharesConversation(person),
+      },
+      items,
+    });
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
+// The glue's per-item report. The seat, its host and its person all come from the
+// TOKEN; the body names only the item, its leg and the outcome.
+async function handleSeatInboxReport(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const json = (code: number, body: unknown) => {
+    res.writeHead(code, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    const who = await seatOfRequest(req);
+    if ('status' in who) {
+      res.writeHead(who.status);
+      res.end();
+      return;
+    }
+    let body: unknown;
+    try {
+      const raw = await readRawBody(req, 16 * 1024);
+      body = raw.length ? JSON.parse(raw) : undefined;
+    } catch (err) {
+      if ((err as { code?: string }).code === 'BODY_TOO_LARGE') {
+        json(413, { error: 'body too large' });
+        return;
+      }
+      json(400, { error: 'malformed JSON body' });
+      return;
+    }
+    const b = (body ?? {}) as Record<string, unknown>;
+    const id = typeof b.id === 'string' ? b.id.trim() : '';
+    if (!UUID.test(id)) {
+      json(400, { error: 'id must be an inbox item id (uuid)' });
+      return;
+    }
+    if (b.leg !== 'phone' && b.leg !== 'note') {
+      json(400, { error: "leg must be 'phone' or 'note'" });
+      return;
+    }
+    if (b.outcome !== 'delivered' && b.outcome !== 'failed') {
+      json(400, { error: "outcome must be 'delivered' or 'failed'" });
+      return;
+    }
+    const detail = typeof b.detail === 'string' ? b.detail.slice(0, 300) : null;
+    const { seat } = who;
+    // A report is proof of life too: one long pull (slow Telegram, many items)
+    // must not age the seat out and hand its person back to the runners mid-pull.
+    await touchSeatPull(seat.id);
+    const scope = { onlyTechnicianId: seat.technician_id };
+    const result =
+      b.leg === 'phone'
+        ? await completeNudgeDelivery(seat.host_id, id, b.outcome, detail, {}, scope)
+        : await completeOfficeDelivery(seat.host_id, id, b.outcome, detail, {}, scope);
+    json(200, { result });
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
+// STEP 3 — a glue seat uploads its conversation (plan 2026-09-23-step-3-office-
+// reaches-glue-seats), so the office reads what an assistant knows instead of
+// asking it. Tenant, person and seat come from the TOKEN; the body names only
+// the turns. A turn is cut rather than refused where it can be (the office
+// body idiom: the words already exist) and skipped only when it is not a turn.
+export const SEAT_TURN_TEXT_MAX = 8000;
+export const SEAT_TURN_ARGS_MAX = 4000;
+const SEAT_CONVERSATION_BODY_CAP = 256 * 1024;
+const SEAT_CONVERSATION_MAX_TURNS = 200;
+
+// Postgres text refuses NUL, and a cut through the middle of an emoji would
+// leave half a character: cut on whole characters, NULs gone.
+function cleanTurnText(s: string, max: number): string {
+  const chars = Array.from(s.replace(/\u0000/g, ''));
+  return chars.length <= max ? chars.join('') : chars.slice(0, max).join('');
+}
+
+// A batch the database refuses for its DATA (22xxx bad value, 23xxx constraint)
+// is stored row by row, dropping only the rows it refuses — otherwise one bad
+// turn would be re-sent, oldest first, and block every turn after it forever.
+// Any other failure (an outage) stays a 500, and the glue keeps the batch.
+async function insertSeatTurnsTolerant(rows: SeatTurnInsert[]): Promise<{ stored: number; dropped: number }> {
+  try {
+    return { stored: await insertSeatTurns(rows), dropped: 0 };
+  } catch (err) {
+    const code = String(((err as { cause?: { code?: unknown } }).cause?.code as string | undefined) ?? '');
+    if (!/^2[23]/.test(code)) throw err;
+    let stored = 0;
+    let dropped = 0;
+    for (const row of rows) {
+      try {
+        stored += await insertSeatTurns([row]);
+      } catch (rowErr) {
+        const rowCode = String(((rowErr as { cause?: { code?: unknown } }).cause?.code as string | undefined) ?? '');
+        if (!/^2[23]/.test(rowCode)) throw rowErr;
+        dropped += 1;
+      }
+    }
+    console.error(`[seat/conversation] dropped ${dropped} turn(s) the database refused (${code})`);
+    return { stored, dropped };
+  }
+}
+
+export function seatTurnsFromBody(
+  body: unknown,
+  seat: Pick<Seat, 'id' | 'tenant_id' | 'technician_id'>,
+): SeatTurnInsert[] | null {
+  const turns = (body as { turns?: unknown })?.turns;
+  if (!Array.isArray(turns) || turns.length > SEAT_CONVERSATION_MAX_TURNS) return null;
+  const out: SeatTurnInsert[] = [];
+  for (const raw of turns as Array<Record<string, unknown>>) {
+    if (!raw || typeof raw.id !== 'string' || !UUID.test(raw.id)) continue;
+    if (raw.role !== 'person' && raw.role !== 'assistant' && raw.role !== 'tool') continue;
+    if (typeof raw.at !== 'string' || Number.isNaN(Date.parse(raw.at))) continue;
+    if (typeof raw.sessionId !== 'string' || !raw.sessionId || raw.sessionId.length > 200) continue;
+    const text = typeof raw.text === 'string' ? cleanTurnText(raw.text, SEAT_TURN_TEXT_MAX) : null;
+    const tool = typeof raw.tool === 'string' ? cleanTurnText(raw.tool, 200) : null;
+    let args: Json | null = null;
+    if (raw.args !== undefined && raw.args !== null) {
+      // jsonb refuses a NUL anywhere, even escaped: drop it from every string
+      // value as it is encoded (never by editing the encoded text, which would
+      // break a string that merely CONTAINS the characters backslash-u-0000).
+      const encoded = JSON.stringify(raw.args, (_k, v: unknown) =>
+        typeof v === 'string' ? v.replace(/\u0000/g, '') : v,
+      );
+      args = encoded.length <= SEAT_TURN_ARGS_MAX ? (JSON.parse(encoded) as Json) : { truncated: true };
+    }
+    out.push({
+      id: raw.id,
+      tenantId: seat.tenant_id,
+      technicianId: seat.technician_id,
+      seatId: seat.id,
+      sessionId: raw.sessionId,
+      at: new Date(raw.at).toISOString(),
+      role: raw.role,
+      text,
+      tool,
+      args,
+      ok: typeof raw.ok === 'boolean' ? raw.ok : null,
+    });
+  }
+  return out;
+}
+
+async function handleSeatConversation(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const json = (code: number, body: unknown) => {
+    res.writeHead(code, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    const who = await seatOfRequest(req);
+    if ('status' in who) {
+      res.writeHead(who.status);
+      res.end();
+      return;
+    }
+    // An honest oversized client gets a clean 413 from its Content-Length before
+    // any read (the board's idiom); a length-less flood is cut off by the cap.
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > SEAT_CONVERSATION_BODY_CAP) {
+      json(413, { error: 'body too large' });
+      return;
+    }
+    let body: unknown;
+    try {
+      const raw = await readRawBody(req, SEAT_CONVERSATION_BODY_CAP);
+      body = raw.length ? JSON.parse(raw) : undefined;
+    } catch (err) {
+      if ((err as { code?: string }).code === 'BODY_TOO_LARGE') {
+        json(413, { error: 'body too large' });
+        return;
+      }
+      json(400, { error: 'malformed JSON body' });
+      return;
+    }
+    const rows = seatTurnsFromBody(body, who.seat);
+    if (!rows) {
+      json(400, { error: `turns must be an array of at most ${SEAT_CONVERSATION_MAX_TURNS}` });
+      return;
+    }
+    // The second guard for a manager's privacy (the first: their glue never
+    // uploads). Accepted and dropped, so a glue that has not yet restarted on a
+    // promotion clears its outbox instead of retrying forever.
+    if (!sharesConversation(who.person)) {
+      json(200, { stored: 0, private: true });
+      return;
+    }
+    const { stored, dropped } = await insertSeatTurnsTolerant(rows);
+    json(200, dropped ? { stored, dropped } : { stored });
   } catch {
     if (!res.headersSent) {
       res.writeHead(500);
@@ -400,7 +717,9 @@ async function handleNudgePull(req: http.IncomingMessage, res: http.ServerRespon
       res.end();
       return;
     }
-    const body = await buildNudgeDelivery(host.id);
+    const body = await buildNudgeDelivery(host.id, {}, {
+      skipTechnicianIds: await listLiveGlueTechnicianIds(host.id, liveGlueSince()),
+    });
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(body));
   } catch {
@@ -480,7 +799,9 @@ async function handleOfficePull(req: http.IncomingMessage, res: http.ServerRespo
       res.end();
       return;
     }
-    const body = await buildOfficeDelivery(host.id);
+    const body = await buildOfficeDelivery(host.id, {}, {
+      skipTechnicianIds: await listLiveGlueTechnicianIds(host.id, liveGlueSince()),
+    });
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(body));
   } catch {
@@ -986,6 +1307,22 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     if (req.url === '/seat/whoami' && req.method === 'GET') {
       await handleSeatWhoami(req, res);
+      return;
+    }
+    // Step 3: a glue seat's inbox — its own person's office items, and its
+    // report per item. Seat token only; before allowed() like whoami.
+    if (req.url === '/seat/inbox' && req.method === 'GET') {
+      await handleSeatInboxPull(req, res);
+      return;
+    }
+    if (req.url === '/seat/inbox' && req.method === 'POST') {
+      await handleSeatInboxReport(req, res);
+      return;
+    }
+    // Step 3: the glue's conversation upload — before allowed() too, since box
+    // egress IPs rotate and an upload refused there is a conversation lost.
+    if (req.url === '/seat/conversation' && req.method === 'POST') {
+      await handleSeatConversation(req, res);
       return;
     }
     // The voice's outbox: nudge pull + delivery report — same host-token gate

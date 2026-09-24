@@ -2,7 +2,7 @@
 date: 2026-09-23
 task: Step 3 — office messages, nudges and pushes reach glue seats with zero seat model calls; the office reads seat conversations instead of asking them
 research: thoughts/shared/research/2026-09-23-step-3-office-messages-and-nudges-reach-glue-seats.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -425,21 +425,32 @@ what a technician said to their assistant, from `read_conversation`, in the offi
 
 ### Live verification (agent-executable)
 - Prerequisites: Supabase test MCP, Render MCP, `ssh tradesbox` (read-only journal).
-- [ ] `seats.last_pulled_at` for s5 advances every ~10 s. `office-runner` and `nudge-runner`
+- [x] `seats.last_pulled_at` for s5 advances every ~10 s. `office-runner` and `nudge-runner`
       journals show no new s5 failures.
-- [ ] Insert a `person_pushes` row for Ben via the push path, i.e. a board move on the pilot,
+- [ ] (not run live — same phone leg as the chat item below; covered by unit + integration tests) Insert a `person_pushes` row for Ben via the push path, i.e. a board move on the pilot,
       driven. It reaches `delivered` within 20 s.
-- [ ] A driven planner `send` `as:"chat"` + `as:"assistant"` to Ben: both rows `delivered`, with
+- [x] A driven planner `send` `as:"chat"` + `as:"assistant"` to Ben: both rows `delivered`, with
       zero seat model calls in the glue's cost log for that window.
 
 ### Manual verification
-- [ ] **The gate, on the phone:**
+- [x] **The gate, on the phone:** (PASSED 2026-09-24 16:30 UTC — note a23ea11b on visit b7c8b837, nudge answered_by set)
   - A planner question arrives on Ben's Telegram. The operator answers it.
   - `record_field_note` lands on the named job and the nudge gets `answered_by_capture_id`. The
     seat's reply shows it understood the question: the "[Since …]" block worked.
   - `read_conversation` (run by a driven planner tick, or the manager office door) returns
     snippets of that exchange.
-- [ ] The disclosure copy reads well, and it arrived exactly once.
+- [x] The disclosure copy reads well, and it arrived exactly once.
 
 ---
 *Pause after Phase 5's manual list. Phases 1–4 have no manual checks and run straight through.*
+
+## Outcome (2026-09-24)
+
+Live on the pilot: web + lifecycle-heart at d06ba6f (#283), migrations applied, s5 glue installed
+06:51 UTC. Driven: an office text and an office note to Ben were delivered in 3.3 s / 4.3 s, served
+once, with zero seat model calls. Gate: the operator answered on the phone; the seat saw the office's
+text on top of the reply, filed the note on the right visit (completing it), the open nudge got
+answered_by_capture_id, and all four turns reached seat_turns. Follow-ups merged: #284 (npm audit fix)
+and #285 (a manager's conversation is private, operator 2026-09-24): both awaiting deploy, and #285
+must be live before step 2 moves a manager seat onto the glue.
+

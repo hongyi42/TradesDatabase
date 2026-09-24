@@ -128,6 +128,14 @@ if (poolErr) throw new Error(`pool read failed: ${poolErr.message}`);
 // A roster row with no host_id falls back to the name, which is unambiguous
 // only while one pool row carries it; when more do, say so instead of guessing.
 const poolByHostRef = new Map((pool ?? []).map((p) => [`${p.host_id}|${p.sandbox_ref}`, p]));
+// Glue seats (step 4) are real seats with no pool row by design: a person whose
+// sandbox_ref is their live seat's ref is on the seat glue, not orphaned.
+const { data: seatRows, error: seatErr } = await db
+  .from('seats')
+  .select('technician_id,seat_ref,host_id')
+  .is('retired_at', null);
+if (seatErr) throw new Error(`seats read failed: ${seatErr.message}`);
+const glueSeat = new Set((seatRows ?? []).map((s) => `${s.technician_id}|${s.host_id}|${s.seat_ref}`));
 const poolByRef = new Map();
 for (const p of pool ?? []) poolByRef.set(p.sandbox_ref, [...(poolByRef.get(p.sandbox_ref) ?? []), p]);
 let split = 0;
@@ -140,6 +148,7 @@ for (const t of live.filter((x) => x.sandbox_ref)) {
     continue;
   }
   const p = t.host_id ? poolByHostRef.get(`${t.host_id}|${t.sandbox_ref}`) : sameRef[0];
+  if (!p && glueSeat.has(`${t.id}|${t.host_id}|${t.sandbox_ref}`)) continue; // a glue seat
   if (!p) {
     split++;
     say(`  ${t.sandbox_ref.padEnd(4)} ${t.ref} holds a sandbox with NO pool row`);

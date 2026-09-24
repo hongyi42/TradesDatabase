@@ -132,6 +132,15 @@ describe('seats', () => {
     await expect(
       registerSeatBot({ hostId, tenantId, botId: '123:ABC', botUsername: '@pasted_token_bot' }),
     ).rejects.toThrow(/numeric id/);
+
+    // A bot a live pool sandbox answers is refused, by id or by handle.
+    await registerSandbox({ tenantId, hostId, sandboxRef: 'pool-owned', botUsername: '@pooled_bot', botId: '700099' });
+    await expect(
+      registerSeatBot({ hostId, tenantId, botId: '700099', botUsername: '@renamed_bot' }),
+    ).rejects.toThrow(/pool sandbox pool-owned/);
+    await expect(
+      registerSeatBot({ hostId, tenantId, botId: null, botUsername: '@pooled_bot' }),
+    ).rejects.toThrow(/pool sandbox pool-owned/);
   });
 
   test('pool-less seat refs exclude a seat backed by a live pool sandbox', async () => {

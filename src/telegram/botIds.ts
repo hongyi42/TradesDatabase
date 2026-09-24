@@ -1,4 +1,4 @@
-import { listLiveBotIds } from '../db/index.js';
+import { listLiveBotIds, listLiveSeatBotIds } from '../db/index.js';
 import { botIdFromToken } from './initData.js';
 
 // THE ALLOWLIST behind Mini App signature checks — the numeric ids of every bot
@@ -54,7 +54,11 @@ export function boardBotId(): string | null {
 
 async function refresh(): Promise<void> {
   try {
-    cached = await listLiveBotIds();
+    // The pool's bots plus the glue seats' bots (step 4): both are doors we
+    // own. listLiveSeatBotIds contributes [] until its table is migrated, so a
+    // schema-behind-code deploy never throws the whole list away.
+    const [pool, seats] = await Promise.all([listLiveBotIds(), listLiveSeatBotIds()]);
+    cached = [...new Set([...pool, ...seats])];
     lastGoodAt = Date.now();
     expiresAt = lastGoodAt + TTL_MS;
   } catch {

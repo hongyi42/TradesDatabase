@@ -9,6 +9,7 @@
 // Tier membership is DECLARATIVE only: listing a tool under `admin` is what puts
 // it in ADMIN_TOOL_NAMES, and the hub applies that gate by name before any
 // handler here runs. A handler never checks a tier itself.
+import { randomBytes } from 'node:crypto';
 import {
   disablePairing as liveDisablePairing,
   enablePairing as liveEnablePairing,
@@ -22,10 +23,13 @@ import {
   cancelSandboxRetirement as liveCancelRetirement,
   casTechnician,
   claimSandbox,
+  createSeat,
   dismissOpenObservationsForRef,
   findTechnicianByTelegramUserId,
   getOpenReviewItem,
   getPoolRowByTechnician,
+  getSeatBotUsername,
+  getSeatByTechnician,
   getTechnician,
   getTenantProfile,
   insertTechnician,
@@ -33,7 +37,9 @@ import {
   isSeatCapError,
   isUniqueViolation,
   listFreeSandboxes,
+  listFreeSeatBots,
   listPoolRows,
+  listSeatBotHandles,
   listTeam,
   profileEcho,
   profileGaps,
@@ -47,6 +53,7 @@ import {
 } from '../../db/index.js';
 import type {
   LicenseNumber,
+  Seat,
   TechnicianTier,
   TenantProfilePatch,
 } from '../../db/index.js';
@@ -774,43 +781,81 @@ async function handleBindTelegram(toolCtx: ToolContext): Promise<unknown> {
       };
       let sandboxRef = target.sandbox_ref;
       // The bot handle is the only way the person can OPEN the chat (bots can't
-      // message first) — resolve it from the pool row on both paths. Legacy
-      // host assignments (no pool row) and pre-handle registrations yield null, which
-      // the tool description turns into "ask your operator", never a guess.
+      // message first) — resolve it on every path. Legacy host assignments (no
+      // pool row, no seat) and pre-handle registrations yield null, which the
+      // tool description turns into "ask your operator", never a guess.
       let botUsername: string | null = null;
+      // A GLUE seat (step 4) is started on the box by an operator; a pool
+      // sandbox is picked up by the box's own 5-minute pull. The note differs.
+      let glue = false;
       if (!sandboxRef) {
-        let pool = await getPoolRowByTechnician(target.id);
-        if (!pool) {
-          for (const free of await listFreeSandboxes(tenantId)) {
-            const claimed = await claimSandbox(free.id, target.id);
-            if (claimed) {
-              pool = claimed;
-              break;
+        // Order (plan 2026-09-23-step-4, review 3-4): every recovery first, so
+        // a retried bind never takes a second assistant. (a) a glue seat whose
+        // roster write failed mid-flight; (b) a pool claim whose roster write
+        // failed; only then (c) a free seat bot → a new glue seat, and last
+        // (d) a free pool sandbox.
+        let seat = await getSeatByTechnician(target.id);
+        let pool = seat ? null : await getPoolRowByTechnician(target.id);
+        if (!seat && !pool) {
+          seat = await claimGlueSeat(tenantId, target.id);
+          // No bot was free — but a CONCURRENT bind of this same person may have
+          // just taken the last one. Re-check before the pool, or they would end
+          // up with a glue seat AND a pool sandbox (nothing links the two tables).
+          seat ??= await getSeatByTechnician(target.id);
+        }
+        if (seat) {
+          glue = true;
+          patch.host_id = seat.host_id;
+          patch.sandbox_ref = seat.seat_ref;
+          sandboxRef = seat.seat_ref;
+          botUsername = await getSeatBotUsername(seat);
+        } else {
+          if (!pool) {
+            for (const free of await listFreeSandboxes(tenantId)) {
+              const claimed = await claimSandbox(free.id, target.id);
+              if (claimed) {
+                pool = claimed;
+                break;
+              }
             }
           }
+          if (!pool) {
+            // Honest emptiness: a swap-in-progress means a blank is minutes away
+            // (the recycler is rebuilding the deactivated member's sandbox) —
+            // "contact support" is only true when nothing is in flight.
+            const recycling = (await listPoolRows(tenantId)).some(
+              (r) => r.retire_requested_at && !r.retired_at,
+            );
+            throw new Error(
+              recycling
+                ? 'no free sandbox yet — one is being recycled and should be ready in ~15 minutes; try again then'
+                : 'no free sandbox in the cold pool — contact support to add capacity',
+            );
+          }
+          patch.host_id = pool.host_id;
+          patch.sandbox_ref = pool.sandbox_ref;
+          sandboxRef = pool.sandbox_ref;
+          botUsername = pool.bot_username;
         }
-        if (!pool) {
-          // Honest emptiness: a swap-in-progress means a blank is minutes away
-          // (the recycler is rebuilding the deactivated member's sandbox) —
-          // "contact support" is only true when nothing is in flight.
-          const recycling = (await listPoolRows(tenantId)).some(
-            (r) => r.retire_requested_at && !r.retired_at,
-          );
-          throw new Error(
-            recycling
-              ? 'no free sandbox yet — one is being recycled and should be ready in ~15 minutes; try again then'
-              : 'no free sandbox in the cold pool — contact support to add capacity',
-          );
-        }
-        patch.host_id = pool.host_id;
-        patch.sandbox_ref = pool.sandbox_ref;
-        sandboxRef = pool.sandbox_ref;
-        botUsername = pool.bot_username;
       } else {
-        botUsername = (await getPoolRowByTechnician(target.id))?.bot_username ?? null;
+        const seat = await getSeatByTechnician(target.id);
+        if (seat) glue = true;
+        botUsername = seat
+          ? await getSeatBotUsername(seat)
+          : ((await getPoolRowByTechnician(target.id))?.bot_username ?? null);
       }
       const previousTelegramUserId = target.telegram_user_id;
       await updateTechnician(target.id, patch);
+      const open = botUsername
+        ? `the person must open ${botUsername} in Telegram and send /start`
+        : 'no bot handle on record for this sandbox — ask your operator which bot to open';
+      // A glue seat learns its Telegram account when it starts (/seat/whoami),
+      // so a NEW one needs an operator to start it and a rebind needs a restart.
+      const box = !glue
+        ? 'applies to the box within ~5 minutes'
+        : patch.sandbox_ref
+          ? `an operator starts the assistant on the box (install.sh ${sandboxRef})`
+          : 'applies when an operator restarts the assistant on the box';
       return {
         status: previousTelegramUserId ? 'rebound' : 'bound',
         ref,
@@ -818,12 +863,36 @@ async function handleBindTelegram(toolCtx: ToolContext): Promise<unknown> {
         sandboxRef,
         botUsername,
         previousTelegramUserId,
-        note:
-          'applies to the box within ~5 minutes' +
-          (botUsername
-            ? `; the person must open ${botUsername} in Telegram and send /start`
-            : '; no bot handle on record for this sandbox — ask your operator which bot to open'),
+        note: `${box}; then ${open}`,
       };
+}
+
+// Claim a free seat bot for this person as a new GLUE seat (step 4). Tries each
+// free bot in turn: losing a bot to a concurrent bind (seats_live_bot_key) or a
+// ref collision moves on to the next; finding that THIS person already got a
+// seat meanwhile (seats_live_technician_key) returns that seat. Null = no bot
+// was free, and the caller falls back to the pool.
+async function claimGlueSeat(tenantId: string, technicianId: string): Promise<Seat | null> {
+  for (const bot of await listFreeSeatBots(tenantId)) {
+    try {
+      return await createSeat({
+        tenantId,
+        technicianId,
+        hostId: bot.host_id,
+        seatRef: `g_${randomBytes(4).toString('hex')}`,
+        botRef: bot.id,
+      });
+    } catch (err) {
+      const constraint = (err as { constraint?: string }).constraint;
+      if (constraint === 'seats_live_bot_key' || constraint === 'seats_live_host_ref_key') continue;
+      if (constraint === 'seats_live_technician_key') {
+        const mine = await getSeatByTechnician(technicianId);
+        if (mine) return mine;
+      }
+      throw err;
+    }
+  }
+  return null;
 }
 
 async function handleListTeam(toolCtx: ToolContext): Promise<unknown> {
@@ -836,6 +905,8 @@ async function handleListTeam(toolCtx: ToolContext): Promise<unknown> {
           .filter((p) => p.technician_id)
           .map((p) => [p.technician_id, p.bot_username]),
       );
+      // A glue seat's bot (step 4) wins over the pool row it may have come from.
+      const seatBotByTechnician = await listSeatBotHandles(tenantId);
       // A named object, never a bare array (retrieval layer 4): arrays get no
       // `now` rider.
       return {
@@ -848,7 +919,7 @@ async function handleListTeam(toolCtx: ToolContext): Promise<unknown> {
           skills: t.skills,
           availabilityConfigured: t.availability !== null,
           sandboxRef: t.sandbox_ref,
-          botUsername: poolBotByTechnician.get(t.id) ?? null,
+          botUsername: seatBotByTechnician.get(t.id) ?? poolBotByTechnician.get(t.id) ?? null,
         })),
       };
 }

@@ -293,12 +293,12 @@ from env, `getMe` (reuse `wire-bot`'s :276-300), `registerSeatBot`; prints the h
 token goes on the box (`/root/bots/<handle>.env`, 0600 root).
 
 ### Automated verification
-- [ ] gates pass
-- [ ] `src/mcp/server.test.ts` (bind_telegram, `tg-host` fixtures :2027-2496): existing cases
+- [x] gates pass
+- [x] `src/mcp/server.test.ts` (bind_telegram, `tg-host` fixtures :2027-2496): existing cases
   unchanged (`tg-a` legacy, `rcy-s2` recycle); free seat bot → `g_…` seat + mirror; two binds on one
   bot → second takes the next bot or the pool; half-written glue seat reused; no bots → pool path
-- [ ] `list_team` shows the seat bot handle; `botIds` admits a seat bot id
-- [ ] `badgeFile.test.ts`: a pool-less glue seat ships nothing; a glue seat with a pool row (s5)
+- [x] `list_team` shows the seat bot handle; `botIds` admits a seat bot id
+- [x] `badgeFile.test.ts`: a pool-less glue seat ships nothing; a glue seat with a pool row (s5)
   still ships its badge and binding
 
 ---

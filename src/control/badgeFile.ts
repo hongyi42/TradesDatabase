@@ -1,6 +1,7 @@
 import {
   claimBadgeHash,
   isInactiveState,
+  listPoollessSeatRefs,
   listRetirementsForHost,
   listTechniciansForHost,
   type Technician,
@@ -64,11 +65,13 @@ export async function buildBadgeResponse(
     list?: typeof listTechniciansForHost;
     claim?: typeof claimBadgeHash;
     listRetirements?: typeof listRetirementsForHost;
+    listPoolless?: typeof listPoollessSeatRefs;
   } = {},
 ): Promise<BadgeResponse> {
   const list = deps.list ?? listTechniciansForHost;
   const claim = deps.claim ?? claimBadgeHash;
   const listRetirements = deps.listRetirements ?? listRetirementsForHost;
+  const listPoolless = deps.listPoolless ?? listPoollessSeatRefs;
   // Retirements are fetched BEFORE the mint loop: a throw here 500s the pull
   // while nothing has been minted yet (retried next tick, nothing lost). After
   // the loop it would kill the response carrying freshly minted plaintexts —
@@ -77,7 +80,15 @@ export async function buildBadgeResponse(
   const retirements = (await listRetirements(hostId)).map((r) => ({
     sandboxRef: r.sandbox_ref,
   }));
-  const rows = await list(hostId);
+  // Glue seats with NO pool sandbox behind them (step 4's new hires, `g_…`):
+  // nothing on this box can use a badge or an openclaw binding for them, and
+  // shipping one would have the box try to install into a container that does
+  // not exist, every 5 minutes. A glue seat that still HAS its pool sandbox (s5,
+  // and every seat step 5 installs before its cutover) keeps both, so rolling
+  // back to openclaw still reaches the spine. Fetched before the mint loop for
+  // the same reason as retirements: a throw here must not strand a plaintext.
+  const poolless = new Set(await listPoolless(hostId));
+  const rows = (await list(hostId)).filter((r) => !(r.sandbox_ref && poolless.has(r.sandbox_ref)));
   const badgesFile: BadgeResponse['badgesFile'] = {};
   const newBadges: BadgeResponse['newBadges'] = [];
   const bindings: BadgeResponse['bindings'] = [];

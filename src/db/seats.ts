@@ -157,8 +157,8 @@ export async function listSeatBotHandles(tenantId: string): Promise<Map<string, 
   return out;
 }
 
-// The seat bots' half of the Mini App allowlist (listLiveBotIds unions it with
-// the pool's). SCHEMA-BEHIND-CODE is a normal deploy order: until this table is
+// The seat bots' half of the Mini App allowlist (src/telegram/botIds.ts unions
+// it with the pool's listLiveBotIds). SCHEMA-BEHIND-CODE is a normal deploy order: until this table is
 // migrated in, it contributes nothing — it must never throw the whole union and
 // leave every assistant launch refused once the stale list ages out.
 export async function listLiveSeatBotIds(): Promise<string[]> {
@@ -206,6 +206,28 @@ export async function registerSeatBot(input: {
 }): Promise<SeatBot> {
   if (input.botId !== null && !/^[0-9]{1,20}$/.test(input.botId)) {
     throw new Error('registerSeatBot: botId must be the numeric id, not the token');
+  }
+  // A bot an OpenClaw pool sandbox still answers must never become a seat bot:
+  // the next glue bind would put a second person on it (Telegram allows ONE
+  // poller per bot). Checked by id and by handle — a pool row may have either.
+  let owned = getClient()
+    .from('sandbox_pool')
+    .select('sandbox_ref')
+    .is('retired_at', null)
+    .eq('bot_username', input.botUsername);
+  if (input.botId !== null) {
+    owned = getClient()
+      .from('sandbox_pool')
+      .select('sandbox_ref')
+      .is('retired_at', null)
+      .or(`bot_id.eq.${input.botId},bot_username.eq.${input.botUsername}`);
+  }
+  const { data: pool, error: poolError } = await owned.limit(1);
+  if (poolError) throw new Error(`registerSeatBot failed: ${poolError.message}`);
+  if (pool?.length) {
+    throw new Error(
+      `registerSeatBot: ${input.botUsername} is pool sandbox ${pool[0].sandbox_ref}'s bot — a seat bot needs a bot of its own`,
+    );
   }
   const { data, error } = await getClient()
     .from('seat_bots')

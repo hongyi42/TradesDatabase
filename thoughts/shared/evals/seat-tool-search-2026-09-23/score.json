@@ -1,0 +1,6031 @@
+{
+ "summary": {
+  "messages": 100,
+  "searches": 228,
+  "scored": 138,
+  "referenceLLM": {
+   "allNeededFound": "100.0%",
+   "avgToolsLoaded": "2.53"
+  },
+  "jevStability_top1_same_across_reps": {
+   "short": "97.8%",
+   "full": "98.6%"
+  },
+  "jevNewCalls": 532,
+  "jevCost": 0.1753360980000001,
+  "jevLatency": {
+   "p50": 378,
+   "p95": 474
+  },
+  "table": [
+   {
+    "variant": "short",
+    "policy": "top1",
+    "n": 414,
+    "allNeededFound": "67.1%",
+    "anyFound": "89.6%",
+    "avgToolsLoaded": "1.00",
+    "noneWins": "4.1%",
+    "unsure": "14.3%"
+   },
+   {
+    "variant": "short",
+    "policy": "top3",
+    "n": 414,
+    "allNeededFound": "80.4%",
+    "anyFound": "96.1%",
+    "avgToolsLoaded": "3.00",
+    "noneWins": "4.1%",
+    "unsure": "14.3%"
+   },
+   {
+    "variant": "short",
+    "policy": "top5",
+    "n": 414,
+    "allNeededFound": "85.5%",
+    "anyFound": "98.1%",
+    "avgToolsLoaded": "5.00",
+    "noneWins": "4.1%",
+    "unsure": "14.3%"
+   },
+   {
+    "variant": "short",
+    "policy": "confident1-else5 (hi .6)",
+    "n": 414,
+    "allNeededFound": "77.3%",
+    "anyFound": "96.9%",
+    "avgToolsLoaded": "1.57",
+    "noneWins": "4.1%",
+    "unsure": "14.3%"
+   },
+   {
+    "variant": "short",
+    "policy": "confident1-else5 (hi .8)",
+    "n": 414,
+    "allNeededFound": "80.4%",
+    "anyFound": "97.8%",
+    "avgToolsLoaded": "1.77",
+    "noneWins": "4.1%",
+    "unsure": "14.3%"
+   },
+   {
+    "variant": "short",
+    "policy": "confident2-else5 (hi .6)",
+    "n": 414,
+    "allNeededFound": "82.1%",
+    "anyFound": "97.8%",
+    "avgToolsLoaded": "2.43",
+    "noneWins": "4.1%",
+    "unsure": "14.3%"
+   },
+   {
+    "variant": "short",
+    "policy": "cumulative 0.9 (max 8)",
+    "n": 414,
+    "allNeededFound": "81.2%",
+    "anyFound": "97.1%",
+    "avgToolsLoaded": "2.14",
+    "noneWins": "4.1%",
+    "unsure": "14.3%"
+   },
+   {
+    "variant": "full",
+    "policy": "top1",
+    "n": 414,
+    "allNeededFound": "67.6%",
+    "anyFound": "90.8%",
+    "avgToolsLoaded": "1.00",
+    "noneWins": "2.4%",
+    "unsure": "14.7%"
+   },
+   {
+    "variant": "full",
+    "policy": "top3",
+    "n": 414,
+    "allNeededFound": "83.1%",
+    "anyFound": "96.4%",
+    "avgToolsLoaded": "3.00",
+    "noneWins": "2.4%",
+    "unsure": "14.7%"
+   },
+   {
+    "variant": "full",
+    "policy": "top5",
+    "n": 414,
+    "allNeededFound": "87.2%",
+    "anyFound": "98.3%",
+    "avgToolsLoaded": "5.00",
+    "noneWins": "2.4%",
+    "unsure": "14.7%"
+   },
+   {
+    "variant": "full",
+    "policy": "confident1-else5 (hi .6)",
+    "n": 414,
+    "allNeededFound": "77.1%",
+    "anyFound": "97.6%",
+    "avgToolsLoaded": "1.59",
+    "noneWins": "2.4%",
+    "unsure": "14.7%"
+   },
+   {
+    "variant": "full",
+    "policy": "confident1-else5 (hi .8)",
+    "n": 414,
+    "allNeededFound": "80.4%",
+    "anyFound": "97.8%",
+    "avgToolsLoaded": "1.97",
+    "noneWins": "2.4%",
+    "unsure": "14.7%"
+   },
+   {
+    "variant": "full",
+    "policy": "confident2-else5 (hi .6)",
+    "n": 414,
+    "allNeededFound": "82.6%",
+    "anyFound": "98.3%",
+    "avgToolsLoaded": "2.44",
+    "noneWins": "2.4%",
+    "unsure": "14.7%"
+   },
+   {
+    "variant": "full",
+    "policy": "cumulative 0.9 (max 8)",
+    "n": 414,
+    "allNeededFound": "80.4%",
+    "anyFound": "97.8%",
+    "avgToolsLoaded": "2.17",
+    "noneWins": "2.4%",
+    "unsure": "14.7%"
+   }
+  ]
+ },
+ "rows": [
+  {
+   "variant": "short",
+   "policy": "top1",
+   "n": 414,
+   "allNeededFound": "67.1%",
+   "anyFound": "89.6%",
+   "avgToolsLoaded": "1.00",
+   "noneWins": "4.1%",
+   "unsure": "14.3%",
+   "missesSample": [
+    {
+     "q": "technician time off leave availability cancel",
+     "used": [
+      "get_availability",
+      "remove_time_off"
+     ],
+     "got": [
+      "remove_time_off"
+     ],
+     "top": [
+      "remove_time_off 1.00",
+      "revoke_access 0.00",
+      "deactivate_technician_seat 0.00"
+     ]
+    },
+    {
+     "q": "revenue and financial reports",
+     "used": [
+      "query_spine"
+     ],
+     "got": [
+      "run_command"
+     ],
+     "top": [
+      "run_command 0.41",
+      "query_spine 0.40",
+      "read_file 0.03"
+     ]
+    },
+    {
+     "q": "send email to customer",
+     "used": [
+      "find_customer",
+      "get_customer_context"
+     ],
+     "got": [
+      "send_email"
+     ],
+     "top": [
+      "send_email 1.00",
+      "get_availability 0.00",
+      "record_standing_fact 0.00"
+     ]
+    },
+    {
+     "q": "quote estimate",
+     "used": [
+      "set_firm_profile"
+     ],
+     "got": [
+      "open_job"
+     ],
+     "top": [
+      "open_job 0.55",
+      "record_money_event 0.26",
+      "run_command 0.02"
+     ]
+    },
+    {
+     "q": "read schedule visits for a technician or customer",
+     "used": [
+      "get_customer_context",
+      "get_team_schedule",
+      "query_spine",
+      "get_job"
+     ],
+     "got": [
+      "get_team_schedule"
+     ],
+     "top": [
+      "get_team_schedule 0.54",
+      "find_slots 0.09",
+      "get_availability 0.03"
+     ]
+    },
+    {
+     "q": "query cancelled visits or search visits schedule",
+     "used": [
+      "query_spine"
+     ],
+     "got": [
+      "get_team_schedule"
+     ],
+     "top": [
+      "get_team_schedule 0.43",
+      "unschedule_visit 0.42",
+      "find_slots 0.06"
+     ]
+    },
+    {
+     "q": "view schedule visits for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context"
+     ],
+     "top": [
+      "get_customer_context 0.29",
+      "get_team_schedule 0.14",
+      "query_spine 0.10"
+     ]
+    },
+    {
+     "q": "get technician schedule or visits",
+     "used": [
+      "get_availability",
+      "get_team_schedule"
+     ],
+     "got": [
+      "get_team_schedule"
+     ],
+     "top": [
+      "get_team_schedule 0.87",
+      "get_availability 0.05",
+      "find_slots 0.02"
+     ]
+    },
+    {
+     "q": "dispatch board link",
+     "used": [
+      "get_team_schedule"
+     ],
+     "got": [
+      "read_webpage"
+     ],
+     "top": [
+      "read_webpage 0.58",
+      "web_search 0.09",
+      "get_team_schedule 0.05"
+     ]
+    },
+    {
+     "q": "office note team lead message",
+     "used": [
+      "ask_team_lead"
+     ],
+     "got": [
+      "inform_team_lead"
+     ],
+     "top": [
+      "inform_team_lead 1.00",
+      "read_webpage 0.00",
+      "record_standing_fact 0.00"
+     ]
+    },
+    {
+     "q": "dashboard settings firm configuration",
+     "used": [
+      "set_firm_profile"
+     ],
+     "got": [
+      "set_technician_view"
+     ],
+     "top": [
+      "set_technician_view 0.59",
+      "set_firm_profile 0.32",
+      "set_timezone 0.03"
+     ]
+    },
+    {
+     "q": "get visit details",
+     "used": [
+      "query_spine"
+     ],
+     "got": [
+      "get_job"
+     ],
+     "top": [
+      "get_job 0.11",
+      "get_team_schedule 0.05",
+      "query_spine 0.04"
+     ]
+    }
+   ]
+  },
+  {
+   "variant": "short",
+   "policy": "top3",
+   "n": 414,
+   "allNeededFound": "80.4%",
+   "anyFound": "96.1%",
+   "avgToolsLoaded": "3.00",
+   "noneWins": "4.1%",
+   "unsure": "14.3%",
+   "missesSample": [
+    {
+     "q": "technician time off leave availability cancel",
+     "used": [
+      "get_availability",
+      "remove_time_off"
+     ],
+     "got": [
+      "remove_time_off",
+      "revoke_access",
+      "deactivate_technician_seat"
+     ],
+     "top": [
+      "remove_time_off 1.00",
+      "revoke_access 0.00",
+      "deactivate_technician_seat 0.00"
+     ]
+    },
+    {
+     "q": "send email to customer",
+     "used": [
+      "find_customer",
+      "get_customer_context"
+     ],
+     "got": [
+      "send_email",
+      "get_availability",
+      "record_standing_fact"
+     ],
+     "top": [
+      "send_email 1.00",
+      "get_availability 0.00",
+      "record_standing_fact 0.00"
+     ]
+    },
+    {
+     "q": "quote estimate",
+     "used": [
+      "set_firm_profile"
+     ],
+     "got": [
+      "open_job",
+      "record_money_event",
+      "run_command"
+     ],
+     "top": [
+      "open_job 0.55",
+      "record_money_event 0.26",
+      "run_command 0.02"
+     ]
+    },
+    {
+     "q": "read schedule visits for a technician or customer",
+     "used": [
+      "get_customer_context",
+      "get_team_schedule",
+      "query_spine",
+      "get_job"
+     ],
+     "got": [
+      "get_team_schedule",
+      "find_slots",
+      "get_availability"
+     ],
+     "top": [
+      "get_team_schedule 0.54",
+      "find_slots 0.09",
+      "get_availability 0.03"
+     ]
+    },
+    {
+     "q": "query cancelled visits or search visits schedule",
+     "used": [
+      "query_spine"
+     ],
+     "got": [
+      "get_team_schedule",
+      "unschedule_visit",
+      "find_slots"
+     ],
+     "top": [
+      "get_team_schedule 0.43",
+      "unschedule_visit 0.42",
+      "find_slots 0.06"
+     ]
+    },
+    {
+     "q": "office note team lead message",
+     "used": [
+      "ask_team_lead"
+     ],
+     "got": [
+      "inform_team_lead",
+      "read_webpage",
+      "record_standing_fact"
+     ],
+     "top": [
+      "inform_team_lead 1.00",
+      "read_webpage 0.00",
+      "record_standing_fact 0.00"
+     ]
+    },
+    {
+     "q": "technician schedule working hours roster",
+     "used": [
+      "get_availability",
+      "list_team"
+     ],
+     "got": [
+      "get_availability",
+      "set_availability",
+      "get_team_schedule"
+     ],
+     "top": [
+      "get_availability 0.85",
+      "set_availability 0.13",
+      "get_team_schedule 0.02"
+     ]
+    },
+    {
+     "q": "record technician time off or leave",
+     "used": [
+      "list_team"
+     ],
+     "got": [
+      "add_time_off",
+      "set_job_duration",
+      "resolve_date"
+     ],
+     "top": [
+      "add_time_off 1.00",
+      "set_job_duration 0.00",
+      "resolve_date 0.00"
+     ]
+    },
+    {
+     "q": "read field notes or visit details",
+     "used": [
+      "get_customer_context",
+      "list_recent_captures"
+     ],
+     "got": [
+      "list_recent_captures",
+      "get_capture",
+      "read_webpage"
+     ],
+     "top": [
+      "list_recent_captures 0.78",
+      "get_capture 0.16",
+      "read_webpage 0.02"
+     ]
+    },
+    {
+     "q": "list jobs for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context",
+      "read_webpage",
+      "run_command"
+     ],
+     "top": [
+      "get_customer_context 0.99",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    },
+    {
+     "q": "list jobs for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context",
+      "read_webpage",
+      "run_command"
+     ],
+     "top": [
+      "get_customer_context 0.99",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    },
+    {
+     "q": "run python command write file share file sandbox",
+     "used": [
+      "run_command",
+      "read_file",
+      "write_file",
+      "share_file"
+     ],
+     "got": [
+      "run_command",
+      "write_file",
+      "share_file"
+     ],
+     "top": [
+      "run_command 0.84",
+      "write_file 0.08",
+      "share_file 0.04"
+     ]
+    }
+   ]
+  },
+  {
+   "variant": "short",
+   "policy": "top5",
+   "n": 414,
+   "allNeededFound": "85.5%",
+   "anyFound": "98.1%",
+   "avgToolsLoaded": "5.00",
+   "noneWins": "4.1%",
+   "unsure": "14.3%",
+   "missesSample": [
+    {
+     "q": "technician time off leave availability cancel",
+     "used": [
+      "get_availability",
+      "remove_time_off"
+     ],
+     "got": [
+      "remove_time_off",
+      "revoke_access",
+      "deactivate_technician_seat",
+      "find_slots",
+      "write_file"
+     ],
+     "top": [
+      "remove_time_off 1.00",
+      "revoke_access 0.00",
+      "deactivate_technician_seat 0.00"
+     ]
+    },
+    {
+     "q": "send email to customer",
+     "used": [
+      "find_customer",
+      "get_customer_context"
+     ],
+     "got": [
+      "send_email",
+      "get_availability",
+      "record_standing_fact",
+      "read_webpage",
+      "set_availability"
+     ],
+     "top": [
+      "send_email 1.00",
+      "get_availability 0.00",
+      "record_standing_fact 0.00"
+     ]
+    },
+    {
+     "q": "read schedule visits for a technician or customer",
+     "used": [
+      "get_customer_context",
+      "get_team_schedule",
+      "query_spine",
+      "get_job"
+     ],
+     "got": [
+      "get_team_schedule",
+      "find_slots",
+      "get_availability",
+      "query_spine",
+      "get_job"
+     ],
+     "top": [
+      "get_team_schedule 0.54",
+      "find_slots 0.09",
+      "get_availability 0.03"
+     ]
+    },
+    {
+     "q": "office note team lead message",
+     "used": [
+      "ask_team_lead"
+     ],
+     "got": [
+      "inform_team_lead",
+      "read_webpage",
+      "record_standing_fact",
+      "move_visit",
+      "list_team"
+     ],
+     "top": [
+      "inform_team_lead 1.00",
+      "read_webpage 0.00",
+      "record_standing_fact 0.00"
+     ]
+    },
+    {
+     "q": "technician schedule working hours roster",
+     "used": [
+      "get_availability",
+      "list_team"
+     ],
+     "got": [
+      "get_availability",
+      "set_availability",
+      "get_team_schedule",
+      "set_technician_skills",
+      "add_time_off"
+     ],
+     "top": [
+      "get_availability 0.85",
+      "set_availability 0.13",
+      "get_team_schedule 0.02"
+     ]
+    },
+    {
+     "q": "record technician time off or leave",
+     "used": [
+      "list_team"
+     ],
+     "got": [
+      "add_time_off",
+      "set_job_duration",
+      "resolve_date",
+      "record_standing_fact",
+      "record_caller"
+     ],
+     "top": [
+      "add_time_off 1.00",
+      "set_job_duration 0.00",
+      "resolve_date 0.00"
+     ]
+    },
+    {
+     "q": "list jobs for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context",
+      "read_webpage",
+      "run_command",
+      "find_customer",
+      "record_money_event"
+     ],
+     "top": [
+      "get_customer_context 0.99",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    },
+    {
+     "q": "list jobs for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context",
+      "read_webpage",
+      "run_command",
+      "find_customer",
+      "record_money_event"
+     ],
+     "top": [
+      "get_customer_context 0.99",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    },
+    {
+     "q": "run python command write file share file sandbox",
+     "used": [
+      "run_command",
+      "read_file",
+      "write_file",
+      "share_file"
+     ],
+     "got": [
+      "run_command",
+      "write_file",
+      "share_file",
+      "get_team_schedule",
+      "resolve_date"
+     ],
+     "top": [
+      "run_command 0.84",
+      "write_file 0.08",
+      "share_file 0.04"
+     ]
+    },
+    {
+     "q": "share file or attach file",
+     "used": [
+      "read_file",
+      "write_file",
+      "share_file"
+     ],
+     "got": [
+      "share_file",
+      "read_webpage",
+      "run_command",
+      "find_customer",
+      "record_money_event"
+     ],
+     "top": [
+      "share_file 1.00",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    },
+    {
+     "q": "email pdf invoice attachment",
+     "used": [
+      "run_command",
+      "read_file",
+      "write_file",
+      "share_file"
+     ],
+     "got": [
+      "share_file",
+      "send_email",
+      "run_command",
+      "book_visit",
+      "get_capture"
+     ],
+     "top": [
+      "share_file 0.73",
+      "send_email 0.25",
+      "run_command 0.01"
+     ]
+    },
+    {
+     "q": "list jobs for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context",
+      "read_webpage",
+      "run_command",
+      "find_customer",
+      "record_money_event"
+     ],
+     "top": [
+      "get_customer_context 0.99",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    }
+   ]
+  },
+  {
+   "variant": "short",
+   "policy": "confident1-else5 (hi .6)",
+   "n": 414,
+   "allNeededFound": "77.3%",
+   "anyFound": "96.9%",
+   "avgToolsLoaded": "1.57",
+   "noneWins": "4.1%",
+   "unsure": "14.3%",
+   "missesSample": [
+    {
+     "q": "technician time off leave availability cancel",
+     "used": [
+      "get_availability",
+      "remove_time_off"
+     ],
+     "got": [
+      "remove_time_off"
+     ],
+     "top": [
+      "remove_time_off 1.00",
+      "revoke_access 0.00",
+      "deactivate_technician_seat 0.00"
+     ]
+    },
+    {
+     "q": "send email to customer",
+     "used": [
+      "find_customer",
+      "get_customer_context"
+     ],
+     "got": [
+      "send_email"
+     ],
+     "top": [
+      "send_email 1.00",
+      "get_availability 0.00",
+      "record_standing_fact 0.00"
+     ]
+    },
+    {
+     "q": "read schedule visits for a technician or customer",
+     "used": [
+      "get_customer_context",
+      "get_team_schedule",
+      "query_spine",
+      "get_job"
+     ],
+     "got": [
+      "get_team_schedule",
+      "find_slots",
+      "get_availability",
+      "query_spine",
+      "get_job"
+     ],
+     "top": [
+      "get_team_schedule 0.54",
+      "find_slots 0.09",
+      "get_availability 0.03"
+     ]
+    },
+    {
+     "q": "get technician schedule or visits",
+     "used": [
+      "get_availability",
+      "get_team_schedule"
+     ],
+     "got": [
+      "get_team_schedule"
+     ],
+     "top": [
+      "get_team_schedule 0.87",
+      "get_availability 0.05",
+      "find_slots 0.02"
+     ]
+    },
+    {
+     "q": "office note team lead message",
+     "used": [
+      "ask_team_lead"
+     ],
+     "got": [
+      "inform_team_lead"
+     ],
+     "top": [
+      "inform_team_lead 1.00",
+      "read_webpage 0.00",
+      "record_standing_fact 0.00"
+     ]
+    },
+    {
+     "q": "view schedule for technician or find available slots",
+     "used": [
+      "get_availability",
+      "find_slots",
+      "get_team_schedule"
+     ],
+     "got": [
+      "find_slots"
+     ],
+     "top": [
+      "find_slots 0.93",
+      "get_team_schedule 0.04",
+      "get_availability 0.02"
+     ]
+    },
+    {
+     "q": "technician schedule working hours roster",
+     "used": [
+      "get_availability",
+      "list_team"
+     ],
+     "got": [
+      "get_availability"
+     ],
+     "top": [
+      "get_availability 0.85",
+      "set_availability 0.13",
+      "get_team_schedule 0.02"
+     ]
+    },
+    {
+     "q": "record technician time off or leave",
+     "used": [
+      "list_team"
+     ],
+     "got": [
+      "add_time_off"
+     ],
+     "top": [
+      "add_time_off 1.00",
+      "set_job_duration 0.00",
+      "resolve_date 0.00"
+     ]
+    },
+    {
+     "q": "read field notes or visit details",
+     "used": [
+      "get_customer_context",
+      "list_recent_captures"
+     ],
+     "got": [
+      "list_recent_captures"
+     ],
+     "top": [
+      "list_recent_captures 0.78",
+      "get_capture 0.16",
+      "read_webpage 0.02"
+     ]
+    },
+    {
+     "q": "read captures or notes for a job",
+     "used": [
+      "get_capture",
+      "list_recent_captures"
+     ],
+     "got": [
+      "list_recent_captures"
+     ],
+     "top": [
+      "list_recent_captures 0.91",
+      "get_capture 0.09",
+      "retract_capture 0.00"
+     ]
+    },
+    {
+     "q": "list files or read file in workspace",
+     "used": [
+      "run_command",
+      "read_file"
+     ],
+     "got": [
+      "read_file"
+     ],
+     "top": [
+      "read_file 0.94",
+      "run_command 0.03",
+      "cancel_job 0.00"
+     ]
+    },
+    {
+     "q": "list jobs for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context"
+     ],
+     "top": [
+      "get_customer_context 0.99",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    }
+   ]
+  },
+  {
+   "variant": "short",
+   "policy": "confident1-else5 (hi .8)",
+   "n": 414,
+   "allNeededFound": "80.4%",
+   "anyFound": "97.8%",
+   "avgToolsLoaded": "1.77",
+   "noneWins": "4.1%",
+   "unsure": "14.3%",
+   "missesSample": [
+    {
+     "q": "technician time off leave availability cancel",
+     "used": [
+      "get_availability",
+      "remove_time_off"
+     ],
+     "got": [
+      "remove_time_off"
+     ],
+     "top": [
+      "remove_time_off 1.00",
+      "revoke_access 0.00",
+      "deactivate_technician_seat 0.00"
+     ]
+    },
+    {
+     "q": "send email to customer",
+     "used": [
+      "find_customer",
+      "get_customer_context"
+     ],
+     "got": [
+      "send_email"
+     ],
+     "top": [
+      "send_email 1.00",
+      "get_availability 0.00",
+      "record_standing_fact 0.00"
+     ]
+    },
+    {
+     "q": "read schedule visits for a technician or customer",
+     "used": [
+      "get_customer_context",
+      "get_team_schedule",
+      "query_spine",
+      "get_job"
+     ],
+     "got": [
+      "get_team_schedule",
+      "find_slots",
+      "get_availability",
+      "query_spine",
+      "get_job"
+     ],
+     "top": [
+      "get_team_schedule 0.54",
+      "find_slots 0.09",
+      "get_availability 0.03"
+     ]
+    },
+    {
+     "q": "get technician schedule or visits",
+     "used": [
+      "get_availability",
+      "get_team_schedule"
+     ],
+     "got": [
+      "get_team_schedule"
+     ],
+     "top": [
+      "get_team_schedule 0.87",
+      "get_availability 0.05",
+      "find_slots 0.02"
+     ]
+    },
+    {
+     "q": "office note team lead message",
+     "used": [
+      "ask_team_lead"
+     ],
+     "got": [
+      "inform_team_lead"
+     ],
+     "top": [
+      "inform_team_lead 1.00",
+      "read_webpage 0.00",
+      "record_standing_fact 0.00"
+     ]
+    },
+    {
+     "q": "view schedule for technician or find available slots",
+     "used": [
+      "get_availability",
+      "find_slots",
+      "get_team_schedule"
+     ],
+     "got": [
+      "find_slots"
+     ],
+     "top": [
+      "find_slots 0.93",
+      "get_team_schedule 0.04",
+      "get_availability 0.02"
+     ]
+    },
+    {
+     "q": "technician schedule working hours roster",
+     "used": [
+      "get_availability",
+      "list_team"
+     ],
+     "got": [
+      "get_availability"
+     ],
+     "top": [
+      "get_availability 0.85",
+      "set_availability 0.13",
+      "get_team_schedule 0.02"
+     ]
+    },
+    {
+     "q": "record technician time off or leave",
+     "used": [
+      "list_team"
+     ],
+     "got": [
+      "add_time_off"
+     ],
+     "top": [
+      "add_time_off 1.00",
+      "set_job_duration 0.00",
+      "resolve_date 0.00"
+     ]
+    },
+    {
+     "q": "read captures or notes for a job",
+     "used": [
+      "get_capture",
+      "list_recent_captures"
+     ],
+     "got": [
+      "list_recent_captures"
+     ],
+     "top": [
+      "list_recent_captures 0.91",
+      "get_capture 0.09",
+      "retract_capture 0.00"
+     ]
+    },
+    {
+     "q": "list files or read file in workspace",
+     "used": [
+      "run_command",
+      "read_file"
+     ],
+     "got": [
+      "read_file"
+     ],
+     "top": [
+      "read_file 0.94",
+      "run_command 0.03",
+      "cancel_job 0.00"
+     ]
+    },
+    {
+     "q": "list jobs for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context"
+     ],
+     "top": [
+      "get_customer_context 0.99",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    },
+    {
+     "q": "list jobs for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context"
+     ],
+     "top": [
+      "get_customer_context 0.99",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    }
+   ]
+  },
+  {
+   "variant": "short",
+   "policy": "confident2-else5 (hi .6)",
+   "n": 414,
+   "allNeededFound": "82.1%",
+   "anyFound": "97.8%",
+   "avgToolsLoaded": "2.43",
+   "noneWins": "4.1%",
+   "unsure": "14.3%",
+   "missesSample": [
+    {
+     "q": "technician time off leave availability cancel",
+     "used": [
+      "get_availability",
+      "remove_time_off"
+     ],
+     "got": [
+      "remove_time_off",
+      "revoke_access"
+     ],
+     "top": [
+      "remove_time_off 1.00",
+      "revoke_access 0.00",
+      "deactivate_technician_seat 0.00"
+     ]
+    },
+    {
+     "q": "send email to customer",
+     "used": [
+      "find_customer",
+      "get_customer_context"
+     ],
+     "got": [
+      "send_email",
+      "get_availability"
+     ],
+     "top": [
+      "send_email 1.00",
+      "get_availability 0.00",
+      "record_standing_fact 0.00"
+     ]
+    },
+    {
+     "q": "read schedule visits for a technician or customer",
+     "used": [
+      "get_customer_context",
+      "get_team_schedule",
+      "query_spine",
+      "get_job"
+     ],
+     "got": [
+      "get_team_schedule",
+      "find_slots",
+      "get_availability",
+      "query_spine",
+      "get_job"
+     ],
+     "top": [
+      "get_team_schedule 0.54",
+      "find_slots 0.09",
+      "get_availability 0.03"
+     ]
+    },
+    {
+     "q": "office note team lead message",
+     "used": [
+      "ask_team_lead"
+     ],
+     "got": [
+      "inform_team_lead",
+      "read_webpage"
+     ],
+     "top": [
+      "inform_team_lead 1.00",
+      "read_webpage 0.00",
+      "record_standing_fact 0.00"
+     ]
+    },
+    {
+     "q": "view schedule for technician or find available slots",
+     "used": [
+      "get_availability",
+      "find_slots",
+      "get_team_schedule"
+     ],
+     "got": [
+      "find_slots",
+      "get_team_schedule"
+     ],
+     "top": [
+      "find_slots 0.93",
+      "get_team_schedule 0.04",
+      "get_availability 0.02"
+     ]
+    },
+    {
+     "q": "technician schedule working hours roster",
+     "used": [
+      "get_availability",
+      "list_team"
+     ],
+     "got": [
+      "get_availability",
+      "set_availability"
+     ],
+     "top": [
+      "get_availability 0.85",
+      "set_availability 0.13",
+      "get_team_schedule 0.02"
+     ]
+    },
+    {
+     "q": "record technician time off or leave",
+     "used": [
+      "list_team"
+     ],
+     "got": [
+      "add_time_off",
+      "set_job_duration"
+     ],
+     "top": [
+      "add_time_off 1.00",
+      "set_job_duration 0.00",
+      "resolve_date 0.00"
+     ]
+    },
+    {
+     "q": "read field notes or visit details",
+     "used": [
+      "get_customer_context",
+      "list_recent_captures"
+     ],
+     "got": [
+      "list_recent_captures",
+      "get_capture"
+     ],
+     "top": [
+      "list_recent_captures 0.78",
+      "get_capture 0.16",
+      "read_webpage 0.02"
+     ]
+    },
+    {
+     "q": "list jobs for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context",
+      "read_webpage"
+     ],
+     "top": [
+      "get_customer_context 0.99",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    },
+    {
+     "q": "list jobs for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context",
+      "read_webpage"
+     ],
+     "top": [
+      "get_customer_context 0.99",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    },
+    {
+     "q": "run python command write file share file sandbox",
+     "used": [
+      "run_command",
+      "read_file",
+      "write_file",
+      "share_file"
+     ],
+     "got": [
+      "run_command",
+      "write_file"
+     ],
+     "top": [
+      "run_command 0.84",
+      "write_file 0.08",
+      "share_file 0.04"
+     ]
+    },
+    {
+     "q": "share file or attach file",
+     "used": [
+      "read_file",
+      "write_file",
+      "share_file"
+     ],
+     "got": [
+      "share_file",
+      "read_webpage"
+     ],
+     "top": [
+      "share_file 1.00",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    }
+   ]
+  },
+  {
+   "variant": "short",
+   "policy": "cumulative 0.9 (max 8)",
+   "n": 414,
+   "allNeededFound": "81.2%",
+   "anyFound": "97.1%",
+   "avgToolsLoaded": "2.14",
+   "noneWins": "4.1%",
+   "unsure": "14.3%",
+   "missesSample": [
+    {
+     "q": "technician time off leave availability cancel",
+     "used": [
+      "get_availability",
+      "remove_time_off"
+     ],
+     "got": [
+      "remove_time_off"
+     ],
+     "top": [
+      "remove_time_off 1.00",
+      "revoke_access 0.00",
+      "deactivate_technician_seat 0.00"
+     ]
+    },
+    {
+     "q": "send email to customer",
+     "used": [
+      "find_customer",
+      "get_customer_context"
+     ],
+     "got": [
+      "send_email"
+     ],
+     "top": [
+      "send_email 1.00",
+      "get_availability 0.00",
+      "record_standing_fact 0.00"
+     ]
+    },
+    {
+     "q": "query cancelled visits or search visits schedule",
+     "used": [
+      "query_spine"
+     ],
+     "got": [
+      "get_team_schedule",
+      "unschedule_visit",
+      "find_slots"
+     ],
+     "top": [
+      "get_team_schedule 0.43",
+      "unschedule_visit 0.42",
+      "find_slots 0.06"
+     ]
+    },
+    {
+     "q": "office note team lead message",
+     "used": [
+      "ask_team_lead"
+     ],
+     "got": [
+      "inform_team_lead"
+     ],
+     "top": [
+      "inform_team_lead 1.00",
+      "read_webpage 0.00",
+      "record_standing_fact 0.00"
+     ]
+    },
+    {
+     "q": "view schedule for technician or find available slots",
+     "used": [
+      "get_availability",
+      "find_slots",
+      "get_team_schedule"
+     ],
+     "got": [
+      "find_slots"
+     ],
+     "top": [
+      "find_slots 0.93",
+      "get_team_schedule 0.04",
+      "get_availability 0.02"
+     ]
+    },
+    {
+     "q": "technician schedule working hours roster",
+     "used": [
+      "get_availability",
+      "list_team"
+     ],
+     "got": [
+      "get_availability",
+      "set_availability"
+     ],
+     "top": [
+      "get_availability 0.85",
+      "set_availability 0.13",
+      "get_team_schedule 0.02"
+     ]
+    },
+    {
+     "q": "record technician time off or leave",
+     "used": [
+      "list_team"
+     ],
+     "got": [
+      "add_time_off"
+     ],
+     "top": [
+      "add_time_off 1.00",
+      "set_job_duration 0.00",
+      "resolve_date 0.00"
+     ]
+    },
+    {
+     "q": "read field notes or visit details",
+     "used": [
+      "get_customer_context",
+      "list_recent_captures"
+     ],
+     "got": [
+      "list_recent_captures",
+      "get_capture"
+     ],
+     "top": [
+      "list_recent_captures 0.78",
+      "get_capture 0.16",
+      "read_webpage 0.02"
+     ]
+    },
+    {
+     "q": "read captures or notes for a job",
+     "used": [
+      "get_capture",
+      "list_recent_captures"
+     ],
+     "got": [
+      "list_recent_captures"
+     ],
+     "top": [
+      "list_recent_captures 0.91",
+      "get_capture 0.09",
+      "retract_capture 0.00"
+     ]
+    },
+    {
+     "q": "list files or read file in workspace",
+     "used": [
+      "run_command",
+      "read_file"
+     ],
+     "got": [
+      "read_file"
+     ],
+     "top": [
+      "read_file 0.94",
+      "run_command 0.03",
+      "cancel_job 0.00"
+     ]
+    },
+    {
+     "q": "list jobs for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context"
+     ],
+     "top": [
+      "get_customer_context 0.99",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    },
+    {
+     "q": "list jobs for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context"
+     ],
+     "top": [
+      "get_customer_context 0.99",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    }
+   ]
+  },
+  {
+   "variant": "full",
+   "policy": "top1",
+   "n": 414,
+   "allNeededFound": "67.6%",
+   "anyFound": "90.8%",
+   "avgToolsLoaded": "1.00",
+   "noneWins": "2.4%",
+   "unsure": "14.7%",
+   "missesSample": [
+    {
+     "q": "technician time off leave availability cancel",
+     "used": [
+      "get_availability",
+      "remove_time_off"
+     ],
+     "got": [
+      "remove_time_off"
+     ],
+     "top": [
+      "remove_time_off 1.00",
+      "get_team_schedule 0.00",
+      "resolve_date 0.00"
+     ]
+    },
+    {
+     "q": "revenue and financial reports",
+     "used": [
+      "query_spine"
+     ],
+     "got": [
+      "run_command"
+     ],
+     "top": [
+      "run_command 0.49",
+      "query_spine 0.24",
+      "read_file 0.05"
+     ]
+    },
+    {
+     "q": "send email to customer",
+     "used": [
+      "find_customer",
+      "get_customer_context"
+     ],
+     "got": [
+      "send_email"
+     ],
+     "top": [
+      "send_email 1.00",
+      "get_job 0.00",
+      "record_money_event 0.00"
+     ]
+    },
+    {
+     "q": "quote estimate",
+     "used": [
+      "set_firm_profile"
+     ],
+     "got": [
+      "open_job"
+     ],
+     "top": [
+      "open_job 0.49",
+      "record_money_event 0.27",
+      "run_command 0.04"
+     ]
+    },
+    {
+     "q": "read schedule visits for a technician or customer",
+     "used": [
+      "get_customer_context",
+      "get_team_schedule",
+      "query_spine",
+      "get_job"
+     ],
+     "got": [
+      "get_team_schedule"
+     ],
+     "top": [
+      "get_team_schedule 0.90",
+      "get_customer_context 0.06",
+      "query_spine 0.04"
+     ]
+    },
+    {
+     "q": "view schedule visits for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context"
+     ],
+     "top": [
+      "get_customer_context 0.60",
+      "query_spine 0.30",
+      "get_team_schedule 0.05"
+     ]
+    },
+    {
+     "q": "get technician schedule or visits",
+     "used": [
+      "get_availability",
+      "get_team_schedule"
+     ],
+     "got": [
+      "get_team_schedule"
+     ],
+     "top": [
+      "get_team_schedule 0.97",
+      "query_spine 0.02",
+      "get_availability 0.01"
+     ]
+    },
+    {
+     "q": "dispatch board link",
+     "used": [
+      "get_team_schedule"
+     ],
+     "got": [
+      "move_visit"
+     ],
+     "top": [
+      "move_visit 0.55",
+      "read_webpage 0.09",
+      "unschedule_visit 0.07"
+     ]
+    },
+    {
+     "q": "office note team lead message",
+     "used": [
+      "ask_team_lead"
+     ],
+     "got": [
+      "inform_team_lead"
+     ],
+     "top": [
+      "inform_team_lead 0.97",
+      "ask_team_lead 0.01",
+      "record_field_note 0.01"
+     ]
+    },
+    {
+     "q": "dashboard settings firm configuration",
+     "used": [
+      "set_firm_profile"
+     ],
+     "got": [
+      "set_technician_view"
+     ],
+     "top": [
+      "set_technician_view 0.47",
+      "set_firm_profile 0.34",
+      "set_technician_horizon 0.07"
+     ]
+    },
+    {
+     "q": "list technicians roster or schedule",
+     "used": [
+      "list_team"
+     ],
+     "got": [
+      "get_team_schedule"
+     ],
+     "top": [
+      "get_team_schedule 0.49",
+      "list_team 0.40",
+      "get_availability 0.10"
+     ]
+    },
+    {
+     "q": "view schedule for technician or find available slots",
+     "used": [
+      "get_availability",
+      "find_slots",
+      "get_team_schedule"
+     ],
+     "got": [
+      "find_slots"
+     ],
+     "top": [
+      "find_slots 0.64",
+      "get_team_schedule 0.31",
+      "get_availability 0.05"
+     ]
+    }
+   ]
+  },
+  {
+   "variant": "full",
+   "policy": "top3",
+   "n": 414,
+   "allNeededFound": "83.1%",
+   "anyFound": "96.4%",
+   "avgToolsLoaded": "3.00",
+   "noneWins": "2.4%",
+   "unsure": "14.7%",
+   "missesSample": [
+    {
+     "q": "technician time off leave availability cancel",
+     "used": [
+      "get_availability",
+      "remove_time_off"
+     ],
+     "got": [
+      "remove_time_off",
+      "get_team_schedule",
+      "resolve_date"
+     ],
+     "top": [
+      "remove_time_off 1.00",
+      "get_team_schedule 0.00",
+      "resolve_date 0.00"
+     ]
+    },
+    {
+     "q": "send email to customer",
+     "used": [
+      "find_customer",
+      "get_customer_context"
+     ],
+     "got": [
+      "send_email",
+      "get_job",
+      "record_money_event"
+     ],
+     "top": [
+      "send_email 1.00",
+      "get_job 0.00",
+      "record_money_event 0.00"
+     ]
+    },
+    {
+     "q": "quote estimate",
+     "used": [
+      "set_firm_profile"
+     ],
+     "got": [
+      "open_job",
+      "record_money_event",
+      "run_command"
+     ],
+     "top": [
+      "open_job 0.49",
+      "record_money_event 0.27",
+      "run_command 0.04"
+     ]
+    },
+    {
+     "q": "dispatch board link",
+     "used": [
+      "get_team_schedule"
+     ],
+     "got": [
+      "move_visit",
+      "read_webpage",
+      "unschedule_visit"
+     ],
+     "top": [
+      "move_visit 0.55",
+      "read_webpage 0.09",
+      "unschedule_visit 0.07"
+     ]
+    },
+    {
+     "q": "technician schedule working hours roster",
+     "used": [
+      "get_availability",
+      "list_team"
+     ],
+     "got": [
+      "get_availability",
+      "set_availability",
+      "get_team_schedule"
+     ],
+     "top": [
+      "get_availability 0.75",
+      "set_availability 0.19",
+      "get_team_schedule 0.04"
+     ]
+    },
+    {
+     "q": "record technician time off or leave",
+     "used": [
+      "list_team"
+     ],
+     "got": [
+      "add_time_off",
+      "read_webpage",
+      "run_command"
+     ],
+     "top": [
+      "add_time_off 1.00",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    },
+    {
+     "q": "read field notes or visit details",
+     "used": [
+      "get_customer_context",
+      "list_recent_captures"
+     ],
+     "got": [
+      "list_recent_captures",
+      "get_capture",
+      "get_team_schedule"
+     ],
+     "top": [
+      "list_recent_captures 0.75",
+      "get_capture 0.10",
+      "get_team_schedule 0.07"
+     ]
+    },
+    {
+     "q": "run python command write file share file sandbox",
+     "used": [
+      "run_command",
+      "read_file",
+      "write_file",
+      "share_file"
+     ],
+     "got": [
+      "run_command",
+      "write_file",
+      "share_file"
+     ],
+     "top": [
+      "run_command 0.81",
+      "write_file 0.10",
+      "share_file 0.04"
+     ]
+    },
+    {
+     "q": "share file or attach file",
+     "used": [
+      "read_file",
+      "write_file",
+      "share_file"
+     ],
+     "got": [
+      "share_file",
+      "set_job_duration",
+      "resolve_date"
+     ],
+     "top": [
+      "share_file 1.00",
+      "set_job_duration 0.00",
+      "resolve_date 0.00"
+     ]
+    },
+    {
+     "q": "email pdf invoice attachment",
+     "used": [
+      "run_command",
+      "read_file",
+      "write_file",
+      "share_file"
+     ],
+     "got": [
+      "share_file",
+      "send_email",
+      "query_spine"
+     ],
+     "top": [
+      "share_file 0.64",
+      "send_email 0.35",
+      "query_spine 0.00"
+     ]
+    },
+    {
+     "q": "generate estimate pdf",
+     "used": [
+      "set_firm_profile",
+      "run_command",
+      "read_file",
+      "write_file"
+     ],
+     "got": [
+      "run_command",
+      "write_file",
+      "revoke_access"
+     ],
+     "top": [
+      "run_command 0.98",
+      "write_file 0.01",
+      "revoke_access 0.00"
+     ]
+    },
+    {
+     "q": "create or send estimate proposal",
+     "used": [
+      "run_command",
+      "share_file"
+     ],
+     "got": [
+      "send_email",
+      "share_file",
+      "record_money_event"
+     ],
+     "top": [
+      "send_email 0.40",
+      "share_file 0.20",
+      "record_money_event 0.09"
+     ]
+    }
+   ]
+  },
+  {
+   "variant": "full",
+   "policy": "top5",
+   "n": 414,
+   "allNeededFound": "87.2%",
+   "anyFound": "98.3%",
+   "avgToolsLoaded": "5.00",
+   "noneWins": "2.4%",
+   "unsure": "14.7%",
+   "missesSample": [
+    {
+     "q": "technician time off leave availability cancel",
+     "used": [
+      "get_availability",
+      "remove_time_off"
+     ],
+     "got": [
+      "remove_time_off",
+      "get_team_schedule",
+      "resolve_date",
+      "set_timezone",
+      "list_recent_captures"
+     ],
+     "top": [
+      "remove_time_off 1.00",
+      "get_team_schedule 0.00",
+      "resolve_date 0.00"
+     ]
+    },
+    {
+     "q": "send email to customer",
+     "used": [
+      "find_customer",
+      "get_customer_context"
+     ],
+     "got": [
+      "send_email",
+      "get_job",
+      "record_money_event",
+      "record_caller",
+      "share_file"
+     ],
+     "top": [
+      "send_email 1.00",
+      "get_job 0.00",
+      "record_money_event 0.00"
+     ]
+    },
+    {
+     "q": "technician schedule working hours roster",
+     "used": [
+      "get_availability",
+      "list_team"
+     ],
+     "got": [
+      "get_availability",
+      "set_availability",
+      "get_team_schedule",
+      "book_visit",
+      "add_technician_seat"
+     ],
+     "top": [
+      "get_availability 0.75",
+      "set_availability 0.19",
+      "get_team_schedule 0.04"
+     ]
+    },
+    {
+     "q": "record technician time off or leave",
+     "used": [
+      "list_team"
+     ],
+     "got": [
+      "add_time_off",
+      "read_webpage",
+      "run_command",
+      "find_customer",
+      "record_money_event"
+     ],
+     "top": [
+      "add_time_off 1.00",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    },
+    {
+     "q": "run python command write file share file sandbox",
+     "used": [
+      "run_command",
+      "read_file",
+      "write_file",
+      "share_file"
+     ],
+     "got": [
+      "run_command",
+      "write_file",
+      "share_file",
+      "get_team_schedule",
+      "resolve_date"
+     ],
+     "top": [
+      "run_command 0.81",
+      "write_file 0.10",
+      "share_file 0.04"
+     ]
+    },
+    {
+     "q": "share file or attach file",
+     "used": [
+      "read_file",
+      "write_file",
+      "share_file"
+     ],
+     "got": [
+      "share_file",
+      "set_job_duration",
+      "resolve_date",
+      "record_standing_fact",
+      "bind_telegram"
+     ],
+     "top": [
+      "share_file 1.00",
+      "set_job_duration 0.00",
+      "resolve_date 0.00"
+     ]
+    },
+    {
+     "q": "email pdf invoice attachment",
+     "used": [
+      "run_command",
+      "read_file",
+      "write_file",
+      "share_file"
+     ],
+     "got": [
+      "share_file",
+      "send_email",
+      "query_spine",
+      "set_timezone",
+      "cancel_job"
+     ],
+     "top": [
+      "share_file 0.64",
+      "send_email 0.35",
+      "query_spine 0.00"
+     ]
+    },
+    {
+     "q": "generate estimate pdf",
+     "used": [
+      "set_firm_profile",
+      "run_command",
+      "read_file",
+      "write_file"
+     ],
+     "got": [
+      "run_command",
+      "write_file",
+      "revoke_access",
+      "deactivate_technician_seat",
+      "reactivate_technician_seat"
+     ],
+     "top": [
+      "run_command 0.98",
+      "write_file 0.01",
+      "revoke_access 0.00"
+     ]
+    },
+    {
+     "q": "search jobs",
+     "used": [
+      "get_customer_context",
+      "query_spine",
+      "get_job"
+     ],
+     "got": [
+      "web_search",
+      "query_spine",
+      "get_team_schedule",
+      "get_job",
+      "find_slots"
+     ],
+     "top": [
+      "web_search 0.39",
+      "query_spine 0.13",
+      "get_team_schedule 0.13"
+     ]
+    },
+    {
+     "q": "search company documents and knowledge base",
+     "used": [
+      "query_spine",
+      "run_command"
+     ],
+     "got": [
+      "web_search",
+      "read_file",
+      "query_spine",
+      "list_recent_captures",
+      "ask_team_lead"
+     ],
+     "top": [
+      "web_search 0.19",
+      "read_file 0.16",
+      "query_spine 0.05"
+     ]
+    },
+    {
+     "q": "remove technician from team or delete seat",
+     "used": [
+      "list_team",
+      "deactivate_technician_seat"
+     ],
+     "got": [
+      "deactivate_technician_seat",
+      "cancel_job",
+      "add_technician_seat",
+      "open_job",
+      "reactivate_technician_seat"
+     ],
+     "top": [
+      "deactivate_technician_seat 1.00",
+      "cancel_job 0.00",
+      "add_technician_seat 0.00"
+     ]
+    },
+    {
+     "q": "file reading or sandbox tools",
+     "used": [
+      "write_file",
+      "read_file",
+      "share_file",
+      "run_command"
+     ],
+     "got": [
+      "read_file",
+      "run_command",
+      "record_field_note",
+      "add_technician_seat",
+      "find_customer"
+     ],
+     "top": [
+      "read_file 0.97",
+      "run_command 0.03",
+      "record_field_note 0.00"
+     ]
+    }
+   ]
+  },
+  {
+   "variant": "full",
+   "policy": "confident1-else5 (hi .6)",
+   "n": 414,
+   "allNeededFound": "77.1%",
+   "anyFound": "97.6%",
+   "avgToolsLoaded": "1.59",
+   "noneWins": "2.4%",
+   "unsure": "14.7%",
+   "missesSample": [
+    {
+     "q": "technician time off leave availability cancel",
+     "used": [
+      "get_availability",
+      "remove_time_off"
+     ],
+     "got": [
+      "remove_time_off"
+     ],
+     "top": [
+      "remove_time_off 1.00",
+      "get_team_schedule 0.00",
+      "resolve_date 0.00"
+     ]
+    },
+    {
+     "q": "send email to customer",
+     "used": [
+      "find_customer",
+      "get_customer_context"
+     ],
+     "got": [
+      "send_email"
+     ],
+     "top": [
+      "send_email 1.00",
+      "get_job 0.00",
+      "record_money_event 0.00"
+     ]
+    },
+    {
+     "q": "read schedule visits for a technician or customer",
+     "used": [
+      "get_customer_context",
+      "get_team_schedule",
+      "query_spine",
+      "get_job"
+     ],
+     "got": [
+      "get_team_schedule"
+     ],
+     "top": [
+      "get_team_schedule 0.90",
+      "get_customer_context 0.06",
+      "query_spine 0.04"
+     ]
+    },
+    {
+     "q": "view schedule visits for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context"
+     ],
+     "top": [
+      "get_customer_context 0.60",
+      "query_spine 0.30",
+      "get_team_schedule 0.05"
+     ]
+    },
+    {
+     "q": "get technician schedule or visits",
+     "used": [
+      "get_availability",
+      "get_team_schedule"
+     ],
+     "got": [
+      "get_team_schedule"
+     ],
+     "top": [
+      "get_team_schedule 0.97",
+      "query_spine 0.02",
+      "get_availability 0.01"
+     ]
+    },
+    {
+     "q": "office note team lead message",
+     "used": [
+      "ask_team_lead"
+     ],
+     "got": [
+      "inform_team_lead"
+     ],
+     "top": [
+      "inform_team_lead 0.97",
+      "ask_team_lead 0.01",
+      "record_field_note 0.01"
+     ]
+    },
+    {
+     "q": "view schedule for technician or find available slots",
+     "used": [
+      "get_availability",
+      "find_slots",
+      "get_team_schedule"
+     ],
+     "got": [
+      "find_slots"
+     ],
+     "top": [
+      "find_slots 0.64",
+      "get_team_schedule 0.31",
+      "get_availability 0.05"
+     ]
+    },
+    {
+     "q": "technician schedule working hours roster",
+     "used": [
+      "get_availability",
+      "list_team"
+     ],
+     "got": [
+      "get_availability"
+     ],
+     "top": [
+      "get_availability 0.75",
+      "set_availability 0.19",
+      "get_team_schedule 0.04"
+     ]
+    },
+    {
+     "q": "record technician time off or leave",
+     "used": [
+      "list_team"
+     ],
+     "got": [
+      "add_time_off"
+     ],
+     "top": [
+      "add_time_off 1.00",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    },
+    {
+     "q": "read field notes or visit details",
+     "used": [
+      "get_customer_context",
+      "list_recent_captures"
+     ],
+     "got": [
+      "list_recent_captures"
+     ],
+     "top": [
+      "list_recent_captures 0.75",
+      "get_capture 0.10",
+      "get_team_schedule 0.07"
+     ]
+    },
+    {
+     "q": "read captures or notes for a job",
+     "used": [
+      "get_capture",
+      "list_recent_captures"
+     ],
+     "got": [
+      "list_recent_captures"
+     ],
+     "top": [
+      "list_recent_captures 0.89",
+      "get_capture 0.06",
+      "get_customer_context 0.03"
+     ]
+    },
+    {
+     "q": "list files or read file in workspace",
+     "used": [
+      "run_command",
+      "read_file"
+     ],
+     "got": [
+      "read_file"
+     ],
+     "top": [
+      "read_file 0.93",
+      "run_command 0.02",
+      "get_job 0.00"
+     ]
+    }
+   ]
+  },
+  {
+   "variant": "full",
+   "policy": "confident1-else5 (hi .8)",
+   "n": 414,
+   "allNeededFound": "80.4%",
+   "anyFound": "97.8%",
+   "avgToolsLoaded": "1.97",
+   "noneWins": "2.4%",
+   "unsure": "14.7%",
+   "missesSample": [
+    {
+     "q": "technician time off leave availability cancel",
+     "used": [
+      "get_availability",
+      "remove_time_off"
+     ],
+     "got": [
+      "remove_time_off"
+     ],
+     "top": [
+      "remove_time_off 1.00",
+      "get_team_schedule 0.00",
+      "resolve_date 0.00"
+     ]
+    },
+    {
+     "q": "send email to customer",
+     "used": [
+      "find_customer",
+      "get_customer_context"
+     ],
+     "got": [
+      "send_email"
+     ],
+     "top": [
+      "send_email 1.00",
+      "get_job 0.00",
+      "record_money_event 0.00"
+     ]
+    },
+    {
+     "q": "read schedule visits for a technician or customer",
+     "used": [
+      "get_customer_context",
+      "get_team_schedule",
+      "query_spine",
+      "get_job"
+     ],
+     "got": [
+      "get_team_schedule"
+     ],
+     "top": [
+      "get_team_schedule 0.90",
+      "get_customer_context 0.06",
+      "query_spine 0.04"
+     ]
+    },
+    {
+     "q": "get technician schedule or visits",
+     "used": [
+      "get_availability",
+      "get_team_schedule"
+     ],
+     "got": [
+      "get_team_schedule"
+     ],
+     "top": [
+      "get_team_schedule 0.97",
+      "query_spine 0.02",
+      "get_availability 0.01"
+     ]
+    },
+    {
+     "q": "office note team lead message",
+     "used": [
+      "ask_team_lead"
+     ],
+     "got": [
+      "inform_team_lead"
+     ],
+     "top": [
+      "inform_team_lead 0.97",
+      "ask_team_lead 0.01",
+      "record_field_note 0.01"
+     ]
+    },
+    {
+     "q": "technician schedule working hours roster",
+     "used": [
+      "get_availability",
+      "list_team"
+     ],
+     "got": [
+      "get_availability",
+      "set_availability",
+      "get_team_schedule",
+      "book_visit",
+      "add_technician_seat"
+     ],
+     "top": [
+      "get_availability 0.75",
+      "set_availability 0.19",
+      "get_team_schedule 0.04"
+     ]
+    },
+    {
+     "q": "record technician time off or leave",
+     "used": [
+      "list_team"
+     ],
+     "got": [
+      "add_time_off"
+     ],
+     "top": [
+      "add_time_off 1.00",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    },
+    {
+     "q": "read captures or notes for a job",
+     "used": [
+      "get_capture",
+      "list_recent_captures"
+     ],
+     "got": [
+      "list_recent_captures"
+     ],
+     "top": [
+      "list_recent_captures 0.89",
+      "get_capture 0.06",
+      "get_customer_context 0.03"
+     ]
+    },
+    {
+     "q": "list files or read file in workspace",
+     "used": [
+      "run_command",
+      "read_file"
+     ],
+     "got": [
+      "read_file"
+     ],
+     "top": [
+      "read_file 0.93",
+      "run_command 0.02",
+      "get_job 0.00"
+     ]
+    },
+    {
+     "q": "list jobs for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context"
+     ],
+     "top": [
+      "get_customer_context 0.97",
+      "query_spine 0.01",
+      "set_timezone 0.00"
+     ]
+    },
+    {
+     "q": "list jobs for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context"
+     ],
+     "top": [
+      "get_customer_context 0.97",
+      "query_spine 0.01",
+      "set_timezone 0.00"
+     ]
+    },
+    {
+     "q": "run python command write file share file sandbox",
+     "used": [
+      "run_command",
+      "read_file",
+      "write_file",
+      "share_file"
+     ],
+     "got": [
+      "run_command"
+     ],
+     "top": [
+      "run_command 0.81",
+      "write_file 0.10",
+      "share_file 0.04"
+     ]
+    }
+   ]
+  },
+  {
+   "variant": "full",
+   "policy": "confident2-else5 (hi .6)",
+   "n": 414,
+   "allNeededFound": "82.6%",
+   "anyFound": "98.3%",
+   "avgToolsLoaded": "2.44",
+   "noneWins": "2.4%",
+   "unsure": "14.7%",
+   "missesSample": [
+    {
+     "q": "technician time off leave availability cancel",
+     "used": [
+      "get_availability",
+      "remove_time_off"
+     ],
+     "got": [
+      "remove_time_off",
+      "get_team_schedule"
+     ],
+     "top": [
+      "remove_time_off 1.00",
+      "get_team_schedule 0.00",
+      "resolve_date 0.00"
+     ]
+    },
+    {
+     "q": "send email to customer",
+     "used": [
+      "find_customer",
+      "get_customer_context"
+     ],
+     "got": [
+      "send_email",
+      "get_job"
+     ],
+     "top": [
+      "send_email 1.00",
+      "get_job 0.00",
+      "record_money_event 0.00"
+     ]
+    },
+    {
+     "q": "read schedule visits for a technician or customer",
+     "used": [
+      "get_customer_context",
+      "get_team_schedule",
+      "query_spine",
+      "get_job"
+     ],
+     "got": [
+      "get_team_schedule",
+      "get_customer_context"
+     ],
+     "top": [
+      "get_team_schedule 0.90",
+      "get_customer_context 0.06",
+      "query_spine 0.04"
+     ]
+    },
+    {
+     "q": "get technician schedule or visits",
+     "used": [
+      "get_availability",
+      "get_team_schedule"
+     ],
+     "got": [
+      "get_team_schedule",
+      "query_spine"
+     ],
+     "top": [
+      "get_team_schedule 0.97",
+      "query_spine 0.02",
+      "get_availability 0.01"
+     ]
+    },
+    {
+     "q": "view schedule for technician or find available slots",
+     "used": [
+      "get_availability",
+      "find_slots",
+      "get_team_schedule"
+     ],
+     "got": [
+      "find_slots",
+      "get_team_schedule"
+     ],
+     "top": [
+      "find_slots 0.64",
+      "get_team_schedule 0.31",
+      "get_availability 0.05"
+     ]
+    },
+    {
+     "q": "technician schedule working hours roster",
+     "used": [
+      "get_availability",
+      "list_team"
+     ],
+     "got": [
+      "get_availability",
+      "set_availability"
+     ],
+     "top": [
+      "get_availability 0.75",
+      "set_availability 0.19",
+      "get_team_schedule 0.04"
+     ]
+    },
+    {
+     "q": "record technician time off or leave",
+     "used": [
+      "list_team"
+     ],
+     "got": [
+      "add_time_off",
+      "read_webpage"
+     ],
+     "top": [
+      "add_time_off 1.00",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    },
+    {
+     "q": "read field notes or visit details",
+     "used": [
+      "get_customer_context",
+      "list_recent_captures"
+     ],
+     "got": [
+      "list_recent_captures",
+      "get_capture"
+     ],
+     "top": [
+      "list_recent_captures 0.75",
+      "get_capture 0.10",
+      "get_team_schedule 0.07"
+     ]
+    },
+    {
+     "q": "run python command write file share file sandbox",
+     "used": [
+      "run_command",
+      "read_file",
+      "write_file",
+      "share_file"
+     ],
+     "got": [
+      "run_command",
+      "write_file"
+     ],
+     "top": [
+      "run_command 0.81",
+      "write_file 0.10",
+      "share_file 0.04"
+     ]
+    },
+    {
+     "q": "share file or attach file",
+     "used": [
+      "read_file",
+      "write_file",
+      "share_file"
+     ],
+     "got": [
+      "share_file",
+      "set_job_duration"
+     ],
+     "top": [
+      "share_file 1.00",
+      "set_job_duration 0.00",
+      "resolve_date 0.00"
+     ]
+    },
+    {
+     "q": "email pdf invoice attachment",
+     "used": [
+      "run_command",
+      "read_file",
+      "write_file",
+      "share_file"
+     ],
+     "got": [
+      "share_file",
+      "send_email"
+     ],
+     "top": [
+      "share_file 0.64",
+      "send_email 0.35",
+      "query_spine 0.00"
+     ]
+    },
+    {
+     "q": "generate estimate pdf",
+     "used": [
+      "set_firm_profile",
+      "run_command",
+      "read_file",
+      "write_file"
+     ],
+     "got": [
+      "run_command",
+      "write_file"
+     ],
+     "top": [
+      "run_command 0.98",
+      "write_file 0.01",
+      "revoke_access 0.00"
+     ]
+    }
+   ]
+  },
+  {
+   "variant": "full",
+   "policy": "cumulative 0.9 (max 8)",
+   "n": 414,
+   "allNeededFound": "80.4%",
+   "anyFound": "97.8%",
+   "avgToolsLoaded": "2.17",
+   "noneWins": "2.4%",
+   "unsure": "14.7%",
+   "missesSample": [
+    {
+     "q": "technician time off leave availability cancel",
+     "used": [
+      "get_availability",
+      "remove_time_off"
+     ],
+     "got": [
+      "remove_time_off"
+     ],
+     "top": [
+      "remove_time_off 1.00",
+      "get_team_schedule 0.00",
+      "resolve_date 0.00"
+     ]
+    },
+    {
+     "q": "send email to customer",
+     "used": [
+      "find_customer",
+      "get_customer_context"
+     ],
+     "got": [
+      "send_email"
+     ],
+     "top": [
+      "send_email 1.00",
+      "get_job 0.00",
+      "record_money_event 0.00"
+     ]
+    },
+    {
+     "q": "read schedule visits for a technician or customer",
+     "used": [
+      "get_customer_context",
+      "get_team_schedule",
+      "query_spine",
+      "get_job"
+     ],
+     "got": [
+      "get_team_schedule"
+     ],
+     "top": [
+      "get_team_schedule 0.90",
+      "get_customer_context 0.06",
+      "query_spine 0.04"
+     ]
+    },
+    {
+     "q": "get technician schedule or visits",
+     "used": [
+      "get_availability",
+      "get_team_schedule"
+     ],
+     "got": [
+      "get_team_schedule"
+     ],
+     "top": [
+      "get_team_schedule 0.97",
+      "query_spine 0.02",
+      "get_availability 0.01"
+     ]
+    },
+    {
+     "q": "office note team lead message",
+     "used": [
+      "ask_team_lead"
+     ],
+     "got": [
+      "inform_team_lead"
+     ],
+     "top": [
+      "inform_team_lead 0.97",
+      "ask_team_lead 0.01",
+      "record_field_note 0.01"
+     ]
+    },
+    {
+     "q": "view schedule for technician or find available slots",
+     "used": [
+      "get_availability",
+      "find_slots",
+      "get_team_schedule"
+     ],
+     "got": [
+      "find_slots",
+      "get_team_schedule"
+     ],
+     "top": [
+      "find_slots 0.64",
+      "get_team_schedule 0.31",
+      "get_availability 0.05"
+     ]
+    },
+    {
+     "q": "technician schedule working hours roster",
+     "used": [
+      "get_availability",
+      "list_team"
+     ],
+     "got": [
+      "get_availability",
+      "set_availability"
+     ],
+     "top": [
+      "get_availability 0.75",
+      "set_availability 0.19",
+      "get_team_schedule 0.04"
+     ]
+    },
+    {
+     "q": "record technician time off or leave",
+     "used": [
+      "list_team"
+     ],
+     "got": [
+      "add_time_off"
+     ],
+     "top": [
+      "add_time_off 1.00",
+      "read_webpage 0.00",
+      "run_command 0.00"
+     ]
+    },
+    {
+     "q": "read field notes or visit details",
+     "used": [
+      "get_customer_context",
+      "list_recent_captures"
+     ],
+     "got": [
+      "list_recent_captures",
+      "get_capture",
+      "get_team_schedule"
+     ],
+     "top": [
+      "list_recent_captures 0.75",
+      "get_capture 0.10",
+      "get_team_schedule 0.07"
+     ]
+    },
+    {
+     "q": "list files or read file in workspace",
+     "used": [
+      "run_command",
+      "read_file"
+     ],
+     "got": [
+      "read_file"
+     ],
+     "top": [
+      "read_file 0.93",
+      "run_command 0.02",
+      "get_job 0.00"
+     ]
+    },
+    {
+     "q": "list jobs for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context"
+     ],
+     "top": [
+      "get_customer_context 0.97",
+      "query_spine 0.01",
+      "set_timezone 0.00"
+     ]
+    },
+    {
+     "q": "list jobs for a customer",
+     "used": [
+      "get_customer_context",
+      "query_spine"
+     ],
+     "got": [
+      "get_customer_context"
+     ],
+     "top": [
+      "get_customer_context 0.97",
+      "query_spine 0.01",
+      "set_timezone 0.00"
+     ]
+    }
+   ]
+  }
+ ],
+ "searches": [
+  {
+   "id": "s001",
+   "category": "schedule_read",
+   "hard": false,
+   "q": "view schedule or visits for a day",
+   "returned": [
+    "get_team_schedule",
+    "resolve_date"
+   ],
+   "used": [
+    "get_team_schedule"
+   ]
+  },
+  {
+   "id": "s090",
+   "category": "availability",
+   "hard": false,
+   "q": "technician time off leave availability cancel",
+   "returned": [
+    "remove_time_off",
+    "add_time_off",
+    "get_availability",
+    "set_availability"
+   ],
+   "used": [
+    "get_availability",
+    "remove_time_off"
+   ]
+  },
+  {
+   "id": "s060",
+   "category": "booking",
+   "hard": false,
+   "q": "book a visit",
+   "returned": [
+    "book_visit",
+    "find_slots",
+    "resolve_date"
+   ],
+   "used": []
+  },
+  {
+   "id": "s060",
+   "category": "booking",
+   "hard": false,
+   "q": "get customer context and jobs",
+   "returned": [
+    "get_customer_context",
+    "get_job",
+    "find_customer"
+   ],
+   "used": [
+    "get_customer_context",
+    "get_job"
+   ]
+  },
+  {
+   "id": "s060",
+   "category": "booking",
+   "hard": false,
+   "q": "list recent captures",
+   "returned": [
+    "list_recent_captures"
+   ],
+   "used": [
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s040",
+   "category": "schedule_read",
+   "hard": true,
+   "q": "list recent captures or notes",
+   "returned": [
+    "list_recent_captures"
+   ],
+   "used": [
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s120",
+   "category": "customers_jobs",
+   "hard": false,
+   "q": "open a new job",
+   "returned": [
+    "open_job",
+    "find_customer"
+   ],
+   "used": [
+    "open_job"
+   ]
+  },
+  {
+   "id": "s150",
+   "category": "money",
+   "hard": false,
+   "q": "revenue and financial reports",
+   "returned": [
+    "query_spine",
+    "run_command",
+    "share_file",
+    "write_file",
+    "resolve_date"
+   ],
+   "used": [
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s250",
+   "category": "access",
+   "hard": false,
+   "q": "grant access or open access to customer history",
+   "returned": [
+    "grant_access",
+    "list_access",
+    "set_technician_view"
+   ],
+   "used": []
+  },
+  {
+   "id": "s250",
+   "category": "access",
+   "hard": false,
+   "q": "list team technicians roster",
+   "returned": [
+    "list_team"
+   ],
+   "used": [
+    "list_team"
+   ]
+  },
+  {
+   "id": "s200",
+   "category": "email",
+   "hard": false,
+   "q": "send email to customer",
+   "returned": [
+    "send_email",
+    "find_customer",
+    "get_customer_context"
+   ],
+   "used": [
+    "find_customer",
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s200",
+   "category": "email",
+   "hard": false,
+   "q": "quote price invoice job",
+   "returned": [
+    "record_money_event",
+    "get_job",
+    "open_job",
+    "set_firm_profile"
+   ],
+   "used": []
+  },
+  {
+   "id": "s200",
+   "category": "email",
+   "hard": false,
+   "q": "quote estimate",
+   "returned": [
+    "record_money_event",
+    "open_job",
+    "set_firm_profile"
+   ],
+   "used": [
+    "set_firm_profile"
+   ]
+  },
+  {
+   "id": "s200",
+   "category": "email",
+   "hard": false,
+   "q": "list read captures notes",
+   "returned": [
+    "list_recent_captures",
+    "get_capture"
+   ],
+   "used": [
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s280",
+   "category": "record_notes",
+   "hard": true,
+   "q": "intake phone call",
+   "returned": [
+    "record_caller",
+    "find_customer",
+    "get_customer_context",
+    "open_job"
+   ],
+   "used": []
+  },
+  {
+   "id": "s280",
+   "category": "record_notes",
+   "hard": true,
+   "q": "record call",
+   "returned": [
+    "record_caller"
+   ],
+   "used": []
+  },
+  {
+   "id": "s280",
+   "category": "record_notes",
+   "hard": true,
+   "q": "customer communication",
+   "returned": [
+    "send_email",
+    "share_file"
+   ],
+   "used": []
+  },
+  {
+   "id": "s280",
+   "category": "record_notes",
+   "hard": true,
+   "q": "customer call",
+   "returned": [
+    "record_caller",
+    "find_customer",
+    "get_customer_context",
+    "open_job",
+    "record_field_note"
+   ],
+   "used": []
+  },
+  {
+   "id": "s280",
+   "category": "record_notes",
+   "hard": true,
+   "q": "record customer call",
+   "returned": [
+    "record_caller",
+    "record_field_note"
+   ],
+   "used": []
+  },
+  {
+   "id": "s280",
+   "category": "record_notes",
+   "hard": true,
+   "q": "customer correspondence",
+   "returned": [
+    "send_email",
+    "share_file",
+    "get_customer_context",
+    "find_customer",
+    "record_caller"
+   ],
+   "used": []
+  },
+  {
+   "id": "s011",
+   "category": "schedule_read",
+   "hard": false,
+   "q": "read schedule or list visits",
+   "returned": [
+    "get_team_schedule",
+    "resolve_date"
+   ],
+   "used": [
+    "resolve_date",
+    "get_team_schedule"
+   ]
+  },
+  {
+   "id": "s006",
+   "category": "schedule_read",
+   "hard": false,
+   "q": "view schedule visits for this week",
+   "returned": [
+    "get_team_schedule",
+    "resolve_date"
+   ],
+   "used": [
+    "get_team_schedule"
+   ]
+  },
+  {
+   "id": "s007",
+   "category": "schedule_read",
+   "hard": false,
+   "q": "read schedule visits for a technician or customer",
+   "returned": [
+    "get_team_schedule",
+    "get_customer_context",
+    "get_job",
+    "query_spine"
+   ],
+   "used": [
+    "get_customer_context",
+    "get_team_schedule",
+    "query_spine",
+    "get_job"
+   ]
+  },
+  {
+   "id": "s015",
+   "category": "schedule_read",
+   "hard": false,
+   "q": "view schedule or technician visits for a day",
+   "returned": [
+    "get_team_schedule",
+    "resolve_date"
+   ],
+   "used": [
+    "get_team_schedule",
+    "resolve_date"
+   ]
+  },
+  {
+   "id": "s017",
+   "category": "schedule_read",
+   "hard": true,
+   "q": "query cancelled visits or search visits schedule",
+   "returned": [
+    "get_team_schedule",
+    "query_spine",
+    "resolve_date"
+   ],
+   "used": [
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s025",
+   "category": "schedule_read",
+   "hard": false,
+   "q": "technician schedule visits",
+   "returned": [
+    "get_team_schedule",
+    "book_visit",
+    "move_visit",
+    "find_slots",
+    "unschedule_visit"
+   ],
+   "used": []
+  },
+  {
+   "id": "s025",
+   "category": "schedule_read",
+   "hard": false,
+   "q": "customer context jobs",
+   "returned": [
+    "get_customer_context",
+    "get_job",
+    "find_customer"
+   ],
+   "used": [
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s036",
+   "category": "schedule_read",
+   "hard": false,
+   "q": "view schedule visits for a customer",
+   "returned": [
+    "get_customer_context",
+    "get_team_schedule",
+    "find_customer",
+    "get_job",
+    "query_spine"
+   ],
+   "used": [
+    "get_customer_context",
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s027",
+   "category": "schedule_read",
+   "hard": true,
+   "q": "schedule visits this week notes",
+   "returned": [
+    "get_team_schedule",
+    "resolve_date",
+    "book_visit",
+    "list_recent_captures",
+    "record_field_note"
+   ],
+   "used": []
+  },
+  {
+   "id": "s027",
+   "category": "schedule_read",
+   "hard": true,
+   "q": "query database sql spine",
+   "returned": [
+    "query_spine"
+   ],
+   "used": [
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s037",
+   "category": "schedule_read",
+   "hard": false,
+   "q": "get technician schedule or visits",
+   "returned": [
+    "get_team_schedule",
+    "get_availability"
+   ],
+   "used": [
+    "get_availability",
+    "get_team_schedule"
+   ]
+  },
+  {
+   "id": "s033",
+   "category": "schedule_read",
+   "hard": false,
+   "q": "view schedule",
+   "returned": [
+    "get_team_schedule",
+    "resolve_date"
+   ],
+   "used": [
+    "resolve_date",
+    "get_team_schedule"
+   ]
+  },
+  {
+   "id": "s033",
+   "category": "schedule_read",
+   "hard": false,
+   "q": "dispatch board link",
+   "returned": [
+    "get_team_schedule"
+   ],
+   "used": [
+    "get_team_schedule"
+   ]
+  },
+  {
+   "id": "s033",
+   "category": "schedule_read",
+   "hard": false,
+   "q": "book visit",
+   "returned": [
+    "book_visit",
+    "find_slots"
+   ],
+   "used": []
+  },
+  {
+   "id": "s033",
+   "category": "schedule_read",
+   "hard": false,
+   "q": "schedule",
+   "returned": [
+    "get_team_schedule",
+    "find_slots",
+    "book_visit",
+    "move_visit",
+    "unschedule_visit"
+   ],
+   "used": []
+  },
+  {
+   "id": "s033",
+   "category": "schedule_read",
+   "hard": false,
+   "q": "office note team lead message",
+   "returned": [
+    "inform_team_lead",
+    "ask_team_lead"
+   ],
+   "used": [
+    "ask_team_lead"
+   ]
+  },
+  {
+   "id": "s033",
+   "category": "schedule_read",
+   "hard": false,
+   "q": "dashboard settings firm configuration",
+   "returned": [
+    "set_firm_profile",
+    "set_timezone",
+    "set_technician_view",
+    "set_technician_horizon",
+    "set_job_duration"
+   ],
+   "used": [
+    "set_firm_profile"
+   ]
+  },
+  {
+   "id": "s033",
+   "category": "schedule_read",
+   "hard": false,
+   "q": "board",
+   "returned": [
+    "get_team_schedule",
+    "move_visit",
+    "book_visit",
+    "unschedule_visit",
+    "find_slots"
+   ],
+   "used": []
+  },
+  {
+   "id": "s047",
+   "category": "booking",
+   "hard": false,
+   "q": "cancel job",
+   "returned": [
+    "cancel_job"
+   ],
+   "used": []
+  },
+  {
+   "id": "s047",
+   "category": "booking",
+   "hard": false,
+   "q": "get customer context jobs history",
+   "returned": [
+    "get_customer_context",
+    "find_customer",
+    "get_job",
+    "list_recent_captures",
+    "query_spine"
+   ],
+   "used": [
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s041",
+   "category": "booking",
+   "hard": false,
+   "q": "book a visit for a technician",
+   "returned": [
+    "book_visit",
+    "find_slots",
+    "resolve_date"
+   ],
+   "used": []
+  },
+  {
+   "id": "s041",
+   "category": "booking",
+   "hard": false,
+   "q": "get customer context and jobs",
+   "returned": [
+    "get_customer_context",
+    "get_job",
+    "find_customer"
+   ],
+   "used": [
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s041",
+   "category": "booking",
+   "hard": false,
+   "q": "list technicians roster or schedule",
+   "returned": [
+    "list_team",
+    "get_team_schedule",
+    "get_availability"
+   ],
+   "used": [
+    "list_team"
+   ]
+  },
+  {
+   "id": "s041",
+   "category": "booking",
+   "hard": false,
+   "q": "list recent captures or notes on a job",
+   "returned": [
+    "list_recent_captures",
+    "get_capture"
+   ],
+   "used": [
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s051",
+   "category": "booking",
+   "hard": false,
+   "q": "book a visit on a job",
+   "returned": [
+    "book_visit",
+    "find_slots",
+    "resolve_date",
+    "get_job"
+   ],
+   "used": []
+  },
+  {
+   "id": "s051",
+   "category": "booking",
+   "hard": false,
+   "q": "list technicians roster",
+   "returned": [
+    "list_team"
+   ],
+   "used": []
+  },
+  {
+   "id": "s051",
+   "category": "booking",
+   "hard": false,
+   "q": "get customer context or jobs",
+   "returned": [
+    "get_customer_context",
+    "get_job",
+    "find_customer"
+   ],
+   "used": [
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s052",
+   "category": "booking",
+   "hard": false,
+   "q": "book visit",
+   "returned": [
+    "book_visit",
+    "find_slots"
+   ],
+   "used": []
+  },
+  {
+   "id": "s052",
+   "category": "booking",
+   "hard": false,
+   "q": "get customer context",
+   "returned": [
+    "get_customer_context",
+    "find_customer"
+   ],
+   "used": [
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s048",
+   "category": "booking",
+   "hard": true,
+   "q": "get customer jobs or schedule",
+   "returned": [
+    "get_customer_context",
+    "get_team_schedule",
+    "get_job",
+    "find_customer"
+   ],
+   "used": [
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s048",
+   "category": "booking",
+   "hard": true,
+   "q": "cancel job or visit",
+   "returned": [
+    "cancel_job",
+    "unschedule_visit"
+   ],
+   "used": [
+    "cancel_job"
+   ]
+  },
+  {
+   "id": "s057",
+   "category": "booking",
+   "hard": false,
+   "q": "check technician availability and schedule visits",
+   "returned": [
+    "find_slots",
+    "book_visit",
+    "get_availability",
+    "get_team_schedule"
+   ],
+   "used": []
+  },
+  {
+   "id": "s057",
+   "category": "booking",
+   "hard": false,
+   "q": "customer context and jobs",
+   "returned": [
+    "get_customer_context",
+    "get_job",
+    "find_customer",
+    "open_job"
+   ],
+   "used": [
+    "get_customer_context",
+    "find_customer",
+    "get_job"
+   ]
+  },
+  {
+   "id": "s057",
+   "category": "booking",
+   "hard": false,
+   "q": "read job notes captures",
+   "returned": [
+    "list_recent_captures",
+    "get_capture"
+   ],
+   "used": [
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s057",
+   "category": "booking",
+   "hard": false,
+   "q": "get visit details",
+   "returned": [
+    "get_team_schedule",
+    "get_job",
+    "query_spine"
+   ],
+   "used": [
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s061",
+   "category": "booking",
+   "hard": false,
+   "q": "book a visit",
+   "returned": [
+    "book_visit",
+    "find_slots",
+    "resolve_date",
+    "get_team_schedule"
+   ],
+   "used": []
+  },
+  {
+   "id": "s061",
+   "category": "booking",
+   "hard": false,
+   "q": "get customer context and jobs",
+   "returned": [
+    "get_customer_context",
+    "get_job"
+   ],
+   "used": [
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s061",
+   "category": "booking",
+   "hard": false,
+   "q": "move visit or reschedule visit",
+   "returned": [
+    "move_visit",
+    "find_slots",
+    "get_team_schedule",
+    "unschedule_visit",
+    "resolve_date"
+   ],
+   "used": []
+  },
+  {
+   "id": "s061",
+   "category": "booking",
+   "hard": false,
+   "q": "list recent captures",
+   "returned": [
+    "list_recent_captures",
+    "get_capture"
+   ],
+   "used": [
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s063",
+   "category": "booking",
+   "hard": true,
+   "q": "book a visit for a technician",
+   "returned": [
+    "book_visit",
+    "find_slots",
+    "resolve_date",
+    "get_team_schedule"
+   ],
+   "used": []
+  },
+  {
+   "id": "s063",
+   "category": "booking",
+   "hard": true,
+   "q": "list technicians roster",
+   "returned": [
+    "list_team"
+   ],
+   "used": [
+    "list_team"
+   ]
+  },
+  {
+   "id": "s063",
+   "category": "booking",
+   "hard": true,
+   "q": "get customer context and jobs",
+   "returned": [
+    "get_customer_context",
+    "get_job"
+   ],
+   "used": [
+    "get_customer_context",
+    "get_job"
+   ]
+  },
+  {
+   "id": "s068",
+   "category": "booking",
+   "hard": false,
+   "q": "find available slots or technician schedule",
+   "returned": [
+    "find_slots",
+    "get_team_schedule",
+    "get_availability"
+   ],
+   "used": [
+    "find_slots"
+   ]
+  },
+  {
+   "id": "s068",
+   "category": "booking",
+   "hard": false,
+   "q": "list customer jobs",
+   "returned": [
+    "get_customer_context",
+    "find_customer",
+    "get_job",
+    "query_spine"
+   ],
+   "used": [
+    "get_job",
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s069",
+   "category": "booking",
+   "hard": true,
+   "q": "view schedule for technician or find available slots",
+   "returned": [
+    "get_team_schedule",
+    "find_slots",
+    "get_availability"
+   ],
+   "used": [
+    "get_availability",
+    "find_slots",
+    "get_team_schedule"
+   ]
+  },
+  {
+   "id": "s066",
+   "category": "booking",
+   "hard": false,
+   "q": "move a booked visit to another day or time",
+   "returned": [
+    "move_visit",
+    "find_slots",
+    "get_team_schedule"
+   ],
+   "used": []
+  },
+  {
+   "id": "s066",
+   "category": "booking",
+   "hard": false,
+   "q": "view schedule or visits for a day",
+   "returned": [
+    "get_team_schedule",
+    "resolve_date"
+   ],
+   "used": [
+    "get_team_schedule"
+   ]
+  },
+  {
+   "id": "s066",
+   "category": "booking",
+   "hard": false,
+   "q": "list customer jobs or get customer details",
+   "returned": [
+    "get_customer_context",
+    "find_customer",
+    "get_job"
+   ],
+   "used": [
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s066",
+   "category": "booking",
+   "hard": false,
+   "q": "read job captures or notes",
+   "returned": [
+    "list_recent_captures",
+    "get_capture"
+   ],
+   "used": [
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s066",
+   "category": "booking",
+   "hard": false,
+   "q": "query database SQL or query spine",
+   "returned": [
+    "query_spine"
+   ],
+   "used": [
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s066",
+   "category": "booking",
+   "hard": false,
+   "q": "reopen job or uncancel job or schedule visit",
+   "returned": [
+    "book_visit",
+    "open_job",
+    "find_slots",
+    "move_visit"
+   ],
+   "used": []
+  },
+  {
+   "id": "s066",
+   "category": "booking",
+   "hard": false,
+   "q": "update job or modify job",
+   "returned": [
+    "update_job",
+    "get_job"
+   ],
+   "used": [
+    "get_job"
+   ]
+  },
+  {
+   "id": "s072",
+   "category": "booking",
+   "hard": true,
+   "q": "book a visit for a job",
+   "returned": [
+    "book_visit",
+    "find_slots",
+    "resolve_date"
+   ],
+   "used": [
+    "book_visit"
+   ]
+  },
+  {
+   "id": "s070",
+   "category": "booking",
+   "hard": false,
+   "q": "unschedule a visit from calendar",
+   "returned": [
+    "unschedule_visit",
+    "get_team_schedule"
+   ],
+   "used": []
+  },
+  {
+   "id": "s070",
+   "category": "booking",
+   "hard": false,
+   "q": "find visits or schedule",
+   "returned": [
+    "get_team_schedule",
+    "find_slots",
+    "get_availability"
+   ],
+   "used": []
+  },
+  {
+   "id": "s070",
+   "category": "booking",
+   "hard": false,
+   "q": "get customer context or jobs for customer",
+   "returned": [
+    "get_customer_context",
+    "get_job",
+    "find_customer"
+   ],
+   "used": [
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s070",
+   "category": "booking",
+   "hard": false,
+   "q": "list captures on a job",
+   "returned": [
+    "list_recent_captures",
+    "get_capture"
+   ],
+   "used": [
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s079",
+   "category": "booking",
+   "hard": true,
+   "q": "find available slots for a job or visit",
+   "returned": [
+    "find_slots",
+    "resolve_date",
+    "get_team_schedule",
+    "get_availability"
+   ],
+   "used": [
+    "find_slots"
+   ]
+  },
+  {
+   "id": "s091",
+   "category": "availability",
+   "hard": false,
+   "q": "technician schedule working hours roster",
+   "returned": [
+    "get_availability",
+    "get_team_schedule",
+    "list_team",
+    "set_availability",
+    "find_slots"
+   ],
+   "used": [
+    "get_availability",
+    "list_team"
+   ]
+  },
+  {
+   "id": "s087",
+   "category": "availability",
+   "hard": false,
+   "q": "record technician time off or leave",
+   "returned": [
+    "add_time_off",
+    "list_team",
+    "resolve_date"
+   ],
+   "used": [
+    "list_team"
+   ]
+  },
+  {
+   "id": "s087",
+   "category": "availability",
+   "hard": false,
+   "q": "view schedule or visits for a date",
+   "returned": [
+    "get_team_schedule",
+    "resolve_date"
+   ],
+   "used": [
+    "get_team_schedule"
+   ]
+  },
+  {
+   "id": "s094",
+   "category": "availability",
+   "hard": false,
+   "q": "technician schedule leave availability time off",
+   "returned": [
+    "get_availability",
+    "add_time_off",
+    "set_availability",
+    "remove_time_off",
+    "get_team_schedule"
+   ],
+   "used": []
+  },
+  {
+   "id": "s094",
+   "category": "availability",
+   "hard": false,
+   "q": "inform team lead office note",
+   "returned": [
+    "inform_team_lead"
+   ],
+   "used": []
+  },
+  {
+   "id": "s105",
+   "category": "customers_jobs",
+   "hard": false,
+   "q": "read field notes or captures on a job",
+   "returned": [
+    "list_recent_captures",
+    "get_capture"
+   ],
+   "used": []
+  },
+  {
+   "id": "s105",
+   "category": "customers_jobs",
+   "hard": false,
+   "q": "list jobs for a customer or customer context",
+   "returned": [
+    "get_customer_context",
+    "find_customer",
+    "get_job"
+   ],
+   "used": [
+    "get_customer_context",
+    "get_job"
+   ]
+  },
+  {
+   "id": "s109",
+   "category": "customers_jobs",
+   "hard": false,
+   "q": "update job priority or urgency",
+   "returned": [
+    "update_job",
+    "get_job"
+   ],
+   "used": []
+  },
+  {
+   "id": "s109",
+   "category": "customers_jobs",
+   "hard": false,
+   "q": "get customer jobs context",
+   "returned": [
+    "get_customer_context",
+    "get_job",
+    "find_customer"
+   ],
+   "used": [
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s111",
+   "category": "customers_jobs",
+   "hard": false,
+   "q": "read field notes or visit details",
+   "returned": [
+    "list_recent_captures",
+    "get_capture",
+    "get_team_schedule",
+    "get_job",
+    "get_customer_context"
+   ],
+   "used": [
+    "get_customer_context",
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s111",
+   "category": "customers_jobs",
+   "hard": false,
+   "q": "query spine SQL search database",
+   "returned": [
+    "query_spine"
+   ],
+   "used": [
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s114",
+   "category": "customers_jobs",
+   "hard": false,
+   "q": "list jobs or query jobs",
+   "returned": [
+    "query_spine",
+    "get_customer_context",
+    "get_job"
+   ],
+   "used": [
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s122",
+   "category": "customers_jobs",
+   "hard": false,
+   "q": "list customers or query database",
+   "returned": [
+    "query_spine",
+    "find_customer"
+   ],
+   "used": [
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s121",
+   "category": "customers_jobs",
+   "hard": true,
+   "q": "update job",
+   "returned": [
+    "update_job",
+    "get_job"
+   ],
+   "used": [
+    "update_job"
+   ]
+  },
+  {
+   "id": "s118",
+   "category": "customers_jobs",
+   "hard": true,
+   "q": "search jobs by technician or customer",
+   "returned": [
+    "query_spine",
+    "get_customer_context",
+    "find_customer",
+    "get_team_schedule",
+    "get_job"
+   ],
+   "used": [
+    "find_customer",
+    "query_spine",
+    "get_customer_context",
+    "get_job"
+   ]
+  },
+  {
+   "id": "s126",
+   "category": "customers_jobs",
+   "hard": false,
+   "q": "find jobs for a customer",
+   "returned": [
+    "get_customer_context",
+    "find_customer",
+    "query_spine"
+   ],
+   "used": [
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s126",
+   "category": "customers_jobs",
+   "hard": false,
+   "q": "read captures or notes for a job",
+   "returned": [
+    "list_recent_captures",
+    "get_capture"
+   ],
+   "used": [
+    "get_capture",
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s123",
+   "category": "customers_jobs",
+   "hard": true,
+   "q": "update job title",
+   "returned": [
+    "update_job",
+    "get_job"
+   ],
+   "used": [
+    "update_job"
+   ]
+  },
+  {
+   "id": "s140",
+   "category": "money",
+   "hard": false,
+   "q": "record a field note or estimate",
+   "returned": [
+    "record_field_note",
+    "record_money_event"
+   ],
+   "used": []
+  },
+  {
+   "id": "s140",
+   "category": "money",
+   "hard": false,
+   "q": "search jobs or list customer jobs",
+   "returned": [
+    "get_customer_context",
+    "query_spine",
+    "get_job",
+    "find_customer"
+   ],
+   "used": [
+    "find_customer",
+    "get_customer_context",
+    "get_job",
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s141",
+   "category": "money",
+   "hard": true,
+   "q": "get customer context and jobs",
+   "returned": [
+    "get_customer_context",
+    "get_job",
+    "find_customer"
+   ],
+   "used": [
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s141",
+   "category": "money",
+   "hard": true,
+   "q": "record field note",
+   "returned": [
+    "record_field_note"
+   ],
+   "used": []
+  },
+  {
+   "id": "s141",
+   "category": "money",
+   "hard": true,
+   "q": "estimate quote approve",
+   "returned": [
+    "record_money_event",
+    "open_job"
+   ],
+   "used": []
+  },
+  {
+   "id": "s141",
+   "category": "money",
+   "hard": true,
+   "q": "list captures notes job",
+   "returned": [
+    "list_recent_captures",
+    "get_capture"
+   ],
+   "used": [
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s141",
+   "category": "money",
+   "hard": true,
+   "q": "query database sql spine",
+   "returned": [
+    "query_spine"
+   ],
+   "used": [
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s143",
+   "category": "money",
+   "hard": false,
+   "q": "total collected payments revenue",
+   "returned": [
+    "query_spine"
+   ],
+   "used": [
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s144",
+   "category": "money",
+   "hard": false,
+   "q": "outstanding balance unpaid invoices who owes money",
+   "returned": [
+    "query_spine"
+   ],
+   "used": [
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s145",
+   "category": "money",
+   "hard": false,
+   "q": "refund a payment",
+   "returned": [
+    "record_money_event",
+    "get_job"
+   ],
+   "used": []
+  },
+  {
+   "id": "s145",
+   "category": "money",
+   "hard": false,
+   "q": "get customer jobs or details",
+   "returned": [
+    "get_customer_context",
+    "get_job",
+    "find_customer"
+   ],
+   "used": [
+    "get_customer_context",
+    "get_job"
+   ]
+  },
+  {
+   "id": "s127",
+   "category": "customers_jobs",
+   "hard": true,
+   "q": "customer context or standing facts",
+   "returned": [
+    "get_customer_context",
+    "record_standing_fact",
+    "retract_capture",
+    "find_customer"
+   ],
+   "used": [
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s127",
+   "category": "customers_jobs",
+   "hard": true,
+   "q": "list files or read file in workspace",
+   "returned": [
+    "read_file",
+    "run_command"
+   ],
+   "used": [
+    "run_command",
+    "read_file"
+   ]
+  },
+  {
+   "id": "s158",
+   "category": "money",
+   "hard": false,
+   "q": "find unpaid invoices or list invoices",
+   "returned": [
+    "query_spine",
+    "get_customer_context",
+    "get_job"
+   ],
+   "used": [
+    "query_spine",
+    "get_job",
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s157",
+   "category": "money",
+   "hard": true,
+   "q": "record a payment on a job",
+   "returned": [
+    "record_money_event"
+   ],
+   "used": []
+  },
+  {
+   "id": "s157",
+   "category": "money",
+   "hard": true,
+   "q": "list jobs for a customer",
+   "returned": [
+    "get_customer_context",
+    "find_customer",
+    "query_spine"
+   ],
+   "used": [
+    "get_customer_context",
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s151",
+   "category": "money",
+   "hard": false,
+   "q": "void an invoice",
+   "returned": [
+    "record_money_event",
+    "get_job"
+   ],
+   "used": []
+  },
+  {
+   "id": "s151",
+   "category": "money",
+   "hard": false,
+   "q": "list jobs for a customer",
+   "returned": [
+    "get_customer_context",
+    "find_customer",
+    "query_spine"
+   ],
+   "used": [
+    "get_customer_context",
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s151",
+   "category": "money",
+   "hard": false,
+   "q": "invoice",
+   "returned": [
+    "record_money_event",
+    "get_job",
+    "set_firm_profile"
+   ],
+   "used": []
+  },
+  {
+   "id": "s151",
+   "category": "money",
+   "hard": false,
+   "q": "send invoice",
+   "returned": [
+    "send_email",
+    "record_money_event",
+    "share_file"
+   ],
+   "used": []
+  },
+  {
+   "id": "s162",
+   "category": "money",
+   "hard": true,
+   "q": "record payment",
+   "returned": [
+    "record_money_event"
+   ],
+   "used": []
+  },
+  {
+   "id": "s162",
+   "category": "money",
+   "hard": true,
+   "q": "get customer jobs context",
+   "returned": [
+    "get_customer_context",
+    "get_job",
+    "find_customer"
+   ],
+   "used": [
+    "get_customer_context",
+    "get_job"
+   ]
+  },
+  {
+   "id": "s162",
+   "category": "money",
+   "hard": true,
+   "q": "record note",
+   "returned": [
+    "record_field_note",
+    "record_standing_fact"
+   ],
+   "used": []
+  },
+  {
+   "id": "s162",
+   "category": "money",
+   "hard": true,
+   "q": "list recent captures notes",
+   "returned": [
+    "list_recent_captures",
+    "get_capture"
+   ],
+   "used": [
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s162",
+   "category": "money",
+   "hard": true,
+   "q": "query spine",
+   "returned": [
+    "query_spine"
+   ],
+   "used": [
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s171",
+   "category": "files",
+   "hard": false,
+   "q": "list all customers or query database",
+   "returned": [
+    "query_spine",
+    "find_customer"
+   ],
+   "used": []
+  },
+  {
+   "id": "s171",
+   "category": "files",
+   "hard": false,
+   "q": "run python command write file share file sandbox",
+   "returned": [
+    "run_command",
+    "write_file",
+    "share_file",
+    "read_file"
+   ],
+   "used": [
+    "run_command",
+    "read_file",
+    "write_file",
+    "share_file"
+   ]
+  },
+  {
+   "id": "s169",
+   "category": "files",
+   "hard": false,
+   "q": "send email",
+   "returned": [
+    "send_email"
+   ],
+   "used": []
+  },
+  {
+   "id": "s169",
+   "category": "files",
+   "hard": false,
+   "q": "payments or financial records SQL database",
+   "returned": [
+    "query_spine",
+    "record_money_event"
+   ],
+   "used": []
+  },
+  {
+   "id": "s169",
+   "category": "files",
+   "hard": false,
+   "q": "run command or python bash shell",
+   "returned": [
+    "run_command"
+   ],
+   "used": []
+  },
+  {
+   "id": "s169",
+   "category": "files",
+   "hard": false,
+   "q": "share file or attach file",
+   "returned": [
+    "share_file",
+    "send_email",
+    "read_file",
+    "write_file"
+   ],
+   "used": [
+    "read_file",
+    "write_file",
+    "share_file"
+   ]
+  },
+  {
+   "id": "s167",
+   "category": "files",
+   "hard": true,
+   "q": "send email to customer",
+   "returned": [
+    "send_email",
+    "find_customer"
+   ],
+   "used": []
+  },
+  {
+   "id": "s167",
+   "category": "files",
+   "hard": true,
+   "q": "generate invoice pdf",
+   "returned": [
+    "run_command",
+    "write_file",
+    "set_firm_profile",
+    "read_file",
+    "share_file"
+   ],
+   "used": []
+  },
+  {
+   "id": "s167",
+   "category": "files",
+   "hard": true,
+   "q": "query database",
+   "returned": [
+    "query_spine"
+   ],
+   "used": []
+  },
+  {
+   "id": "s167",
+   "category": "files",
+   "hard": true,
+   "q": "get customer jobs",
+   "returned": [
+    "get_customer_context",
+    "get_job",
+    "find_customer"
+   ],
+   "used": [
+    "get_customer_context",
+    "get_job"
+   ]
+  },
+  {
+   "id": "s167",
+   "category": "files",
+   "hard": true,
+   "q": "invoice",
+   "returned": [
+    "record_money_event",
+    "set_firm_profile",
+    "get_job"
+   ],
+   "used": []
+  },
+  {
+   "id": "s167",
+   "category": "files",
+   "hard": true,
+   "q": "email pdf invoice attachment",
+   "returned": [
+    "send_email",
+    "share_file",
+    "run_command",
+    "write_file",
+    "read_file"
+   ],
+   "used": [
+    "run_command",
+    "read_file",
+    "write_file",
+    "share_file"
+   ]
+  },
+  {
+   "id": "s172",
+   "category": "files",
+   "hard": true,
+   "q": "get customer context or jobs for customer",
+   "returned": [
+    "get_customer_context",
+    "get_job",
+    "find_customer"
+   ],
+   "used": [
+    "get_customer_context",
+    "get_job"
+   ]
+  },
+  {
+   "id": "s172",
+   "category": "files",
+   "hard": true,
+   "q": "read notes captures on a job",
+   "returned": [
+    "list_recent_captures",
+    "get_capture"
+   ],
+   "used": [
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s177",
+   "category": "files",
+   "hard": false,
+   "q": "run python command in sandbox",
+   "returned": [
+    "run_command"
+   ],
+   "used": []
+  },
+  {
+   "id": "s177",
+   "category": "files",
+   "hard": false,
+   "q": "query database or schedule for visits",
+   "returned": [
+    "get_team_schedule",
+    "query_spine",
+    "find_slots",
+    "resolve_date"
+   ],
+   "used": []
+  },
+  {
+   "id": "s177",
+   "category": "files",
+   "hard": false,
+   "q": "share file or send file",
+   "returned": [
+    "share_file"
+   ],
+   "used": []
+  },
+  {
+   "id": "s177",
+   "category": "files",
+   "hard": false,
+   "q": "read file from sandbox",
+   "returned": [
+    "read_file"
+   ],
+   "used": [
+    "read_file"
+   ]
+  },
+  {
+   "id": "s173",
+   "category": "files",
+   "hard": false,
+   "q": "share file from sandbox",
+   "returned": [
+    "share_file"
+   ],
+   "used": []
+  },
+  {
+   "id": "s173",
+   "category": "files",
+   "hard": false,
+   "q": "run command in sandbox to build pdf",
+   "returned": [
+    "run_command",
+    "write_file",
+    "read_file"
+   ],
+   "used": []
+  },
+  {
+   "id": "s173",
+   "category": "files",
+   "hard": false,
+   "q": "list jobs for a customer",
+   "returned": [
+    "get_customer_context",
+    "find_customer",
+    "query_spine"
+   ],
+   "used": [
+    "get_customer_context",
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s173",
+   "category": "files",
+   "hard": false,
+   "q": "generate estimate pdf",
+   "returned": [
+    "run_command",
+    "write_file",
+    "set_firm_profile",
+    "read_file",
+    "share_file"
+   ],
+   "used": [
+    "set_firm_profile",
+    "run_command",
+    "read_file",
+    "write_file"
+   ]
+  },
+  {
+   "id": "s173",
+   "category": "files",
+   "hard": false,
+   "q": "create or send estimate proposal",
+   "returned": [
+    "record_money_event",
+    "send_email",
+    "share_file",
+    "run_command",
+    "open_job"
+   ],
+   "used": [
+    "run_command",
+    "share_file"
+   ]
+  },
+  {
+   "id": "s178",
+   "category": "files",
+   "hard": false,
+   "q": "schedule visits technician job sheet",
+   "returned": [
+    "book_visit",
+    "find_slots",
+    "get_team_schedule",
+    "move_visit",
+    "get_job"
+   ],
+   "used": [
+    "get_team_schedule",
+    "get_job"
+   ]
+  },
+  {
+   "id": "s174",
+   "category": "files",
+   "hard": true,
+   "q": "send file or email to customer",
+   "returned": [
+    "send_email",
+    "share_file"
+   ],
+   "used": [
+    "share_file"
+   ]
+  },
+  {
+   "id": "s181",
+   "category": "files",
+   "hard": true,
+   "q": "share file or send file",
+   "returned": [
+    "share_file"
+   ],
+   "used": []
+  },
+  {
+   "id": "s181",
+   "category": "files",
+   "hard": true,
+   "q": "write file in sandbox",
+   "returned": [
+    "write_file"
+   ],
+   "used": []
+  },
+  {
+   "id": "s180",
+   "category": "files",
+   "hard": false,
+   "q": "query financial balances invoices jobs database",
+   "returned": [
+    "query_spine",
+    "get_job"
+   ],
+   "used": []
+  },
+  {
+   "id": "s180",
+   "category": "files",
+   "hard": false,
+   "q": "run command python script in sandbox",
+   "returned": [
+    "run_command"
+   ],
+   "used": []
+  },
+  {
+   "id": "s180",
+   "category": "files",
+   "hard": false,
+   "q": "share file send file out of sandbox",
+   "returned": [
+    "share_file"
+   ],
+   "used": []
+  },
+  {
+   "id": "s180",
+   "category": "files",
+   "hard": false,
+   "q": "read file from sandbox",
+   "returned": [
+    "read_file"
+   ],
+   "used": []
+  },
+  {
+   "id": "s180",
+   "category": "files",
+   "hard": false,
+   "q": "write file in manager sandbox",
+   "returned": [
+    "write_file"
+   ],
+   "used": [
+    "write_file"
+   ]
+  },
+  {
+   "id": "s199",
+   "category": "email",
+   "hard": true,
+   "q": "run bash command in sandbox",
+   "returned": [
+    "run_command"
+   ],
+   "used": [
+    "run_command"
+   ]
+  },
+  {
+   "id": "s202",
+   "category": "email",
+   "hard": false,
+   "q": "send email to customer",
+   "returned": [
+    "send_email",
+    "find_customer"
+   ],
+   "used": []
+  },
+  {
+   "id": "s202",
+   "category": "email",
+   "hard": false,
+   "q": "get customer context",
+   "returned": [
+    "get_customer_context",
+    "find_customer"
+   ],
+   "used": []
+  },
+  {
+   "id": "s202",
+   "category": "email",
+   "hard": false,
+   "q": "send sms or text message to customer",
+   "returned": [],
+   "used": []
+  },
+  {
+   "id": "s202",
+   "category": "email",
+   "hard": false,
+   "q": "list recent captures on job",
+   "returned": [
+    "list_recent_captures",
+    "get_capture"
+   ],
+   "used": [
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s202",
+   "category": "email",
+   "hard": false,
+   "q": "send reminder",
+   "returned": [
+    "send_email",
+    "inform_teammate",
+    "inform_team_lead"
+   ],
+   "used": []
+  },
+  {
+   "id": "s202",
+   "category": "email",
+   "hard": false,
+   "q": "text message",
+   "returned": [],
+   "used": []
+  },
+  {
+   "id": "s202",
+   "category": "email",
+   "hard": false,
+   "q": "invoice",
+   "returned": [
+    "record_money_event",
+    "get_job",
+    "set_firm_profile"
+   ],
+   "used": [
+    "get_job"
+   ]
+  },
+  {
+   "id": "s202",
+   "category": "email",
+   "hard": false,
+   "q": "contact customer",
+   "returned": [
+    "send_email",
+    "find_customer",
+    "get_customer_context",
+    "share_file"
+   ],
+   "used": []
+  },
+  {
+   "id": "s206",
+   "category": "email",
+   "hard": false,
+   "q": "send an email",
+   "returned": [
+    "send_email"
+   ],
+   "used": []
+  },
+  {
+   "id": "s206",
+   "category": "email",
+   "hard": false,
+   "q": "search jobs",
+   "returned": [
+    "query_spine",
+    "get_customer_context",
+    "get_job"
+   ],
+   "used": [
+    "get_customer_context",
+    "query_spine",
+    "get_job"
+   ]
+  },
+  {
+   "id": "s217",
+   "category": "web",
+   "hard": false,
+   "q": "search company documents and knowledge base",
+   "returned": [
+    "query_spine",
+    "read_file",
+    "run_command"
+   ],
+   "used": [
+    "query_spine",
+    "run_command"
+   ]
+  },
+  {
+   "id": "s207",
+   "category": "email",
+   "hard": false,
+   "q": "send an email to a customer",
+   "returned": [
+    "send_email",
+    "find_customer"
+   ],
+   "used": [
+    "find_customer"
+   ]
+  },
+  {
+   "id": "s207",
+   "category": "email",
+   "hard": false,
+   "q": "get customer context or customer jobs",
+   "returned": [
+    "get_customer_context",
+    "get_job",
+    "find_customer"
+   ],
+   "used": [
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s207",
+   "category": "email",
+   "hard": false,
+   "q": "list recent captures or notes",
+   "returned": [
+    "list_recent_captures"
+   ],
+   "used": [
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s207",
+   "category": "email",
+   "hard": false,
+   "q": "query database with SQL",
+   "returned": [
+    "query_spine"
+   ],
+   "used": [
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s207",
+   "category": "email",
+   "hard": false,
+   "q": "read or list files",
+   "returned": [
+    "read_file",
+    "run_command"
+   ],
+   "used": [
+    "run_command",
+    "read_file"
+   ]
+  },
+  {
+   "id": "s221",
+   "category": "team_admin",
+   "hard": false,
+   "q": "add technician seat",
+   "returned": [
+    "add_technician_seat",
+    "list_team"
+   ],
+   "used": [
+    "add_technician_seat"
+   ]
+  },
+  {
+   "id": "s212",
+   "category": "web",
+   "hard": false,
+   "q": "search the web or internet",
+   "returned": [
+    "web_search",
+    "read_webpage"
+   ],
+   "used": []
+  },
+  {
+   "id": "s212",
+   "category": "web",
+   "hard": false,
+   "q": "search standing facts or notes or suppliers",
+   "returned": [
+    "web_search",
+    "list_recent_captures",
+    "get_customer_context",
+    "query_spine",
+    "get_capture"
+   ],
+   "used": [
+    "query_spine",
+    "web_search"
+   ]
+  },
+  {
+   "id": "s212",
+   "category": "web",
+   "hard": false,
+   "q": "run command terminal bash python",
+   "returned": [
+    "run_command"
+   ],
+   "used": [
+    "run_command"
+   ]
+  },
+  {
+   "id": "s212",
+   "category": "web",
+   "hard": false,
+   "q": "read file",
+   "returned": [
+    "read_file"
+   ],
+   "used": [
+    "read_file"
+   ]
+  },
+  {
+   "id": "s212",
+   "category": "web",
+   "hard": false,
+   "q": "supplier vendor parts supply house",
+   "returned": [
+    "web_search",
+    "read_webpage"
+   ],
+   "used": []
+  },
+  {
+   "id": "s212",
+   "category": "web",
+   "hard": false,
+   "q": "standing facts company documents notes policy",
+   "returned": [
+    "record_standing_fact",
+    "record_field_note",
+    "set_firm_profile",
+    "list_recent_captures",
+    "set_technician_view"
+   ],
+   "used": []
+  },
+  {
+   "id": "s212",
+   "category": "web",
+   "hard": false,
+   "q": "ask team lead office question",
+   "returned": [
+    "ask_team_lead",
+    "inform_team_lead"
+   ],
+   "used": [
+    "ask_team_lead"
+   ]
+  },
+  {
+   "id": "s225",
+   "category": "team_admin",
+   "hard": false,
+   "q": "remove technician from team or delete seat",
+   "returned": [
+    "deactivate_technician_seat",
+    "list_team"
+   ],
+   "used": [
+    "list_team",
+    "deactivate_technician_seat"
+   ]
+  },
+  {
+   "id": "s225",
+   "category": "team_admin",
+   "hard": false,
+   "q": "check technician schedule or assigned visits",
+   "returned": [
+    "get_team_schedule",
+    "get_availability",
+    "resolve_date"
+   ],
+   "used": [
+    "get_team_schedule",
+    "resolve_date"
+   ]
+  },
+  {
+   "id": "s218",
+   "category": "web",
+   "hard": true,
+   "q": "search the web for HVAC parts",
+   "returned": [
+    "web_search",
+    "read_webpage"
+   ],
+   "used": []
+  },
+  {
+   "id": "s218",
+   "category": "web",
+   "hard": true,
+   "q": "send an email",
+   "returned": [
+    "send_email"
+   ],
+   "used": []
+  },
+  {
+   "id": "s218",
+   "category": "web",
+   "hard": true,
+   "q": "lookup parts or inventory",
+   "returned": [
+    "web_search",
+    "read_webpage",
+    "query_spine"
+   ],
+   "used": [
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s218",
+   "category": "web",
+   "hard": true,
+   "q": "run command in sandbox",
+   "returned": [
+    "run_command"
+   ],
+   "used": [
+    "run_command"
+   ]
+  },
+  {
+   "id": "s218",
+   "category": "web",
+   "hard": true,
+   "q": "read file",
+   "returned": [
+    "read_file"
+   ],
+   "used": [
+    "read_file"
+   ]
+  },
+  {
+   "id": "s218",
+   "category": "web",
+   "hard": true,
+   "q": "file reading or sandbox tools",
+   "returned": [
+    "read_file",
+    "write_file",
+    "run_command",
+    "share_file",
+    "read_webpage"
+   ],
+   "used": [
+    "write_file",
+    "read_file",
+    "share_file",
+    "run_command"
+   ]
+  },
+  {
+   "id": "s230",
+   "category": "team_admin",
+   "hard": true,
+   "q": "business profile settings and location",
+   "returned": [
+    "set_firm_profile",
+    "set_timezone"
+   ],
+   "used": [
+    "set_firm_profile",
+    "set_timezone"
+   ]
+  },
+  {
+   "id": "s233",
+   "category": "team_admin",
+   "hard": false,
+   "q": "company letterhead business details settings",
+   "returned": [
+    "set_firm_profile"
+   ],
+   "used": [
+    "set_firm_profile"
+   ]
+  },
+  {
+   "id": "s237",
+   "category": "team_admin",
+   "hard": false,
+   "q": "update technician skills",
+   "returned": [
+    "set_technician_skills",
+    "list_team"
+   ],
+   "used": [
+    "list_team",
+    "set_technician_skills"
+   ]
+  },
+  {
+   "id": "s236",
+   "category": "team_admin",
+   "hard": false,
+   "q": "update technician telegram id or contact details",
+   "returned": [
+    "bind_telegram",
+    "list_team"
+   ],
+   "used": [
+    "list_team",
+    "bind_telegram"
+   ]
+  },
+  {
+   "id": "s241",
+   "category": "access",
+   "hard": false,
+   "q": "list access requests",
+   "returned": [
+    "list_access"
+   ],
+   "used": [
+    "list_access"
+   ]
+  },
+  {
+   "id": "s248",
+   "category": "access",
+   "hard": false,
+   "q": "technician access permissions dollar amounts",
+   "returned": [
+    "list_access",
+    "grant_access",
+    "set_technician_view",
+    "get_job",
+    "record_money_event"
+   ],
+   "used": [
+    "list_access",
+    "set_technician_view"
+   ]
+  },
+  {
+   "id": "s245",
+   "category": "access",
+   "hard": false,
+   "q": "grant access to view dollar amounts or financial figures on jobs",
+   "returned": [
+    "grant_access",
+    "set_technician_view",
+    "list_access"
+   ],
+   "used": [
+    "list_access",
+    "grant_access"
+   ]
+  },
+  {
+   "id": "s256",
+   "category": "office_notes",
+   "hard": true,
+   "q": "send a note to the office planner",
+   "returned": [
+    "inform_team_lead"
+   ],
+   "used": [
+    "inform_team_lead"
+   ]
+  },
+  {
+   "id": "s258",
+   "category": "office_notes",
+   "hard": false,
+   "q": "ask the office a question",
+   "returned": [
+    "ask_team_lead"
+   ],
+   "used": []
+  },
+  {
+   "id": "s258",
+   "category": "office_notes",
+   "hard": false,
+   "q": "get customer details and jobs",
+   "returned": [
+    "get_customer_context",
+    "find_customer",
+    "get_job"
+   ],
+   "used": [
+    "get_customer_context",
+    "get_job"
+   ]
+  },
+  {
+   "id": "s258",
+   "category": "office_notes",
+   "hard": false,
+   "q": "list captures or notes on a job",
+   "returned": [
+    "list_recent_captures"
+   ],
+   "used": [
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s268",
+   "category": "office_notes",
+   "hard": false,
+   "q": "message teammate or technician",
+   "returned": [
+    "inform_teammate",
+    "send_email"
+   ],
+   "used": []
+  },
+  {
+   "id": "s268",
+   "category": "office_notes",
+   "hard": false,
+   "q": "list technicians roster team",
+   "returned": [
+    "list_team"
+   ],
+   "used": [
+    "list_team"
+   ]
+  },
+  {
+   "id": "s268",
+   "category": "office_notes",
+   "hard": false,
+   "q": "send telegram or text message to technician",
+   "returned": [
+    "inform_teammate"
+   ],
+   "used": []
+  },
+  {
+   "id": "s268",
+   "category": "office_notes",
+   "hard": false,
+   "q": "message teammate",
+   "returned": [
+    "inform_teammate",
+    "list_team"
+   ],
+   "used": [
+    "inform_teammate"
+   ]
+  },
+  {
+   "id": "s270",
+   "category": "office_notes",
+   "hard": true,
+   "q": "inform team lead or office",
+   "returned": [
+    "inform_team_lead",
+    "ask_team_lead"
+   ],
+   "used": [
+    "inform_team_lead"
+   ]
+  },
+  {
+   "id": "s262",
+   "category": "office_notes",
+   "hard": false,
+   "q": "ask team lead or office what they are working on",
+   "returned": [
+    "ask_team_lead"
+   ],
+   "used": []
+  },
+  {
+   "id": "s262",
+   "category": "office_notes",
+   "hard": false,
+   "q": "view office tasks or what needs attention",
+   "returned": [
+    "ask_team_lead",
+    "query_spine"
+   ],
+   "used": []
+  },
+  {
+   "id": "s262",
+   "category": "office_notes",
+   "hard": false,
+   "q": "office messages or unplaced visits or planner items",
+   "returned": [
+    "get_team_schedule",
+    "inform_team_lead",
+    "ask_team_lead",
+    "move_visit"
+   ],
+   "used": [
+    "ask_team_lead",
+    "get_team_schedule"
+   ]
+  },
+  {
+   "id": "s277",
+   "category": "record_notes",
+   "hard": false,
+   "q": "record a standing fact or note about a customer",
+   "returned": [
+    "record_standing_fact",
+    "record_field_note"
+   ],
+   "used": [
+    "record_standing_fact"
+   ]
+  },
+  {
+   "id": "s290",
+   "category": "access",
+   "hard": true,
+   "q": "grant access to a technician or list access requests",
+   "returned": [
+    "grant_access",
+    "list_access"
+   ],
+   "used": []
+  },
+  {
+   "id": "s290",
+   "category": "access",
+   "hard": true,
+   "q": "send a note to a teammate's assistant or message a technician",
+   "returned": [
+    "inform_teammate",
+    "send_email"
+   ],
+   "used": []
+  },
+  {
+   "id": "s290",
+   "category": "access",
+   "hard": true,
+   "q": "list technicians or team roster",
+   "returned": [
+    "list_team"
+   ],
+   "used": [
+    "list_team"
+   ]
+  },
+  {
+   "id": "s290",
+   "category": "access",
+   "hard": true,
+   "q": "list jobs for a customer",
+   "returned": [
+    "get_customer_context",
+    "find_customer",
+    "query_spine"
+   ],
+   "used": [
+    "get_customer_context"
+   ]
+  },
+  {
+   "id": "s275",
+   "category": "record_notes",
+   "hard": false,
+   "q": "find recent captures or notes",
+   "returned": [
+    "list_recent_captures",
+    "get_capture",
+    "get_customer_context"
+   ],
+   "used": []
+  },
+  {
+   "id": "s275",
+   "category": "record_notes",
+   "hard": false,
+   "q": "search captures by text or filter",
+   "returned": [
+    "query_spine",
+    "list_recent_captures",
+    "get_capture"
+   ],
+   "used": []
+  },
+  {
+   "id": "s275",
+   "category": "record_notes",
+   "hard": false,
+   "q": "retract capture",
+   "returned": [
+    "retract_capture",
+    "get_capture",
+    "list_recent_captures"
+   ],
+   "used": [
+    "list_recent_captures"
+   ]
+  },
+  {
+   "id": "s275",
+   "category": "record_notes",
+   "hard": false,
+   "q": "record standing fact or review item",
+   "returned": [
+    "record_standing_fact",
+    "record_field_note",
+    "get_customer_context"
+   ],
+   "used": []
+  },
+  {
+   "id": "s279",
+   "category": "record_notes",
+   "hard": false,
+   "q": "record a field note",
+   "returned": [
+    "record_field_note"
+   ],
+   "used": [
+    "record_field_note"
+   ]
+  },
+  {
+   "id": "s279",
+   "category": "record_notes",
+   "hard": false,
+   "q": "list technicians roster",
+   "returned": [
+    "list_team"
+   ],
+   "used": [
+    "list_team"
+   ]
+  },
+  {
+   "id": "s279",
+   "category": "record_notes",
+   "hard": false,
+   "q": "query database",
+   "returned": [
+    "query_spine"
+   ],
+   "used": [
+    "query_spine"
+   ]
+  },
+  {
+   "id": "s279",
+   "category": "record_notes",
+   "hard": false,
+   "q": "update job",
+   "returned": [
+    "update_job",
+    "get_job"
+   ],
+   "used": []
+  },
+  {
+   "id": "s279",
+   "category": "record_notes",
+   "hard": false,
+   "q": "standing fact",
+   "returned": [
+    "record_standing_fact",
+    "get_customer_context",
+    "retract_capture"
+   ],
+   "used": []
+  },
+  {
+   "id": "s279",
+   "category": "record_notes",
+   "hard": false,
+   "q": "inform team lead office",
+   "returned": [
+    "inform_team_lead",
+    "ask_team_lead"
+   ],
+   "used": []
+  },
+  {
+   "id": "s279",
+   "category": "record_notes",
+   "hard": false,
+   "q": "record capture",
+   "returned": [
+    "record_field_note",
+    "record_standing_fact"
+   ],
+   "used": []
+  },
+  {
+   "id": "s279",
+   "category": "record_notes",
+   "hard": false,
+   "q": "note",
+   "returned": [
+    "record_field_note",
+    "get_capture",
+    "list_recent_captures",
+    "retract_capture",
+    "inform_team_lead"
+   ],
+   "used": []
+  },
+  {
+   "id": "s279",
+   "category": "record_notes",
+   "hard": false,
+   "q": "equipment",
+   "returned": [
+    "query_spine",
+    "web_search",
+    "get_customer_context",
+    "record_standing_fact",
+    "read_webpage"
+   ],
+   "used": [
+    "record_standing_fact"
+   ]
+  },
+  {
+   "id": "s279",
+   "category": "record_notes",
+   "hard": false,
+   "q": "run command python",
+   "returned": [
+    "run_command"
+   ],
+   "used": [
+    "run_command"
+   ]
+  },
+  {
+   "id": "s279",
+   "category": "record_notes",
+   "hard": false,
+   "q": "read file",
+   "returned": [
+    "read_file"
+   ],
+   "used": [
+    "read_file"
+   ]
+  },
+  {
+   "id": "s279",
+   "category": "record_notes",
+   "hard": false,
+   "q": "all tools",
+   "returned": [],
+   "used": []
+  },
+  {
+   "id": "s279",
+   "category": "record_notes",
+   "hard": false,
+   "q": "schedule visit",
+   "returned": [
+    "book_visit",
+    "find_slots",
+    "resolve_date",
+    "get_team_schedule"
+   ],
+   "used": []
+  },
+  {
+   "id": "s279",
+   "category": "record_notes",
+   "hard": false,
+   "q": "move visit",
+   "returned": [
+    "move_visit"
+   ],
+   "used": []
+  }
+ ]
+}

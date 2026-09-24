@@ -1,0 +1,13 @@
+import { mkdtempSync } from 'node:fs'; import { tmpdir } from 'node:os'; import { join } from 'node:path';
+import { makeClient, runItem, spineClient, keyUsage } from './seat.mjs';
+import { llmRetriever, llmStats, jevRaw, jevPolicy, jevStats } from './retrievers.mjs';
+const k0 = await keyUsage();
+const raw = await jevRaw('work out the date of next Friday');
+console.log('JEV', raw.choice, JSON.stringify(jevPolicy(raw)), `${jevStats.ms[0]}ms`);
+const client = makeClient(mkdtempSync(join(tmpdir(), 'te-'))); await client.start();
+const spine = await spineClient();
+const r = await runItem(client, spine, { id: 'smoke', text: 'Record a $450 payment by check from Maria Gonzalez on her AC repair job.' }, { retrieve: llmRetriever });
+console.log(JSON.stringify({ log: r.log, lastReply: r.replies.at(-1), usage: r.usage, secs: r.secs, llm: llmStats }, null, 1));
+await spine.close(); await client.stop();
+await new Promise((res) => setTimeout(res, 8000));
+const k1 = await keyUsage(); console.log('key spend $', (k1.usage - k0.usage).toFixed(4));

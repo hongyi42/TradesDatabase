@@ -1,0 +1,1958 @@
+{
+ "summary": {
+  "reference_llm": {
+   "messages": 31,
+   "allNeedsCalled": "24/31",
+   "needsCovered": "88.1%",
+   "searchesPerMsg": "2.10",
+   "emptySearches": 0,
+   "saidItLackedATool": 0,
+   "costPerMsg": "$0.1050",
+   "secsPerMsg": "62.1",
+   "inputTokensPerCall": 18621,
+   "modelCallsPerMsg": "10.39",
+   "timeouts": 0
+  },
+  "jev": {
+   "messages": 31,
+   "allNeedsCalled": "22/31",
+   "needsCovered": "84.7%",
+   "searchesPerMsg": "2.61",
+   "emptySearches": 0,
+   "saidItLackedATool": 0,
+   "costPerMsg": "$0.1120",
+   "secsPerMsg": "57.7",
+   "inputTokensPerCall": 20314,
+   "modelCallsPerMsg": "11.29",
+   "timeouts": 0
+  },
+  "all_tools": {
+   "messages": 31,
+   "allNeedsCalled": "22/31",
+   "needsCovered": "84.7%",
+   "searchesPerMsg": "0.00",
+   "emptySearches": 0,
+   "saidItLackedATool": 0,
+   "costPerMsg": "$0.1209",
+   "secsPerMsg": "62.5",
+   "inputTokensPerCall": 35487,
+   "modelCallsPerMsg": "12.00",
+   "timeouts": 1
+  }
+ },
+ "per": [
+  {
+   "arm": "reference_llm",
+   "id": "s290",
+   "category": "access",
+   "needs": [
+    "find_customer",
+    "get_customer_context",
+    "grant_access",
+    "inform_teammate"
+   ],
+   "called": [
+    "list_access",
+    "list_team",
+    "find_customer",
+    "resolve_date",
+    "get_customer_context",
+    "grant_access",
+    "inform_teammate"
+   ],
+   "missing": [],
+   "searches": [
+    "grant access to a technician or list access requests -> grant_access|list_access",
+    "send a note to a teammate's assistant or message a technician -> inform_teammate|send_email",
+    "list technicians or team roster -> list_team",
+    "list jobs for a customer -> get_customer_context|find_customer|query_spine"
+   ],
+   "lastReply": "I have granted Jane Alvarez access to Acme Offices (all jobs and technician notes, with money in words) through Wednesday 2026-09-30.\n\nI also sent a note to Jan"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s248",
+   "category": "access",
+   "needs": [
+    "set_technician_view"
+   ],
+   "called": [
+    "list_access",
+    "set_technician_view"
+   ],
+   "missing": [],
+   "searches": [
+    "technician access permissions dollar amounts -> list_access|grant_access|set_technician_view|get_job|record_money_event"
+   ],
+   "lastReply": "I've updated the firm-wide rule for technicians:\n\n• **Money:** changed from *status in words only, no figures (the default)* → *dollar figures on everything the"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s100",
+   "category": "availability",
+   "needs": [
+    "set_availability"
+   ],
+   "called": [
+    "set_availability"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "Jane Alvarez's working pattern has been updated to:\n\n- **Mon–Fri:** 08:00–17:00\n- **Sat:** 08:00–12:00\n- **Sun:** Off\n\nShe is now visible to the scheduler durin"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s094",
+   "category": "availability",
+   "needs": [
+    "resolve_date",
+    "add_time_off"
+   ],
+   "called": [
+    "resolve_date",
+    "get_availability",
+    "add_time_off",
+    "get_team_schedule",
+    "get_job"
+   ],
+   "missing": [],
+   "searches": [
+    "technician schedule leave availability time off -> get_availability|add_time_off|set_availability|remove_time_off|get_team_schedule",
+    "inform team lead office note -> inform_team_lead"
+   ],
+   "lastReply": "I have recorded full-day time off for Jane Alvarez on **Thursday 2026-09-24** (Dentist appointment). The scheduler will skip this day, and manual bookings will "
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s069",
+   "category": "booking",
+   "needs": [
+    "resolve_date",
+    "find_customer",
+    "find_slots"
+   ],
+   "called": [
+    "resolve_date",
+    "find_customer",
+    "get_availability",
+    "find_slots",
+    "get_team_schedule",
+    "get_job"
+   ],
+   "missing": [],
+   "searches": [
+    "view schedule for technician or find available slots -> get_team_schedule|find_slots|get_availability"
+   ],
+   "lastReply": "Yes, Jane has room tomorrow, **Thursday 2026-09-24**. Her schedule is completely clear for the day (free 08:00–17:00), so she is fully available in the afternoo"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s070",
+   "category": "booking",
+   "needs": [
+    "get_team_schedule",
+    "unschedule_visit"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "list_recent_captures",
+    "get_job",
+    "get_team_schedule",
+    "ask_user",
+    "unschedule_visit"
+   ],
+   "missing": [],
+   "searches": [
+    "unschedule a visit from calendar -> unschedule_visit|get_team_schedule",
+    "find visits or schedule -> get_team_schedule|find_slots|get_availability",
+    "get customer context or jobs for customer -> get_customer_context|get_job|find_customer",
+    "list captures on a job -> list_recent_captures|get_capture"
+   ],
+   "lastReply": "Please confirm taking this visit off the calendar:\n\n• **Customer:** Acme Offices  \n• **Date:** Saturday 2026-09-26 (08:00–10:00)  \n• **Job:** Quarterly maintena"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s068",
+   "category": "booking",
+   "needs": [
+    "find_customer",
+    "find_slots"
+   ],
+   "called": [
+    "find_customer",
+    "resolve_date",
+    "find_slots",
+    "get_job",
+    "get_customer_context"
+   ],
+   "missing": [],
+   "searches": [
+    "find available slots or technician schedule -> find_slots|get_team_schedule|get_availability",
+    "list customer jobs -> get_customer_context|find_customer|get_job|query_spine"
+   ],
+   "lastReply": "For **Acme Offices** (Quarterly maintenance):\n\n### Earliest Open Availability\nIf you are looking for the soonest new opening on the schedule, the earliest booka"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s121",
+   "category": "customers_jobs",
+   "needs": [
+    "update_job"
+   ],
+   "called": [
+    "get_job",
+    "update_job"
+   ],
+   "missing": [],
+   "searches": [
+    "update job -> update_job|get_job"
+   ],
+   "lastReply": "The existing **slow drain** job for Maria Gonzalez is confirmed as **plumbing** (job type: plumbing → plumbing).\n\n*(Note: There is no stored standard duration f"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s114",
+   "category": "customers_jobs",
+   "needs": [
+    "query_spine"
+   ],
+   "called": [
+    "query_spine"
+   ],
+   "missing": [],
+   "searches": [
+    "list jobs or query jobs -> query_spine|get_customer_context|get_job"
+   ],
+   "lastReply": "There are **4 jobs** currently open:\n\n1. **Furnace inspection** — Tom Becker\n   - **Priority:** Urgent\n   - **Duration:** 120 mins\n   - **Scheduled visit:** Fri"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s105",
+   "category": "customers_jobs",
+   "needs": [
+    "find_customer",
+    "get_customer_context",
+    "list_recent_captures"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "list_recent_captures",
+    "get_job"
+   ],
+   "missing": [],
+   "searches": [
+    "read field notes or captures on a job -> list_recent_captures|get_capture",
+    "list jobs for a customer or customer context -> get_customer_context|find_customer|get_job"
+   ],
+   "lastReply": "On file for **Tom Becker** (99 Ranch Rd, Clovis):\n\n* **Active Job:** Furnace inspection (scheduled for **Friday 2026-09-25** from **08:00 to 10:00** with **Jane"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s199",
+   "category": "email",
+   "needs": [
+    "send_email"
+   ],
+   "called": [
+    "query_spine",
+    "run_command"
+   ],
+   "missing": [
+    "send_email"
+   ],
+   "searches": [
+    "run bash command in sandbox -> run_command"
+   ],
+   "lastReply": "I cannot send an email to Tom Becker yet because there is no email address on file for him (we only have his phone number, 555-0199).\n\nPlease provide Tom's emai"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s206",
+   "category": "email",
+   "needs": [
+    "find_customer",
+    "get_customer_context",
+    "send_email"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "query_spine",
+    "get_job",
+    "resolve_date"
+   ],
+   "missing": [
+    "send_email"
+   ],
+   "searches": [
+    "send an email -> send_email",
+    "search jobs -> query_spine|get_customer_context|get_job"
+   ],
+   "lastReply": "Tom Becker does not have an email address on file (we only have his phone number: 555-0199). \n\nHe currently has a **Furnace inspection** scheduled for **Friday "
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s167",
+   "category": "files",
+   "needs": [
+    "find_customer",
+    "get_customer_context",
+    "run_command",
+    "share_file"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "query_spine",
+    "get_job",
+    "set_firm_profile",
+    "run_command",
+    "read_file",
+    "write_file",
+    "ask_user",
+    "share_file"
+   ],
+   "missing": [],
+   "searches": [
+    "send email to customer -> send_email|find_customer",
+    "generate invoice pdf -> run_command|write_file|set_firm_profile|read_file|share_file",
+    "query database -> query_spine",
+    "get customer jobs -> get_customer_context|get_job|find_customer",
+    "invoice -> record_money_event|set_firm_profile|get_job",
+    "email pdf invoice attachment -> send_email|share_file|run_command|write_file|read_file"
+   ],
+   "lastReply": "I have generated the PDF invoice for **Maria Gonzalez** for the completed **AC repair** ($400.00, balance paid in full) and shared the file with you here on Tel"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s180",
+   "category": "files",
+   "needs": [
+    "query_spine",
+    "run_command"
+   ],
+   "called": [
+    "resolve_date",
+    "query_spine",
+    "get_job",
+    "run_command",
+    "read_file",
+    "write_file",
+    "share_file"
+   ],
+   "missing": [],
+   "searches": [
+    "query financial balances invoices jobs database -> query_spine|get_job",
+    "run command python script in sandbox -> run_command",
+    "share file send file out of sandbox -> share_file",
+    "read file from sandbox -> read_file",
+    "write file in manager sandbox -> write_file"
+   ],
+   "lastReply": "Here is the summary of outstanding balances across the firm as of **Wednesday 2026-09-23** (America/Los_Angeles), and I have generated and sent the full **`outs"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s178",
+   "category": "files",
+   "needs": [
+    "resolve_date",
+    "get_team_schedule",
+    "run_command"
+   ],
+   "called": [
+    "resolve_date",
+    "get_team_schedule",
+    "get_job"
+   ],
+   "missing": [
+    "run_command"
+   ],
+   "searches": [
+    "schedule visits technician job sheet -> book_visit|find_slots|get_team_schedule|move_visit|get_job"
+   ],
+   "lastReply": "**Reviewing Jane's Schedule**\n\nI'm currently processing Jane's Thursday visit details for Acme Offices. The entry includes the address, time slot from 8 to 10 A"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s157",
+   "category": "money",
+   "needs": [
+    "resolve_date",
+    "find_customer",
+    "get_customer_context",
+    "record_money_event"
+   ],
+   "called": [
+    "resolve_date",
+    "find_customer",
+    "get_customer_context",
+    "get_job",
+    "query_spine",
+    "ask_user",
+    "record_money_event"
+   ],
+   "missing": [],
+   "searches": [
+    "record a payment on a job -> record_money_event",
+    "list jobs for a customer -> get_customer_context|find_customer|query_spine"
+   ],
+   "lastReply": "I have recorded the payment on Maria Gonzalez's **AC repair** job:\n\n- **Payment Recorded**: $50.00 in cash (received Tuesday 2026-09-22)\n- **Total Paid**: Moved"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s140",
+   "category": "money",
+   "needs": [
+    "find_customer",
+    "get_customer_context",
+    "record_money_event"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "get_job",
+    "query_spine",
+    "record_money_event"
+   ],
+   "missing": [],
+   "searches": [
+    "record a field note or estimate -> record_field_note|record_money_event",
+    "search jobs or list customer jobs -> get_customer_context|query_spine|get_job|find_customer"
+   ],
+   "lastReply": "Recorded an estimate presented of $3,200 on Acme Offices' \"Quarterly maintenance\" job.\n\n• **Job:** Quarterly maintenance  \n• **Estimate presented:** $3,200.00  "
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s151",
+   "category": "money",
+   "needs": [
+    "find_customer",
+    "query_spine",
+    "record_money_event"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "get_job",
+    "query_spine",
+    "resolve_date"
+   ],
+   "missing": [
+    "record_money_event"
+   ],
+   "searches": [
+    "void an invoice -> record_money_event|get_job",
+    "list jobs for a customer -> get_customer_context|find_customer|query_spine",
+    "invoice -> record_money_event|get_job|set_firm_profile",
+    "send invoice -> send_email|record_money_event|share_file"
+   ],
+   "lastReply": "I checked Tom Becker's record (99 Ranch Rd, Clovis), and there are no invoices or money events recorded for him:\n\n- **Furnace inspection** (open, visit booked f"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s256",
+   "category": "office_notes",
+   "needs": [
+    "resolve_date",
+    "add_time_off"
+   ],
+   "called": [
+    "resolve_date",
+    "inform_team_lead"
+   ],
+   "missing": [
+    "add_time_off"
+   ],
+   "searches": [
+    "send a note to the office planner -> inform_team_lead"
+   ],
+   "lastReply": "I've passed a note to the office that Jane is on leave next week, Monday 2026-09-28 through Sunday 2026-10-04. The office will pick it up on its next planning p"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s262",
+   "category": "office_notes",
+   "needs": [
+    "ask_team_lead"
+   ],
+   "called": [
+    "ask_team_lead",
+    "resolve_date",
+    "get_team_schedule",
+    "query_spine"
+   ],
+   "missing": [],
+   "searches": [
+    "ask team lead or office what they are working on -> ask_team_lead",
+    "view office tasks or what needs attention -> ask_team_lead|query_spine",
+    "office messages or unplaced visits or planner items -> get_team_schedule|inform_team_lead|ask_team_lead|move_visit"
+   ],
+   "lastReply": "The office planner evaluates updates on its regular planning passes, and the direct check was kept for the next pass. Looking directly at the current operationa"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s274",
+   "category": "record_notes",
+   "needs": [
+    "record_standing_fact"
+   ],
+   "called": [
+    "record_standing_fact"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "Recorded the gate code `4417` for Acme Offices."
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s275",
+   "category": "record_notes",
+   "needs": [
+    "list_recent_captures",
+    "retract_capture"
+   ],
+   "called": [
+    "query_spine",
+    "list_recent_captures",
+    "get_customer_context"
+   ],
+   "missing": [
+    "retract_capture"
+   ],
+   "searches": [
+    "find recent captures or notes -> list_recent_captures|get_capture|get_customer_context",
+    "search captures by text or filter -> query_spine|list_recent_captures|get_capture",
+    "retract capture -> retract_capture|get_capture|list_recent_captures",
+    "record standing fact or review item -> record_standing_fact|record_field_note|get_customer_context"
+   ],
+   "lastReply": "Which customer and note are you referring to? \n\nI checked the records across Acme Offices, Tom Becker, and Maria Gonzalez, but there isn't a note mentioning a f"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s038",
+   "category": "schedule_read",
+   "needs": [
+    "get_team_schedule"
+   ],
+   "called": [
+    "get_job"
+   ],
+   "missing": [
+    "get_team_schedule"
+   ],
+   "searches": [],
+   "lastReply": "The unassigned visit is for **Maria Gonzalez**:\n\n• **Customer:** Maria Gonzalez  \n• **Address:** 14 Smith St, Fresno, CA, 93701  \n• **Job:** AC repair (reported"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s037",
+   "category": "schedule_read",
+   "needs": [
+    "resolve_date",
+    "get_team_schedule"
+   ],
+   "called": [
+    "resolve_date",
+    "get_availability",
+    "get_team_schedule"
+   ],
+   "missing": [],
+   "searches": [
+    "get technician schedule or visits -> get_team_schedule|get_availability"
+   ],
+   "lastReply": "Here is Jane Alvarez's schedule for the rest of the week (Wednesday 2026-09-23 through Sunday 2026-09-27):\n\n* **Wednesday 2026-09-23**\n  * **17:00–18:00**: Tom "
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s015",
+   "category": "schedule_read",
+   "needs": [
+    "resolve_date",
+    "get_team_schedule"
+   ],
+   "called": [
+    "resolve_date",
+    "get_team_schedule"
+   ],
+   "missing": [],
+   "searches": [
+    "view schedule or technician visits for a day -> get_team_schedule|resolve_date"
+   ],
+   "lastReply": "Nobody is scheduled for **Saturday 2026-09-26** (0 visits booked).\n\n*(If you meant the following week, **Saturday 2026-10-03** also has nothing booked.)*"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s292",
+   "category": "small_talk",
+   "needs": [],
+   "called": [],
+   "missing": [],
+   "searches": [],
+   "lastReply": "Ready when you are. What are we working on?"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s297",
+   "category": "small_talk",
+   "needs": [],
+   "called": [],
+   "missing": [],
+   "searches": [],
+   "lastReply": "I’m your AI assistant for running day-to-day operations at the firm. Here is what I can help you with directly from chat:\n\n* **Schedule & Dispatch:** Check who "
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s222",
+   "category": "team_admin",
+   "needs": [
+    "add_technician_seat"
+   ],
+   "called": [
+    "add_technician_seat"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "Carlos Ruiz has been added to the team roster as a technician with ref `carlos-ruiz`.\n\nWhat are Carlos's normal working days and hours? Once you let me know, I "
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s237",
+   "category": "team_admin",
+   "needs": [
+    "set_technician_skills"
+   ],
+   "called": [
+    "list_team",
+    "set_technician_skills"
+   ],
+   "missing": [],
+   "searches": [
+    "update technician skills -> set_technician_skills|list_team"
+   ],
+   "lastReply": "Jane Alvarez's skills have been cleared. Her skill list is now empty (skills unknown), so she won't be excluded from scheduling for any jobs on the basis of req"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s218",
+   "category": "web",
+   "needs": [
+    "web_search",
+    "send_email"
+   ],
+   "called": [
+    "web_search",
+    "query_spine",
+    "run_command",
+    "read_file",
+    "read_webpage",
+    "write_file",
+    "share_file",
+    "get_job",
+    "send_email"
+   ],
+   "missing": [],
+   "searches": [
+    "search the web for HVAC parts -> web_search|read_webpage",
+    "send an email -> send_email",
+    "lookup parts or inventory -> web_search|read_webpage|query_spine",
+    "run command in sandbox -> run_command",
+    "read file -> read_file",
+    "file reading or sandbox tools -> read_file|write_file|run_command|share_file|read_webpage"
+   ],
+   "lastReply": "The replacement igniter for a Lennox ML180 furnace is:\n\n* **Catalog Number:** **70W16**\n* **Part Number:** **70W1601** (replaces LB-92850A and 100537-01)\n\nRegar"
+  },
+  {
+   "arm": "reference_llm",
+   "id": "s212",
+   "category": "web",
+   "needs": [
+    "web_search"
+   ],
+   "called": [
+    "resolve_date",
+    "query_spine",
+    "web_search",
+    "run_command",
+    "read_file",
+    "ask_team_lead"
+   ],
+   "missing": [],
+   "searches": [
+    "search the web or internet -> web_search|read_webpage",
+    "search standing facts or notes or suppliers -> web_search|list_recent_captures|get_customer_context|query_spine|get_capture",
+    "run command terminal bash python -> run_command",
+    "read file -> read_file",
+    "supplier vendor parts supply house -> web_search|read_webpage",
+    "standing facts company documents notes policy -> record_standing_fact|record_field_note|set_firm_profile|list_recent_captures|set_technician_view",
+    "ask team lead office question -> ask_team_lead|inform_team_lead"
+   ],
+   "lastReply": "I don't have hours or contact details on file for the supply house on 5th Street, and live web search is currently unavailable. \n\nFor **Saturday 2026-09-26**, m"
+  },
+  {
+   "arm": "jev",
+   "id": "s290",
+   "category": "access",
+   "needs": [
+    "find_customer",
+    "get_customer_context",
+    "grant_access",
+    "inform_teammate"
+   ],
+   "called": [
+    "find_customer",
+    "resolve_date",
+    "list_team",
+    "list_access",
+    "get_customer_context",
+    "inform_teammate",
+    "get_team_schedule"
+   ],
+   "missing": [
+    "grant_access"
+   ],
+   "searches": [
+    "schedule or book visit or list visits -> book_visit|get_team_schedule",
+    "grant access to a customer or job -> grant_access|resolve_date",
+    "pass a note to a teammate or message technician -> inform_teammate|record_field_note",
+    "list team members roster -> list_team|write_file",
+    "list access requests -> list_access|grant_access",
+    "list jobs for customer -> get_customer_context|get_job",
+    "get customer context or customer details -> get_customer_context|move_visit",
+    "send text or message to technician -> inform_teammate|send_email|share_file|decline_access|grant_access"
+   ],
+   "lastReply": "Jane Alvarez already has access to Acme Offices on record through Wednesday 2026-09-30. \n\nShe is already booked on the schedule for the Quarterly maintenance vi"
+  },
+  {
+   "arm": "jev",
+   "id": "s248",
+   "category": "access",
+   "needs": [
+    "set_technician_view"
+   ],
+   "called": [
+    "set_technician_view"
+   ],
+   "missing": [],
+   "searches": [
+    "grant access to technicians or permissions -> grant_access|set_technician_view"
+   ],
+   "lastReply": "All technicians are already set to see dollar figures on everything they can open, so no changes were needed."
+  },
+  {
+   "arm": "jev",
+   "id": "s100",
+   "category": "availability",
+   "needs": [
+    "set_availability"
+   ],
+   "called": [
+    "set_availability"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "Updated Jane Alvarez's working pattern:\n\n- **Mon–Fri:** 08:00–17:00\n- **Sat:** 08:00–12:00\n- **Sun:** Off\n\nShe is now visible to the scheduler for those working"
+  },
+  {
+   "arm": "jev",
+   "id": "s094",
+   "category": "availability",
+   "needs": [
+    "resolve_date",
+    "add_time_off"
+   ],
+   "called": [
+    "resolve_date",
+    "get_availability",
+    "get_team_schedule",
+    "add_time_off",
+    "get_job",
+    "query_spine"
+   ],
+   "missing": [],
+   "searches": [
+    "technician schedule and availability -> get_availability|get_team_schedule",
+    "record time off or technician leave -> add_time_off|query_spine",
+    "move visit or reschedule visit -> move_visit|set_job_duration"
+   ],
+   "lastReply": "I have recorded whole-day time off for **Jane Alvarez** on **Thursday 2026-09-24** (Dentist appointment). The scheduler will skip this day, and manual bookings "
+  },
+  {
+   "arm": "jev",
+   "id": "s069",
+   "category": "booking",
+   "needs": [
+    "resolve_date",
+    "find_customer",
+    "find_slots"
+   ],
+   "called": [
+    "resolve_date",
+    "find_customer",
+    "get_availability",
+    "get_customer_context",
+    "get_team_schedule",
+    "find_slots"
+   ],
+   "missing": [],
+   "searches": [
+    "check technician schedule availability slots -> find_slots|get_availability|get_team_schedule|set_availability|bind_telegram",
+    "list customer jobs open jobs -> get_customer_context|get_team_schedule"
+   ],
+   "lastReply": "No, Jane does not have room tomorrow afternoon (**Thursday 2026-09-24**). \n\n### Details\n* **Binding Constraint:** Working windows, time off, and existing visits"
+  },
+  {
+   "arm": "jev",
+   "id": "s070",
+   "category": "booking",
+   "needs": [
+    "get_team_schedule",
+    "unschedule_visit"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "get_job",
+    "query_spine",
+    "ask_user",
+    "unschedule_visit"
+   ],
+   "missing": [
+    "get_team_schedule"
+   ],
+   "searches": [
+    "unschedule visit or remove visit from schedule -> unschedule_visit|list_team",
+    "get schedule or find visits for customer -> get_customer_context|query_spine"
+   ],
+   "lastReply": "Please confirm taking this visit off the calendar:\n\n- **Customer:** Acme Offices\n- **Date & Time:** Thursday 2026-09-24, 08:00 – 10:00\n- **Technician:** Jane Al"
+  },
+  {
+   "arm": "jev",
+   "id": "s068",
+   "category": "booking",
+   "needs": [
+    "find_customer",
+    "find_slots"
+   ],
+   "called": [
+    "resolve_date",
+    "find_customer",
+    "get_customer_context",
+    "find_slots"
+   ],
+   "missing": [],
+   "searches": [
+    "find available slots or schedule visit -> find_slots|book_visit",
+    "get customer context or list jobs -> get_customer_context|revoke_access"
+   ],
+   "lastReply": "The soonest visit scheduled for Acme Offices is tomorrow:\n\n* **Thursday 2026-09-24** from 08:00 to 10:00 with Jane Alvarez (Quarterly maintenance).\n\nFurther vis"
+  },
+  {
+   "arm": "jev",
+   "id": "s121",
+   "category": "customers_jobs",
+   "needs": [
+    "update_job"
+   ],
+   "called": [
+    "get_job",
+    "update_job"
+   ],
+   "missing": [],
+   "searches": [
+    "update job -> update_job|get_job"
+   ],
+   "lastReply": "The job type is confirmed as **plumbing** (it was already recorded as plumbing).\n\n*Note: There is no stored default duration for \"plumbing\" yet. When you're rea"
+  },
+  {
+   "arm": "jev",
+   "id": "s114",
+   "category": "customers_jobs",
+   "needs": [
+    "query_spine"
+   ],
+   "called": [
+    "query_spine",
+    "get_team_schedule",
+    "resolve_date",
+    "get_job"
+   ],
+   "missing": [],
+   "searches": [
+    "list jobs -> query_spine|get_customer_context|get_team_schedule|get_job|list_team"
+   ],
+   "lastReply": "Here are the 4 jobs currently open:\n\n1. **Tom Becker — Furnace inspection**\n   * **Job ID:** `054203fe-85be-4dfa-857b-060f07d7b919`\n   * **Priority:** Urgent (1"
+  },
+  {
+   "arm": "jev",
+   "id": "s105",
+   "category": "customers_jobs",
+   "needs": [
+    "find_customer",
+    "get_customer_context",
+    "list_recent_captures"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "list_recent_captures",
+    "get_capture",
+    "get_job"
+   ],
+   "missing": [],
+   "searches": [
+    "read notes or captures on a job -> list_recent_captures|get_capture",
+    "customer context and jobs -> get_customer_context|get_job"
+   ],
+   "lastReply": "For **Tom Becker** (99 Ranch Rd), there are two furnace inspection jobs on record:\n\n### 1. Active Job — Furnace inspection (Open, Urgent)\n* **Notes:** None reco"
+  },
+  {
+   "arm": "jev",
+   "id": "s199",
+   "category": "email",
+   "needs": [
+    "send_email"
+   ],
+   "called": [
+    "query_spine"
+   ],
+   "missing": [
+    "send_email"
+   ],
+   "searches": [],
+   "lastReply": "I have noted the subject line as **\"Your furnace visit\"**, but I still cannot stage or send the email because **we do not have an email address on file for Tom "
+  },
+  {
+   "arm": "jev",
+   "id": "s206",
+   "category": "email",
+   "needs": [
+    "find_customer",
+    "get_customer_context",
+    "send_email"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "get_capture",
+    "query_spine",
+    "ask_user",
+    "get_job",
+    "run_command"
+   ],
+   "missing": [
+    "send_email"
+   ],
+   "searches": [
+    "send an email to a customer -> send_email|set_firm_profile",
+    "get jobs for a customer -> get_customer_context|get_job",
+    "get capture note by id -> get_capture|share_file",
+    "run SQL query against database -> query_spine|run_command",
+    "send text message or SMS to customer -> send_email|share_file|move_visit|list_access|reactivate_technician_seat"
+   ],
+   "lastReply": "Tom Becker is on file with a **Furnace inspection** scheduled for **Friday 2026-09-25 from 08:00 to 10:00**, but he does not have an email address listed in the"
+  },
+  {
+   "arm": "jev",
+   "id": "s167",
+   "category": "files",
+   "needs": [
+    "find_customer",
+    "get_customer_context",
+    "run_command",
+    "share_file"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "get_job",
+    "list_recent_captures",
+    "query_spine",
+    "run_command",
+    "ask_user",
+    "share_file"
+   ],
+   "missing": [],
+   "searches": [
+    "send email to customer -> send_email|move_visit",
+    "get customer details and jobs -> get_customer_context|find_customer",
+    "invoice -> record_money_event|set_firm_profile",
+    "query spine database -> query_spine|share_file",
+    "list captures or notes -> list_recent_captures|set_technician_horizon",
+    "run command or write file in sandbox -> run_command|write_file"
+   ],
+   "lastReply": "I have generated the PDF invoice for **Maria Gonzalez** (AC repair job at 14 Smith St, Fresno, CA 93701) and shared the file with you here.\n\nHowever, **Maria do"
+  },
+  {
+   "arm": "jev",
+   "id": "s180",
+   "category": "files",
+   "needs": [
+    "query_spine",
+    "run_command"
+   ],
+   "called": [
+    "resolve_date",
+    "query_spine",
+    "get_job",
+    "run_command",
+    "read_file",
+    "write_file",
+    "share_file"
+   ],
+   "missing": [],
+   "searches": [
+    "outstanding balances invoices revenue -> query_spine|record_money_event|run_command|ask_team_lead|grant_access",
+    "run command in sandbox share file -> run_command|share_file",
+    "write file read file sandbox -> read_file|write_file|run_command|bind_telegram|retract_capture"
+   ],
+   "lastReply": "I have generated and sent the **Outstanding Balances & Receivables Report** PDF (`outstanding_balances_report.pdf`) to you.\n\n### Summary of Accounts & Balances "
+  },
+  {
+   "arm": "jev",
+   "id": "s178",
+   "category": "files",
+   "needs": [
+    "resolve_date",
+    "get_team_schedule",
+    "run_command"
+   ],
+   "called": [
+    "resolve_date",
+    "list_team",
+    "get_team_schedule",
+    "get_job",
+    "get_customer_context",
+    "list_recent_captures",
+    "run_command",
+    "share_file"
+   ],
+   "missing": [],
+   "searches": [
+    "technician schedule visit job sheet -> book_visit|get_team_schedule|get_job|run_command|open_job",
+    "roster technicians -> list_team|add_technician_seat",
+    "share file send file -> share_file|add_time_off",
+    "customer context contact details notes -> get_customer_context|record_standing_fact|record_field_note|list_recent_captures|find_customer"
+   ],
+   "lastReply": "Here is the job sheet for **Jane Alvarez** for **Thursday 2026-09-24**:\n\n---\n\n### **Technician Job Sheet**\n**Technician:** Jane Alvarez  \n**Date:** Thursday 202"
+  },
+  {
+   "arm": "jev",
+   "id": "s157",
+   "category": "money",
+   "needs": [
+    "resolve_date",
+    "find_customer",
+    "get_customer_context",
+    "record_money_event"
+   ],
+   "called": [
+    "resolve_date",
+    "find_customer",
+    "get_customer_context",
+    "get_job",
+    "list_recent_captures",
+    "record_money_event"
+   ],
+   "missing": [],
+   "searches": [
+    "record a payment on a job -> record_money_event|retract_capture",
+    "get customer jobs context -> get_customer_context|get_job",
+    "list recent captures notes on a job -> list_recent_captures|ask_team_lead"
+   ],
+   "lastReply": "Recorded a cash payment of $50.00 for Maria Gonzalez on the **AC repair** job for Tuesday 2026-09-22.\n\n- **Amount recorded:** $50.00 (cash)\n- **Balance due:** M"
+  },
+  {
+   "arm": "jev",
+   "id": "s140",
+   "category": "money",
+   "needs": [
+    "find_customer",
+    "get_customer_context",
+    "record_money_event"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "get_job",
+    "list_recent_captures",
+    "query_spine",
+    "record_money_event"
+   ],
+   "missing": [],
+   "searches": [
+    "record estimate or quote -> record_money_event|open_job",
+    "get customer jobs or customer details -> get_customer_context|get_job",
+    "record field note -> record_field_note|add_technician_seat",
+    "list captures or notes on a job -> list_recent_captures|get_job",
+    "query spine or sql database -> query_spine|write_file"
+   ],
+   "lastReply": "Recorded an estimate of $3,200 presented for **Acme Offices** on the **Quarterly maintenance** job.\n\n**Updated Ledger:**\n- **Quoted:** $3,200\n- **Invoiced:** $0"
+  },
+  {
+   "arm": "jev",
+   "id": "s151",
+   "category": "money",
+   "needs": [
+    "find_customer",
+    "query_spine",
+    "record_money_event"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "get_job",
+    "query_spine"
+   ],
+   "missing": [
+    "record_money_event"
+   ],
+   "searches": [
+    "void an invoice -> record_money_event|record_field_note",
+    "list jobs for a customer -> get_customer_context|query_spine",
+    "send email or list emails -> send_email|write_file",
+    "invoices -> record_money_event|set_firm_profile|run_command|send_email|query_spine",
+    "job money ledger invoice payment -> record_money_event|grant_access",
+    "invoice billing ledger -> record_money_event|query_spine",
+    "cancel void retract delete -> retract_capture|cancel_job",
+    "update job status -> update_job|record_money_event|write_file|bind_telegram|list_recent_captures"
+   ],
+   "lastReply": "I checked Tom Becker's account, and there is currently no invoice (or any financial entry) recorded on file for either of his Furnace inspection jobs. \n\nTo void"
+  },
+  {
+   "arm": "jev",
+   "id": "s256",
+   "category": "office_notes",
+   "needs": [
+    "resolve_date",
+    "add_time_off"
+   ],
+   "called": [
+    "resolve_date",
+    "inform_team_lead"
+   ],
+   "missing": [
+    "add_time_off"
+   ],
+   "searches": [
+    "inform team lead or office -> inform_team_lead|inform_teammate"
+   ],
+   "lastReply": "I've passed a note to the office that Jane is on leave next week (Monday 2026-09-28 through Sunday 2026-10-04). They will pick it up on their next planning pass"
+  },
+  {
+   "arm": "jev",
+   "id": "s262",
+   "category": "office_notes",
+   "needs": [
+    "ask_team_lead"
+   ],
+   "called": [
+    "ask_team_lead",
+    "get_team_schedule",
+    "list_access",
+    "resolve_date"
+   ],
+   "missing": [],
+   "searches": [
+    "ask office or check office tasks and open items -> ask_team_lead|get_team_schedule",
+    "office open items triage inbox unassigned jobs tasks -> get_team_schedule|ask_team_lead",
+    "incoming calls triage new customer messages -> record_caller|open_job",
+    "list access requests pending from technicians -> list_access|find_slots"
+   ],
+   "lastReply": "Here is the current status from the office queue and dispatch board:\n\n### Unassigned & Parked Visits (Needs Technicians Assigned)\n* **Maria Gonzalez** — AC repa"
+  },
+  {
+   "arm": "jev",
+   "id": "s274",
+   "category": "record_notes",
+   "needs": [
+    "record_standing_fact"
+   ],
+   "called": [
+    "record_standing_fact"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "Recorded the gate code (4417) for Acme Offices onto their permanent record."
+  },
+  {
+   "arm": "jev",
+   "id": "s275",
+   "category": "record_notes",
+   "needs": [
+    "list_recent_captures",
+    "retract_capture"
+   ],
+   "called": [
+    "query_spine",
+    "get_customer_context",
+    "list_recent_captures",
+    "find_customer",
+    "get_job"
+   ],
+   "missing": [
+    "retract_capture"
+   ],
+   "searches": [
+    "list recent captures or field notes -> list_recent_captures|resolve_date",
+    "retract capture -> retract_capture|set_timezone",
+    "query database or recent notes across system -> list_recent_captures|query_spine|get_customer_context|find_customer|write_file"
+   ],
+   "lastReply": "Which customer was that for? \n\nI checked the records across all customers on file (Maria Gonzalez, Tom Becker, and Acme Offices), and there are currently no not"
+  },
+  {
+   "arm": "jev",
+   "id": "s038",
+   "category": "schedule_read",
+   "needs": [
+    "get_team_schedule"
+   ],
+   "called": [
+    "get_job"
+   ],
+   "missing": [
+    "get_team_schedule"
+   ],
+   "searches": [],
+   "lastReply": "The unassigned visit is for **Maria Gonzalez**:\n\n* **Job**: AC repair (reported symptom: not cooling)\n* **Address**: 14 Smith St, Fresno, CA, 93701\n* **Time**: "
+  },
+  {
+   "arm": "jev",
+   "id": "s037",
+   "category": "schedule_read",
+   "needs": [
+    "resolve_date",
+    "get_team_schedule"
+   ],
+   "called": [
+    "resolve_date",
+    "query_spine",
+    "get_team_schedule"
+   ],
+   "missing": [],
+   "searches": [
+    "view technician schedule or visits for a team member -> get_team_schedule|query_spine"
+   ],
+   "lastReply": "Jane Alvarez has 2 visits scheduled for the rest of the week (phrase: **Monday 2026-09-21 through Sunday 2026-09-27**), though she also has time off logged:\n\n* "
+  },
+  {
+   "arm": "jev",
+   "id": "s015",
+   "category": "schedule_read",
+   "needs": [
+    "resolve_date",
+    "get_team_schedule"
+   ],
+   "called": [
+    "resolve_date",
+    "get_availability",
+    "get_team_schedule"
+   ],
+   "missing": [],
+   "searches": [
+    "check schedule or who is working on a date -> get_team_schedule|get_availability"
+   ],
+   "lastReply": "For **Saturday 2026-09-26**:\n\n### Working Pattern\n* **Jane Alvarez**: `Mon–Fri 08:00–17:00; Sat 08:00–12:00; Sun off`\n* **Sam Rivera** and **Office Dispatch** h"
+  },
+  {
+   "arm": "jev",
+   "id": "s292",
+   "category": "small_talk",
+   "needs": [],
+   "called": [],
+   "missing": [],
+   "searches": [],
+   "lastReply": "I'm ready whenever you are. What would you like to look into or get done?"
+  },
+  {
+   "arm": "jev",
+   "id": "s297",
+   "category": "small_talk",
+   "needs": [],
+   "called": [],
+   "missing": [],
+   "searches": [],
+   "lastReply": "I'm your assistant for managing operations and the schedule across the business. Here is what I can help you with right here in chat:\n\n* **Scheduling & Visits:*"
+  },
+  {
+   "arm": "jev",
+   "id": "s222",
+   "category": "team_admin",
+   "needs": [
+    "add_technician_seat"
+   ],
+   "called": [],
+   "missing": [
+    "add_technician_seat"
+   ],
+   "searches": [
+    "invite or activate technician -> add_technician_seat|reactivate_technician_seat"
+   ],
+   "lastReply": "Carlos Ruiz is already on the roster (`carlos-ruiz`, currently in `invited` status), so nothing was staged or added.\n\n* If you're referring to the **existing Ca"
+  },
+  {
+   "arm": "jev",
+   "id": "s237",
+   "category": "team_admin",
+   "needs": [
+    "set_technician_skills"
+   ],
+   "called": [
+    "list_team",
+    "set_technician_skills"
+   ],
+   "missing": [],
+   "searches": [
+    "technician skills -> set_technician_skills|list_team"
+   ],
+   "lastReply": "Jane Alvarez's skills list has been cleared. Her skills are now set to unknown (`[]`), meaning she won't be excluded from scheduling on the basis of required sk"
+  },
+  {
+   "arm": "jev",
+   "id": "s218",
+   "category": "web",
+   "needs": [
+    "web_search",
+    "send_email"
+   ],
+   "called": [
+    "web_search",
+    "query_spine",
+    "run_command",
+    "read_file",
+    "send_email"
+   ],
+   "missing": [],
+   "searches": [
+    "send an email -> send_email|reactivate_technician_seat",
+    "search the web for part information -> web_search|find_slots",
+    "execute shell command or python -> run_command|set_timezone",
+    "query database spine -> query_spine|set_timezone",
+    "read file from sandbox -> read_file|run_command",
+    "write file -> write_file|set_technician_horizon"
+   ],
+   "lastReply": "The OEM igniter part number for a Lennox ML180 furnace is **70W16** (or **70W1601**), which supersedes the older part number **76M23** (or **76M2301**).\n\nConnec"
+  },
+  {
+   "arm": "jev",
+   "id": "s212",
+   "category": "web",
+   "needs": [
+    "web_search"
+   ],
+   "called": [
+    "resolve_date",
+    "query_spine",
+    "web_search",
+    "run_command",
+    "read_file",
+    "ask_team_lead"
+   ],
+   "missing": [],
+   "searches": [
+    "search supply house vendors or standing facts or web search -> web_search|write_file",
+    "standing facts -> record_standing_fact|get_customer_context",
+    "vendor or supplier contact info and hours -> web_search|find_slots",
+    "search notes or field notes -> list_recent_captures|web_search",
+    "query database or spine -> query_spine|bind_telegram",
+    "run command or read file -> run_command|read_file",
+    "ask team lead -> ask_team_lead|inform_team_lead"
+   ],
+   "lastReply": "I don't have hours on file in our records for the supply house on 5th, and web search is currently unavailable to check external listings for Saturday 2026-09-2"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s290",
+   "category": "access",
+   "needs": [
+    "find_customer",
+    "get_customer_context",
+    "grant_access",
+    "inform_teammate"
+   ],
+   "called": [
+    "list_team",
+    "find_customer",
+    "resolve_date",
+    "list_access",
+    "get_customer_context",
+    "get_team_schedule",
+    "get_availability",
+    "grant_access",
+    "inform_teammate"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "I have granted Jane Alvarez access to Acme Offices and queued a message for her assistant. \n\nHere are the details and context from the schedule:\n\n* **Access Gra"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s248",
+   "category": "access",
+   "needs": [
+    "set_technician_view"
+   ],
+   "called": [
+    "set_technician_view"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "The firm is already set up to let all technicians see dollar amounts on everything they can open."
+  },
+  {
+   "arm": "all_tools",
+   "id": "s100",
+   "category": "availability",
+   "needs": [
+    "set_availability"
+   ],
+   "called": [
+    "set_availability"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "Jane Alvarez's working pattern has been updated:\n\n* **Mon–Fri:** 08:00–17:00\n* **Sat:** 08:00–12:00\n* **Sun:** Off\n\nShe is now visible to the scheduler on her w"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s094",
+   "category": "availability",
+   "needs": [
+    "resolve_date",
+    "add_time_off"
+   ],
+   "called": [
+    "resolve_date",
+    "list_team",
+    "add_time_off",
+    "get_team_schedule"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "I have recorded a full day of time off for **Jane Alvarez** on **Thursday 2026-09-24** for her dentist appointment. \n\nThe scheduler will not book her on that da"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s069",
+   "category": "booking",
+   "needs": [
+    "resolve_date",
+    "find_customer",
+    "find_slots"
+   ],
+   "called": [
+    "resolve_date",
+    "list_team",
+    "find_customer",
+    "get_customer_context",
+    "get_availability",
+    "get_team_schedule",
+    "find_slots"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "No, Jane does not have room tomorrow afternoon. \n\nJane Alvarez has whole-day time off recorded for **Thursday 2026-09-24** (dentist appointment), so she is unav"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s070",
+   "category": "booking",
+   "needs": [
+    "get_team_schedule",
+    "unschedule_visit"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "list_recent_captures",
+    "query_spine",
+    "ask_user",
+    "unschedule_visit"
+   ],
+   "missing": [
+    "get_team_schedule"
+   ],
+   "searches": [],
+   "lastReply": "Please confirm taking this visit off the calendar:\n\n* **Customer:** Acme Offices\n* **Job:** Quarterly maintenance\n* **Visit:** Saturday 2026-09-26 (08:00–10:00)"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s068",
+   "category": "booking",
+   "needs": [
+    "find_customer",
+    "find_slots"
+   ],
+   "called": [
+    "find_customer",
+    "resolve_date",
+    "get_customer_context",
+    "find_slots",
+    "get_team_schedule",
+    "get_availability"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "The soonest anyone can get to **Acme Offices** (200 Main St) is **Saturday 2026-09-26**:\n\n* **Already on the schedule:** There is an existing visit booked for *"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s121",
+   "category": "customers_jobs",
+   "needs": [
+    "update_job"
+   ],
+   "called": [
+    "query_spine",
+    "get_job",
+    "update_job"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "The existing open job **\"slow drain\"** for Maria Gonzalez was already set to job type **plumbing** (not HVAC):\n\n* **Job:** slow drain\n* **Job Type:** plumbing ("
+  },
+  {
+   "arm": "all_tools",
+   "id": "s114",
+   "category": "customers_jobs",
+   "needs": [
+    "query_spine"
+   ],
+   "called": [
+    "query_spine",
+    "get_team_schedule",
+    "resolve_date"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "There are currently **5 open jobs**:\n\n1. **Furnace inspection**\n   - **Customer:** Tom Becker\n   - **Type:** Untyped\n   - **Priority:** Urgent\n   - **Visits:** "
+  },
+  {
+   "arm": "all_tools",
+   "id": "s105",
+   "category": "customers_jobs",
+   "needs": [
+    "find_customer",
+    "get_customer_context",
+    "list_recent_captures"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "list_recent_captures",
+    "get_capture",
+    "query_spine"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "Here is what we have on file for **Tom Becker** (99 Ranch Rd, Clovis):\n\n### Note on File\n* **Web Form Submission:**  \n  *\"Web form: furnace is making a loud rat"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s199",
+   "category": "email",
+   "needs": [
+    "send_email"
+   ],
+   "called": [
+    "query_spine",
+    "run_command",
+    "read_file"
+   ],
+   "missing": [
+    "send_email"
+   ],
+   "searches": [],
+   "lastReply": "I cannot send or stage an email yet because we do not have an email address on file for Tom Becker, and no draft has been created. \n\nAdditionally, sending an em"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s206",
+   "category": "email",
+   "needs": [
+    "find_customer",
+    "get_customer_context",
+    "send_email"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "get_capture",
+    "query_spine"
+   ],
+   "missing": [
+    "send_email"
+   ],
+   "searches": [],
+   "lastReply": "I checked the records for Tom Becker (99 Ranch Rd), who is currently scheduled for a furnace inspection on Friday 2026-09-25 from 08:00 to 10:00 with Jane Alvar"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s167",
+   "category": "files",
+   "needs": [
+    "find_customer",
+    "get_customer_context",
+    "run_command",
+    "share_file"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "set_firm_profile",
+    "get_job",
+    "list_recent_captures",
+    "query_spine",
+    "run_command",
+    "read_file",
+    "write_file",
+    "share_file"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "I have generated the PDF invoice for **Maria Gonzalez** for the **AC repair** job completed on September 23, 2026, and shared a copy (`invoice_maria_gonzalez.pd"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s180",
+   "category": "files",
+   "needs": [
+    "query_spine",
+    "run_command"
+   ],
+   "called": [
+    "resolve_date",
+    "query_spine",
+    "get_job",
+    "get_customer_context",
+    "run_command",
+    "read_file",
+    "write_file",
+    "list_team",
+    "share_file"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "Here is the **Outstanding Balances & Accounts Receivable Report** as of **Wednesday 2026-09-23**. \n\nThe PDF report has been generated and shared directly with y"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s178",
+   "category": "files",
+   "needs": [
+    "resolve_date",
+    "get_team_schedule",
+    "run_command"
+   ],
+   "called": [
+    "resolve_date",
+    "list_team",
+    "get_team_schedule",
+    "get_job",
+    "set_firm_profile",
+    "get_customer_context",
+    "query_spine",
+    "list_recent_captures",
+    "get_availability",
+    "run_command",
+    "read_file",
+    "write_file"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "Jane has whole-day time off recorded on the schedule for tomorrow, **Thursday 2026-09-24**, for a **Dentist appointment** (and time off on Friday 2026-09-25 as "
+  },
+  {
+   "arm": "all_tools",
+   "id": "s157",
+   "category": "money",
+   "needs": [
+    "resolve_date",
+    "find_customer",
+    "get_customer_context",
+    "record_money_event"
+   ],
+   "called": [
+    "resolve_date",
+    "find_customer",
+    "get_customer_context",
+    "get_job",
+    "query_spine",
+    "run_command",
+    "read_file",
+    "record_money_event"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "Recorded a **$400.00** cash payment received on **Tuesday 2026-09-22** for Maria Gonzalez's AC repair job.\n\n**Updated Ledger Summary:**\n- **Amount Recorded:** $"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s140",
+   "category": "money",
+   "needs": [
+    "find_customer",
+    "get_customer_context",
+    "record_money_event"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "get_job",
+    "record_money_event"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "Recorded the estimate for **Acme Offices** (200 Main St):\n\n* **Job:** Quarterly maintenance\n* **Estimate Presented:** $3,200.00\n* **Quoted Total:** $3,200.00\n* "
+  },
+  {
+   "arm": "all_tools",
+   "id": "s151",
+   "category": "money",
+   "needs": [
+    "find_customer",
+    "query_spine",
+    "record_money_event"
+   ],
+   "called": [
+    "find_customer",
+    "get_customer_context",
+    "query_spine",
+    "get_job",
+    "run_command",
+    "read_file"
+   ],
+   "missing": [
+    "record_money_event"
+   ],
+   "searches": [],
+   "lastReply": "There is no invoice on file for **Tom Becker** to void. \n\nHere is what is currently on his record:\n- **Furnace inspection** (open, scheduled for Friday 2026-09-"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s256",
+   "category": "office_notes",
+   "needs": [
+    "resolve_date",
+    "add_time_off"
+   ],
+   "called": [
+    "resolve_date",
+    "list_team",
+    "inform_team_lead"
+   ],
+   "missing": [
+    "add_time_off"
+   ],
+   "searches": [],
+   "lastReply": "I've passed that to the office to let them know Jane Alvarez is on leave next week (Monday 2026-09-28 through Sunday 2026-10-04). They will pick it up at their "
+  },
+  {
+   "arm": "all_tools",
+   "id": "s262",
+   "category": "office_notes",
+   "needs": [
+    "ask_team_lead"
+   ],
+   "called": [
+    "ask_team_lead",
+    "query_spine",
+    "list_access",
+    "get_team_schedule",
+    "list_team",
+    "resolve_date"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "The office's planner is currently offline until its next planning pass, but looking at the firm's records and planner queue, here is what is currently active an"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s274",
+   "category": "record_notes",
+   "needs": [
+    "record_standing_fact"
+   ],
+   "called": [
+    "record_standing_fact"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "The gate code **4417** has been recorded on the permanent record for **Acme Offices**."
+  },
+  {
+   "arm": "all_tools",
+   "id": "s275",
+   "category": "record_notes",
+   "needs": [
+    "list_recent_captures",
+    "retract_capture"
+   ],
+   "called": [
+    "query_spine",
+    "get_customer_context",
+    "list_recent_captures",
+    "run_command",
+    "read_file",
+    "find_customer",
+    "list_team"
+   ],
+   "missing": [
+    "retract_capture"
+   ],
+   "searches": [],
+   "lastReply": "I checked our records, but there are no field notes on file mentioning a filter for any of our customers (Maria Gonzalez, Tom Becker, or Acme Offices). \n\nWhich "
+  },
+  {
+   "arm": "all_tools",
+   "id": "s038",
+   "category": "schedule_read",
+   "needs": [
+    "get_team_schedule"
+   ],
+   "called": [
+    "get_job",
+    "list_team",
+    "get_availability",
+    "find_slots"
+   ],
+   "missing": [
+    "get_team_schedule"
+   ],
+   "searches": [],
+   "lastReply": "The unassigned visit is for **Maria Gonzalez**:\n\n* **Customer:** Maria Gonzalez\n* **Job:** AC repair (HVAC – \"not cooling\")\n* **Address:** 14 Smith St, Fresno, "
+  },
+  {
+   "arm": "all_tools",
+   "id": "s037",
+   "category": "schedule_read",
+   "needs": [
+    "resolve_date",
+    "get_team_schedule"
+   ],
+   "called": [
+    "resolve_date",
+    "list_team",
+    "get_team_schedule",
+    "get_availability",
+    "get_job"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "Here is Jane Alvarez's schedule for the rest of the week (Wednesday 2026-09-23 through Sunday 2026-09-27):\n\n* **Wednesday 2026-09-23**: No visits booked.\n* **Th"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s015",
+   "category": "schedule_read",
+   "needs": [
+    "resolve_date",
+    "get_team_schedule"
+   ],
+   "called": [
+    "resolve_date",
+    "get_availability",
+    "get_team_schedule"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "**Synthesizing Availability and Schedule Details**\n\nI will now compile the findings into a clear response:\n1. Referencing the date using the verbatim phrase: **"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s292",
+   "category": "small_talk",
+   "needs": [],
+   "called": [],
+   "missing": [],
+   "searches": [],
+   "lastReply": "Let me know what you need help with!"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s297",
+   "category": "small_talk",
+   "needs": [],
+   "called": [],
+   "missing": [],
+   "searches": [],
+   "lastReply": "I’m your assistant for managing the firm’s day-to-day operations right here over text. Here is what I can handle for you:\n\n* **Scheduling & Dispatch:** Check wh"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s222",
+   "category": "team_admin",
+   "needs": [
+    "add_technician_seat"
+   ],
+   "called": [
+    "ask_user",
+    "get_availability",
+    "set_availability"
+   ],
+   "missing": [
+    "add_technician_seat"
+   ],
+   "searches": [],
+   "lastReply": "Carlos Ruiz's weekly working pattern has been set:\n\n* **Monday–Friday:** 08:00–17:00\n* **Saturday & Sunday:** Off\n\nHe is now visible to the scheduler and bookab"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s237",
+   "category": "team_admin",
+   "needs": [
+    "set_technician_skills"
+   ],
+   "called": [
+    "list_team",
+    "set_technician_skills"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "Jane Alvarez's skills have been cleared. Her skill list is now empty, so her skills are treated as unknown and she won't be excluded from scheduling based on sk"
+  },
+  {
+   "arm": "all_tools",
+   "id": "s218",
+   "category": "web",
+   "needs": [
+    "web_search",
+    "send_email"
+   ],
+   "called": [
+    "web_search",
+    "run_command",
+    "read_file",
+    "write_file",
+    "read_webpage"
+   ],
+   "missing": [
+    "send_email"
+   ],
+   "searches": [],
+   "lastReply": "**Reading KVDB Endpoint**\n\nI am now reading the test key from KVDB."
+  },
+  {
+   "arm": "all_tools",
+   "id": "s212",
+   "category": "web",
+   "needs": [
+    "web_search"
+   ],
+   "called": [
+    "set_firm_profile",
+    "query_spine",
+    "web_search",
+    "run_command",
+    "read_file",
+    "ask_team_lead",
+    "resolve_date",
+    "write_file"
+   ],
+   "missing": [],
+   "searches": [],
+   "lastReply": "I don't have hours on file for the supply house on 5th for Saturday 2026-09-26. \n\nWhich specific supplier are you referring to? If you have their name, I can ch"
+  }
+ ]
+}

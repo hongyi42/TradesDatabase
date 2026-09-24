@@ -11,6 +11,7 @@ import { readState, writeState } from './state.js';
 import { TelegramClient, TelegramConflictError, type TelegramApi } from './telegram.js';
 import { TurnPolicy } from './turnPolicy.js';
 import { transcribe } from './voice.js';
+import { approvesPlan, needsPlan } from './jev.js';
 import { fetchWhoami, type SeatWho } from './whoami.js';
 
 // The seat glue's entry point on trades-box-1: `node app/main.js`, run by
@@ -73,8 +74,17 @@ export function seatDeps(
     readState: () => readState(cfg.stateDir),
     writeState: (s) => writeState(cfg.stateDir, s),
     allowedUserId: who.telegramUserId,
-    // Step 2a: a manager seat asks with buttons and shows plans (Seat hooks).
+    // Step 2a: a manager seat asks with buttons and shows plans (Seat hooks),
+    // and Jev decides per message whether to plan first. Technicians get neither.
     manager: who.tier === 'manager',
+    ...(who.tier === 'manager'
+      ? {
+          planChooser: (message: string, previous: { user: string; assistant: string } | null) =>
+            needsPlan({ openrouterKey: cfg.openrouterKey, log: (m) => console.log(`seat-glue: ${m}`) }, message, previous),
+          approvesPlan: (reply: string, summary: string) =>
+            approvesPlan({ openrouterKey: cfg.openrouterKey, log: (m) => console.log(`seat-glue: ${m}`) }, reply, summary),
+        }
+      : {}),
   };
 }
 

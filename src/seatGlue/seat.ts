@@ -23,7 +23,12 @@ export const TEXT = {
   replyFailed: "I couldn't answer that just now. Try again in a minute.",
   promptClosed: 'This question has closed.',
   whatShouldChange: 'What should change?',
+  /** Sent once when an approved plan was followed by nothing at all (measured 1/10). */
+  goAhead: 'Go ahead with the plan.',
 } as const;
+
+/** How long a typed plan reply may wait on Jev before it counts as a change request. */
+export const APPROVE_WAIT_MS = 3_500;
 
 /** Plan text shown with Go/Change — kept well inside one Telegram message. */
 export const PLAN_TEXT_MAX = 3_500;
@@ -56,6 +61,12 @@ export interface SeatDeps {
   manager?: boolean;
   /** Does a TYPED reply to a plan approve it as it stands? (Jev, phase 4.) Absent = never. */
   approvesPlan?(reply: string, planSummary: string): Promise<boolean>;
+  /**
+   * Should this manager message get a plan first? (Jev, phase 4.) Called before
+   * every FRESH send — never for a steer, a prompt answer or the go-ahead nudge.
+   * Absent (technicians) = the mode is never touched.
+   */
+  planChooser?(message: string, previous: { user: string; assistant: string } | null): Promise<{ plan: boolean; p: number | null }>;
 }
 
 export class Seat {
@@ -85,6 +96,13 @@ export class Seat {
   /** The one waiting question/plan at a time; the person's next tap, text or voice answers it. */
   private readonly prompts = new PendingPrompts();
   private promptCount = 0;
+  /** The last manager message and the last reply, for Jev (a follow-up means nothing alone). */
+  private lastUser = '';
+  private lastReply = '';
+  /** After a plan's Go: did anything follow? (the go-ahead nudge, phase 4). */
+  private afterApproval: { tools: number; replied: boolean; nudged: boolean } | null = null;
+  /** A typed plan reply is with Jev: later texts are held here, never sent (review round 2). */
+  private deciding: { buffer: string[]; cancelled: boolean } | null = null;
 
   constructor(private readonly deps: SeatDeps) {
     this.log = deps.log ?? ((m) => console.log(`seat-glue: ${m}`));
@@ -191,6 +209,15 @@ export class Seat {
     // A WAITING PROMPT (step 2a): only the person's own text, voice or tap answers
     // it — never delivered as a new message (no abort, no steer). A photo, Stop or
     // /new ends it first, so the engine's handler is never left waiting.
+    // Jev is judging a typed reply to a plan: a text arriving now is part of that
+    // reply — held, and it turns the answer into a change request.
+    if (this.deciding && !this.prompts.isOpen && msg.kind === 'text') {
+      this.deciding.buffer.push(msg.text);
+      return;
+    }
+    // Stop, /new or a photo end a decision in progress too (the plan comes back as
+    // stopped), so nothing sent afterwards is swallowed into a dead loop's feedback.
+    if (msg.kind === 'stop' || msg.kind === 'new' || msg.kind === 'photo') this.endDeciding();
     if (this.prompts.isOpen) {
       if (msg.kind === 'text') return this.answerPrompt(msg.text);
       if (msg.kind === 'photo') this.cancelPrompts('the manager sent a photo instead of answering');
@@ -238,6 +265,10 @@ export class Seat {
           });
         }
         // A spoken answer to a waiting prompt answers it, like typed text.
+        if (this.deciding && !this.prompts.isOpen) {
+          this.deciding.buffer.push(transcript.text);
+          return;
+        }
         if (this.prompts.isOpen) return this.answerPrompt(transcript.text);
         return this.deliver(`[voice note] ${transcript.text}`);
       }
@@ -245,7 +276,7 @@ export class Seat {
   }
 
   /** Send a message into the conversation, per the turn policy. */
-  private async deliver(prompt: string, attachments?: BlobAttachment[]): Promise<void> {
+  private async deliver(prompt: string, attachments?: BlobAttachment[], opts: { nudge?: boolean } = {}): Promise<void> {
     // No conversation open (a /new whose open failed): reopen the recorded one,
     // or a fresh one, rather than going silent until a restart.
     if (!this.session) {
@@ -269,6 +300,24 @@ export class Seat {
         await this.waitFor(done);
         return this.deliver(prompt, attachments); // another abort won: route again
       }
+    }
+
+    // PLAN OR NOT (step 2a phase 4): Jev decides for every fresh manager message
+    // and the session's mode is set before the send (agentMode on send() is only
+    // a label — measured). A steer joins a running reply, and the nudge must not
+    // re-plan, so neither is classified. A failing Jev or mode switch never blocks.
+    if (this.deps.planChooser && route !== 'steer' && !opts.nudge) {
+      const previous = this.lastUser ? { user: this.lastUser, assistant: this.lastReply } : null;
+      const { plan, p } = await this.deps.planChooser(prompt, previous);
+      this.log(`plan ${plan ? 'yes' : 'no'} p=${p === null ? 'n/a' : p.toFixed(2)}`);
+      try {
+        await session.rpc?.mode.set({ mode: plan ? 'plan' : 'interactive' });
+      } catch (err) {
+        this.log(`could not set the mode (${errText(err)}) — sending anyway`);
+      }
+      this.lastUser = prompt;
+      this.lastReply = '';
+      this.afterApproval = null;
     }
 
     const freshTurn = !policy.isBusy;
@@ -360,6 +409,10 @@ export class Seat {
       this.log(`could not start a fresh conversation: ${errText(err)}`);
       return this.say(TEXT.replyFailed);
     }
+    // The new conversation has no history: Jev must not judge against the old one.
+    this.lastUser = '';
+    this.lastReply = '';
+    this.afterApproval = null;
     await this.say(TEXT.fresh);
   }
 
@@ -391,6 +444,7 @@ export class Seat {
         return;
       case 'tool.execution_start':
         this.activityCount += 1;
+        if (this.afterApproval && data.toolName !== 'exit_plan_mode') this.afterApproval.tools += 1;
         return;
       case 'session.idle': {
         this.idleCount += 1;
@@ -400,10 +454,27 @@ export class Seat {
         // prompt — but NOT on a stale idle, which belongs to an old, dead loop
         // while the reply now running may be waiting on its person.
         if (result !== 'stale' && this.prompts.isOpen) this.cancelPrompts('the turn ended');
+        if (result !== 'stale') this.endDeciding();
+        // An approved plan followed by nothing at all (no tool, no reply): say go
+        // once, as a plain send — no Jev, no mode switch, never twice per plan.
+        let nudge = false;
+        if (result === 'idle' && this.afterApproval) {
+          const a = this.afterApproval;
+          if (!a.nudged && a.tools === 0 && !a.replied) {
+            a.nudged = true;
+            nudge = true;
+          } else this.afterApproval = null;
+        }
         if (result === 'idle') this.stopWorking();
         // Idle clears pending tools even when no completion named them (an
         // id-less permission request), so a waiting Stop or /new moves on here too.
         this.releaseToolWaiters();
+        // AFTER the idle bookkeeping: the nudge starts a new reply (typing, the
+        // Working line with Stop) that stopWorking() above must not take down.
+        if (nudge) {
+          this.log('plan approved but nothing followed — nudging once');
+          void this.deliver(TEXT.goAhead, undefined, { nudge: true });
+        }
         return;
       }
       case 'assistant.message': {
@@ -500,15 +571,41 @@ export class Seat {
       (id) => this.postPrompt(body, [[{ text: 'Go', data: `p:${id}:0` }, { text: 'Change', data: `p:${id}:1` }]]),
       (mid) => this.clearPromptButtons(mid),
     );
+    const go: ExitPlanResultLike = { approved: true, selectedAction: req.recommendedAction };
     if (r.cancelled) return this.resumed(stopped);
-    if (!r.freeform && r.index === 0) return this.resumed({ approved: true, selectedAction: req.recommendedAction });
+    if (!r.freeform && r.index === 0) return this.approved(go);
     if (r.freeform) {
-      // A typed reply instead of a tap: "yes go" approves; anything else is a change request.
-      const yes = this.deps.approvesPlan ? await this.deps.approvesPlan(r.answer, req.summary).catch(() => false) : false;
-      return this.resumed(yes ? { approved: true, selectedAction: req.recommendedAction } : { approved: false, feedback: r.answer });
+      // A typed reply instead of a tap: "yes go" approves; anything else is a
+      // change request. Texts arriving while Jev decides are HELD and make it one.
+      const deciding = { buffer: [] as string[], cancelled: false };
+      this.deciding = deciding;
+      // Never throws: a failing or slow Jev answers "not approved".
+      const yes = this.deps.approvesPlan
+        ? await Promise.race([
+            this.deps.approvesPlan(r.answer, req.summary).catch(() => false),
+            new Promise<boolean>((res) => setTimeout(() => res(false), APPROVE_WAIT_MS).unref?.()),
+          ])
+        : false;
+      if (this.deciding === deciding) this.deciding = null;
+      if (deciding.cancelled) return this.resumed(stopped);
+      if (deciding.buffer.length) return this.resumed({ approved: false, feedback: [r.answer, ...deciding.buffer].join('\n') });
+      return yes ? this.approved(go) : this.resumed({ approved: false, feedback: r.answer });
     }
     const f = await this.prompts.ask('plan-feedback', [], () => this.postPrompt(TEXT.whatShouldChange, []));
     return this.resumed(f.cancelled ? stopped : { approved: false, feedback: f.answer });
+  }
+
+  /** End a typed-reply decision in progress: the plan answers "stopped". */
+  private endDeciding(): void {
+    if (!this.deciding) return;
+    this.deciding.cancelled = true;
+    this.deciding = null;
+  }
+
+  /** Go: the plan runs — and the glue watches that something actually follows. */
+  private approved(value: ExitPlanResultLike): ExitPlanResultLike {
+    this.afterApproval = { tools: 0, replied: false, nudged: false };
+    return this.resumed(value);
   }
 
   private resumed<T>(value: T): T {
@@ -575,7 +672,11 @@ export class Seat {
     if (hadTool) return;
     // The answer is here: the "Working…" line goes first (through the same
     // ordered outbox), typing carries on until the reply really ends.
-    if (texts.length) this.clearWorkingLine();
+    if (texts.length) {
+      this.clearWorkingLine();
+      this.lastReply = texts.join('\n');
+      if (this.afterApproval) this.afterApproval.replied = true;
+    }
     for (const text of texts) void this.say(text);
   }
 

@@ -21,8 +21,21 @@ class FakeSession implements EngineSession {
   /** When true, abort() answers with an aborted idle (the engine's normal behaviour). */
   idleOnAbort = true;
   private handler: ((e: EngineEvent) => void) | null = null;
+  /** mode.set and send, in the order they happened (step 2a phase 4). */
+  readonly calls: string[] = [];
+  modeSetFails = false;
+  readonly rpc = {
+    mode: {
+      set: async (p: { mode: 'plan' | 'interactive' }) => {
+        this.calls.push(`mode:${p.mode}`);
+        if (this.modeSetFails) throw new Error('rpc down');
+      },
+      get: async () => 'interactive',
+    },
+  };
   constructor(readonly sessionId: string) {}
   async send(o: Sent): Promise<string> {
+    this.calls.push(`send:${o.prompt}`);
     this.sends.push(o);
     return `m${this.sends.length}`;
   }
@@ -740,5 +753,121 @@ describe('Seat — a manager seat asks with buttons (step 2a)', () => {
     const posted = t.telegram.buttons.at(-1)!;
     expect(posted.rows.flat().map((b) => b.text)).toEqual(['T0', 'T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8', 'T9']);
     expect(posted.text).toContain('Also possible (type it): T10; T11');
+  });
+
+});
+
+describe('Seat — Jev chooses plan mode per message (step 2a phase 4)', () => {
+  const chooser = (plan: boolean, seen: Array<{ m: string; prev: unknown }> = []) =>
+    async (m: string, prev: unknown) => {
+      seen.push({ m, prev });
+      return { plan, p: plan ? 0.9 : 0.1 };
+    };
+
+  it("a manager's fresh message: Jev first, the mode set, THEN the send", async () => {
+    const t = setup({ manager: true, planChooser: chooser(true) });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'invoice last month' }));
+    expect(t.session().calls).toEqual(['mode:plan', 'send:invoice last month']);
+  });
+
+  it('Jev gets the previous exchange, so a follow-up is classified in context', async () => {
+    const seen: Array<{ m: string; prev: unknown }> = [];
+    const t = setup({ manager: true, planChooser: chooser(false, seen) });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'what is owed on J-12?' }));
+    t.session().emit('assistant.message', { content: '$450 is owed.' });
+    t.session().emit('session.idle', {});
+    await t.seat.whenIdle(1);
+    await t.seat.handleUpdate(upd({ text: 'same for J-14' }));
+    expect(seen[1]).toEqual({ m: 'same for J-14', prev: { user: 'what is owed on J-12?', assistant: '$450 is owed.' } });
+    expect(t.session().calls.at(-2)).toBe('mode:interactive');
+  });
+
+  it('a failing mode switch still sends', async () => {
+    const t = setup({ manager: true, planChooser: chooser(true) });
+    await t.seat.start();
+    t.session().modeSetFails = true;
+    await t.seat.handleUpdate(upd({ text: 'invoice last month' }));
+    expect(t.session().sends.map((x) => x.prompt)).toEqual(['invoice last month']);
+  });
+
+  it('a steer is not re-classified; a technician never calls Jev', async () => {
+    const seen: Array<{ m: string; prev: unknown }> = [];
+    const t = setup({ manager: true, planChooser: chooser(false, seen) });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'record a note on J-12' }));
+    t.policy.onToolPending('call-1');
+    await t.seat.handleUpdate(upd({ text: 'and add the parts' }));
+    expect(seen.map((x) => x.m)).toEqual(['record a note on J-12']);
+    const tech = setup();
+    await tech.seat.start();
+    await tech.seat.handleUpdate(upd({ text: 'hi' }));
+    expect(tech.session().calls).toEqual(['send:hi']);
+  });
+
+  it('an approved plan followed by nothing gets ONE go-ahead nudge, sent without Jev', async () => {
+    const seen: Array<{ m: string; prev: unknown }> = [];
+    const t = setup({ manager: true, planChooser: chooser(true, seen) });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'invoice last month' }));
+    const plan = t.hooks()!.onExitPlan({ summary: 'plan', actions: [], recommendedAction: 'autopilot' });
+    await tick();
+    t.session().emit('tool.execution_start', { toolName: 'exit_plan_mode' });
+    await t.seat.handleUpdate(tap(dataOf(t, 0)));
+    await plan;
+    t.session().emit('session.idle', {}); // nothing ran, nothing said
+    await tick();
+    expect(t.session().sends.map((x) => x.prompt)).toEqual(['invoice last month', TEXT.goAhead]);
+    expect(seen).toHaveLength(1); // the nudge was not classified
+    expect(t.telegram.working.size).toBe(1); // the nudged reply shows Working… with Stop
+    t.session().emit('session.idle', {}); // still nothing: never twice
+    await tick();
+    expect(t.session().sends).toHaveLength(2);
+  });
+
+  it('no nudge when the approved plan actually ran a tool', async () => {
+    const t = setup({ manager: true, planChooser: chooser(true) });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'invoice last month' }));
+    const plan = t.hooks()!.onExitPlan({ summary: 'plan', actions: [], recommendedAction: 'autopilot' });
+    await tick();
+    await t.seat.handleUpdate(tap(dataOf(t, 0)));
+    await plan;
+    t.session().emit('tool.execution_start', { toolName: 'spine-get_job' });
+    t.session().emit('session.idle', {});
+    await tick();
+    expect(t.session().sends).toHaveLength(1);
+  });
+
+  it('texts arriving while Jev judges a typed plan reply are held and make it a change request', async () => {
+    let release: (v: boolean) => void = () => {};
+    const t = setup({ manager: true, planChooser: chooser(true), approvesPlan: () => new Promise<boolean>((r) => (release = r)) });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'invoice last month' }));
+    const plan = t.hooks()!.onExitPlan({ summary: 'plan', actions: [], recommendedAction: 'autopilot' });
+    await tick();
+    await t.seat.handleUpdate(upd({ text: 'yes go' }));
+    await t.seat.handleUpdate(upd({ text: 'and skip Acme' }));
+    release(true);
+    expect(await plan).toEqual({ approved: false, feedback: 'yes go\nand skip Acme' });
+    expect(t.session().sends).toHaveLength(1);
+    expect(t.session().aborts).toBe(0);
+  });
+
+  it('Stop while Jev judges a typed plan reply: the plan comes back stopped and the next text is delivered', async () => {
+    let release: (v: boolean) => void = () => {};
+    const t = setup({ manager: true, planChooser: chooser(true), approvesPlan: () => new Promise<boolean>((r) => (release = r)) });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'invoice last month' }));
+    const plan = t.hooks()!.onExitPlan({ summary: 'plan', actions: [], recommendedAction: 'autopilot' });
+    await tick();
+    await t.seat.handleUpdate(upd({ text: 'yes go' }));
+    await t.seat.handleUpdate(upd({ text: 'stop' }));
+    release(true);
+    expect(await plan).toMatchObject({ approved: false });
+    await t.seat.whenIdle(1);
+    await t.seat.handleUpdate(upd({ text: 'what is on tomorrow?' }));
+    expect(t.session().sends.at(-1)?.prompt).toBe('what is on tomorrow?');
   });
 });

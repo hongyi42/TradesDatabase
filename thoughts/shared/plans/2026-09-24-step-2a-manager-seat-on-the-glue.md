@@ -187,19 +187,27 @@ manager approving the plan as it stands?". 3 s timeout; any failure → `{plan:f
 **`src/seatGlue/main.ts`**: pass `tier` and a Jev client into `seatDeps` (technicians get none).
 
 ### Automated verification
-- [ ] `jev.test.ts` (fake fetch): p ≥ 0.5 → plan, 0.49 → interactive; HTTP 500/timeout → safe default
-- [ ] `seat.test.ts`: a manager's fresh turn calls `mode.set` before `send` (FakeSession records it);
+- [x] `jev.test.ts` (fake fetch): p ≥ 0.5 → plan, 0.49 → interactive; HTTP 500/timeout → safe default
+- [x] `seat.test.ts`: a manager's fresh turn calls `mode.set` before `send` (FakeSession records it);
   `mode.set` throwing still sends; a technician never calls Jev; a steer does not re-classify; the
   nudge fires once, only when nothing but `exit_plan_mode` ran; a typed "yes go" → Go
-- [ ] typecheck, lint, `npm test`
+- [x] typecheck, lint, `npm test`
 
 ### Live verification (agent-executable)
 - Prerequisites: the local seat set up; `OPENROUTER_API_KEY`; key allowance checked.
-- [ ] Driver, 6 messages from `test2.mjs` (3 quick, 3 multi-step), each followed by `waitPrompt`/`tap`
+- [x] Driver, 6 messages from `test2.mjs` (3 quick, 3 multi-step), each followed by `waitPrompt`/`tap`
   where a plan appears: quick → no plan; multi-step → [Go][Change] and no local-DB write
   (money_events / visits) until the tap. Evidence: transcript + row timestamps.
-- [ ] A prompt left 10 minutes, then tapped, still completes. The engine's timeout on a pending
+  **Done 2026-09-24:** quick ×3 → `plan no` p 0.10–0.35, no plan. Plan-worthy ×3 (4 actions / emails
+  to customers / move all late visits) → `plan yes` p 0.72–0.74, `session.mode_changed` interactive→plan,
+  plan with Go/Change, **0 spine writes before exit_plan_mode completed** (engine events.jsonl), writes
+  after Go; money_events + visits `created_at` 6–11 s after approval. Finding: Jev's measured criteria
+  do NOT plan small two-write internal requests (p 0.17–0.47): by design (reversible internal changes
+  are just done), so the first pass's test messages were the wrong kind.
+- [x] A prompt left 10 minutes, then tapped, still completes. The engine's timeout on a pending
   request is unmeasured (research Open Question 1); record the result either way.
+  **Done 2026-09-24:** plan shown 16:31:18Z, Go tapped 16:41:18Z, the writes ran at 16:41:24Z and landed.
+  The engine does NOT time out a pending plan approval within 10 minutes.
 
 ## Phase 5: install and cut over s2
 

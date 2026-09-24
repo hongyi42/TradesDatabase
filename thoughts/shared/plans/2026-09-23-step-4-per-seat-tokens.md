@@ -2,7 +2,7 @@
 date: 2026-09-23
 task: Step 4 (4a + 4b) — per-seat tokens replace the glue's shared secret; a glue seat exists without the sandbox pool
 research: thoughts/shared/research/2026-09-23-step-4-seat-identity-doorman-badges-sandbox-pool.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -51,6 +51,9 @@ the pool keep serving s1-s4 untouched; their removal moves into step 5 (operator
 - **Foreign keys cascade** (review 5, 14, 15): `seats` → tenants/technicians/hosts and `seat_bots`
   → hosts `on delete cascade`; `seats.bot_ref` → `seat_bots` `on delete set null`, so existing test
   cleanups and the eval resets keep working.
+- **A running glue learns of a deactivation/rebind only on restart** (operator, final review
+  2026-09-23): Render cannot call the box, so the fix rides STEP 3's pull ("your seat changed" in
+  the office/nudge answer). Rejected: a polling timer in the glue now; an open long-lived line.
 - **Named holes** (accepted, build fast): a glue seat gets no nudges/office notes until step 3
   (same as s5 today; items report `failed`); deactivating a glue seat keeps its bot (bot recovery
   decided with the bot model in step 5); a manager bound onto a glue seat runs technician doctrine

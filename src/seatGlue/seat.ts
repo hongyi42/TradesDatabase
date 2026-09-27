@@ -840,6 +840,16 @@ export class Seat {
     // Not approved, and why — the model reads it (a photo or a new request may follow).
     const notApproved = (reason?: string): ExitPlanResultLike =>
       reason ? { approved: false, feedback: `The manager did not approve this plan (${reason}). Do not carry it out.` } : stopped;
+    // exit_only = the model is only LEAVING plan mode, with nothing to carry out
+    // (a cancelled plan, a question answered). There is nothing to approve, so no
+    // Go / Change: say its summary as a message and let it leave. Live finding
+    // 2026-09-27: "cancel the plan" came back as a "Plan Cancelled" plan with Go.
+    // No afterApproval either: a go-ahead nudge would tell it to act.
+    if (req.recommendedAction === 'exit_only') {
+      const summary = [req.summary.trim(), (req.planContent ?? '').trim()].filter(Boolean).join('\n\n');
+      if (summary) void this.say(summary.length <= PLAN_TEXT_MAX ? summary : `${summary.slice(0, PLAN_TEXT_MAX - 1).trimEnd()}…`);
+      return { approved: true, selectedAction: 'exit_only' };
+    }
     const body = planText(req);
     const r = await this.prompts.ask(
       { kind: 'plan', choices: ['Go', 'Change'], text: body, allowFreeform: true },

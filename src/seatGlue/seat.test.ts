@@ -1394,3 +1394,25 @@ describe('Seat — a manager seat shares nothing (step 3)', () => {
   });
 });
 
+describe('Seat — a plan that only leaves plan mode (exit_only, live 2026-09-27)', () => {
+  it('is said as a message with no buttons and approved at once; no go-ahead nudge follows', async () => {
+    const t = setup({ manager: true });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'cancel the plan' }));
+    const buttonsBefore = t.telegram.buttons.length;
+    const r = await t.hooks()!.onExitPlan({
+      summary: '### Plan Cancelled\n- No customer messages were sent.',
+      actions: ['exit_only'],
+      recommendedAction: 'exit_only',
+    });
+    expect(r).toEqual({ approved: true, selectedAction: 'exit_only' });
+    await tick();
+    expect(t.telegram.buttons.length).toBe(buttonsBefore);
+    expect(t.telegram.sent.join('\n')).toContain('Plan Cancelled');
+    expect(t.seat.promptOpen).toBe(false);
+    t.session().emit('session.idle', {});
+    await tick();
+    expect(t.session().sends.map((x) => x.prompt)).toEqual(['cancel the plan']);
+  });
+});
+

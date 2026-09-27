@@ -4,6 +4,7 @@ import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Technician } from '../db/technicians.js';
 import {
+  BLOCKED_TOOL_TEXT,
   capMcpToolResult,
   cappingForward,
   takeEvents,
@@ -216,6 +217,43 @@ describe('handleComposioRelay cost metering', () => {
     );
     expect(captured.status).toBe(503);
     expect(calls).toEqual([]);
+  });
+});
+
+// Operator, 2026-09-27: Composio's hosted sandbox is off until step 2b.
+describe('handleComposioRelay — Composio sandbox tools are switched off', () => {
+  const call = async (name: string) => {
+    process.env.COMPOSIO_API_KEY = 'key-1';
+    const billed: unknown[] = [];
+    const { forward, calls } = stubForward();
+    const captured = fakeRes();
+    await handleComposioRelay(
+      fakeReq(),
+      captured.res,
+      JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name, arguments: { code_to_execute: 'x' } } }),
+      deps({ forward, recordCost: async () => void billed.push(1) }),
+    );
+    return { captured, calls, billed };
+  };
+
+  test('the workbench and remote bash are answered as a tool error: never forwarded, never billed', async () => {
+    for (const name of ['COMPOSIO_REMOTE_WORKBENCH', 'COMPOSIO_REMOTE_BASH_TOOL']) {
+      const { captured, calls, billed } = await call(name);
+      expect(calls).toEqual([]);
+      expect(billed).toEqual([]);
+      expect(captured.status).toBe(200);
+      expect(JSON.parse(captured.body)).toEqual({
+        jsonrpc: '2.0',
+        id: 7,
+        result: { content: [{ type: 'text', text: BLOCKED_TOOL_TEXT }], isError: true },
+      });
+    }
+  });
+
+  test('every other Composio tool still goes through', async () => {
+    const { calls, billed } = await call('COMPOSIO_MANAGE_CONNECTIONS');
+    expect(calls).toHaveLength(1);
+    expect(billed).toHaveLength(1);
   });
 });
 

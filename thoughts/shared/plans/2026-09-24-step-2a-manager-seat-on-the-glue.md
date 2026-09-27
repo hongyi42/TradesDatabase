@@ -2,7 +2,7 @@
 date: 2026-09-24
 task: Step 2a — the owner's manager seat (s2) runs on the seat glue: manager rulebook, Composio, answer buttons, Jev-chosen plan mode, seat memory
 research: thoughts/shared/research/2026-09-23-step-2-manager-seat-on-the-seat-glue.md (+ 2026-09-23-plan-mode-and-jev-tool-search-tests.md, 2026-09-23-sandbox-vendors-in-depth.md)
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -226,14 +226,24 @@ No code. Steps, in order:
 
 ### Live verification (agent-executable)
 - Prerequisites: box ssh via the operator; the Render deploy visible in the dashboard.
-- [ ] `journalctl -u seat-glue@s2`: whoami tier=manager, "polling Telegram", no 409
-- [ ] `journalctl -u seat-glue@s5` after its restart: whoami ok; a technician message still answered
+- [x] `journalctl -u seat-glue@s2`: whoami tier=manager, "polling Telegram", no 409 — 2026-09-27 14:15:44 UTC "s2 polling Telegram", no 409, no missing-tier warning; pilot seats row tier manager; inbox pulled 3 s after start (the merge fix)
+- [x] `journalctl -u seat-glue@s5` after its restart: whoami ok; a technician message still answered — reinstalled 14:14 UTC (token rotation restart as designed), polling, inbox pulling every 10 s; the extra `restart seat-glue@s5` was skipped (same package)
 
 ### Manual verification
-- [ ] From Sam's phone to @ragisan_bot: a schedule question (no plan); "make a list of every open job
+- [x] From Sam's phone to @ragisan_bot: a schedule question (no plan); "make a list of every open job
   with its balance" (plan → Go → answer); a question that makes it ask (buttons); "remember I want
   invoices due in 14 days" → /new → "what are my invoice terms?" (memory); "connect my Google
   Sheets" (Composio link). Judge the tone and whether the buttons feel right.
 
 ---
 *Pause after Phase 5 (manual checks on the phone).*
+
+### Phase 5 evidence (2026-09-27, operator's phone; read from the engine's session files)
+- Schedule question: resolve_date → get_team_schedule, correct answer, Jev p=0.13 (no plan).
+- Open jobs with balances: 10 spine reads then a correct list; Jev p=0.24 (a read-only list does not plan, as measured).
+- Buttons: "Cancel the Becker job" → ask_user (which job) → tap → cancel_job two-step → cancelled.
+- Memory: write_my_memory `invoices/terms.md`; after /new read back correctly.
+- Composio: "Connect my Google Sheets" → COMPOSIO_MANAGE_CONNECTIONS link.
+- Plan: "text every customer with an open job…" p=0.85–0.88 → plan mode → exit_plan_mode with Go/Change, nothing written before it. The engine held a pending ask_user for 17 minutes and carried on.
+- Status lines ("**Checking…**") stayed off the phone (operator confirmed).
+- Two fixes from the phone tests, both live: #287 the Composio relay refuses COMPOSIO_REMOTE_WORKBENCH / COMPOSIO_REMOTE_BASH_TOOL (the seat had put customer names and balances in a file on Composio's storage behind an open link); #288 a real choice goes to ask_user FIRST and a plan is one course of action (a plan listing three options under Go/Change left Go meaning nothing). Re-tested on the phone after #288: choice as three buttons, then one plan.

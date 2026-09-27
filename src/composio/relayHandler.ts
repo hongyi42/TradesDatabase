@@ -49,6 +49,30 @@ function isToolCall(parsed: unknown): parsed is { method: 'tools/call'; id?: unk
 // All three forms must route here — a query string on the bare path would
 // otherwise silently fall through to the spine MCP handler (which serves
 // every unrouted path) as a malformed MCP request.
+// Composio's hosted sandbox tools (operator, 2026-09-27): switched off until
+// step 2b gives a manager our own file tools in a sandbox the operator chose.
+// Measured live on s2 the same day: asked for a CSV, the seat retyped the rows
+// into COMPOSIO_REMOTE_WORKBENCH, which uploaded customer names and balances to
+// Composio's storage behind an open link. Refused as a TOOL RESULT (isError),
+// never an HTTP error, so the model reads why and offers another way.
+export const BLOCKED_COMPOSIO_TOOLS: ReadonlySet<string> = new Set([
+  'COMPOSIO_REMOTE_WORKBENCH',
+  'COMPOSIO_REMOTE_BASH_TOOL',
+]);
+
+export const BLOCKED_TOOL_TEXT =
+  "That tool is switched off here: it would run in Composio's hosted sandbox and put the firm's data " +
+  'in files on their storage. Do not retry it. Give the manager the answer as text in the chat ' +
+  '(a short table or list), and say that file exports are coming soon.';
+
+function blockedToolCall(parsed: unknown): { id: string | number | null } | null {
+  if (!isToolCall(parsed)) return null;
+  const name = (parsed as { params?: { name?: unknown } }).params?.name;
+  if (typeof name !== 'string' || !BLOCKED_COMPOSIO_TOOLS.has(name)) return null;
+  const id = parsed.id;
+  return { id: typeof id === 'string' || typeof id === 'number' ? id : null };
+}
+
 export function isRelayPath(url: string | undefined): boolean {
   if (!url) return false;
   return url === '/composio' || url.startsWith('/composio/') || url.startsWith('/composio?');
@@ -522,6 +546,19 @@ export async function handleComposioRelay(
     const offending = findConnectedAccountKey(parsed);
     if (offending) {
       return jsonError(res, 400, `argument key '${offending}' is not allowed through the relay`);
+    }
+    // Answered here, before Composio or the cost counter ever sees it.
+    const blocked = blockedToolCall(parsed);
+    if (blocked) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: blocked.id,
+          result: { content: [{ type: 'text', text: BLOCKED_TOOL_TEXT }], isError: true },
+        }),
+      );
+      return;
     }
   }
 

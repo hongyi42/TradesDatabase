@@ -61,6 +61,8 @@ describe('manager doctrine (step 2a)', () => {
     expect(MANAGER_PREAMBLE).toContain('composio-COMPOSIO_MANAGE_CONNECTIONS');
     expect(MANAGER_PREAMBLE).toContain('spine-write_my_memory');
     expect(MANAGER_PREAMBLE).toContain('`ask_user`');
+    // Operator 2026-09-27: choices go to ask_user first; a plan is one course of action.
+    expect(MANAGER_PREAMBLE).toContain('PLANS. A plan you show for approval is ONE course of action');
     expect(MANAGER_PREAMBLE).not.toContain('technician');
     expect(MANAGER_DOCTRINE).not.toContain('## Long or bulk tasks');
   });

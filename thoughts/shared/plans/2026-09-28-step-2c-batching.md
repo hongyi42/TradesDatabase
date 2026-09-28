@@ -27,6 +27,10 @@ Operator, 2026-09-28 ("Go with your recommendations"):
 - **2A — progress on the "Working…" line** ("Working… batch 2 of 10"), fed by the checklist.
 - **3A — a short trigger in the rulebook + the full procedure in a `batching` skill**, loaded only when needed.
 - **4A — resumable:** "carry on" continues from the next pending batch; an abandoned job is said and cleared.
+- **Plan mode only when Jev is sure (operator 2026-09-28, in this branch):** `needsPlan` plans at
+  p ≥ 0.8 (was the measured 0.5; the bot planned easy tasks). Without a plan the rulebook says to ask
+  with `ask_user` at the point a choice or missing detail would change the work. The 48/48
+  measurement was at 0.5; 0.8 is unmeasured, and the phone check in Phase 5 is the test.
 - **Sub-agents are out of 2c.** The spike's must-fix findings (double dispatch, agentId filtering,
   cost ids, the permission-less `task` call) stay recorded for a later step.
 
@@ -226,11 +230,23 @@ on" message, no token from batches 1–2 appears, the job finishes, the source w
 
 ### Live verification (agent-executable)
 - Prerequisites: as Phase 3; a fresh seed each run (`npm run seed:local` + `seed-emails.mjs`).
-- [ ] (a) twice: all batches done, ≥ 11/12, no done batch redone; record time and the model calls' cost
+- [x] (a) twice: all batches done, ≥ 11/12, no done batch redone; record time and the model calls' cost
       from their OpenRouter generation ids (the glue's cost log)
-- [ ] (b) once: Stop mid-job, "carry on" resumes at the next pending batch; checklist state read back
+      — full1 244 s, full2 214 s: 10 batches each, all done, none redone, 12/12, cleared, 48 tool calls.
+      COST NOT CAPTURED: the run wrapper stopped the driver before its cost lines were written.
+- [x] (b) once: Stop mid-job, "carry on" resumes at the next pending batch; checklist state read back
       from `.batches/<job>.json` in the sandbox (cross-channel)
-- [ ] Baseline for the record: the same (a) on `origin/main` (no batching) — coverage and context size
+      — resume1 264 s: Stop after batches 1–2, "carry on" began batch 3, no re-export, no batch 1–2
+      email re-read (the E-097/E-084 hits were reads of the batch NOTES, excluded), 12/12, cleared.
+- [x] Baseline for the record: the same (a) on `origin/main` (no batching) — coverage and context size
+      — 79 s, 12 tool calls, 12/12, by a Python keyword scan of the whole CSV. The seed reuses 4
+      emergency sentences, so this gate cannot rank batching against a scan. Operator 2026-09-28:
+      answer quality vs a scan is NOT the point; batching exists so a long, repetitive job is worked
+      through a file and a checklist instead of held in the model's memory. The test was not reworked.
+- [x] Added (operator 2026-09-28: "small jobs are not batched"): `gate.mjs … small`. "What did my
+      last 5 emails say?" (1 tool call) and "Go through my last 12 emails…" (6 calls, found the one
+      urgent email): no checklist, no batching skill. A first 5-email run died on an OpenRouter
+      "400 Provider returned error" and was rerun.
 
 ---
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MANAGER_DOCTRINE, TECHNICIAN_DOCTRINE } from './doctrine.js';
+import { FILES_SECTION, MANAGER_DOCTRINE, TECHNICIAN_DOCTRINE } from './doctrine.js';
 import { sessionConfig, type EngineConfig, type SeatHooks } from './engine.js';
 import { TurnPolicy } from './turnPolicy.js';
 
@@ -106,11 +106,13 @@ describe('sessionConfig — a manager\'s file tools (step 2b)', () => {
     const c = sessionConfig({ ...base('manager'), tools, skillsDir: '/s', skills }, new TurnPolicy(), hooks) as unknown as Cfg;
     const content = (c.systemMessage as { content: string }).content;
     expect(content.startsWith(MANAGER_DOCTRINE)).toBe(true);
+    expect(content).toContain(FILES_SECTION);
     expect(content).toContain('## Skills');
     expect(content).toContain('- spreadsheet: How to make a spreadsheet.');
-    // No tools, no skills section: a manager without a sandbox has the plain rulebook.
+    // No tools (no E2B key): no computer, no skills — the seat is never told it has one.
     const bare = sessionConfig({ ...base('manager'), skillsDir: '/s', skills }, new TurnPolicy(), hooks) as unknown as Cfg;
     expect(bare.systemMessage).toEqual({ mode: 'replace', content: MANAGER_DOCTRINE });
+    expect(MANAGER_DOCTRINE).not.toContain('FILES. You have a computer');
   });
 
   it('a manager WITHOUT file tools gets no skills (their scripts run on the sandbox)', () => {

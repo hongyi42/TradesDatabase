@@ -61,6 +61,9 @@ interface Stored {
   sandboxId: string;
   createdAt: string;
   template: string;
+  /** Whose computer it is. A seat rebound to someone else never reopens it (final review). */
+  tenantId?: string;
+  technicianRef?: string;
 }
 
 export interface ManagerSandboxOptions {
@@ -75,15 +78,16 @@ export interface ManagerSandboxOptions {
   log?: (msg: string) => void;
 }
 
-/** A not-found error from connect: the sandbox was killed or never existed. */
+/**
+ * A not-found error from connect: the sandbox was killed or never existed. By
+ * the SDK's error NAME or a 404 status only — never by message text: a
+ * transient error that merely mentions "not found" would otherwise replace the
+ * manager's sandbox and lose their files for good (final review).
+ */
 export function isNotFound(err: unknown): boolean {
-  const e = err as { name?: unknown; message?: unknown; status?: unknown } | null;
+  const e = err as { name?: unknown; status?: unknown } | null;
   if (!e) return false;
-  return (
-    (typeof e.name === 'string' && /NotFound/.test(e.name)) ||
-    e.status === 404 ||
-    (typeof e.message === 'string' && /not found|404/i.test(e.message))
-  );
+  return (typeof e.name === 'string' && /NotFound/.test(e.name)) || e.status === 404;
 }
 
 export class ManagerSandbox {
@@ -134,7 +138,13 @@ export class ManagerSandbox {
 
   private async open(): Promise<{ sbx: E2bSandboxLike; fresh: boolean }> {
     const { Sandbox } = await this.sdk();
-    const stored = await this.readStored();
+    let stored = await this.readStored();
+    const { tenantId, technicianRef } = this.opts.meta;
+    if (stored && (stored.tenantId !== tenantId || stored.technicianRef !== technicianRef)) {
+      // This seat now belongs to someone else: their files must never be reachable.
+      this.log(`sandbox ${stored.sandboxId} belongs to another person — creating a new one`);
+      stored = null;
+    }
     if (stored) {
       try {
         return { sbx: await Sandbox.connect(stored.sandboxId, { apiKey: this.opts.apiKey }), fresh: false };
@@ -151,7 +161,13 @@ export class ManagerSandbox {
       metadata: { seat: this.opts.meta.seat, tenant: this.opts.meta.tenantId, person: this.opts.meta.technicianRef },
     });
     await sbx.commands.run(`mkdir -p ${FILES_DIR}`);
-    await this.writeStored({ sandboxId: sbx.sandboxId, createdAt: new Date().toISOString(), template: this.opts.template });
+    await this.writeStored({
+      sandboxId: sbx.sandboxId,
+      createdAt: new Date().toISOString(),
+      template: this.opts.template,
+      tenantId,
+      technicianRef,
+    });
     this.log(`sandbox ${sbx.sandboxId} created from ${this.opts.template}`);
     return { sbx, fresh: stored !== null };
   }

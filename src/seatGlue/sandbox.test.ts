@@ -132,7 +132,10 @@ describe('ManagerSandbox', () => {
 
   it('two tools at once open it once', async () => {
     const f = fakeSdk();
-    await writeFile(join(dir, 'sandbox.json'), JSON.stringify({ sandboxId: 'sbx9', createdAt: 'x', template: 't' }));
+    await writeFile(
+      join(dir, 'sandbox.json'),
+      JSON.stringify({ sandboxId: 'sbx9', createdAt: 'x', template: 't', tenantId: 't1', technicianRef: 'manager-sam' }),
+    );
     f.alive.add('sbx9');
     const box = open(f.sdk);
     const [a, b] = await Promise.all([box.get(), box.get()]);
@@ -141,11 +144,29 @@ describe('ManagerSandbox', () => {
     expect(f.calls.filter((c) => c.op === 'connect')).toHaveLength(1);
   });
 
-  it('isNotFound knows the SDK error, a 404 and the message', () => {
+  it('isNotFound trusts the SDK error name and a 404 — never the message text', () => {
     expect(isNotFound(new NotFound('x'))).toBe(true);
     expect(isNotFound({ status: 404 })).toBe(true);
-    expect(isNotFound(new Error('Sandbox abc not found'))).toBe(true);
+    // A transient error that merely SAYS "not found" must not cost the manager their files.
+    expect(isNotFound(new Error('upstream route not found, retry'))).toBe(false);
     expect(isNotFound(new Error('timeout'))).toBe(false);
+  });
+
+  it("a seat rebound to another person never reopens the previous person's sandbox", async () => {
+    const f = fakeSdk();
+    const first = await open(f.sdk).get();
+    const other = new ManagerSandbox({
+      apiKey: 'e2b_key',
+      template: 'trades-manager',
+      stateDir: dir,
+      meta: { seat: 's2', tenantId: 't2', technicianRef: 'manager-joy' },
+      sdk: f.sdk,
+      log: () => {},
+    });
+    const theirs = await other.get();
+    expect(theirs.sbx.sandboxId).not.toBe(first.sbx.sandboxId);
+    expect(f.calls.filter((c) => c.op === 'connect')).toHaveLength(0);
+    expect(JSON.parse(await readFile(join(dir, 'sandbox.json'), 'utf8'))).toMatchObject({ tenantId: 't2', technicianRef: 'manager-joy' });
   });
 
   it('skills are copied in once, and again only when the folder changes', async () => {

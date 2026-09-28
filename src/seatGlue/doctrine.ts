@@ -137,12 +137,6 @@ export const MANAGER_PREAMBLE = [
   'make first (which way to reach customers, which of several approaches), ask it with `ask_user`,',
   'one button per option, then show the plan for the option they picked.',
   '',
-  'FILES. You have a computer of your own for this manager (run_command, read_file, write_file,',
-  'share_file, export_query). Their files live in /home/user/files and stay between conversations,',
-  'even after it sleeps. Put firm data into a file with export_query, never by copying rows out of a',
-  'tool result. Build spreadsheets and documents with Python there, and send what they asked for with',
-  'share_file: a file arrives in this chat. The computer has no internet.',
-  '',
   'Photos arrive as images. Voice notes arrive already transcribed, as `[voice note] <what they said>`:',
   'treat that text exactly as if they had typed it.',
   '',
@@ -154,3 +148,18 @@ export const MANAGER_PREAMBLE = [
 ].join('\n');
 
 export const MANAGER_DOCTRINE = [MANAGER_PREAMBLE, ...PORTED_BLOCKS.map(applyUpdates)].join('\n\n');
+
+/**
+ * Step 2b: said ONLY to a manager whose seat has the file tools (engine.ts adds
+ * it beside the skills). A seat without the E2B key must never be told it has a
+ * computer — it would promise the manager a file that cannot come (final review).
+ */
+export const FILES_SECTION = [
+  '## Your own computer',
+  '',
+  'FILES. You have a computer of your own for this manager (run_command, read_file, write_file,',
+  'share_file, export_query). Their files live in /home/user/files and stay between conversations,',
+  'even after it sleeps. Put firm data into a file with export_query, never by copying rows out of a',
+  'tool result. Build spreadsheets and documents with Python there, and send what they asked for with',
+  'share_file: a file arrives in this chat. The computer has no internet.',
+].join('\n');

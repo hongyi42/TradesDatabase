@@ -1,5 +1,5 @@
 import { seatHeaders } from './identity.js';
-import { MANAGER_DOCTRINE, TECHNICIAN_DOCTRINE } from './doctrine.js';
+import { FILES_SECTION, MANAGER_DOCTRINE, TECHNICIAN_DOCTRINE } from './doctrine.js';
 import type { TurnPolicy } from './turnPolicy.js';
 import { FILE_TOOL_NAMES, type FileTool } from './fileTools.js';
 
@@ -191,7 +191,13 @@ export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy, hooks?: Sea
     systemMessage: {
       mode: 'replace',
       content: manager
-        ? [MANAGER_DOCTRINE, fileTools.length && cfg.skillsDir ? skillsSection(cfg.skills ?? []) : ''].filter(Boolean).join('\n\n')
+        ? [
+            MANAGER_DOCTRINE,
+            fileTools.length ? FILES_SECTION : '',
+            fileTools.length && cfg.skillsDir ? skillsSection(cfg.skills ?? []) : '',
+          ]
+            .filter(Boolean)
+            .join('\n\n')
         : TECHNICIAN_DOCTRINE,
     },
     // All tools loaded, tool search OFF (measured 2026-09-23: a wash at ~49 tools).

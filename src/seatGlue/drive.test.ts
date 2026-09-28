@@ -34,6 +34,7 @@ describe('seatDeps office wiring', () => {
     model: 'm',
     stateDir: '/tmp/seat-glue-test-never-written',
     mediaRetentionDays: 7,
+    e2bTemplate: 'trades-manager',
   };
   const who = { seatRef: 's5', tenantId: 't', technicianRef: 'ben', telegramUserId: 5801703167, tz: 'UTC', tier: 'technician' as const, shareConversation: true };
   const client = {} as EngineClient;

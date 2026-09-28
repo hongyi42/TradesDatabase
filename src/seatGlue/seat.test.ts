@@ -100,6 +100,10 @@ class FakeTelegram implements TelegramApi {
   async clearButtons(_chat: number, id: number): Promise<void> {
     this.cleared.push(id);
   }
+  readonly documents: Array<{ filename: string; bytes: Uint8Array; caption?: string }> = [];
+  async sendDocument(_chat: number, filename: string, bytes: Uint8Array, caption?: string): Promise<void> {
+    this.documents.push({ filename, bytes, caption });
+  }
 }
 
 let n = 0;

@@ -35,9 +35,13 @@ export type Route = 'send' | 'steer' | 'abort-then-send';
 // Tools a Stop or /new may interrupt mid-call. ask_team_lead is the office,
 // which can take minutes and stops itself when the caller hangs up (desk→office
 // merge, thoughts/shared/plans/2026-09-22-the-office-one-agent-three-doors.md).
-// Everything else — above all record_field_note — is never aborted mid-call.
+// run_command (step 2b) runs model-written code in the manager's sandbox for up
+// to minutes; its handler KILLS the process when the call is aborted, so a Stop
+// ends it at once instead of waiting 90 s and cutting it off anyway (a half-
+// written file stays inside the sandbox). Everything else — above all
+// record_field_note — is never aborted mid-call.
 // Double texts still STEER during any tool: they never abort one.
-export const ABORT_SAFE_TOOLS = new Set(['ask_team_lead']);
+export const ABORT_SAFE_TOOLS = new Set(['ask_team_lead', 'run_command']);
 const bareName = (tool?: string): string => (tool ?? '').replace(/^spine-/, '');
 
 export class TurnPolicy {

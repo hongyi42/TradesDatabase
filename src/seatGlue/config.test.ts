@@ -55,4 +55,17 @@ describe('loadConfig', () => {
   it('rejects a non-positive retention', () => {
     expect(() => loadConfig({ ...FULL, MEDIA_RETENTION_DAYS: '0' })).toThrow('MEDIA_RETENTION_DAYS');
   });
+
+  it('step 2b: the E2B key is optional (no key = no file tools), the template has a default', () => {
+    const base = {
+      TELEGRAM_BOT_TOKEN: 'b',
+      SEAT_REF: 's2',
+      SEAT_TOKEN: `st_${'a'.repeat(64)}`,
+      SPINE_MCP_URL: 'https://spine.example/',
+      OPENROUTER_API_KEY: 'k',
+    };
+    expect(loadConfig(base)).toMatchObject({ e2bTemplate: 'trades-manager' });
+    expect(loadConfig(base).e2bApiKey).toBeUndefined();
+    expect(loadConfig({ ...base, E2B_API_KEY: ' e2b_x ', E2B_TEMPLATE: 'other' })).toMatchObject({ e2bApiKey: 'e2b_x', e2bTemplate: 'other' });
+  });
 });

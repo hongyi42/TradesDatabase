@@ -21,6 +21,7 @@
 #   TELEGRAM_BOT_TOKEN  <- /root/bots/<bot handle>.env, else /root/seats/<seat>.env
 #   SPINE_MCP_URL       <- /etc/doorman/doorman.env   (MCP_UPSTREAM_URL)
 #   OPENROUTER_API_KEY  <- /etc/nemoclaw/openrouter.env
+#   E2B_API_KEY         <- /etc/seat-glue/e2b.env (optional; step 2b, a manager's sandbox)
 #
 # Idempotent: re-run it to upgrade the code or rotate the token. It never enables
 # or starts the unit — cutover.sh does that, after the old openclaw seat has
@@ -127,9 +128,16 @@ install -d -o root -g root -m 0700 /etc/seat-glue
 ( umask 077
   printf 'TELEGRAM_BOT_TOKEN=%s\nSEAT_TOKEN=%s\nSPINE_MCP_URL=%s\nOPENROUTER_API_KEY=%s\n' \
     "$bot" "$token" "$spine" "$orkey" > "/etc/seat-glue/${SEAT}.env.new"
+  # Step 2b: a manager's sandbox key, when the operator has put it on this box
+  # (/etc/seat-glue/e2b.env, root 0600). Every seat gets it — bash cannot see the
+  # tier — and the glue uses it for a manager only.
+  e2bkey="$(val /etc/seat-glue/e2b.env E2B_API_KEY)"
+  e2btpl="$(val /etc/seat-glue/e2b.env E2B_TEMPLATE)"
+  if [ -n "$e2bkey" ]; then printf 'E2B_API_KEY=%s\n' "$e2bkey" >> "/etc/seat-glue/${SEAT}.env.new"; fi
+  if [ -n "$e2btpl" ]; then printf 'E2B_TEMPLATE=%s\n' "$e2btpl" >> "/etc/seat-glue/${SEAT}.env.new"; fi
 )
 chmod 600 "/etc/seat-glue/${SEAT}.env.new"
-unset bot token orkey
+unset bot token orkey e2bkey e2btpl
 log "seat token minted; /etc/seat-glue/${SEAT}.env.new written (root, 0600)"
 
 # 6. Swap in the new code, then its env file. A failure before the mint (step 5)

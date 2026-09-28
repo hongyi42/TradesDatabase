@@ -17,7 +17,7 @@ describe('transcribe', () => {
     const out = await transcribe(Buffer.from('OggS'), 'audio/ogg', { openrouterKey: 'k', fetch: f });
     expect(out).toEqual({ text: 'Fan swapped, parts 180.', generationId: 'gen-v1' });
     expect(seen[0].url).toBe('https://openrouter.ai/api/v1/chat/completions');
-    const body = JSON.parse(seen[0].init?.body ?? '{}');
+    const body = JSON.parse((seen[0].init?.body as string | undefined) ?? '{}');
     expect(body.model).toBe('google/gemini-3.8-flash');
     const audio = body.messages[0].content.find((p: { type: string }) => p.type === 'input_audio');
     expect(audio.input_audio).toEqual({ data: Buffer.from('OggS').toString('base64'), format: 'ogg' });

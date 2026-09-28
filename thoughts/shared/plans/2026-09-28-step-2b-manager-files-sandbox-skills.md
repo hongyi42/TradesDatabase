@@ -110,9 +110,9 @@ empty for null).
 
 **`src/mcp/csv.ts`** (new) — `toCsv(rows: unknown[]): { csv: string; columns: string[] }`.
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` pass
-- [ ] `src/mcp/csv.test.ts`: quoting of commas/quotes/newlines, null, nested objects, column union
-- [ ] `src/mcp/httpServer.test.ts` (seat-token describe): manager → 200 with every row and
+- [x] `npm run typecheck`, `npm run lint`, `npm test` pass
+- [x] `src/mcp/csv.test.ts`: quoting of commas/quotes/newlines, null, nested objects, column union
+- [x] `src/mcp/httpServer.test.ts` (seat-token describe): manager → 200 with every row and
       `truncated:false`; technician → 403; an invited (not active) manager → 403; unknown token → 401; bad SQL → 400 with the DB's message;
       a `query_audit` row is written with the manager's ref
 
@@ -158,16 +158,16 @@ helper, `:81-86`) and add `E2B_API_KEY` / `E2B_TEMPLATE` to the env file it writ
 `Template.build(t, 'trades-manager')`. Re-run to change libraries.
 
 ### Automated verification
-- [ ] typecheck, lint, `npx vitest run src/seatGlue` pass
-- [ ] `sandbox.test.ts` (fake SDK): first `get` creates with pause/autoResume, internet off, the
+- [x] typecheck, lint, `npx vitest run src/seatGlue` pass
+- [x] `sandbox.test.ts` (fake SDK): first `get` creates with pause/autoResume, internet off, the
       template, metadata, the explicit `apiKey`, and writes `sandbox.json`; `holdMs` above 10 min
       re-arms to it; the second process connects by id and re-arms
       10 min; not-found → a new one with `fresh:true`; two concurrent `get`s open once
-- [ ] `telegram.test.ts`: `sendDocument` posts multipart with the file name and bytes
+- [x] `telegram.test.ts`: `sendDocument` posts multipart with the file name and bytes
 
 ### Live verification (agent-executable)
 - Prerequisites: `E2B_API_KEY` in `.env`; `npm i --no-save e2b@2.51.0 @github/copilot-sdk@1.0.14`.
-- [ ] Build the template; a scratch script opens a `ManagerSandbox` and checks, as the default user:
+- [x] Build the template; a scratch script opens a `ManagerSandbox` and checks, as the default user:
       `python3 -c "import openpyxl, reportlab, pandas"` exits 0; `/home/user/files` is writable;
       `python3 -c "import urllib.request; urllib.request.urlopen('https://pypi.org', timeout=5)"`
       fails with a NETWORK error (URLError/timeout — not "command not found"); `sandbox.json` holds
@@ -175,6 +175,14 @@ helper, `:81-86`) and add `E2B_API_KEY` / `E2B_TEMPLATE` to the env file it writ
 - [ ] Record the gate test's 2-hour check (state, resume ms, files identical, job finished).
 
 ---
+
+**Evidence (2026-09-28):** phase 1 `dafbe23` (review: an outage was a 400 → only a SQLSTATE is; audit
+rows cleaned; the export test first proved nothing on an empty firm → it makes its own customers).
+Phase 2: template `trades-manager` built in 53 s (templateId f8uluqhamu0bk35be1ge); a real sandbox
+from it ran as `user`, imported openpyxl/reportlab/pandas/xlsxwriter, wrote /home/user/files, and
+`urlopen('https://pypi.org')` failed with URLError "name resolution" (no internet); a second process
+reconnected the same id in 287 ms with the file intact; killed. Review: a quick call's `setTimeout`
+would SHORTEN a long command's hold (E2B can reduce it) → the longest hold is remembered.
 
 ## Phase 3: the five tools
 

@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 303 documents · 289 live · 14 superseded.
+Regenerate with `npm run decisions:index`. 304 documents · 290 live · 14 superseded.
 
 ## Superseded — do not build on these
 
@@ -55,6 +55,7 @@ Regenerate with `npm run decisions:index`. 303 documents · 289 live · 14 super
 
 - `2026-09-28` `plan` [2026-09-28-step-2b-manager-files-sandbox-skills](shared/plans/2026-09-28-step-2b-manager-files-sandbox-skills.md) · _draft_ — Step 2b — the manager seat gets files: an E2B sandbox per manager, the glue's own file tools, export_query, a…
 - `2026-09-28` `plan` [2026-09-28-step-2c-batching](shared/plans/2026-09-28-step-2c-batching.md) — Step 2c — batching for a manager seat's big jobs: the model recognises a job too big for one pass and follows…
+- `2026-09-28` `plan` [2026-09-28-step-2d-files](shared/plans/2026-09-28-step-2d-files.md) `describes 4 deleted files` · _draft_ — Step 2d — a file store: photos and documents kept, linked to customers/jobs/visits/ledger entries, deletable,…
 - `2026-09-28` `research` [2026-09-28-step-2c-batching-spike](shared/research/2026-09-28-step-2c-batching-spike.md) `not landed` — Step 2c spike — do the Copilot SDK's sub-agents work on the seat glue, and do they help a 100-email job?
 - `2026-09-28` `research` [2026-09-28-step-2d-files](shared/research/2026-09-28-step-2d-files.md) `landed` — Step 2d — files (photos, PDFs, audio): how they enter, where they are stored, what they could attach to, who…
 - `2026-09-27` `finding` [2026-09-27-step-2b-manager-seat-files-sandbox-and-s](shared/findings/2026-09-27-step-2b-manager-seat-files-sandbox-and-s.md) `drift 18` — Step 2b: manager seat files, sandbox and skills (E2B vs Vercel gate test; lift the Composio workbench block)

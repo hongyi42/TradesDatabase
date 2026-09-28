@@ -20,7 +20,7 @@ const line = readFileSync(join(dirname(common), '.env'), 'utf8').split('\n').fin
 if (!line) throw new Error('E2B_API_KEY missing from .env');
 const apiKey = line.slice('E2B_API_KEY='.length).trim().replace(/^["']|["']$/g, '');
 
-// openpyxl + xlsxwriter: spreadsheets; reportlab: PDFs (2c's invoices);
+// openpyxl + xlsxwriter: spreadsheets; reportlab: PDFs (2d's invoices);
 // pandas: the CSV that export_query writes.
 const template = Template()
   .fromPythonImage('3.12')

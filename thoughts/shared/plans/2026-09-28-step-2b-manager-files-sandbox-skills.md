@@ -11,7 +11,7 @@ supersedes: nothing (carries out 2a's split; changes #287's "until 2b" to "kept"
 s2 cannot make a file: asked for a CSV on 2026-09-27 it used Composio's workbench, which put customer
 data behind an open link (blocked, #287). 2b gives each manager an E2B sandbox (a small isolated
 computer that sleeps when idle, wakes in ~0.5 s), tools the glue defines, and file delivery into
-the chat. Invoices are 2c.
+the chat. Next in step 2: 2c batching (sub-agents, the Claude Code pattern; operator 2026-09-28), then 2d invoices and exports.
 
 ## Decisions
 
@@ -26,7 +26,7 @@ Operator, 2026-09-27/28:
 - **3A — `export_query` now**: the glue asks Render for a query's full rows and writes them into a
   sandbox file itself, so the model never retypes data (the lossy path seen on 2026-09-27).
 - **4A — the skills mechanism plus one "spreadsheet" skill** (SDK `skillDirectories`); the PDF
-  invoice skill is 2c.
+  invoice skill is 2d (invoices moved there when batching became 2c, 2026-09-28).
 - **5A — #287's Composio workbench/bash block STAYS**: the workbench still copies firm data onto
   Composio's storage, and our own sandbox now does the job.
 - Standing: managers only (technician seats get no file tools); permissions stay loose.

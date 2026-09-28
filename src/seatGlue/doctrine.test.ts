@@ -63,6 +63,9 @@ describe('manager doctrine (step 2a)', () => {
     expect(MANAGER_PREAMBLE).toContain('`ask_user`');
     // Operator 2026-09-27: choices go to ask_user first; a plan is one course of action.
     expect(MANAGER_PREAMBLE).toContain('PLANS. A plan you show for approval is ONE course of action');
+    // Operator 2026-09-28: a plan a manager can read — plain words, the assumptions, no machinery.
+    expect(MANAGER_PREAMBLE).toContain('Write the plan for the manager, not for yourself');
+    expect(MANAGER_PREAMBLE).toContain('Never tool names, file paths, queries');
     // Step 2b: the computer is NOT in the preamble — only a seat with the tools is told (engine.ts).
     expect(MANAGER_PREAMBLE).not.toContain('FILES. You have a computer of your own');
     const { FILES_SECTION } = await import('./doctrine.js');

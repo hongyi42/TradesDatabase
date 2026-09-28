@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 298 documents · 284 live · 14 superseded.
+Regenerate with `npm run decisions:index`. 299 documents · 285 live · 14 superseded.
 
 ## Superseded — do not build on these
 
@@ -53,6 +53,7 @@ Regenerate with `npm run decisions:index`. 298 documents · 284 live · 14 super
 
 ## Live
 
+- `2026-09-28` `plan` [2026-09-28-step-2b-manager-files-sandbox-skills](shared/plans/2026-09-28-step-2b-manager-files-sandbox-skills.md) `describes 3 deleted files` · _draft_ — Step 2b — the manager seat gets files: an E2B sandbox per manager, the glue's own file tools, export_query, a…
 - `2026-09-24` `plan` [2026-09-24-step-2a-manager-seat-on-the-glue](shared/plans/2026-09-24-step-2a-manager-seat-on-the-glue.md) — Step 2a — the owner's manager seat (s2) runs on the seat glue: manager rulebook, Composio, answer buttons, Je…
 - `2026-09-23` `finding` [2026-09-23-step-2-manager-seat-s2-on-the-seat-glue](shared/findings/2026-09-23-step-2-manager-seat-s2-on-the-seat-glue.md) `drift 24` — Step 2: manager seat (s2) on the seat glue with a sandbox vendor — Cowork-like files, export + invoice verbs,…
 - `2026-09-23` `finding` [2026-09-23-step-3-office-messages-and-nudges-reach](shared/findings/2026-09-23-step-3-office-messages-and-nudges-reach.md) `drift 33` — Step 3: office messages and nudges reach glue seats — readers in the seat glue replace office-runner and nudg…

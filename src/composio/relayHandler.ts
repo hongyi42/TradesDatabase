@@ -49,8 +49,10 @@ function isToolCall(parsed: unknown): parsed is { method: 'tools/call'; id?: unk
 // All three forms must route here — a query string on the bare path would
 // otherwise silently fall through to the spine MCP handler (which serves
 // every unrouted path) as a malformed MCP request.
-// Composio's hosted sandbox tools (operator, 2026-09-27): switched off until
-// step 2b gives a manager our own file tools in a sandbox the operator chose.
+// Composio's hosted sandbox tools (operator, 2026-09-27): switched off, and KEPT
+// off after step 2b (operator 2026-09-28, 5A) — a manager now has our own file
+// tools in a sandbox the operator chose, and the workbench would still copy the
+// firm's data onto Composio's storage.
 // Measured live on s2 the same day: asked for a CSV, the seat retyped the rows
 // into COMPOSIO_REMOTE_WORKBENCH, which uploaded customer names and balances to
 // Composio's storage behind an open link. Refused as a TOOL RESULT (isError),
@@ -62,8 +64,8 @@ export const BLOCKED_COMPOSIO_TOOLS: ReadonlySet<string> = new Set([
 
 export const BLOCKED_TOOL_TEXT =
   "That tool is switched off here: it would run in Composio's hosted sandbox and put the firm's data " +
-  'in files on their storage. Do not retry it. Give the manager the answer as text in the chat ' +
-  '(a short table or list), and say that file exports are coming soon.';
+  'in files on their storage. Do not retry it. If you have your own file tools (share_file), make ' +
+  'the file there and send it; otherwise give the answer as text in the chat (a short table or list).';
 
 function blockedToolCall(parsed: unknown): { id: string | number | null } | null {
   if (!isToolCall(parsed)) return null;

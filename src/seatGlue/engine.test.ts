@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MANAGER_DOCTRINE, TECHNICIAN_DOCTRINE } from './doctrine.js';
+import { FILES_SECTION, MANAGER_DOCTRINE, TECHNICIAN_DOCTRINE } from './doctrine.js';
 import { sessionConfig, type EngineConfig, type SeatHooks } from './engine.js';
 import { TurnPolicy } from './turnPolicy.js';
 
@@ -84,3 +84,65 @@ describe('sessionConfig — the manager seat (step 2a)', () => {
     expect(perm({ kind: 'custom-tool', toolName: 'ask_user' })).toEqual({ kind: 'reject' });
   });
 });
+
+describe('sessionConfig — a manager\'s file tools (step 2b)', () => {
+  const tool = (name: string) => ({ name, description: '', parameters: {}, handler: async () => '' });
+  const tools = ['run_command', 'read_file', 'write_file', 'share_file', 'export_query'].map(tool);
+
+  it('a manager with tools gets custom:*, the tools, and our skill folders (with the skill tool)', () => {
+    const c = sessionConfig({ ...base('manager'), tools, skillsDir: '/opt/seat-glue/skills' }, new TurnPolicy(), hooks) as unknown as Cfg & {
+      tools?: unknown[];
+      enableSkills?: boolean;
+      skillDirectories?: string[];
+    };
+    expect(c.availableTools).toEqual(['mcp:*', 'builtin:ask_user', 'builtin:exit_plan_mode', 'custom:*', 'builtin:skill']);
+    expect(c.tools).toBe(tools);
+    expect(c.enableSkills).toBe(true);
+    expect(c.skillDirectories).toEqual(['/opt/seat-glue/skills']);
+  });
+
+  it('the skills are LISTED in the rulebook: it replaces the engine prompt that would have listed them', () => {
+    const skills = [{ name: 'spreadsheet', description: 'How to make a spreadsheet.' }];
+    const c = sessionConfig({ ...base('manager'), tools, skillsDir: '/s', skills }, new TurnPolicy(), hooks) as unknown as Cfg;
+    const content = (c.systemMessage as { content: string }).content;
+    expect(content.startsWith(MANAGER_DOCTRINE)).toBe(true);
+    expect(content).toContain(FILES_SECTION);
+    expect(content).toContain('## Skills');
+    expect(content).toContain('- spreadsheet: How to make a spreadsheet.');
+    // No tools (no E2B key): no computer, no skills — the seat is never told it has one.
+    const bare = sessionConfig({ ...base('manager'), skillsDir: '/s', skills }, new TurnPolicy(), hooks) as unknown as Cfg;
+    expect(bare.systemMessage).toEqual({ mode: 'replace', content: MANAGER_DOCTRINE });
+    expect(MANAGER_DOCTRINE).not.toContain('FILES. You have a computer');
+  });
+
+  it('a manager WITHOUT file tools gets no skills (their scripts run on the sandbox)', () => {
+    const c = sessionConfig({ ...base('manager'), skillsDir: '/opt/seat-glue/skills' }, new TurnPolicy(), hooks) as Record<string, unknown>;
+    expect(c.enableSkills).toBeUndefined();
+    expect(c.availableTools).toEqual(['mcp:*', 'builtin:ask_user', 'builtin:exit_plan_mode']);
+  });
+
+  it('a technician never carries them, even if handed some: the whole config is unchanged', () => {
+    const withTools = sessionConfig({ ...base('technician'), tools }, new TurnPolicy()) as Record<string, unknown>;
+    const without = sessionConfig(base('technician'), new TurnPolicy()) as Record<string, unknown>;
+    expect(Object.keys(withTools)).toEqual(Object.keys(without));
+    const data = (c: Record<string, unknown>) => JSON.parse(JSON.stringify(c));
+    expect(data(withTools)).toEqual(data(without));
+    expect(withTools.tools).toBeUndefined();
+  });
+
+  it('a file-tool call is approved AND marked pending; an unknown custom tool is refused', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const policy = new TurnPolicy();
+    policy.onSend();
+    const perm = (sessionConfig({ ...base('manager'), tools }, policy, hooks) as { onPermissionRequest: Perm }).onPermissionRequest;
+    expect(perm({ kind: 'custom-tool', toolName: 'write_file', toolCallId: 'w1' })).toEqual({ kind: 'approve-once' });
+    expect(policy.toolPending).toBe(true);
+    expect(policy.onlyAbortSafePending).toBe(false);
+    expect(perm({ kind: 'custom-tool', toolName: 'format_disk', toolCallId: 'x1' })).toEqual({ kind: 'reject' });
+    // Without tools configured, a file-tool name is refused too.
+    const bare = (sessionConfig(base('manager'), new TurnPolicy(), hooks) as { onPermissionRequest: Perm }).onPermissionRequest;
+    expect(bare({ kind: 'custom-tool', toolName: 'run_command', toolCallId: 'r1' })).toEqual({ kind: 'reject' });
+  });
+});
+

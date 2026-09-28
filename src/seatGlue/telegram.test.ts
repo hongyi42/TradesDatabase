@@ -24,7 +24,7 @@ function fakeFetch(respond: (c: Call) => { status?: number; json?: unknown; byte
   return { f, calls };
 }
 
-const body = (c: Call) => JSON.parse(c.init?.body ?? '{}') as Record<string, unknown>;
+const body = (c: Call) => JSON.parse((c.init?.body as string | undefined) ?? '{}') as Record<string, unknown>;
 
 describe('TelegramClient', () => {
   it('long-polls for messages only and returns the updates', async () => {
@@ -111,4 +111,28 @@ describe('splitText', () => {
   it('leaves short text alone', () => {
     expect(splitText('hello')).toEqual(['hello']);
   });
+
+  it('step 2b: sendDocument uploads multipart (no JSON content-type) with the name and bytes', async () => {
+    const { f, calls } = fakeFetch(() => ({ json: { ok: true, result: {} } }));
+    await new TelegramClient('tok', f).sendDocument(42, 'open_jobs.xlsx', new Uint8Array([1, 2, 3]), 'Open jobs');
+    const c = calls[0];
+    expect(c.url).toBe('https://api.telegram.org/bottok/sendDocument');
+    expect(c.init?.headers).toBeUndefined();
+    const form = c.init?.body as FormData;
+    expect(form).toBeInstanceOf(FormData);
+    expect(form.get('chat_id')).toBe('42');
+    expect(form.get('caption')).toBe('Open jobs');
+    const doc = form.get('document') as File;
+    expect(doc.name).toBe('open_jobs.xlsx');
+    expect(new Uint8Array(await doc.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it('step 2b: sendDocument refuses over 50 MB before any request, and reports a failed upload', async () => {
+    const { f, calls } = fakeFetch(() => ({ status: 400, json: { ok: false } }));
+    const tg = new TelegramClient('tok', f);
+    await expect(tg.sendDocument(42, 'big.bin', new Uint8Array(50 * 1024 * 1024 + 1))).rejects.toThrow(/50 MB/);
+    expect(calls).toHaveLength(0);
+    await expect(tg.sendDocument(42, 'a.csv', new Uint8Array([1]))).rejects.toThrow(/sendDocument failed/);
+  });
 });
+

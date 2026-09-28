@@ -1,3 +1,4 @@
+import { readFileSync, readdirSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -5,6 +6,10 @@ import { pathToFileURL } from 'node:url';
 import { loadConfig, type SeatConfig } from './config.js';
 import { CostLog } from './costLog.js';
 import { openSession, startEngine, type EngineClient, type EngineConfig } from './engine.js';
+import { ExportError, fileTools, type ExportResult, type FileTool, type FileToolSet } from './fileTools.js';
+import { defaultFetch, type FetchLike } from './http.js';
+import { seatHeaders } from './identity.js';
+import { ManagerSandbox } from './sandbox.js';
 import { fetchInbox, reportInbox } from './inbox.js';
 import { saveMedia, sweepMedia } from './media.js';
 import { Seat, type SeatDeps } from './seat.js';
@@ -29,7 +34,7 @@ export const EXIT_CONFLICT = 3;
 // 10 s into a whoami that refuses it.
 export const EXIT_SEAT_GONE = 4;
 
-export function engineConfig(cfg: SeatConfig, who: SeatWho): EngineConfig {
+export function engineConfig(cfg: SeatConfig, who: SeatWho, tools?: FileTool[]): EngineConfig {
   return {
     seatRef: cfg.seatRef,
     stateDir: cfg.stateDir,
@@ -39,7 +44,77 @@ export function engineConfig(cfg: SeatConfig, who: SeatWho): EngineConfig {
     spineUrl: cfg.spineUrl,
     seatToken: cfg.seatToken,
     tier: who.tier,
+    ...(tools?.length ? { tools, skillsDir: cfg.skillsDir, skills: readSkills(cfg.skillsDir) } : {}),
   };
+}
+
+/**
+ * The skills in the folder: each subfolder's SKILL.md frontmatter `name` and
+ * `description` (the SDK's own fields). A missing folder or file is no skills.
+ */
+export function readSkills(dir: string): Array<{ name: string; description: string }> {
+  const out: Array<{ name: string; description: string }> = [];
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(dir).sort();
+  } catch {
+    return out;
+  }
+  for (const sub of entries) {
+    let text: string;
+    try {
+      text = readFileSync(join(dir, sub, 'SKILL.md'), 'utf8');
+    } catch {
+      continue;
+    }
+    const front = /^---\n([\s\S]*?)\n---/.exec(text.replace(/\r\n/g, '\n'))?.[1] ?? '';
+    const field = (k: string) =>
+      new RegExp(`^${k}:\\s*(.+)$`, 'm')
+        .exec(front)?.[1]
+        ?.trim()
+        .replace(/^(["'])(.*)\1$/, '$2');
+    out.push({ name: field('name') || sub, description: field('description') || '' });
+  }
+  return out;
+}
+
+/** Render's POST /seat/export: a query's every row as CSV (step 2b). */
+export async function exportRows(cfg: SeatConfig, sql: string, fetchFn: FetchLike = defaultFetch): Promise<ExportResult> {
+  const res = await fetchFn(new URL('/seat/export', cfg.spineUrl).toString(), {
+    method: 'POST',
+    headers: { ...seatHeaders(cfg.seatToken), 'content-type': 'application/json' },
+    body: JSON.stringify({ sql }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  const body = (await res.json().catch(() => null)) as (ExportResult & { error?: string }) | null;
+  if (!res.ok || !body || typeof body.csv !== 'string') {
+    throw new ExportError(body?.error ?? `Render answered HTTP ${res.status}`, res.status);
+  }
+  return body;
+}
+
+/**
+ * A manager's file tools (step 2b), or none. Built here, not in main(), because
+ * the local driver builds its seat through seatDeps too.
+ */
+export function managerTools(cfg: SeatConfig, who: SeatWho, telegram: TelegramApi): FileToolSet | undefined {
+  if (who.tier !== 'manager') return undefined;
+  if (!cfg.e2bApiKey) {
+    console.warn('seat-glue: no E2B_API_KEY — this manager seat has no file tools');
+    return undefined;
+  }
+  const sandbox = new ManagerSandbox({
+    apiKey: cfg.e2bApiKey,
+    template: cfg.e2bTemplate,
+    stateDir: cfg.stateDir,
+    meta: { seat: cfg.seatRef, tenantId: who.tenantId, technicianRef: who.technicianRef },
+    skillsDir: cfg.skillsDir,
+  });
+  return fileTools({
+    sandbox,
+    exportRows: (sql) => exportRows(cfg, sql),
+    sendDocument: (name, bytes, caption) => telegram.sendDocument(who.telegramUserId, name, bytes, caption),
+  });
 }
 
 /**
@@ -74,9 +149,11 @@ export function seatDeps(
     stateDir: cfg.stateDir,
     openrouterKey: cfg.openrouterKey,
   });
+  const files = managerTools(cfg, who, telegram);
   return {
     telegram,
-    openSession: (id, hooks) => openSession(client, engineConfig(cfg, who), policy, id, hooks),
+    openSession: (id, hooks) => openSession(client, engineConfig(cfg, who, files?.tools), policy, id, hooks),
+    ...(files ? { onAbort: () => files.stopRunning() } : {}),
     policy,
     costLog,
     transcribe: (buf, mime) => transcribe(buf, mime, { openrouterKey: cfg.openrouterKey }),

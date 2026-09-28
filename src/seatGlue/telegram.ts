@@ -77,7 +77,12 @@ export interface TelegramApi {
   sendButtons(chatId: number, text: string, rows: ButtonRow[]): Promise<number>;
   /** Remove a message's buttons once it is answered. */
   clearButtons(chatId: number, messageId: number): Promise<void>;
+  /** A file as a Telegram document (step 2b share_file). Telegram's bot limit is 50 MB. */
+  sendDocument(chatId: number, filename: string, bytes: Uint8Array, caption?: string): Promise<void>;
 }
+
+/** Telegram's cap on a document a bot sends (Bot API sendDocument). */
+export const TELEGRAM_MAX_UPLOAD = 50 * 1024 * 1024;
 
 export type ButtonRow = Array<{ text: string; data: string }>;
 
@@ -166,6 +171,25 @@ export class TelegramClient implements TelegramApi {
 
   async answerCallback(callbackQueryId: string, text?: string): Promise<void> {
     await this.call('answerCallbackQuery', { callback_query_id: callbackQueryId, ...(text ? { text } : {}) });
+  }
+
+  // Its OWN request, not call(): call() forces a JSON content-type, and a
+  // multipart upload must let fetch write its own boundary header.
+  async sendDocument(chatId: number, filename: string, bytes: Uint8Array, caption?: string): Promise<void> {
+    if (bytes.length > TELEGRAM_MAX_UPLOAD) throw new Error('telegram: file over 50 MB');
+    const form = new FormData();
+    form.append('chat_id', String(chatId));
+    if (caption) form.append('caption', caption.slice(0, 1024));
+    // A copy into a plain ArrayBuffer: Blob will not take a view over a SharedArrayBuffer.
+    form.append('document', new Blob([new Uint8Array(bytes)]), filename);
+    const res = await this.fetchImpl(`https://api.telegram.org/bot${this.token}/sendDocument`, {
+      method: 'POST',
+      body: form,
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (res.status === 409) throw new TelegramConflictError();
+    const json = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+    if (!res.ok || !json?.ok) throw new Error(`telegram: sendDocument failed (HTTP ${res.status})`);
   }
 
   async typing(chatId: number): Promise<void> {

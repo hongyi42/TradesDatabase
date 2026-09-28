@@ -24,7 +24,7 @@ import { queuePersonPush } from '../db/index.js';
 import { Client } from 'pg';
 import type { AddressInfo } from 'node:net';
 import type http from 'node:http';
-import { createHttpServer, hangUpSignal } from './httpServer.js';
+import { createHttpServer, hangUpSignal, isQueryRefusal } from './httpServer.js';
 import { EventEmitter } from 'node:events';
 import { mintBadge, sha256hex } from '../control/badges.js';
 import { createHost } from '../db/hosts.js';
@@ -37,6 +37,7 @@ import {
 } from '../db/sandboxPool.js';
 import { setTenantSeats } from '../db/tenants.js';
 import { createSeat } from '../db/seats.js';
+import { createCustomer } from '../db/customers.js';
 import { fetchWhoami } from '../seatGlue/whoami.js';
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -1231,6 +1232,85 @@ describe('seat tokens: POST /control/seat-token, GET /seat/whoami, /mcp', () => 
     } finally {
       await updateTechnician(seatTechId, { state: 'active' });
     }
+  });
+
+  // Step 2b: a manager seat's export_query — every row as CSV, active managers only.
+  describe('/seat/export', () => {
+    // The audit rows these reads write, under the shared seed tenant.
+    afterAll(async () => {
+      await pg.query("delete from query_audit where tenant_id = $1 and technician_ref = 'seat-probe'", [tenantId]);
+    });
+
+    test('only a database refusal (a SQLSTATE) is the caller\'s 400; an outage is a 500', () => {
+      expect(isQueryRefusal(new Error('column "nope" does not exist', { cause: { code: '42703' } }))).toBe(true);
+      expect(isQueryRefusal(new Error('TypeError: fetch failed', { cause: { code: '' } }))).toBe(false);
+      expect(isQueryRefusal(new Error('boom'))).toBe(false);
+    });
+
+    const exportCsv = (token: string, body: unknown) =>
+      fetch(`${base}/seat/export`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const asManager = async (state: 'active' | 'invited', f: (token: string) => Promise<void>) => {
+      await pg.query('update technicians set tier = $2, state = $3 where id = $1', [seatTechId, 'manager', state]);
+      try {
+        const { token } = (await (await mint(hostToken, 'g_probe001')).json()) as { token: string };
+        await f(token);
+      } finally {
+        await pg.query("update technicians set tier = 'technician', state = 'active' where id = $1", [seatTechId]);
+      }
+    };
+
+    test('an active manager gets every row as CSV, and the read is audited under their ref', async () => {
+      // Two customers of our own (no capture pins them, so they can go again),
+      // one with a comma the CSV must quote.
+      const made = [
+        await createCustomer({ tenantId, name: 'Export Probe, Inc.' }),
+        await createCustomer({ tenantId, name: 'Export Probe Two' }),
+      ];
+      try {
+        await asManager('active', async (token) => {
+          const want = (
+            await pg.query<{ n: number }>('select count(*)::int as n from customers where tenant_id = $1', [tenantId])
+          ).rows[0].n;
+          expect(want).toBeGreaterThan(1);
+          const res = await exportCsv(token, { sql: 'select id, name from v_customers order by name' });
+          expect(res.status).toBe(200);
+          const out = (await res.json()) as { csv: string; columns: string[]; rowCount: number; truncated: boolean };
+          expect(out.rowCount).toBe(want);
+          expect(out.truncated).toBe(false);
+          expect(out.columns).toEqual(['id', 'name']);
+          expect(out.csv).toContain('"Export Probe, Inc."');
+          const audit = await pg.query(
+            "select 1 from query_audit where tenant_id = $1 and technician_ref = 'seat-probe' and sql like 'select id, name from v_customers%'",
+            [tenantId],
+          );
+          expect(audit.rowCount).toBeGreaterThan(0);
+        });
+      } finally {
+        await pg.query('delete from customers where id = any($1)', [made.map((c) => c.id)]);
+      }
+    });
+
+    test("the database's refusal is a 400 the model can read", async () => {
+      await asManager('active', async (token) => {
+        const res = await exportCsv(token, { sql: 'select nope from v_customers' });
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: string }).error).toMatch(/nope/);
+        expect((await exportCsv(token, { sql: '' })).status).toBe(400);
+      });
+    });
+
+    test('a technician, an invited (not active) manager and an unknown token are refused', async () => {
+      const { token } = (await (await mint(hostToken, 'g_probe001')).json()) as { token: string };
+      expect((await exportCsv(token, { sql: 'select id from v_customers' })).status).toBe(403);
+      await asManager('invited', async (t) => {
+        expect((await exportCsv(t, { sql: 'select id from v_customers' })).status).toBe(403);
+      });
+      expect((await exportCsv('st_' + '0'.repeat(64), { sql: 'select 1' })).status).toBe(401);
+    });
   });
 
   test('/mcp: the real MCP client lists the technician tools with only the seat token', async () => {

@@ -1,6 +1,7 @@
 import { seatHeaders } from './identity.js';
-import { MANAGER_DOCTRINE, TECHNICIAN_DOCTRINE } from './doctrine.js';
+import { FILES_SECTION, MANAGER_DOCTRINE, TECHNICIAN_DOCTRINE } from './doctrine.js';
 import type { TurnPolicy } from './turnPolicy.js';
+import { FILE_TOOL_NAMES, type FileTool } from './fileTools.js';
 
 // The ONLY file that loads @github/copilot-sdk (1.0.14). The SDK is not a
 // dependency of this repo — Render installs the root package.json on every
@@ -92,6 +93,27 @@ export interface EngineConfig {
   seatToken: string;
   /** From /seat/whoami (step 2a): picks the rulebook, Composio and the two built-ins. */
   tier: 'manager' | 'technician';
+  /** Step 2b: a manager's file tools (fileTools.ts). Absent = no sandbox. */
+  tools?: FileTool[];
+  /** Step 2b: the skill folders, loaded for a manager who has file tools (a skill's scripts run there). */
+  skillsDir?: string;
+  /** The skills in skillsDir (name + description from each SKILL.md), listed in the rulebook. */
+  skills?: Array<{ name: string; description: string }>;
+}
+
+/**
+ * The rulebook REPLACES the engine's system prompt, and with it the engine's own
+ * list of skills — measured 2026-09-28: the skill was loaded and enabled
+ * (session.rpc.skills.list) yet the model never used it. So the glue lists them.
+ */
+export function skillsSection(skills: Array<{ name: string; description: string }>): string {
+  if (!skills.length) return '';
+  return [
+    '## Skills',
+    '',
+    'Before a task one of these covers, load it with the `skill` tool and follow it:',
+    ...skills.map((k) => `- ${k.name}: ${k.description}`),
+  ].join('\n');
 }
 
 // The tool servers a seat may call. serverName is the mcpServers KEY (measured
@@ -106,9 +128,10 @@ export const TOOL_SERVERS = new Set([...SPINE_NAMES, 'composio']);
 // Built-in tools a manager seat allows (availableTools). Whether the engine asks
 // permission for them at all is UNMEASURED (plan 2a review): if it does, approve
 // them by name here rather than let the default reject hide the buttons.
-export const MANAGER_BUILTINS = new Set(['ask_user', 'exit_plan_mode']);
+export const MANAGER_BUILTINS = new Set(['ask_user', 'exit_plan_mode', 'skill']);
 let loggedServerName = false;
 let loggedNonMcpKind = false;
+let loggedCustomCallId = false;
 
 export async function startEngine(opts: { baseDirectory: string; tz: string }): Promise<EngineClient> {
   const sdk = (await import(SDK_SPECIFIER)) as SdkModule;
@@ -127,6 +150,8 @@ export async function startEngine(opts: { baseDirectory: string; tz: string }): 
 
 export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy, hooks?: SeatHooks): Record<string, unknown> {
   const manager = cfg.tier === 'manager';
+  // File tools are a manager's only (step 2b); a technician config never carries them.
+  const fileTools = manager ? (cfg.tools ?? []) : [];
   const spine = {
     type: 'http',
     url: cfg.spineUrl,
@@ -154,17 +179,36 @@ export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy, hooks?: Sea
       supports: { vision: true },
       limits: { vision: { supported_media_types: ['image/jpeg', 'image/png'] } },
     },
-    // Spine results are capped at 20k chars; a spill file is unreadable anyway
-    // (no file tool in mode "empty").
+    // Spine results are capped at 20k chars. The engine would spill a large one
+    // to a file on the BOX, which no tool can read: a manager's file tools act
+    // on the sandbox (step 2b), and export_query is how full results reach it.
     largeOutput: { enabled: false },
     // NOT reasoningSummary:'none' — measured 2026-09-22 through OpenRouter +
     // @preset/trades-seats, Gemini 3.8 Flash writes its thought summaries
     // ("**Title** I am …") as message text before every tool call regardless.
     // The only defence is seat.ts holding back text from any model call that
     // ends in a tool request. Do not remove that hold on the strength of a setting.
-    systemMessage: { mode: 'replace', content: manager ? MANAGER_DOCTRINE : TECHNICIAN_DOCTRINE },
+    systemMessage: {
+      mode: 'replace',
+      content: manager
+        ? [
+            MANAGER_DOCTRINE,
+            fileTools.length ? FILES_SECTION : '',
+            fileTools.length && cfg.skillsDir ? skillsSection(cfg.skills ?? []) : '',
+          ]
+            .filter(Boolean)
+            .join('\n\n')
+        : TECHNICIAN_DOCTRINE,
+    },
     // All tools loaded, tool search OFF (measured 2026-09-23: a wash at ~49 tools).
-    availableTools: manager ? ['mcp:*', 'builtin:ask_user', 'builtin:exit_plan_mode'] : ['mcp:*'],
+    availableTools: manager
+      ? ['mcp:*', 'builtin:ask_user', 'builtin:exit_plan_mode', ...(fileTools.length ? ['custom:*', 'builtin:skill'] : [])]
+      : ['mcp:*'],
+    ...(fileTools.length ? { tools: fileTools } : {}),
+    // Skills (step 2b): our own folders only — mode "empty" already leaves out
+    // every runtime-bundled skill. A manager without file tools gets none: a
+    // skill's scripts run on the sandbox.
+    ...(fileTools.length && cfg.skillsDir ? { enableSkills: true, skillDirectories: [cfg.skillsDir] } : {}),
     toolSearch: { enabled: false },
     mcpServers: manager
       ? {
@@ -181,6 +225,16 @@ export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy, hooks?: Sea
       }
       if (r.kind === 'mcp' && r.serverName && TOOL_SERVERS.has(r.serverName)) {
         // Pending from HERE, before the call goes out (turnPolicy rule 2).
+        policy.onToolPending(r.toolCallId, r.toolName);
+        return { kind: 'approve-once' };
+      }
+      // Step 2b: our own file tools. Pending from HERE too, so a Stop waits for
+      // them (run_command alone is abort-safe: its handler kills the process).
+      if (r.kind === 'custom-tool' && fileTools.length && r.toolName && FILE_TOOL_NAMES.has(r.toolName)) {
+        if (!loggedCustomCallId) {
+          loggedCustomCallId = true;
+          console.log(`seat-glue: first custom-tool permission request — toolCallId=${JSON.stringify(r.toolCallId)}`);
+        }
         policy.onToolPending(r.toolCallId, r.toolName);
         return { kind: 'approve-once' };
       }

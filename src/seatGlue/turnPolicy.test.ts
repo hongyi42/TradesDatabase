@@ -146,6 +146,15 @@ describe('TurnPolicy', () => {
     expect(p.route()).toBe('steer'); // a double text still never aborts it
   });
 
+  it("step 2b: the sandbox's run_command may be stopped; write_file may not", () => {
+    const p = new TurnPolicy(ids());
+    p.onSend();
+    p.onToolPending('a', 'run_command');
+    expect(p.onlyAbortSafePending).toBe(true);
+    p.onToolPending('b', 'write_file');
+    expect(p.onlyAbortSafePending).toBe(false);
+  });
+
   it('treats an aborted idle with nothing waiting as the end of the reply', () => {
     const p = new TurnPolicy(ids());
     p.onSend();

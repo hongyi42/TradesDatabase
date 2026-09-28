@@ -1,10 +1,11 @@
 {
   "name": "seat-glue",
   "private": true,
-  "description": "The technician seat glue for trades-box-1 (openclaw retirement step 1). Code: src/seatGlue, compiled into app/ by stage.sh.",
+  "description": "The seat glue for trades-box-1 (openclaw retirement steps 1-2b). Code: src/seatGlue, compiled into app/ by stage.sh. e2b = a manager's sandbox (step 2b).",
   "type": "module",
   "engines": { "node": ">=22.12.0" },
   "dependencies": {
-    "@github/copilot-sdk": "1.0.14"
+    "@github/copilot-sdk": "1.0.14",
+    "e2b": "2.51.0"
   }
 }

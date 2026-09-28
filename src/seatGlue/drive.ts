@@ -1,5 +1,5 @@
-import { readFile } from 'node:fs/promises';
-import { extname, join } from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { basename, extname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
 import { startEngine } from './engine.js';
@@ -46,9 +46,14 @@ export class ScriptedTelegram implements TelegramApi {
 
   // Numbering starts at the seat's saved offset: a driver restarted on the same
   // state dir must hand out ids the seat has not already moved past.
+  /** Files the seat sent (step 2b share_file). */
+  readonly documents: Array<{ filename: string; bytes: Uint8Array }> = [];
+
   constructor(
     private readonly userId: number,
     firstUpdateId = 1,
+    /** Where sent files are written, so a run's files outlive the driver process. */
+    private readonly documentsDir?: string,
   ) {
     this.nextId = Math.max(1, firstUpdateId);
   }
@@ -105,6 +110,17 @@ export class ScriptedTelegram implements TelegramApi {
   async deleteMessage(): Promise<void> {}
 
   async answerCallback(): Promise<void> {}
+
+  async sendDocument(_chatId: number, filename: string, bytes: Uint8Array, caption?: string): Promise<void> {
+    this.documents.push({ filename, bytes });
+    let where = '';
+    if (this.documentsDir) {
+      await mkdir(this.documentsDir, { recursive: true });
+      where = join(this.documentsDir, basename(filename));
+      await writeFile(where, bytes);
+    }
+    console.log(`\n<< SEAT sent a file: ${filename} (${bytes.length} bytes)${caption ? ` — ${caption}` : ''}${where ? ` → ${where}` : ''}\n`);
+  }
 
   /** In the driver a file id IS a local path. */
   async download(fileId: string): Promise<Buffer> {
@@ -169,7 +185,7 @@ async function main(argv: string[]): Promise<void> {
 
   const who = await whoAmI(cfg);
   const client = await startEngine({ baseDirectory: join(cfg.stateDir, 'engine'), tz: who.tz });
-  const tg = new ScriptedTelegram(who.telegramUserId, (await readState(cfg.stateDir)).offset);
+  const tg = new ScriptedTelegram(who.telegramUserId, (await readState(cfg.stateDir)).offset, join(cfg.stateDir, 'documents'));
   // No office (step 3): a driven run must never drain the person's real inbox,
   // send the office notice to a fake, or upload scripted turns as their chat.
   const deps = seatDeps(cfg, who, client, tg, new TurnPolicy(), { office: false });

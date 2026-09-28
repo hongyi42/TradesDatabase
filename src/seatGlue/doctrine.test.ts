@@ -63,6 +63,12 @@ describe('manager doctrine (step 2a)', () => {
     expect(MANAGER_PREAMBLE).toContain('`ask_user`');
     // Operator 2026-09-27: choices go to ask_user first; a plan is one course of action.
     expect(MANAGER_PREAMBLE).toContain('PLANS. A plan you show for approval is ONE course of action');
+    // Step 2b: the computer is NOT in the preamble — only a seat with the tools is told (engine.ts).
+    expect(MANAGER_PREAMBLE).not.toContain('FILES. You have a computer of your own');
+    const { FILES_SECTION } = await import('./doctrine.js');
+    expect(FILES_SECTION).toContain('FILES. You have a computer of your own for this manager');
+    expect(FILES_SECTION).toContain('never by copying rows');
+    expect(FILES_SECTION).not.toContain('technician');
     expect(MANAGER_PREAMBLE).not.toContain('technician');
     expect(MANAGER_DOCTRINE).not.toContain('## Long or bulk tasks');
   });

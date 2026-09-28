@@ -5,7 +5,7 @@ import { ANSWER_Q, JEV_MODEL, PLAN_Q, answersPrompt, approvesPlan, needsPlan } f
 function fake(p: number | null, status = 200, seen: { url?: string; body?: Record<string, unknown>; auth?: string } = {}): FetchLike {
   return async (url: string, init?: HttpInit) => {
     seen.url = url;
-    seen.body = JSON.parse(init?.body ?? '{}');
+    seen.body = JSON.parse((init?.body as string | undefined) ?? '{}');
     seen.auth = init?.headers?.authorization;
     return {
       ok: status >= 200 && status < 300,

@@ -100,6 +100,10 @@ class FakeTelegram implements TelegramApi {
   async clearButtons(_chat: number, id: number): Promise<void> {
     this.cleared.push(id);
   }
+  readonly documents: Array<{ filename: string; bytes: Uint8Array; caption?: string }> = [];
+  async sendDocument(_chat: number, filename: string, bytes: Uint8Array, caption?: string): Promise<void> {
+    this.documents.push({ filename, bytes, caption });
+  }
 }
 
 let n = 0;
@@ -238,6 +242,50 @@ describe('Seat', () => {
     expect(t.session().aborts).toBe(1);
     await t.seat.whenIdle(1);
     expect(t.telegram.sent).toEqual([TEXT.stopped]);
+  });
+
+  it("step 2b: Stop cuts off a running run_command at once (its handler kills the process); write_file is waited for", async () => {
+    const t = setup();
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'build the spreadsheet' }));
+    t.policy.onToolPending('run-1', 'run_command');
+    await t.seat.handleUpdate(upd({ text: 'Stop' }));
+    expect(t.session().aborts).toBe(1);
+    await t.seat.whenIdle(1);
+
+    await t.seat.handleUpdate(upd({ text: 'save the notes' }));
+    t.policy.onToolPending('write-1', 'write_file');
+    const stopping = t.seat.handleUpdate(upd({ text: 'Stop' }));
+    await tick();
+    expect(t.session().aborts).toBe(1); // still waiting for the write to land
+    t.session().emit('tool.execution_complete', { toolCallId: 'write-1' });
+    await stopping;
+    expect(t.session().aborts).toBe(2);
+  });
+
+  it('step 2b: a Stop tells the file tools to kill their commands BEFORE the engine aborts', async () => {
+    const order: string[] = [];
+    const t = setup({ onAbort: () => order.push('kill') });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'run the long script' }));
+    t.policy.onToolPending('run-1', 'run_command');
+    const abort = t.session().abort.bind(t.session());
+    t.session().abort = async () => {
+      order.push('abort');
+      return abort();
+    };
+    await t.seat.handleUpdate(upd({ text: 'Stop' }));
+    expect(order).toEqual(['kill', 'abort']);
+  });
+
+  it('step 2b: /new mid-command kills the file tools\' commands too', async () => {
+    let kills = 0;
+    const t = setup({ onAbort: () => void kills++ });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'run the long script' }));
+    t.policy.onToolPending('run-1', 'run_command');
+    await t.seat.handleUpdate(upd({ text: '/new' }));
+    expect(kills).toBe(1);
   });
 
   it('/new disconnects, opens a fresh conversation and records it', async () => {

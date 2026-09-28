@@ -1,13 +1,15 @@
 // Step 2c gate scorer (plan 2026-09-28-step-2c-batching, phase 4). Reads one
 // driver run's session file and scores it against the seed:
 //
-//   node scripts/seat-eval/batching/gate.mjs <session events.jsonl> <seed.json> [resume]
+//   node scripts/seat-eval/batching/gate.mjs <session events.jsonl> <seed.json> [resume|small]
 //
 // Every run: all batches done, no DONE batch begun again, how many of the seed's
 // urgent households the final answer names.
 // resume: after the "carry on" message, no fresh export, and none of the emails
 // of the batches finished BEFORE the Stop appear in any tool result (their
 // `ref E-###` tokens) — the resume read only what was left.
+// small: a job under the BIG JOBS line stays in one pass — no checklist, no
+// batching skill (operator 2026-09-28: small jobs are not batched).
 import { readFileSync } from 'node:fs';
 
 const [eventsPath, seedPath, mode] = process.argv.slice(2);
@@ -51,6 +53,12 @@ const score = {
   cleared: bp.some((c) => c.args.action === 'clear' && c.result.includes('Cleared ')),
   toolCalls: calls.length,
 };
+
+if (mode === 'small') {
+  const loadedSkill = calls.some((c) => c.name === 'skill' && /batching/.test(JSON.stringify(c.args)));
+  score.small = { batchProgressCalls: bp.length, loadedBatchingSkill: loadedSkill, pass: bp.length === 0 && !loadedSkill };
+  score.finalAnswer = final.slice(0, 600);
+}
 
 if (mode === 'resume') {
   if (carryOnAt < 0) throw new Error('resume: no "carry on" message in this session');

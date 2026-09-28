@@ -388,9 +388,8 @@ result carries the rider.
   (what a customer said on a call or email, kept on the job — rung 10) that fold with the
   capture. The agent must show that list as part of the confirmation. The confirm response
   echoes the final list as `alsoRemoved` plus a `restoreHint` when facts folded; the agent then
-  offers to restore still-true facts by **staging** `record_standing_fact` (the preview is the
-  offer — no "want me to?" pre-ask; AGENTS.md rule 3 "propose by staging"), one target at a
-  time. If `alsoRemoved` is absent, the post-commit scan failed — fall back to the staged
+  asks which facts are still true and records those with `record_standing_fact`, which records
+  on the first call (2026-09-28; AGENTS.md rules 2b and 4), one target at a time. If `alsoRemoved` is absent, the post-commit scan failed — fall back to the staged
   `willAlsoRemove`.
 - For questions ("what did the last tech do here?"), the agent uses `find_customer` →
   `get_customer_context` (the contents page: counts and the newest note's opening per job) →

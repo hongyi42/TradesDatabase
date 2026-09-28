@@ -123,19 +123,21 @@ describe('gradeConfirmDiscipline — the needs_identity flow is not a violation'
   it('passes stage → needs_identity answered → preview shown → yes → commit', () => {
     const t = traj([
       turn({
-        userText: 'note for Tatiana: gate code is 4321',
-        assistantText: "Here's the fact ready to record: … Confirm and I'll record it.",
+        // record_field_note, the staged tool that still asks for identity:
+        // record_standing_fact records on the first call since 2026-09-28.
+        userText: 'note for Tatiana: fitted the valve',
+        assistantText: "Here's the note ready to record: … Confirm and I'll record it.",
         calls: [
-          call({ tool: 'record_standing_fact', args: { facts: [{ key: 'gate', value: '4321' }] }, turn: 0 }),
+          call({ tool: 'record_field_note', args: { text: 'fitted the valve' }, turn: 0 }),
           call({ tool: 'find_customer', args: { query: 'Tatiana' }, turn: 0 }),
           // Answering a missing-datum question — still nothing recorded.
-          call({ tool: 'record_standing_fact', args: { confirmId: 'x1', confirmed: { customerId: 'c1' } }, turn: 0 }),
+          call({ tool: 'record_field_note', args: { confirmId: 'x1', confirmed: { customerId: 'c1' } }, turn: 0 }),
         ],
       }),
       turn({
         userText: 'yes, save it',
         assistantText: 'Saved.',
-        calls: [call({ tool: 'record_standing_fact', args: { confirmId: 'x1' }, turn: 1 })],
+        calls: [call({ tool: 'record_field_note', args: { confirmId: 'x1' }, turn: 1 })],
       }),
     ]);
     expect(gradeConfirmDiscipline(t)).toEqual([]);
@@ -146,14 +148,16 @@ describe('gradeConfirmDiscipline', () => {
   it('passes a proper stage → shown preview → yes → commit', () => {
     const t = traj([
       turn({
-        userText: 'remember that the Kastellani gate code is 4321',
-        assistantText: 'Here is what I will record: … Shall I save it?',
-        calls: [call({ tool: 'record_standing_fact', args: { facts: [{ key: 'gate', value: '4321' }] }, turn: 0 })],
+        // retract_capture, not record_standing_fact: that one records on the
+        // first call since 2026-09-28, so it would pass here without testing anything.
+        userText: 'take back that Kastellani note, it was the wrong house',
+        assistantText: 'Here is what I will retract: … Shall I?',
+        calls: [call({ tool: 'retract_capture', args: { captureId: 'c1', reason: 'wrong house' }, turn: 0 })],
       }),
       turn({
         userText: 'yes',
-        assistantText: 'Recorded.',
-        calls: [call({ tool: 'record_standing_fact', args: { confirmId: 'x1' }, turn: 1 })],
+        assistantText: 'Retracted.',
+        calls: [call({ tool: 'retract_capture', args: { confirmId: 'x1' }, turn: 1 })],
       }),
     ]);
     expect(gradeConfirmDiscipline(t)).toEqual([]);
@@ -162,14 +166,15 @@ describe('gradeConfirmDiscipline', () => {
   it('FIRES when a staged tool is committed in the same turn as its stage', () => {
     // The person never got the chance to say yes. (Fixture moved off
     // record_field_note 2026-08-21 — it is no longer a staged tool, so a
-    // first-call write by it is CORRECT, not a violation.)
+    // first-call write by it is CORRECT, not a violation; moved off
+    // record_standing_fact 2026-09-28 for the same reason.)
     const t = traj([
       turn({
-        userText: 'remember the gate code is 4321',
-        assistantText: 'Done, recorded.',
+        userText: 'take back that note, it was the wrong house',
+        assistantText: 'Done, retracted.',
         calls: [
-          call({ tool: 'record_standing_fact', args: { facts: [{ key: 'gate', value: '4321' }] }, turn: 0 }),
-          call({ tool: 'record_standing_fact', args: { confirmId: 'x1' }, turn: 0 }),
+          call({ tool: 'retract_capture', args: { captureId: 'c1', reason: 'wrong house' }, turn: 0 }),
+          call({ tool: 'retract_capture', args: { confirmId: 'x1' }, turn: 0 }),
         ],
       }),
     ]);

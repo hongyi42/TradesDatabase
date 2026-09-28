@@ -566,15 +566,12 @@ export async function tryFindFoldImpact(
   }
 }
 
-// Must stay true to record_standing_fact's stage branch (one open staged
-// batch per person; a new stage supersedes an unconfirmed one) — if that
-// supersede behavior changes, change this hint in the same commit.
+// Must stay true to record_standing_fact, which records on the first call
+// (operator 2026-09-28) — if that changes, change this hint in the same commit.
 export const RESTORE_HINT =
   'These standing facts disappeared with the retracted evidence. Ask the person which are ' +
-  'still true, then restore them by STAGING record_standing_fact — no "want me to?" first; ' +
-  'the staged preview is the question. One call per affected customer/job, SEQUENTIALLY: ' +
-  'stage one, get its yes, confirm it, then stage the next (a new stage supersedes an ' +
-  'unconfirmed one).';
+  'still true, then restore those with record_standing_fact, one call per affected ' +
+  'customer/job: it records on the first call.';
 
 export function restoreHintFor(impact: FoldImpact | undefined): string | undefined {
   return impact && impact.facts.length > 0 ? RESTORE_HINT : undefined;

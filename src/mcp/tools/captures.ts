@@ -252,31 +252,29 @@ const BASE_TOOLS = [
     name: 'record_standing_fact',
     description:
       'Record durable standing facts about ONE customer or job ("prefers email", "gate code ' +
-      '4321") onto their permanent record — two-step, and it STAYS two-step even though ' +
-      'record_field_note no longer is: a note describes one trip and can be retracted, while a ' +
-      'standing fact lands in every future briefing. EVERY fact from the same ' +
-      'conversation about the same customer/job goes in ONE call: first call with customerId ' +
-      "OR jobId + facts:[{key,value},…] (+ sourceText, the person's exact words): NOTHING is " +
-      'recorded; you get needs_confirmation with ONE preview listing every fact (and the ' +
-      'previous value when overwriting). Show the person EXACTLY the preview; only on their ' +
-      'explicit yes call again with ONLY confirmId — the STAGED copy is what gets recorded, ' +
-      'all facts under a single confirmation. To fix a wrong fact: re-record the key with the ' +
-      "right value, or retract the fact's evidence capture (which removes it automatically).",
+      '4321") onto their permanent record. It RECORDS ON THE FIRST CALL — do not ask "shall I ' +
+      'record that?" first; record it and say what you recorded. EVERY fact from the same ' +
+      'conversation about the same customer/job goes in ONE call: customerId OR jobId + ' +
+      "facts:[{key,value},…] (+ sourceText, the person's exact words). The result lists the " +
+      'keys recorded and, under `replaced`, any fact that had a different value before: say ' +
+      'what it was. To fix a wrong fact: record the key again with the right value, or retract ' +
+      "the fact's evidence capture (which removes it automatically). confirmId is only for " +
+      'retrying a call whose error said to.',
     inputSchema: {
       type: 'object',
       properties: {
         customerId: {
           type: 'string',
-          description: 'Target customer (exactly one of customerId/jobId). First call only.',
+          description: 'Target customer (exactly one of customerId/jobId).',
         },
         jobId: {
           type: 'string',
-          description: 'Target job (exactly one of customerId/jobId). First call only.',
+          description: 'Target job (exactly one of customerId/jobId).',
         },
         facts: {
           type: 'array',
           description:
-            'The facts to record — put ALL facts from this conversation here (max 10), one call, one confirmation. First call only.',
+            'The facts to record — put ALL facts from this conversation here (max 10), one call.',
           items: {
             type: 'object',
             properties: {
@@ -292,16 +290,16 @@ const BASE_TOOLS = [
             required: ['key', 'value'],
           },
         },
-        key: { type: 'string', description: 'Single-fact alternative to facts[]. First call only.' },
+        key: { type: 'string', description: 'Single-fact alternative to facts[].' },
         value: {
           type: ['string', 'number', 'boolean'],
-          description: 'Single-fact alternative to facts[]. First call only.',
+          description: 'Single-fact alternative to facts[].',
         },
         sourceText: {
           type: 'string',
-          description: "The person's verbatim words — stored permanently as the facts' evidence. First call only.",
+          description: "The person's verbatim words — stored permanently as the facts' evidence.",
         },
-        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call; ALONE it records the staged facts.' },
+        confirmId: { type: 'string', description: 'ONLY to retry a call whose error named a confirmId; alone, it finishes recording those facts.' },
       },
       required: [],
     },
@@ -1050,15 +1048,19 @@ async function handleRetractCapture(toolCtx: ToolContext): Promise<unknown> {
 async function handleRecordStandingFact(toolCtx: ToolContext): Promise<unknown> {
   const { args, identity, tenantId, str } = toolCtx;
       const subjectRef = identity.technicianRef;
-      const confirmId = str('confirmId');
+      let confirmId = str('confirmId');
+      // RECORDS ON THE FIRST CALL (operator 2026-09-28, for every tier: "does
+      // recording still require confirmation? I feel like it shouldn't"). A
+      // standing fact is internal and a wrong one is retracted, so the yes it
+      // used to wait for guarded nothing that cannot be undone. The first call
+      // still stages ONE review item and then commits it at once through the
+      // confirm path below — its crash-heal, drift and conflict guards stay,
+      // and a failed commit keeps the item so a retry with its confirmId converges.
+      let firstCall = false;
 
       if (!confirmId) {
-        // STAGE. Nothing is written — the facts are held as ONE review item
-        // (one preview, one confirmation for the whole batch) until the
-        // person's explicit yes. Batching exists because facts arrive in
-        // conversation clumps: staging them one-per-call superseded the
-        // earlier token and forced a confusing extra confirmation (live E2E
-        // finding 2026-07-14).
+        // STAGE, then commit below. Batching exists because facts arrive in
+        // conversation clumps (live E2E finding 2026-07-14): one call, one capture.
         const customerIdArg = str('customerId');
         const jobIdArg = str('jobId');
         if ((customerIdArg ? 1 : 0) + (jobIdArg ? 1 : 0) !== 1) {
@@ -1200,35 +1202,8 @@ async function handleRecordStandingFact(toolCtx: ToolContext): Promise<unknown> 
             stagedAt: new Date().toISOString(),
           },
         });
-        // Echo the ITEM's detail, not local state: two racing stage calls can
-        // make the upsert return the other call's open row, and the staged
-        // copy is what commits (same rule as send_email / record_field_note).
-        const staged = (item.detail ?? {}) as {
-          target?: string;
-          targetName?: string | null;
-          facts?: Array<{ key: string; value: Json; previousValue?: Json }>;
-        };
-        const stagedFacts = staged.facts ?? [];
-        return {
-          status: 'needs_confirmation',
-          confirmId: item.id,
-          preview: {
-            target: staged.target,
-            targetName: staged.targetName,
-            facts: stagedFacts,
-            // Single-fact calls keep the flat preview fields (agent/back-compat).
-            ...(stagedFacts.length === 1
-              ? {
-                  key: stagedFacts[0].key,
-                  value: stagedFacts[0].value,
-                  ...(Object.hasOwn(stagedFacts[0], 'previousValue')
-                    ? { previousValue: stagedFacts[0].previousValue }
-                    : {}),
-                }
-              : {}),
-          },
-          note: 'Nothing was recorded. Show the person exactly these facts — ONE confirmation covers all of them; on their explicit yes call again with ONLY confirmId.',
-        };
+        confirmId = item.id;
+        firstCall = true;
       }
 
       // CONFIRM. Guarded token lookup: forged / another person's / consumed
@@ -1238,7 +1213,11 @@ async function handleRecordStandingFact(toolCtx: ToolContext): Promise<unknown> 
         subjectRef,
       });
       if (!item) {
-        throw new Error('confirmation not found — call record_standing_fact again with the fact to restage');
+        // A first call racing an identical one can find the shared item already
+        // committed by the other: its capture landed, so the facts are recorded.
+        const landed = firstCall ? await getRawCaptureByExternalId(tenantId, `fact:${confirmId}`) : null;
+        if (landed) return { status: 'recorded', captureId: landed.id, note: 'recorded by a parallel identical call' };
+        throw new Error('confirmation not found — call record_standing_fact again with the fact to record it');
       }
       const detail = (item.detail ?? {}) as {
         target?: 'customer' | 'job';
@@ -1350,7 +1329,7 @@ async function handleRecordStandingFact(toolCtx: ToolContext): Promise<unknown> 
             /* advisory */
           }
           throw new Error(
-            `facts NOT recorded: ${conflictKeys.map((k) => `'${k}'`).join(', ')} changed on this ${target} while the confirmation was pending — nothing was overwritten; restage to see the current values`,
+            `facts NOT recorded: ${conflictKeys.map((k) => `'${k}'`).join(', ')} changed on this ${target} while it was being recorded — nothing was overwritten; call again to record over the current values`,
           );
         }
         try {
@@ -1370,6 +1349,14 @@ async function handleRecordStandingFact(toolCtx: ToolContext): Promise<unknown> 
           target,
           targetId,
           keys: recordedKeys,
+          // With no preview any more, an overwrite is said in the result: the
+          // seat tells the person what the fact used to be.
+          ...(() => {
+            const replaced = facts
+              .filter((f) => recordedKeys.includes(f.key) && Object.hasOwn(f, 'previousValue'))
+              .map((f) => ({ key: f.key, was: f.previousValue as Json, now: f.value }));
+            return replaced.length > 0 ? { replaced } : {};
+          })(),
           // Single-fact calls keep the flat key field (back-compat).
           ...(facts.length === 1 ? { key: facts[0].key } : {}),
           ...(conflictKeys.length > 0
@@ -1416,7 +1403,7 @@ async function handleRecordStandingFact(toolCtx: ToolContext): Promise<unknown> 
           /* advisory */
         }
         throw new Error(
-          `facts NOT recorded: ${changedKeys.map((k) => `'${k}'`).join(', ')} changed on this ${target} while the confirmation was pending — nothing was overwritten; restage to see the current values`,
+          `facts NOT recorded: ${changedKeys.map((k) => `'${k}'`).join(', ')} changed on this ${target} while it was being recorded — nothing was overwritten; call again to record over the current values`,
         );
       };
 
@@ -1473,7 +1460,7 @@ async function handleRecordStandingFact(toolCtx: ToolContext): Promise<unknown> 
           if (!capture) {
             const msg = err instanceof Error ? err.message : String(err);
             throw new Error(
-              `facts NOT recorded: ${msg} — the staged facts are still held; retry with the SAME confirmId (do not restage)`,
+              `facts NOT recorded: ${msg} — the facts are still held; retry with ONLY confirmId ${item.id} (do not call with the facts again)`,
             );
           }
         }
@@ -1491,7 +1478,7 @@ async function handleRecordStandingFact(toolCtx: ToolContext): Promise<unknown> 
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes('NOT recorded')) throw err;
         throw new Error(
-          `facts may be only PARTIALLY recorded: ${msg} — the staged facts are still held; retry with the SAME confirmId to converge (do not restage)`,
+          `facts may be only PARTIALLY recorded: ${msg} — the facts are still held; retry with ONLY confirmId ${item.id} to converge (do not call with the facts again)`,
         );
       }
 }

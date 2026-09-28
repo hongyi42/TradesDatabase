@@ -588,13 +588,13 @@ export function buildToolCases(): ToolCase[] {
   add({
     id: 'W02',
     family: 'writes',
-    title: 'record_standing_fact takes three facts in ONE confirmation',
+    title: 'record_standing_fact records three facts in ONE call',
     tool: 'record_standing_fact',
     tenant: 'main',
     badge: 'manager-sam',
     steps: [
       {
-        label: 'stage three facts',
+        label: 'record three facts',
         args: (ctx) => ({
           customerId: customerId(ctx.tenant, 'fx-t1-cap-02'),
           facts: [
@@ -604,16 +604,10 @@ export function buildToolCases(): ToolCase[] {
           ],
           sourceText: 'Gate code is 9182, text me rather than call, and there are two cats inside.',
         }),
-        // One preview listing all three — not three confirmations for one breath
-        // of speech.
-        check: all(staged, mentions('gate_code', 'prefers_contact', 'pets')),
-      },
-      {
-        label: 'confirm',
-        when: ifStaged,
-        args: lastConfirmId,
+        // One call records all three — no confirmation (operator 2026-09-28).
         check: all(
           ok,
+          mentions('gate_code', 'prefers_contact', 'pets'),
           dbCheck(
             'all three facts must be stored as evidence-carrying bundles',
             (ctx) => ({

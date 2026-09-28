@@ -663,13 +663,12 @@ export function buildCorpus(): Scenario[] {
   add({
     id: 'C03',
     family: 'capture',
-    title: 'three facts from one breath, in one confirmation',
+    title: 'three facts from one breath, in one call',
     tenant: 'main',
     badge: 'manager-sam',
     tier: 'manager',
     turns: (ctx) => [
       `for ${customerName(ctx.tenant, 'fx-t2-cap-04')}: the gate code is 5567, they prefer afternoons, and there is a dog in the yard.`,
-      'yes',
     ],
     graders: () => [gradeToolChoice({ required: ['record_standing_fact'] })],
     endState: {

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -147,4 +147,87 @@ describe('ManagerSandbox', () => {
     expect(isNotFound(new Error('Sandbox abc not found'))).toBe(true);
     expect(isNotFound(new Error('timeout'))).toBe(false);
   });
+
+  it('skills are copied in once, and again only when the folder changes', async () => {
+    const f = fakeSdk();
+    const written: string[] = [];
+    let remote = '';
+    const skills = join(dir, 'skills');
+    await mkdir(join(skills, 'spreadsheet'), { recursive: true });
+    await writeFile(join(skills, 'spreadsheet', 'SKILL.md'), '# v1');
+    await writeFile(join(skills, 'spreadsheet', 'x.py'), 'print(1)');
+    const make = () =>
+      new ManagerSandbox({
+        apiKey: 'k',
+        template: 't',
+        stateDir: dir,
+        meta: { seat: 's2', tenantId: 't1', technicianRef: 'm' },
+        skillsDir: skills,
+        log: () => {},
+        sdk: {
+          Sandbox: {
+            create: async (tpl, o) => wrap(await f.sdk.Sandbox.create(tpl, o)),
+            connect: async (id, o) => wrap(await f.sdk.Sandbox.connect(id, o)),
+          },
+        },
+      });
+    const wrap = (sbx: E2bSandboxLike): E2bSandboxLike =>
+      ({
+        ...sbx,
+        commands: {
+          ...sbx.commands,
+          run: async (cmd: string) => ({ exitCode: 0, stdout: cmd.startsWith('cat /home/user/skills/.hash') ? remote : '', stderr: '' }),
+        },
+        files: {
+          ...sbx.files,
+          write: async (path: string, data: string) => {
+            written.push(path);
+            if (path.endsWith('/.hash')) remote = data;
+          },
+        },
+      }) as unknown as E2bSandboxLike;
+    await make().get();
+    expect(written.sort()).toEqual(['/home/user/skills/.hash', '/home/user/skills/spreadsheet/SKILL.md', '/home/user/skills/spreadsheet/x.py']);
+    written.length = 0;
+    await make().get(); // a new process, same folder: nothing copied
+    expect(written).toEqual([]);
+    await writeFile(join(skills, 'spreadsheet', 'SKILL.md'), '# v2');
+    await make().get();
+    expect(written).toContain('/home/user/skills/spreadsheet/SKILL.md');
+    // Two tools at once in a NEW process: one copy, not two racing each other.
+    await writeFile(join(skills, 'spreadsheet', 'SKILL.md'), '# v3');
+    written.length = 0;
+    const box = make();
+    await Promise.all([box.get(), box.get()]);
+    expect(written.filter((w) => w.endsWith('SKILL.md'))).toHaveLength(1);
+  });
+
+  it('skill files are written as bytes, so a binary one arrives intact', async () => {
+    const f = fakeSdk();
+    const got: Array<{ path: string; data: unknown }> = [];
+    const skills = join(dir, 'skills');
+    await mkdir(join(skills, 'tpl'), { recursive: true });
+    await writeFile(join(skills, 'tpl', 'blank.xlsx'), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0xff, 0x00]));
+    const box = new ManagerSandbox({
+      apiKey: 'k',
+      template: 't',
+      stateDir: dir,
+      meta: { seat: 's', tenantId: 't', technicianRef: 'm' },
+      skillsDir: skills,
+      log: () => {},
+      sdk: {
+        Sandbox: {
+          create: async (tpl, o) => {
+            const sbx = await f.sdk.Sandbox.create(tpl, o);
+            return { ...sbx, files: { ...sbx.files, write: async (path: string, data: unknown) => void got.push({ path, data }) } } as unknown as E2bSandboxLike;
+          },
+          connect: f.sdk.Sandbox.connect,
+        },
+      },
+    });
+    await box.get();
+    const xlsx = got.find((g) => g.path.endsWith('blank.xlsx'))!;
+    expect(new Uint8Array(xlsx.data as ArrayBuffer)).toEqual(new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xff, 0x00]));
+  });
 });
+

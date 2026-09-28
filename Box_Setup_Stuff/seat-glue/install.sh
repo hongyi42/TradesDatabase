@@ -66,6 +66,8 @@ rm -rf "$NEXT"
 install -d -m 0755 "$NEXT" "$NEXT/app"
 cp "$here"/app/*.js "$NEXT/app/"
 cp "$here/package.json" "$here/package-lock.json" "$NEXT/"
+# Step 2b: the skill folders sit beside app/ (config.ts's default SEAT_SKILLS_DIR).
+if [ -d "$here/skills" ]; then cp -R "$here/skills" "$NEXT/skills"; chmod -R a+rX "$NEXT/skills"; fi
 (cd "$NEXT" && PATH="$npmdir:$PATH" npm ci --omit=dev --no-audit --no-fund >/dev/null)
 log "new code built in $NEXT ($(ls "$NEXT"/app | wc -l | tr -d ' ') modules)"
 

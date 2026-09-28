@@ -1,3 +1,4 @@
+import { readFileSync, readdirSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -43,8 +44,38 @@ export function engineConfig(cfg: SeatConfig, who: SeatWho, tools?: FileTool[]):
     spineUrl: cfg.spineUrl,
     seatToken: cfg.seatToken,
     tier: who.tier,
-    ...(tools?.length ? { tools } : {}),
+    ...(tools?.length ? { tools, skillsDir: cfg.skillsDir, skills: readSkills(cfg.skillsDir) } : {}),
   };
+}
+
+/**
+ * The skills in the folder: each subfolder's SKILL.md frontmatter `name` and
+ * `description` (the SDK's own fields). A missing folder or file is no skills.
+ */
+export function readSkills(dir: string): Array<{ name: string; description: string }> {
+  const out: Array<{ name: string; description: string }> = [];
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(dir).sort();
+  } catch {
+    return out;
+  }
+  for (const sub of entries) {
+    let text: string;
+    try {
+      text = readFileSync(join(dir, sub, 'SKILL.md'), 'utf8');
+    } catch {
+      continue;
+    }
+    const front = /^---\n([\s\S]*?)\n---/.exec(text.replace(/\r\n/g, '\n'))?.[1] ?? '';
+    const field = (k: string) =>
+      new RegExp(`^${k}:\\s*(.+)$`, 'm')
+        .exec(front)?.[1]
+        ?.trim()
+        .replace(/^(["'])(.*)\1$/, '$2');
+    out.push({ name: field('name') || sub, description: field('description') || '' });
+  }
+  return out;
 }
 
 /** Render's POST /seat/export: a query's every row as CSV (step 2b). */
@@ -77,6 +108,7 @@ export function managerTools(cfg: SeatConfig, who: SeatWho, telegram: TelegramAp
     template: cfg.e2bTemplate,
     stateDir: cfg.stateDir,
     meta: { seat: cfg.seatRef, tenantId: who.tenantId, technicianRef: who.technicianRef },
+    skillsDir: cfg.skillsDir,
   });
   return fileTools({
     sandbox,

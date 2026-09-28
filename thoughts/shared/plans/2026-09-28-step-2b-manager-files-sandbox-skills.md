@@ -287,16 +287,26 @@ it to `Box_Setup_Stuff/seat-glue/skills`, since `dist/skills` does not exist.
 sandbox's `/home/user/skills/.hash` differs from the package's hash (once per process per sandbox).
 
 ### Automated verification
-- [ ] typecheck, lint, `npm test` pass; `sandbox.test.ts`: sync on hash change only;
+- [x] typecheck, lint, `npm test` pass; `sandbox.test.ts`: sync on hash change only;
       `engine.test.ts`: manager config carries the skill directory, technician does not
-- [ ] `python3 csv_to_xlsx.py` on a fixture CSV (laptop, openpyxl) produces a readable file
+- [x] `python3 csv_to_xlsx.py` on a fixture CSV (laptop, openpyxl) produces a readable file
 
 ### Live verification (agent-executable)
-- [ ] Driver, same request: the session file shows the `skill` tool loading `spreadsheet` and a
+- [x] Driver, same request: the session file shows the `skill` tool loading `spreadsheet` and a
       `run_command` of `csv_to_xlsx.py` (the styling alone is not proof: the model can bold a header
       on its own); the .xlsx has a bold frozen header and numeric money cells (read with openpyxl)
 
 ---
+
+**Evidence (2026-09-28):** deviation found live — the rulebook REPLACES the engine's system prompt,
+and with it the engine's skill catalogue: the skill was loaded and enabled (`session.rpc.skills.list`)
+yet never used. The glue now lists the skills itself (`readSkills` → `skillsSection`). Live after:
+`skill {"skill":"spreadsheet"}` first, then export_query → `csv_to_xlsx.py --tz America/Los_Angeles`
+→ a check → share_file; the .xlsx has the bold frozen header and the Source line. Review fixes: an
+all-empty column is kept, money = a name ENDING in a money word, timestamps in the firm's zone (`--tz`
+required), sheet titles cleaned, a header-only CSV keeps its header, counts become numbers (phones/ZIPs
+stay text), one skills copy at a time, skill files written as bytes. `scripts/sandbox-gate/
+test_csv_to_xlsx.py` (7 tests) covers the script.
 
 ## Phase 5: live on s2
 

@@ -28,4 +28,7 @@ for js in "$root"/dist/seatGlue/*.js; do
   case "$js" in *.test.js) continue ;; esac
   cp "$js" "$out/app/"
 done
-echo "staged $(ls "$out/app" | wc -l | tr -d ' ') modules into $out"
+# Step 2b: the manager's skill folders (SKILL.md + scripts copied into the sandbox).
+rm -rf "$out/skills"
+cp -R "$here/skills" "$out/skills"
+echo "staged $(ls "$out/app" | wc -l | tr -d ' ') modules and $(ls "$out/skills" | wc -l | tr -d ' ') skills into $out"

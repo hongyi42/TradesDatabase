@@ -11,6 +11,8 @@
 // node:* and the two SDKs, Copilot and E2B), because only dist/seatGlue/ ships to the box.
 // selfContained.test.ts enforces it.
 
+import { fileURLToPath } from 'node:url';
+
 export interface SeatConfig {
   botToken: string;
   seatRef: string;
@@ -28,6 +30,11 @@ export interface SeatConfig {
   e2bApiKey?: string;
   /** The E2B template a manager's sandbox starts from (Box_Setup_Stuff/seat-glue/e2b-template.mjs). */
   e2bTemplate: string;
+  /**
+   * The skill folders (step 2b): SKILL.md files the engine reads, and scripts the
+   * glue copies into the sandbox. Default: `skills/` beside `app/` in the box package.
+   */
+  skillsDir: string;
 }
 
 const REQUIRED = ['TELEGRAM_BOT_TOKEN', 'SEAT_REF', 'SEAT_TOKEN', 'SPINE_MCP_URL', 'OPENROUTER_API_KEY'] as const;
@@ -70,6 +77,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): SeatConfig {
     mediaRetentionDays: positive(env.MEDIA_RETENTION_DAYS, 7, 'MEDIA_RETENTION_DAYS'),
     ...(env.E2B_API_KEY?.trim() ? { e2bApiKey: env.E2B_API_KEY.trim() } : {}),
     e2bTemplate: env.E2B_TEMPLATE?.trim() || 'trades-manager',
+    skillsDir: env.SEAT_SKILLS_DIR?.trim() || fileURLToPath(new URL('../skills', import.meta.url)),
   };
 }
 

@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from './config.js';
 
@@ -65,6 +66,9 @@ describe('loadConfig', () => {
       OPENROUTER_API_KEY: 'k',
     };
     expect(loadConfig(base)).toMatchObject({ e2bTemplate: 'trades-manager' });
+    // The box package: skills/ beside app/ (here: beside src/seatGlue, i.e. src/skills).
+    expect(loadConfig(base).skillsDir).toBe(join(process.cwd(), 'src', 'skills'));
+    expect(loadConfig({ ...base, SEAT_SKILLS_DIR: '/x/skills' }).skillsDir).toBe('/x/skills');
     expect(loadConfig(base).e2bApiKey).toBeUndefined();
     expect(loadConfig({ ...base, E2B_API_KEY: ' e2b_x ', E2B_TEMPLATE: 'other' })).toMatchObject({ e2bApiKey: 'e2b_x', e2bTemplate: 'other' });
   });

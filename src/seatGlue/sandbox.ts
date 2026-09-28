@@ -1,5 +1,6 @@
-import { readFile, rename, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { join, relative } from 'node:path';
 
 // A manager's own computer (step 2b, plan 2026-09-28-step-2b-manager-files-
 // sandbox-skills): ONE E2B sandbox per manager seat, created on first use and
@@ -67,6 +68,8 @@ export interface ManagerSandboxOptions {
   template: string;
   stateDir: string;
   meta: { seat: string; tenantId: string; technicianRef: string };
+  /** The skill folders on the box; copied into SKILLS_DIR whenever they change. */
+  skillsDir?: string;
   /** Tests hand in a fake; the box loads the real SDK. */
   sdk?: E2bModuleLike;
   log?: (msg: string) => void;
@@ -87,6 +90,8 @@ export class ManagerSandbox {
   private opening: Promise<{ sbx: E2bSandboxLike; fresh: boolean }> | null = null;
   /** When the longest hold asked for so far runs out (ms since epoch). */
   private holdUntil = 0;
+  /** Each sandbox's skills check, shared: two tools at once never copy over each other. */
+  private readonly skillsSync = new Map<string, Promise<void>>();
   private readonly log: (msg: string) => void;
 
   constructor(private readonly opts: ManagerSandboxOptions) {
@@ -104,6 +109,17 @@ export class ManagerSandbox {
       this.opening = null;
     });
     const got = await this.opening;
+    // One check per sandbox per process, shared by concurrent calls; a failed
+    // one is forgotten so the next call tries again.
+    let sync = this.skillsSync.get(got.sbx.sandboxId);
+    if (!sync) {
+      sync = this.syncSkills(got.sbx).catch((err: unknown) => {
+        this.skillsSync.delete(got.sbx.sandboxId);
+        this.log(`could not copy skills: ${err instanceof Error ? err.message : String(err)}`);
+      });
+      this.skillsSync.set(got.sbx.sandboxId, sync);
+    }
+    await sync;
     // E2B's setTimeout can SHORTEN the timer too: a quick read during a long
     // command must never cut that command's hold back to 10 minutes (review).
     const now = Date.now();
@@ -140,6 +156,33 @@ export class ManagerSandbox {
     return { sbx, fresh: stored !== null };
   }
 
+  /**
+   * Copy the skill folders into the sandbox when they differ from what is there
+   * (a fingerprint in SKILLS_DIR/.hash): once per sandbox per process. A missing
+   * folder on the box is not an error — the seat just has no skills to copy.
+   */
+  private async syncSkills(sbx: E2bSandboxLike): Promise<void> {
+    const dir = this.opts.skillsDir;
+    if (!dir) return;
+    const files = await listFiles(dir).catch(() => [] as string[]);
+    if (!files.length) return;
+    const contents = await Promise.all(files.map(async (f) => ({ rel: relative(dir, f), data: await readFile(f) })));
+    const hash = createHash('sha256');
+    for (const c of contents) hash.update(c.rel).update('\0').update(c.data).update('\0');
+    const want = hash.digest('hex');
+    const have = await sbx.commands.run(`cat ${SKILLS_DIR}/.hash 2>/dev/null || true`).catch(() => null);
+    if (have?.stdout.trim() !== want) {
+      await sbx.commands.run(`rm -rf ${SKILLS_DIR} && mkdir -p ${SKILLS_DIR}`);
+      for (const c of contents) {
+        // The bytes, not text: a binary file (a template, a font) must arrive intact.
+        const bytes = c.data.buffer.slice(c.data.byteOffset, c.data.byteOffset + c.data.byteLength) as ArrayBuffer;
+        await sbx.files.write(`${SKILLS_DIR}/${c.rel.split('\\').join('/')}`, bytes);
+      }
+      await sbx.files.write(`${SKILLS_DIR}/.hash`, want);
+      this.log(`skills copied into sandbox ${sbx.sandboxId} (${contents.length} files)`);
+    }
+  }
+
   private async readStored(): Promise<Stored | null> {
     try {
       const raw = JSON.parse(await readFile(join(this.opts.stateDir, STATE_FILE), 'utf8')) as Partial<Stored>;
@@ -154,4 +197,15 @@ export class ManagerSandbox {
     await writeFile(`${file}.tmp`, JSON.stringify(s, null, 2), { mode: 0o600 });
     await rename(`${file}.tmp`, file);
   }
+}
+
+/** Every file under a folder, sorted, so the fingerprint is stable. */
+async function listFiles(dir: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const e of await readdir(dir, { withFileTypes: true })) {
+    const full = join(dir, e.name);
+    if (e.isDirectory()) out.push(...(await listFiles(full)));
+    else if (e.isFile()) out.push(full);
+  }
+  return out.sort();
 }

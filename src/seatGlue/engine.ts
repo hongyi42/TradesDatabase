@@ -95,6 +95,25 @@ export interface EngineConfig {
   tier: 'manager' | 'technician';
   /** Step 2b: a manager's file tools (fileTools.ts). Absent = no sandbox. */
   tools?: FileTool[];
+  /** Step 2b: the skill folders, loaded for a manager who has file tools (a skill's scripts run there). */
+  skillsDir?: string;
+  /** The skills in skillsDir (name + description from each SKILL.md), listed in the rulebook. */
+  skills?: Array<{ name: string; description: string }>;
+}
+
+/**
+ * The rulebook REPLACES the engine's system prompt, and with it the engine's own
+ * list of skills — measured 2026-09-28: the skill was loaded and enabled
+ * (session.rpc.skills.list) yet the model never used it. So the glue lists them.
+ */
+export function skillsSection(skills: Array<{ name: string; description: string }>): string {
+  if (!skills.length) return '';
+  return [
+    '## Skills',
+    '',
+    'Before a task one of these covers, load it with the `skill` tool and follow it:',
+    ...skills.map((k) => `- ${k.name}: ${k.description}`),
+  ].join('\n');
 }
 
 // The tool servers a seat may call. serverName is the mcpServers KEY (measured
@@ -109,7 +128,7 @@ export const TOOL_SERVERS = new Set([...SPINE_NAMES, 'composio']);
 // Built-in tools a manager seat allows (availableTools). Whether the engine asks
 // permission for them at all is UNMEASURED (plan 2a review): if it does, approve
 // them by name here rather than let the default reject hide the buttons.
-export const MANAGER_BUILTINS = new Set(['ask_user', 'exit_plan_mode']);
+export const MANAGER_BUILTINS = new Set(['ask_user', 'exit_plan_mode', 'skill']);
 let loggedServerName = false;
 let loggedNonMcpKind = false;
 let loggedCustomCallId = false;
@@ -169,12 +188,21 @@ export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy, hooks?: Sea
     // ("**Title** I am …") as message text before every tool call regardless.
     // The only defence is seat.ts holding back text from any model call that
     // ends in a tool request. Do not remove that hold on the strength of a setting.
-    systemMessage: { mode: 'replace', content: manager ? MANAGER_DOCTRINE : TECHNICIAN_DOCTRINE },
+    systemMessage: {
+      mode: 'replace',
+      content: manager
+        ? [MANAGER_DOCTRINE, fileTools.length && cfg.skillsDir ? skillsSection(cfg.skills ?? []) : ''].filter(Boolean).join('\n\n')
+        : TECHNICIAN_DOCTRINE,
+    },
     // All tools loaded, tool search OFF (measured 2026-09-23: a wash at ~49 tools).
     availableTools: manager
-      ? ['mcp:*', 'builtin:ask_user', 'builtin:exit_plan_mode', ...(fileTools.length ? ['custom:*'] : [])]
+      ? ['mcp:*', 'builtin:ask_user', 'builtin:exit_plan_mode', ...(fileTools.length ? ['custom:*', 'builtin:skill'] : [])]
       : ['mcp:*'],
     ...(fileTools.length ? { tools: fileTools } : {}),
+    // Skills (step 2b): our own folders only — mode "empty" already leaves out
+    // every runtime-bundled skill. A manager without file tools gets none: a
+    // skill's scripts run on the sandbox.
+    ...(fileTools.length && cfg.skillsDir ? { enableSkills: true, skillDirectories: [cfg.skillsDir] } : {}),
     toolSearch: { enabled: false },
     mcpServers: manager
       ? {

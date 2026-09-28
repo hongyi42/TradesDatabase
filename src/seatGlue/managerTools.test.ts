@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SeatConfig } from './config.js';
 import { ExportError } from './fileTools.js';
 import type { FetchLike, HttpInit } from './http.js';
-import { exportRows, managerTools } from './main.js';
+import { exportRows, managerTools, readSkills } from './main.js';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { TelegramApi } from './telegram.js';
 import type { SeatWho } from './whoami.js';
 
@@ -17,6 +20,7 @@ const cfg: SeatConfig = {
   stateDir: '/tmp/seat-glue-test-never-written',
   mediaRetentionDays: 7,
   e2bTemplate: 'trades-manager',
+  skillsDir: '/tmp/seat-glue-test-no-skills',
 };
 const who = (tier: 'manager' | 'technician'): SeatWho => ({
   seatRef: 's2',
@@ -76,3 +80,28 @@ describe('managerTools', () => {
     ]);
   });
 });
+
+describe('readSkills', () => {
+  it("reads each folder's SKILL.md name and description; skips folders without one; a missing dir is none", async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skills-'));
+    try {
+      await mkdir(join(dir, 'spreadsheet'));
+      await writeFile(join(dir, 'spreadsheet', 'SKILL.md'), '---\nname: spreadsheet\ndescription: Make a spreadsheet.\n---\n\n# body');
+      await mkdir(join(dir, 'unnamed'));
+      await writeFile(join(dir, 'unnamed', 'SKILL.md'), '---\ndescription: No name given.\n---\n');
+      await mkdir(join(dir, 'empty'));
+      expect(readSkills(dir)).toEqual([
+        { name: 'spreadsheet', description: 'Make a spreadsheet.' },
+        { name: 'unnamed', description: 'No name given.' },
+      ]);
+      expect(readSkills(join(dir, 'nope'))).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the real skills folder parses', () => {
+    expect(readSkills(join(process.cwd(), 'Box_Setup_Stuff', 'seat-glue', 'skills')).map((k) => k.name)).toEqual(['spreadsheet']);
+  });
+});
+

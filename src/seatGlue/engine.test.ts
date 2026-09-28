@@ -89,10 +89,34 @@ describe('sessionConfig — a manager\'s file tools (step 2b)', () => {
   const tool = (name: string) => ({ name, description: '', parameters: {}, handler: async () => '' });
   const tools = ['run_command', 'read_file', 'write_file', 'share_file', 'export_query'].map(tool);
 
-  it('a manager with tools gets custom:* and the tools themselves', () => {
-    const c = sessionConfig({ ...base('manager'), tools }, new TurnPolicy(), hooks) as unknown as Cfg & { tools?: unknown[] };
-    expect(c.availableTools).toEqual(['mcp:*', 'builtin:ask_user', 'builtin:exit_plan_mode', 'custom:*']);
+  it('a manager with tools gets custom:*, the tools, and our skill folders (with the skill tool)', () => {
+    const c = sessionConfig({ ...base('manager'), tools, skillsDir: '/opt/seat-glue/skills' }, new TurnPolicy(), hooks) as unknown as Cfg & {
+      tools?: unknown[];
+      enableSkills?: boolean;
+      skillDirectories?: string[];
+    };
+    expect(c.availableTools).toEqual(['mcp:*', 'builtin:ask_user', 'builtin:exit_plan_mode', 'custom:*', 'builtin:skill']);
     expect(c.tools).toBe(tools);
+    expect(c.enableSkills).toBe(true);
+    expect(c.skillDirectories).toEqual(['/opt/seat-glue/skills']);
+  });
+
+  it('the skills are LISTED in the rulebook: it replaces the engine prompt that would have listed them', () => {
+    const skills = [{ name: 'spreadsheet', description: 'How to make a spreadsheet.' }];
+    const c = sessionConfig({ ...base('manager'), tools, skillsDir: '/s', skills }, new TurnPolicy(), hooks) as unknown as Cfg;
+    const content = (c.systemMessage as { content: string }).content;
+    expect(content.startsWith(MANAGER_DOCTRINE)).toBe(true);
+    expect(content).toContain('## Skills');
+    expect(content).toContain('- spreadsheet: How to make a spreadsheet.');
+    // No tools, no skills section: a manager without a sandbox has the plain rulebook.
+    const bare = sessionConfig({ ...base('manager'), skillsDir: '/s', skills }, new TurnPolicy(), hooks) as unknown as Cfg;
+    expect(bare.systemMessage).toEqual({ mode: 'replace', content: MANAGER_DOCTRINE });
+  });
+
+  it('a manager WITHOUT file tools gets no skills (their scripts run on the sandbox)', () => {
+    const c = sessionConfig({ ...base('manager'), skillsDir: '/opt/seat-glue/skills' }, new TurnPolicy(), hooks) as Record<string, unknown>;
+    expect(c.enableSkills).toBeUndefined();
+    expect(c.availableTools).toEqual(['mcp:*', 'builtin:ask_user', 'builtin:exit_plan_mode']);
   });
 
   it('a technician never carries them, even if handed some: the whole config is unchanged', () => {

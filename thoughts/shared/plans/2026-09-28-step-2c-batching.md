@@ -189,16 +189,23 @@ skill first and follow it. Smaller jobs stay in one pass.* (`doctrine.test.ts` p
    the job, `clear` it.
 
 ### Automated verification
-- [ ] typecheck, lint, `npm test` pass; `readSkills` lists `batching` and `spreadsheet`
-- [ ] `doctrine.test.ts` pins the trigger; `engine.test.ts` shows it only with file tools
+- [x] typecheck, lint, `npm test` pass; `readSkills` lists `batching` and `spreadsheet`
+- [x] `doctrine.test.ts` pins the trigger; `engine.test.ts` shows it only with file tools
 
 ### Live verification (agent-executable)
 - Prerequisites: local rig (seed, `setup-local-seat.mjs`, spine on 8791, seat token),
   `E2B_API_KEY`, `SEAT_SKILLS_DIR` pointing at `Box_Setup_Stuff/seat-glue/skills`.
-- [ ] Driver: "summarise the last 30 emails" on the seeded rig → the session shows `skill batching`,
+- [x] Driver: "summarise the last 30 emails" on the seeded rig → the session shows `skill batching`,
       `batch_progress start`, one `begin/done` per batch in order, `clear` at the end
 
 ---
+
+**Evidence (2026-09-28, real model + sandbox, 100 seeded emails with no tells):** "Summarise my last 30
+emails" → `skill batching` → `batch_progress list` → ONE `export_query` → `start` (3 × 10) → begin →
+csv.reader script → note → done, ×3 in order → read only the notes → `clear`. The Working line went
+batch 1 of 3 → 2 of 3 → 3 of 3 → combining the notes (the Phase 2 wiring, end to end). The answer named
+exactly the 3 urgent emails among the newest 30 (Novak E-074, Xu E-084, Gallagher E-097). The first
+`start` hit an E2B stream drop on save; the tool said so in words and the model retried.
 
 ## Phase 4: the gate — 100 realistic emails, a Stop and a resume
 

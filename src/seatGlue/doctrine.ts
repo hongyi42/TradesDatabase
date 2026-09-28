@@ -167,4 +167,8 @@ export const FILES_SECTION = [
   'even after it sleeps. Put firm data into a file with export_query, never by copying rows out of a',
   'tool result. Build spreadsheets and documents with Python there, and send what they asked for with',
   'share_file: a file arrives in this chat. The computer has no internet.',
+  '',
+  'BIG JOBS. A job over about 20 items, or one that needs more than a few pages of results (read or',
+  'summarise many emails, go through every open job), is done in batches: load the `batching` skill',
+  'first and follow it. Smaller jobs stay in one pass.',
 ].join('\n');

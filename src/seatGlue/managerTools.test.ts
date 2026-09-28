@@ -102,7 +102,7 @@ describe('readSkills', () => {
   });
 
   it('the real skills folder parses', () => {
-    expect(readSkills(join(process.cwd(), 'Box_Setup_Stuff', 'seat-glue', 'skills')).map((k) => k.name)).toEqual(['spreadsheet']);
+    expect(readSkills(join(process.cwd(), 'Box_Setup_Stuff', 'seat-glue', 'skills')).map((k) => k.name)).toEqual(['batching', 'spreadsheet']);
   });
 });
 

@@ -72,6 +72,9 @@ describe('manager doctrine (step 2a)', () => {
     expect(FILES_SECTION).toContain('FILES. You have a computer of your own for this manager');
     expect(FILES_SECTION).toContain('never by copying rows');
     expect(FILES_SECTION).not.toContain('technician');
+    // Step 2c: when to batch (the how lives in the batching skill).
+    expect(FILES_SECTION).toContain('BIG JOBS. A job over about 20 items');
+    expect(FILES_SECTION).toContain('load the `batching` skill');
     expect(MANAGER_PREAMBLE).not.toContain('technician');
     expect(MANAGER_DOCTRINE).not.toContain('## Long or bulk tasks');
   });

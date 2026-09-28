@@ -2,7 +2,7 @@
 date: 2026-09-28
 task: Step 2c — batching for a manager seat's big jobs: the model recognises a job too big for one pass and follows a checklist procedure (the Claude Code documented pattern)
 research: thoughts/shared/research/2026-09-28-step-2c-batching-spike.md
-status: draft
+status: complete
 supersedes: nothing (the spike's sub-agent route is set aside for 2c, operator 2026-09-28: "Sub agent is not what I necessarily need")
 ---
 
@@ -256,11 +256,14 @@ on" message, no token from batches 1–2 appears, the job finishes, the source w
 2. Stage → rsync → swap → `install.sh s2` (as for #291).
 
 ### Live verification
-- [ ] `journalctl -u seat-glue@s2`: polling; the skills folder has `batching`
+- [x] `journalctl -u seat-glue@s2`: polling; the skills folder has `batching`
+      — 2026-09-28 17:28 UTC: #292 installed on s2 (glue only); "s2 polling Telegram"; /opt/seat-glue/skills = batching, spreadsheet; jev.js has PLAN_THRESHOLD = 0.8.
 
 ### Manual verification
 - [ ] From Sam's phone: "summarise my last 50 emails — what needs me today?" → the Working line counts
       batches; the answer arrives; a Stop mid-way then "carry on" picks up where it stopped
+      — NOT RUN. The operator closed 2c out without it (2026-09-28). Covered only by the local driven
+      gate (Phase 4). Live on the phone: the 0.8 plan threshold (Lee note, p=0.05 → no plan).
 
 ---
 *Pause after Phase 5 (phone check).*

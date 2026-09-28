@@ -44,7 +44,9 @@ import { handleComposioRelay, isRelayPath } from '../composio/relayHandler.js';
 import { handleBoardRequest, isBoardPath } from '../telegram/boardApi.js';
 import { handleConsoleRequest, isConsolePath } from '../console/consoleApi.js';
 import { handleAdminRequest, isAdminPath } from '../admin/adminApi.js';
-import { UUID_RE } from './tools/shared.js';
+import { UUID_RE, isActiveManager } from './tools/shared.js';
+import { QUERY_SPINE_MAX_ROWS, runSpineQuery } from '../db/querySpine.js';
+import { toCsv } from './csv.js';
 
 // Central HTTP entrypoint (Architecture A). Every NemoClaw bot reaches this one
 // server through the gateway. It runs STATELESS (sessionIdGenerator: undefined):
@@ -390,6 +392,81 @@ async function handleSeatWhoami(req: http.IncomingMessage, res: http.ServerRespo
       tier: person.tier,
       shareConversation: sharesConversation(person),
     });
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
+// STEP 2b — a manager seat's export_query (plan 2026-09-28-step-2b-manager-files-
+// sandbox-skills). The same read-only query_spine path the model uses, but EVERY
+// row (up to the spine's own 1,000) comes back as CSV for the glue to write into
+// the manager's sandbox — never through the model, whose copy of a result is cut
+// at 20,000 characters and retyped (the lossy path seen live on 2026-09-27).
+// Only an ACTIVE manager: the same predicate query_spine's tier gate uses.
+export const SEAT_EXPORT_SQL_MAX = 20_000;
+
+// The DATABASE refused the SQL (a SQLSTATE like 42703 / 42501): the model reads
+// it and fixes its query. Anything else — supabase-js reports an unreachable
+// database as an error with an empty code ("fetch failed") — is ours: a 500 the
+// glue reads as "retry", never "your SQL is wrong" (phase 1 review).
+export function isQueryRefusal(err: unknown): boolean {
+  const code = (err as { cause?: { code?: unknown } } | null)?.cause?.code;
+  return typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code);
+}
+async function handleSeatExport(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const json = (code: number, body: unknown) => {
+    res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    if (!seatTokenOf(req.headers)) {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
+    let identity;
+    try {
+      identity = await resolveIdentity(req.headers);
+    } catch (err) {
+      if (err instanceof Error && err.message === 'unknown seat token') {
+        res.writeHead(401);
+        res.end();
+        return;
+      }
+      throw err;
+    }
+    if (!(await isActiveManager(identity))) {
+      json(403, { error: 'exports are for an active manager only' });
+      return;
+    }
+    let body: unknown;
+    try {
+      body = await readBody(req);
+    } catch {
+      json(400, { error: 'malformed JSON body' });
+      return;
+    }
+    const sql = (body as { sql?: unknown } | undefined)?.sql;
+    if (typeof sql !== 'string' || !sql.trim() || sql.length > SEAT_EXPORT_SQL_MAX) {
+      json(400, { error: `sql must be one SELECT of at most ${SEAT_EXPORT_SQL_MAX} characters` });
+      return;
+    }
+    let result;
+    try {
+      result = await runSpineQuery(identity.tenantId, sql, {
+        technicianRef: identity.technicianRef,
+        maxRows: QUERY_SPINE_MAX_ROWS,
+      });
+    } catch (err) {
+      if (!isQueryRefusal(err)) throw err;
+      json(400, { error: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    const { csv, columns } = toCsv(result.rows);
+    json(200, { csv, columns, rowCount: result.rowCount, truncated: result.truncated });
   } catch {
     if (!res.headersSent) {
       res.writeHead(500);
@@ -1307,6 +1384,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     if (req.url === '/seat/whoami' && req.method === 'GET') {
       await handleSeatWhoami(req, res);
+      return;
+    }
+    if (req.url === '/seat/export' && req.method === 'POST') {
+      await handleSeatExport(req, res);
       return;
     }
     // Step 3: a glue seat's inbox — its own person's office items, and its

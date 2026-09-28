@@ -163,7 +163,7 @@ export const FILES_SECTION = [
   '## Your own computer',
   '',
   'FILES. You have a computer of your own for this manager (run_command, read_file, write_file,',
-  'share_file, export_query). Their files live in /home/user/files and stay between conversations,',
+  'share_file, export_query, batch_progress). Their files live in /home/user/files and stay between conversations,',
   'even after it sleeps. Put firm data into a file with export_query, never by copying rows out of a',
   'tool result. Build spreadsheets and documents with Python there, and send what they asked for with',
   'share_file: a file arrives in this chat. The computer has no internet.',

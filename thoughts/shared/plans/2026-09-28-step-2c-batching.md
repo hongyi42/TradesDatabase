@@ -109,17 +109,24 @@ marks it pending); `FileToolDeps.onProgress?` passed through.
 **`src/seatGlue/doctrine.ts`** — `FILES_SECTION` (`:165`) names `batch_progress` with the other tools.
 
 ### Automated verification
-- [ ] typecheck, lint, `npm test` pass
-- [ ] `batchProgress.test.ts`: start → begin 1 → done 1 → next is 2; `begin 3` while 2 is
+- [x] typecheck, lint, `npm test` pass
+- [x] `batchProgress.test.ts`: start → begin 1 → done 1 → next is 2; `begin 3` while 2 is
       `in_progress` is refused; `begin 2` again (the resume) is allowed; `begin` on a done batch is
       refused; an unknown batch or job answers in words; `start` on an open job is refused; `list`
       shows open jobs; `clear` removes; all done → "combine the notes"
-- [ ] `fileTools.test.ts` (the fake gains an `ls -1` branch): the tool persists to
+- [x] `fileTools.test.ts` (the fake gains an `ls -1` branch): the tool persists to
       `.batches/<job>.json` and a NEW tool set (a restart) reads it back; `done 1` and `begin 2` fired
       together both land (the per-job queue); `onProgress` fires with done/total, `null` after clear
-- [ ] `engine.test.ts`: `batch_progress` is approved and marked pending like the other file tools
+- [x] `engine.test.ts`: `batch_progress` is approved and marked pending like the other file tools
 
 ---
+
+**Evidence (2026-09-28):** `batchProgress.ts` + tests; full suite green. Two review rounds: a corrupt
+or unreadable checklist is never read as "no job" (null only for E2B's `FileNotFoundError` — its name
+verified against a live sandbox), so a `start` can never overwrite a half-done job; failed saves and
+failed clears are said in words; `list` reads through each job's queue (a test proves it waits for an
+in-flight write); labels/title capped, notes cut surrogate-safe. For Phase 2: `onProgress` also fires
+on a resumed `begin` with the same counts — the Working line must skip unchanged text.
 
 ## Phase 2: progress on the "Working…" line
 

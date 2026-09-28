@@ -77,6 +77,7 @@ describe('managerTools', () => {
       'write_file',
       'share_file',
       'export_query',
+      'batch_progress',
     ]);
   });
 });

@@ -1,4 +1,5 @@
 import { posix } from 'node:path';
+import { batchProgressTool, type Progress } from './batchProgress.js';
 import { FILES_DIR, type E2bSandboxLike } from './sandbox.js';
 
 // A manager's file tools (step 2b, plan 2026-09-28-step-2b-manager-files-
@@ -8,7 +9,7 @@ import { FILES_DIR, type E2bSandboxLike } from './sandbox.js';
 // Every result is text for the model, never a throw: a failed command, a bad
 // path or a sandbox that could not be opened comes back as words it can act on.
 
-export const FILE_TOOL_NAMES = new Set(['run_command', 'read_file', 'write_file', 'share_file', 'export_query']);
+export const FILE_TOOL_NAMES = new Set(['run_command', 'read_file', 'write_file', 'share_file', 'export_query', 'batch_progress']);
 
 /** What a tool result may carry into the model's context. */
 export const OUTPUT_MAX = 20_000;
@@ -46,6 +47,8 @@ export interface FileToolDeps {
   /** Render's POST /seat/export (every row as CSV). Throws with Render's words on a refusal. */
   exportRows(sql: string): Promise<ExportResult>;
   sendDocument(filename: string, bytes: Uint8Array, caption?: string): Promise<void>;
+  /** Step 2c: a batch job's progress after every checklist change (null = cleared), for the Working line. */
+  onProgress?(p: Progress | null): void;
 }
 
 /** The SDK's Tool shape (1.0.14 types.d.ts:523-578), as plain objects. */
@@ -326,6 +329,8 @@ export function fileTools(deps: FileToolDeps): FileToolSet {
         });
       },
     },
+    // Step 2c: the batch checklist (batchProgress.ts).
+    batchProgressTool({ sandbox: deps.sandbox, onProgress: deps.onProgress }),
   ];
   return {
     tools,

@@ -1811,7 +1811,8 @@ describe('retract_capture + retraction folding', () => {
     expect(done.data.status).toBe('retracted');
     expect(done.data.alsoRemoved).toEqual(will);
     expect(typeof done.data.restoreHint).toBe('string');
-    expect(done.data.restoreHint).toContain('SEQUENTIALLY');
+    // The hint names the restore path as it now is: one call records (2026-09-28).
+    expect(done.data.restoreHint).toContain('records on the first call');
 
     // The retraction FOLLOWS its target onto the trip (rung 9b). The target
     // reached its visit through visit_notes, so a retraction that did not
@@ -3584,35 +3585,58 @@ describe('read_webpage', () => {
 
 // The main `call` client's identity is 'tech-mcp' (active TECHNICIAN tier), so
 // every flow below is the technician-badge end-to-end path by construction.
-describe('record_standing_fact (staged two-step)', () => {
-  test('stage → preview (echoing the staged copy), confirm → wrapped bundle + evidence capture', async () => {
+describe('record_standing_fact (records on the first call)', () => {
+  // The review item a first call committed through: the evidence capture's
+  // externalId is `fact:<item id>`, and that id is the confirmId a retry uses.
+  const itemIdOf = async (captureId: string): Promise<string> => {
+    const r = await pg.query<{ external_id: string }>('select external_id from raw_captures where id = $1', [
+      captureId,
+    ]);
+    const ext = r.rows[0].external_id;
+    expect(ext.startsWith('fact:')).toBe(true);
+    return ext.slice('fact:'.length);
+  };
+  // A HELD fact, exactly as a first call leaves it when its commit fails (the
+  // item stays open so a confirmId-alone retry converges). The confirm path's
+  // guards only ever run on such an item now, so the tests build it directly.
+  const holdFact = async (input: {
+    customerId: string;
+    targetName: string;
+    facts: Array<{ key: string; value: string | number | boolean; previousValue?: Json }>;
+    stagedAt?: string;
+  }) =>
+    upsertOpenReviewItem({
+      tenantId,
+      kind: 'pending_standing_fact',
+      subjectRef: 'tech-mcp', // the suite's `call` identity
+      detail: {
+        target: 'customer',
+        targetId: input.customerId,
+        customerId: input.customerId,
+        targetName: input.targetName,
+        facts: input.facts as unknown as Json,
+        sourceText: null,
+        stagedAt: input.stagedAt ?? new Date().toISOString(),
+      },
+    });
+  const statusOf = async (itemId: string): Promise<string> =>
+    (await pg.query<{ status: string }>('select status from review_items where id = $1', [itemId])).rows[0]
+      .status;
+
+  test('one call records: wrapped bundle + evidence capture, and the review item ends resolved', async () => {
     const customer = await createCustomer({ tenantId, name: 'Fact Cust', phone: '555-9001' });
 
-    const staged = await call('record_standing_fact', {
+    const done = await call('record_standing_fact', {
       customerId: customer.id,
       key: 'Prefers Contact!', // normalizes to prefers_contact
       value: 'email',
       sourceText: 'they said email only from now on',
     });
-    expect(staged.isError).toBe(false);
-    expect(staged.data.status).toBe('needs_confirmation');
-    expect(staged.data.preview).toMatchObject({
-      target: 'customer',
-      targetName: 'Fact Cust',
-      key: 'prefers_contact',
-      value: 'email',
-    });
-    expect(staged.data.preview.previousValue).toBeUndefined();
-    // Nothing recorded yet — no capture, no attribute.
-    const before = await pg.query<{ attributes: Record<string, unknown> }>(
-      'select attributes from customers where id = $1',
-      [customer.id],
-    );
-    expect(before.rows[0].attributes).toEqual({});
-
-    const done = await call('record_standing_fact', { confirmId: staged.data.confirmId });
     expect(done.isError).toBe(false);
     expect(done.data.status).toBe('recorded');
+    expect(done.data).toMatchObject({ target: 'customer', targetId: customer.id, key: 'prefers_contact' });
+    expect(done.data.keys).toEqual(['prefers_contact']);
+    expect(done.data.replaced).toBeUndefined(); // a new fact replaces nothing
 
     // Evidence capture: externalId stamp, verbatim sourceText, customer stamp.
     const cap = await pg.query<{
@@ -3625,11 +3649,14 @@ describe('record_standing_fact (staged two-step)', () => {
       'select external_id, raw_text, customer_id, channel, technician_ref from raw_captures where id = $1',
       [done.data.captureId],
     );
-    expect(cap.rows[0].external_id).toBe(`fact:${staged.data.confirmId}`);
+    const itemId = await itemIdOf(done.data.captureId);
+    expect(cap.rows[0].external_id).toBe(`fact:${itemId}`);
     expect(cap.rows[0].raw_text).toBe('they said email only from now on');
     expect(cap.rows[0].customer_id).toBe(customer.id);
     expect(cap.rows[0].channel).toBe('technician_note');
     expect(cap.rows[0].technician_ref).toBe('tech-mcp'); // identity, not args
+    // The item the call committed through is closed, not left dangling open.
+    expect(await statusOf(itemId)).toBe('resolved');
 
     // The wrapped bundle landed on the customer row.
     const after = await pg.query<{
@@ -3641,14 +3668,13 @@ describe('record_standing_fact (staged two-step)', () => {
     expect(typeof fact?.recordedAt).toBe('string');
   });
 
-  test('a job fact stamps BOTH ids on the evidence; an overwrite previews the previous value', async () => {
+  test('a job fact stamps BOTH ids on the evidence; an overwrite reports what it replaced', async () => {
     const customer = await createCustomer({ tenantId, name: 'Fact Job Cust', phone: '555-9002' });
     const job = await createJob({ tenantId, customerId: customer.id, title: 'Boiler swap' });
 
-    const first = await call('record_standing_fact', { jobId: job.id, key: 'crane_needed', value: true });
-    expect(first.data.preview.targetName).toBe('Fact Job Cust: Boiler swap');
-    const firstDone = await call('record_standing_fact', { confirmId: first.data.confirmId });
+    const firstDone = await call('record_standing_fact', { jobId: job.id, key: 'crane_needed', value: true });
     expect(firstDone.data.status).toBe('recorded');
+    expect(firstDone.data.target).toBe('job');
 
     const cap = await pg.query<{ customer_id: string; job_id: string }>(
       'select customer_id, job_id from raw_captures where id = $1',
@@ -3657,14 +3683,39 @@ describe('record_standing_fact (staged two-step)', () => {
     expect(cap.rows[0].customer_id).toBe(customer.id);
     expect(cap.rows[0].job_id).toBe(job.id);
 
-    const second = await call('record_standing_fact', { jobId: job.id, key: 'crane_needed', value: false });
-    expect(second.data.preview.previousValue).toBe(true); // overwrite is explicit
-    const secondDone = await call('record_standing_fact', { confirmId: second.data.confirmId });
+    const secondDone = await call('record_standing_fact', { jobId: job.id, key: 'crane_needed', value: false });
+    expect(secondDone.data.status).toBe('recorded');
+    // With no preview, the overwrite is said in the result.
+    expect(secondDone.data.replaced).toEqual([{ key: 'crane_needed', was: true, now: false }]);
     const after = await pg.query<{
       attributes: { crane_needed?: { value: boolean; sourceCaptureId: string } };
     }>('select attributes from jobs where id = $1', [job.id]);
     expect(after.rows[0].attributes.crane_needed?.value).toBe(false);
     expect(after.rows[0].attributes.crane_needed?.sourceCaptureId).toBe(secondDone.data.captureId);
+  });
+
+  test('a first call that overwrites reports `replaced` only for the overwritten key, and resolves its item', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Fact Replaced Cust', phone: '555-9024' });
+    await call('record_standing_fact', { customerId: customer.id, key: 'gate_code', value: '1111' });
+
+    const done = await call('record_standing_fact', {
+      customerId: customer.id,
+      facts: [
+        { key: 'gate_code', value: '2222' },
+        { key: 'dog_on_site', value: true }, // new — not in `replaced`
+      ],
+    });
+    expect(done.isError).toBe(false);
+    expect(done.data.status).toBe('recorded');
+    expect(done.data.replaced).toEqual([{ key: 'gate_code', was: '1111', now: '2222' }]);
+    expect(done.data.conflictKeys).toBeUndefined();
+    const itemId = await itemIdOf(done.data.captureId);
+    expect(await statusOf(itemId)).toBe('resolved');
+    // Nothing is left open for this person: the next call has nothing to supersede.
+    const open = await pg.query<{ n: number }>(
+      "select count(*)::int as n from review_items where kind = 'pending_standing_fact' and subject_ref = 'tech-mcp' and status = 'open'",
+    );
+    expect(Number(open.rows[0].n)).toBe(0);
   });
 
   test('argument guards: both/neither target, bad keys/values, cross-tenant target', async () => {
@@ -3710,18 +3761,15 @@ describe('record_standing_fact (staged two-step)', () => {
     expect(forged.text).toContain('customer not found');
   });
 
-  test('an expired token dismisses without writing; a forged confirmId is rejected', async () => {
+  test('a held fact (a failed commit) that expired dismisses without writing; a forged confirmId is rejected', async () => {
     const customer = await createCustomer({ tenantId, name: 'Fact Expiry', phone: '555-9004' });
-    const staged = await call('record_standing_fact', {
+    const held = await holdFact({
       customerId: customer.id,
-      key: 'gate_code',
-      value: 4321,
+      targetName: 'Fact Expiry',
+      facts: [{ key: 'gate_code', value: 4321 }],
+      stagedAt: new Date(Date.now() - 20 * 60_000).toISOString(),
     });
-    await pg.query(
-      "update review_items set detail = jsonb_set(detail, '{stagedAt}', to_jsonb($1::text)) where id = $2",
-      [new Date(Date.now() - 20 * 60_000).toISOString(), staged.data.confirmId],
-    );
-    const expired = await call('record_standing_fact', { confirmId: staged.data.confirmId });
+    const expired = await call('record_standing_fact', { confirmId: held.id });
     expect(expired.isError).toBe(true);
     expect(expired.text).toContain('expired');
     const after = await pg.query<{ attributes: Record<string, unknown> }>(
@@ -3729,14 +3777,10 @@ describe('record_standing_fact (staged two-step)', () => {
       [customer.id],
     );
     expect(after.rows[0].attributes.gate_code).toBeUndefined();
-    // The token was actually DISMISSED (not left silently open): a retry finds
-    // nothing to confirm.
-    const item = await pg.query<{ status: string }>(
-      'select status from review_items where id = $1',
-      [staged.data.confirmId],
-    );
-    expect(item.rows[0].status).toBe('dismissed');
-    const retry = await call('record_standing_fact', { confirmId: staged.data.confirmId });
+    // The item was actually DISMISSED (not left silently open): a retry finds
+    // nothing to finish.
+    expect(await statusOf(held.id)).toBe('dismissed');
+    const retry = await call('record_standing_fact', { confirmId: held.id });
     expect(retry.isError).toBe(true);
     expect(retry.text).toContain('confirmation not found');
 
@@ -3747,93 +3791,87 @@ describe('record_standing_fact (staged two-step)', () => {
     expect(forged.text).toContain('confirmation not found');
   });
 
-  test('drift guard: a fact recorded by someone ELSE between stage and confirm is never clobbered unpreviewed', async () => {
+  test('drift guard: a fact recorded by someone ELSE before a held fact is retried is never clobbered', async () => {
     const customer = await createCustomer({ tenantId, name: 'Fact Drift', phone: '555-9010' });
-    // Tech stages (preview shows NO previousValue — a new fact).
-    const techStage = await call('record_standing_fact', {
+    // The tech's first call failed to commit: gate_code 1111 is held, read as new.
+    const held = await holdFact({
       customerId: customer.id,
-      key: 'gate_code',
-      value: 1111,
+      targetName: 'Fact Drift',
+      facts: [{ key: 'gate_code', value: 1111 }],
     });
-    expect(techStage.data.preview.previousValue).toBeUndefined();
 
-    // A manager records the same key fully, inside the tech's confirm window.
+    // A manager records the same key before the tech's retry.
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
-      const mgrStage = await callWith('record_standing_fact', {
+      const mgrDone = await callWith('record_standing_fact', {
         customerId: customer.id,
         key: 'gate_code',
         value: 2222,
       });
-      const mgrDone = await callWith('record_standing_fact', { confirmId: mgrStage.data.confirmId });
       expect(mgrDone.data.status).toBe('recorded');
     } finally {
       await mgrClient.close();
     }
 
-    // The tech's confirm must refuse — not silently overwrite 2222 with 1111.
-    const clobber = await call('record_standing_fact', { confirmId: techStage.data.confirmId });
+    // The tech's retry must refuse — not silently overwrite 2222 with 1111.
+    const clobber = await call('record_standing_fact', { confirmId: held.id });
     expect(clobber.isError).toBe(true);
     expect(clobber.text).toContain('changed on this customer');
-    // No orphan evidence capture was written for the refused confirm.
+    expect(clobber.text).toContain('call again to record over the current values');
+    // No orphan evidence capture was written for the refused retry.
     const caps = await pg.query<{ n: number }>(
       'select count(*)::int as n from raw_captures where external_id = $1',
-      [`fact:${techStage.data.confirmId}`],
+      [`fact:${held.id}`],
     );
     expect(Number(caps.rows[0].n)).toBe(0);
-    // The manager's fact is intact, and the tech token is dead (dismissed).
+    // The manager's fact is intact, and the held item is dead (dismissed).
     const row = await pg.query<{ attributes: { gate_code?: { value: number } } }>(
       'select attributes from customers where id = $1',
       [customer.id],
     );
     expect(row.rows[0].attributes.gate_code?.value).toBe(2222);
-    const retry = await call('record_standing_fact', { confirmId: techStage.data.confirmId });
+    const retry = await call('record_standing_fact', { confirmId: held.id });
     expect(retry.isError).toBe(true);
     expect(retry.text).toContain('confirmation not found');
   });
 
-  test('stale replay guard: a re-opened token never reverts a NEWER fact; a landed-unconsumed token blocks restaging', async () => {
+  test('stale replay guard: a re-opened item never reverts a NEWER fact; a landed-unconsumed item blocks a new call', async () => {
     const customer = await createCustomer({ tenantId, name: 'Fact Replay', phone: '555-9011' });
-    const staged = await call('record_standing_fact', {
+    const done = await call('record_standing_fact', {
       customerId: customer.id,
       key: 'gate_code',
       value: 1111,
     });
-    const done = await call('record_standing_fact', { confirmId: staged.data.confirmId });
     expect(done.data.status).toBe('recorded');
+    const itemId = await itemIdOf(done.data.captureId);
 
     // Simulate the crash window: commit landed, consume never ran.
     await pg.query(
       "update review_items set status = 'open', resolution = null, resolved_at = null where id = $1",
-      [staged.data.confirmId],
+      [itemId],
     );
 
-    // While the token dangles open, RESTAGING is refused — the landed evidence
+    // While the item dangles open, a NEW call is refused — the landed evidence
     // must converge through its own confirmId, not be stranded by a supersede.
-    const restage = await call('record_standing_fact', {
+    const blocked = await call('record_standing_fact', {
       customerId: customer.id,
       key: 'other_key',
       value: 'x',
     });
-    expect(restage.isError).toBe(true);
-    expect(restage.text).toContain('still unfinished');
-    expect(restage.text).toContain(staged.data.confirmId);
+    expect(blocked.isError).toBe(true);
+    expect(blocked.text).toContain('still unfinished');
+    expect(blocked.text).toContain(itemId);
 
     // A manager then overwrites the key with a NEWER fact.
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
-      const mgrStage = await callWith('record_standing_fact', {
-        customerId: customer.id,
-        key: 'gate_code',
-        value: 2222,
-      });
-      await callWith('record_standing_fact', { confirmId: mgrStage.data.confirmId });
+      await callWith('record_standing_fact', { customerId: customer.id, key: 'gate_code', value: 2222 });
     } finally {
       await mgrClient.close();
     }
 
-    // The tech's replay of the dangling token must NOT revert 2222 to 1111.
-    const replay = await call('record_standing_fact', { confirmId: staged.data.confirmId });
+    // The tech's replay of the dangling item must NOT revert 2222 to 1111.
+    const replay = await call('record_standing_fact', { confirmId: itemId });
     expect(replay.isError).toBe(true);
     expect(replay.text).toContain('changed on this customer');
     const row = await pg.query<{ attributes: { gate_code?: { value: number } } }>(
@@ -3841,27 +3879,26 @@ describe('record_standing_fact (staged two-step)', () => {
       [customer.id],
     );
     expect(row.rows[0].attributes.gate_code?.value).toBe(2222);
-    // The conflicted token is dismissed, so a fresh restage now proceeds.
-    const restage2 = await call('record_standing_fact', {
+    // The conflicted item is dismissed, so a fresh call now records.
+    const next = await call('record_standing_fact', {
       customerId: customer.id,
       key: 'other_key',
       value: 'x',
     });
-    expect(restage2.isError).toBe(false);
-    expect(restage2.data.status).toBe('needs_confirmation');
+    expect(next.isError).toBe(false);
+    expect(next.data.status).toBe('recorded');
   });
 
-  test("empty sourceText falls back to the canonical evidence text; a 'constructor' key never reads a prototype member as previousValue", async () => {
+  test("empty sourceText falls back to the canonical evidence text; a 'constructor' key never reads a prototype member as a replaced value", async () => {
     const customer = await createCustomer({ tenantId, name: 'Fact Edge', phone: '555-9012' });
-    const staged = await call('record_standing_fact', {
+    const done = await call('record_standing_fact', {
       customerId: customer.id,
       key: 'Constructor', // normalizes to 'constructor' — must not hit Object.prototype
       value: 'edge',
       sourceText: '   ', // whitespace-only must not become the permanent evidence
     });
-    expect(staged.data.preview.previousValue).toBeUndefined();
-    const done = await call('record_standing_fact', { confirmId: staged.data.confirmId });
     expect(done.data.status).toBe('recorded');
+    expect(done.data.replaced).toBeUndefined();
     const cap = await pg.query<{ raw_text: string }>(
       'select raw_text from raw_captures where id = $1',
       [done.data.captureId],
@@ -3869,34 +3906,34 @@ describe('record_standing_fact (staged two-step)', () => {
     expect(cap.rows[0].raw_text).toBe('Standing fact: constructor = edge');
   });
 
-  test('crash-heal: token re-opened after a landed commit — a retry converges on ONE capture, same bundle', async () => {
+  test('crash-heal: item re-opened after a landed commit — a confirmId retry converges on ONE capture, same bundle', async () => {
     const customer = await createCustomer({ tenantId, name: 'Fact Heal', phone: '555-9005' });
-    const staged = await call('record_standing_fact', {
+    const done = await call('record_standing_fact', {
       customerId: customer.id,
       key: 'dog_on_site',
       value: true,
     });
-    const done = await call('record_standing_fact', { confirmId: staged.data.confirmId });
     expect(done.data.status).toBe('recorded');
+    const itemId = await itemIdOf(done.data.captureId);
 
-    // A plain second confirm on the CONSUMED token errors honestly.
-    const dead = await call('record_standing_fact', { confirmId: staged.data.confirmId });
+    // A confirmId retry on the CONSUMED item errors honestly.
+    const dead = await call('record_standing_fact', { confirmId: itemId });
     expect(dead.isError).toBe(true);
     expect(dead.text).toContain('confirmation not found');
 
     // Simulate the crash window (commit landed, consume never ran) and retry.
     await pg.query(
       "update review_items set status = 'open', resolution = null, resolved_at = null where id = $1",
-      [staged.data.confirmId],
+      [itemId],
     );
-    const retried = await call('record_standing_fact', { confirmId: staged.data.confirmId });
+    const retried = await call('record_standing_fact', { confirmId: itemId });
     expect(retried.isError).toBe(false);
     expect(retried.data.status).toBe('recorded');
     expect(retried.data.captureId).toBe(done.data.captureId); // same evidence row
 
     const caps = await pg.query<{ n: number }>(
       'select count(*)::int as n from raw_captures where external_id = $1',
-      [`fact:${staged.data.confirmId}`],
+      [`fact:${itemId}`],
     );
     expect(Number(caps.rows[0].n)).toBe(1);
     const after = await pg.query<{ attributes: { dog_on_site?: { sourceCaptureId: string } } }>(
@@ -3906,26 +3943,24 @@ describe('record_standing_fact (staged two-step)', () => {
     expect(after.rows[0].attributes.dog_on_site?.sourceCaptureId).toBe(done.data.captureId);
   });
 
-  test('a re-staged fact supersedes the earlier token', async () => {
+  test('a new call supersedes a held fact whose evidence never landed', async () => {
     const customer = await createCustomer({ tenantId, name: 'Fact Cancel', phone: '555-9006' });
-    const a = await call('record_standing_fact', { customerId: customer.id, key: 'k_one', value: 1 });
-    // Re-stage supersedes: one staged fact per person, the old token is dead.
+    const held = await holdFact({ customerId: customer.id, targetName: 'Fact Cancel', facts: [{ key: 'k_one', value: 1 }] });
+    // One open item per person: the new call dismisses the held one and records.
     const b = await call('record_standing_fact', { customerId: customer.id, key: 'k_two', value: 2 });
-    expect(b.data.confirmId).not.toBe(a.data.confirmId);
-    const deadA = await call('record_standing_fact', { confirmId: a.data.confirmId });
+    expect(b.data.status).toBe('recorded');
+    expect(await itemIdOf(b.data.captureId)).not.toBe(held.id);
+    expect(await statusOf(held.id)).toBe('dismissed');
+    const deadA = await call('record_standing_fact', { confirmId: held.id });
     expect(deadA.isError).toBe(true);
-    // (Its second half — resolve_review refusing to "resolve" the live token and
-    // dismissing it as a cancel — went with that tool, 2026-09-19. `b` is left
-    // unconfirmed; it expires 15 minutes after staging like every token.)
   });
 
-  test('batch: several facts stage as ONE token with ONE preview, commit under ONE capture, and fold together on retraction', async () => {
+  test('batch: several facts record in ONE call under ONE capture, and fold together on retraction', async () => {
     const customer = await createCustomer({ tenantId, name: 'Fact Batch Cust', phone: '555-9020' });
-    // Seed one key so the batch preview shows an overwrite.
-    const pre = await call('record_standing_fact', { customerId: customer.id, key: 'gate_code', value: '1111' });
-    await call('record_standing_fact', { confirmId: pre.data.confirmId });
+    // Seed one key so the batch reports an overwrite.
+    await call('record_standing_fact', { customerId: customer.id, key: 'gate_code', value: '1111' });
 
-    const staged = await call('record_standing_fact', {
+    const done = await call('record_standing_fact', {
       customerId: customer.id,
       facts: [
         { key: 'Dog On Property', value: true }, // normalizes to dog_on_property
@@ -3933,24 +3968,18 @@ describe('record_standing_fact (staged two-step)', () => {
       ],
       sourceText: 'dog on the property; gated community, code 2234',
     });
-    expect(staged.isError).toBe(false);
-    expect(staged.data.status).toBe('needs_confirmation');
-    expect(staged.data.preview.facts).toEqual([
-      { key: 'dog_on_property', value: true },
-      { key: 'gate_code', value: '2234', previousValue: '1111' }, // overwrite is explicit
-    ]);
-    // Multi-fact preview has no flat single-fact fields.
-    expect(staged.data.preview.key).toBeUndefined();
-
-    const done = await call('record_standing_fact', { confirmId: staged.data.confirmId });
     expect(done.isError).toBe(false);
     expect(done.data.status).toBe('recorded');
     expect([...done.data.keys].sort()).toEqual(['dog_on_property', 'gate_code']);
+    expect(done.data.replaced).toEqual([{ key: 'gate_code', was: '1111', now: '2234' }]);
+    // A multi-fact result has no flat single-fact key.
+    expect(done.data.key).toBeUndefined();
 
     // ONE evidence capture; BOTH bundles cite it.
+    const itemId = await itemIdOf(done.data.captureId);
     const caps = await pg.query<{ n: number }>(
       'select count(*)::int as n from raw_captures where external_id = $1',
-      [`fact:${staged.data.confirmId}`],
+      [`fact:${itemId}`],
     );
     expect(Number(caps.rows[0].n)).toBe(1);
     const row = await pg.query<{
@@ -3967,9 +3996,9 @@ describe('record_standing_fact (staged two-step)', () => {
     // Crash-heal replay converges without rewriting (both keys 'already').
     await pg.query(
       "update review_items set status = 'open', resolution = null, resolved_at = null where id = $1",
-      [staged.data.confirmId],
+      [itemId],
     );
-    const replay = await call('record_standing_fact', { confirmId: staged.data.confirmId });
+    const replay = await call('record_standing_fact', { confirmId: itemId });
     expect(replay.isError).toBe(false);
     expect(replay.data.status).toBe('recorded');
     expect(replay.data.captureId).toBe(done.data.captureId);
@@ -3985,7 +4014,7 @@ describe('record_standing_fact (staged two-step)', () => {
     expect(ctx.data.customer.attributes.gate_code).toBeUndefined();
   });
 
-  test('batch guards: duplicate keys, mixed forms, oversize, and whole-batch drift refusal', async () => {
+  test('batch guards: duplicate keys, mixed forms, oversize, and whole-batch drift refusal on a held retry', async () => {
     const customer = await createCustomer({ tenantId, name: 'Fact Batch Guard', phone: '555-9021' });
 
     const dup = await call('record_standing_fact', {
@@ -4017,9 +4046,10 @@ describe('record_standing_fact (staged two-step)', () => {
     const empty = await call('record_standing_fact', { customerId: customer.id, facts: [] });
     expect(empty.isError).toBe(true);
 
-    // Drift on ANY key refuses the WHOLE batch before the evidence lands.
-    const staged = await call('record_standing_fact', {
+    // Drift on ANY key refuses the WHOLE held batch before the evidence lands.
+    const held = await holdFact({
       customerId: customer.id,
+      targetName: 'Fact Batch Guard',
       facts: [
         { key: 'prefers_contact', value: 'email' },
         { key: 'gate_code', value: '9999' },
@@ -4027,22 +4057,17 @@ describe('record_standing_fact (staged two-step)', () => {
     });
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
-      const mgrStage = await callWith('record_standing_fact', {
-        customerId: customer.id,
-        key: 'gate_code',
-        value: '5555',
-      });
-      await callWith('record_standing_fact', { confirmId: mgrStage.data.confirmId });
+      await callWith('record_standing_fact', { customerId: customer.id, key: 'gate_code', value: '5555' });
     } finally {
       await mgrClient.close();
     }
-    const refused = await call('record_standing_fact', { confirmId: staged.data.confirmId });
+    const refused = await call('record_standing_fact', { confirmId: held.id });
     expect(refused.isError).toBe(true);
     expect(refused.text).toContain("'gate_code' changed on this customer");
     // No orphan evidence for the refused batch; the untouched key stayed absent.
     const caps = await pg.query<{ n: number }>(
       'select count(*)::int as n from raw_captures where external_id = $1',
-      [`fact:${staged.data.confirmId}`],
+      [`fact:${held.id}`],
     );
     expect(Number(caps.rows[0].n)).toBe(0);
     const row = await pg.query<{ attributes: Record<string, unknown> }>(
@@ -4083,42 +4108,37 @@ describe('record_standing_fact (staged two-step)', () => {
     expect(row.rows[0].attributes.legacy_key?.value).toBe(false);
   });
 
-  test('partial-conflict replay: a re-opened batch token skips the overwritten key, applies the rest, and reports honestly', async () => {
+  test('partial-conflict replay: a re-opened batch item skips the overwritten key, applies the rest, and reports honestly', async () => {
     const customer = await createCustomer({ tenantId, name: 'Fact Partial Cust', phone: '555-9023' });
-    const staged = await call('record_standing_fact', {
+    const done = await call('record_standing_fact', {
       customerId: customer.id,
       facts: [
         { key: 'alpha', value: 'a1' },
         { key: 'beta', value: 'b1' },
       ],
     });
-    const done = await call('record_standing_fact', { confirmId: staged.data.confirmId });
     expect(done.data.status).toBe('recorded');
+    const itemId = await itemIdOf(done.data.captureId);
 
     // Crash window + a NEWER overwrite of one key by someone else.
     await pg.query(
       "update review_items set status = 'open', resolution = null, resolved_at = null where id = $1",
-      [staged.data.confirmId],
+      [itemId],
     );
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
-      const mgrStage = await callWith('record_standing_fact', {
-        customerId: customer.id,
-        key: 'alpha',
-        value: 'NEWER',
-      });
-      await callWith('record_standing_fact', { confirmId: mgrStage.data.confirmId });
+      await callWith('record_standing_fact', { customerId: customer.id, key: 'alpha', value: 'NEWER' });
     } finally {
       await mgrClient.close();
     }
 
-    const replay = await call('record_standing_fact', { confirmId: staged.data.confirmId });
+    const replay = await call('record_standing_fact', { confirmId: itemId });
     expect(replay.isError).toBe(false);
     expect(replay.data.status).toBe('recorded');
     expect(replay.data.keys).toEqual(['beta']); // 'already' counts as recorded
     expect(replay.data.conflictKeys).toEqual(['alpha']); // skipped, named
     expect(replay.data.note).toContain('NOT overwritten');
-    // The newer value survived; the token's resolution names the skip.
+    // The newer value survived; the item's resolution names the skip.
     const row = await pg.query<{ attributes: { alpha?: { value: string } } }>(
       'select attributes from customers where id = $1',
       [customer.id],
@@ -4126,7 +4146,7 @@ describe('record_standing_fact (staged two-step)', () => {
     expect(row.rows[0].attributes.alpha?.value).toBe('NEWER');
     const token = await pg.query<{ status: string; resolution: string }>(
       'select status, resolution from review_items where id = $1',
-      [staged.data.confirmId],
+      [itemId],
     );
     expect(token.rows[0].status).toBe('resolved');
     expect(token.rows[0].resolution).toContain('skipped changed keys: alpha');
@@ -4136,14 +4156,12 @@ describe('record_standing_fact (staged two-step)', () => {
     const customer = await createCustomer({ tenantId, name: 'Fact Fold Cust', phone: '555-9007' });
     const job = await createJob({ tenantId, customerId: customer.id, title: 'Fold Job' });
 
-    const cs = await call('record_standing_fact', {
+    const cDone = await call('record_standing_fact', {
       customerId: customer.id,
       key: 'prefers_contact',
       value: 'email',
     });
-    const cDone = await call('record_standing_fact', { confirmId: cs.data.confirmId });
-    const js = await call('record_standing_fact', { jobId: job.id, key: 'crane_needed', value: true });
-    const jDone = await call('record_standing_fact', { confirmId: js.data.confirmId });
+    const jDone = await call('record_standing_fact', { jobId: job.id, key: 'crane_needed', value: true });
 
     // Visible before any retraction.
     const before = await call('get_customer_context', { customerId: customer.id });
@@ -4199,18 +4217,16 @@ describe('record_standing_fact (staged two-step)', () => {
 
   test("overwrite + retraction: only the CURRENT bundle's evidence controls the fold", async () => {
     const customer = await createCustomer({ tenantId, name: 'Fact Overfold', phone: '555-9008' });
-    const first = await call('record_standing_fact', {
+    const firstDone = await call('record_standing_fact', {
       customerId: customer.id,
       key: 'gate_code',
       value: 1111,
     });
-    const firstDone = await call('record_standing_fact', { confirmId: first.data.confirmId });
-    const second = await call('record_standing_fact', {
+    const secondDone = await call('record_standing_fact', {
       customerId: customer.id,
       key: 'gate_code',
       value: 2222,
     });
-    const secondDone = await call('record_standing_fact', { confirmId: second.data.confirmId });
 
     // Retracting the OLD evidence must not hide the fact — the current bundle
     // cites the new capture.
@@ -4231,15 +4247,15 @@ describe('record_standing_fact (staged two-step)', () => {
     const end = await call('get_customer_context', { customerId: customer.id });
     expect(end.data.customer.attributes.gate_code).toBeUndefined();
 
-    // Staging the key again after the retraction must NOT resurface the
-    // retracted value as previousValue — the visible record has no such fact.
-    const restaged = await call('record_standing_fact', {
+    // Recording the key again after the retraction must NOT report the
+    // retracted value as replaced — the visible record has no such fact.
+    const again = await call('record_standing_fact', {
       customerId: customer.id,
       key: 'gate_code',
       value: 3333,
     });
-    expect(restaged.data.status).toBe('needs_confirmation');
-    expect(restaged.data.preview.previousValue).toBeUndefined();
+    expect(again.data.status).toBe('recorded');
+    expect(again.data.replaced).toBeUndefined();
   });
 });
 

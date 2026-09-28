@@ -67,7 +67,8 @@ export const STAGED_TOOLS = new Set([
   // possible; what membership buys is that the create-a-customer confirm — the
   // action that cannot be undone — is still held to "a human said yes".
   'record_field_note',
-  'record_standing_fact',
+  // record_standing_fact left on 2026-09-28: it records on the first call, and
+  // a confirmId-alone call is only the retry its own error asks for.
   'retract_capture',
   'send_email',
   'add_technician_seat',

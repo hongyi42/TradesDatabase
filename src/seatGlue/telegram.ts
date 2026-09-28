@@ -17,6 +17,8 @@ export const TELEGRAM_MAX_DOWNLOAD = 20 * 1024 * 1024;
 export const STOP_TEXT = 'Stop';
 export const STOP_CALLBACK = 'stop';
 export const WORKING_TEXT = 'Working…';
+/** The Working line, with a batch job's progress when there is one (step 2c). */
+export const workingText = (progress?: string | null): string => (progress ? `${WORKING_TEXT} ${progress}` : WORKING_TEXT);
 // Telegram keeps a reply keyboard on the phone until a message removes it: the
 // big Stop button the first s5 build installed goes away with the next reply.
 const REMOVE_KEYBOARD = { remove_keyboard: true };
@@ -65,8 +67,10 @@ export interface TelegramApi {
   send(chatId: number, text: string): Promise<void>;
   typing(chatId: number): Promise<void>;
   download(fileId: string): Promise<Buffer>;
-  /** Post the "Working…" line with its Stop button; returns its message id. */
-  sendWorking(chatId: number): Promise<number>;
+  /** Post the "Working…" line with its Stop button; returns its message id. `progress` (step 2c) follows "Working…". */
+  sendWorking(chatId: number, progress?: string): Promise<number>;
+  /** Step 2c: rewrite the "Working…" line's progress, keeping its Stop button. */
+  editWorking(chatId: number, messageId: number, progress: string | null): Promise<void>;
   deleteMessage(chatId: number, messageId: number): Promise<void>;
   /** Acknowledge a button tap (Telegram shows a spinner until this is called). */
   answerCallback(callbackQueryId: string, text?: string): Promise<void>;
@@ -135,15 +139,19 @@ export class TelegramClient implements TelegramApi {
     }
   }
 
-  async sendWorking(chatId: number): Promise<number> {
+  async sendWorking(chatId: number, progress?: string): Promise<number> {
     const msg = (await this.call('sendMessage', {
       chat_id: chatId,
-      text: WORKING_TEXT,
+      text: workingText(progress),
       reply_markup: STOP_BUTTON,
       disable_notification: true,
     })) as { message_id?: number };
     if (typeof msg?.message_id !== 'number') throw new Error('telegram: sendMessage returned no message_id');
     return msg.message_id;
+  }
+
+  async editWorking(chatId: number, messageId: number, progress: string | null): Promise<void> {
+    await this.call('editMessageText', { chat_id: chatId, message_id: messageId, text: workingText(progress), reply_markup: STOP_BUTTON });
   }
 
   async sendButtons(chatId: number, text: string, rows: ButtonRow[]): Promise<number> {

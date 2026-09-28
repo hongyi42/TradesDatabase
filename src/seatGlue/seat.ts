@@ -131,6 +131,14 @@ export class Seat {
   private typingTimer: ReturnType<typeof setInterval> | null = null;
   /** The "Working…" line's message id, once Telegram has it (null = could not post). */
   private workingLine: Promise<number | null> | null = null;
+  /**
+   * A batch job's progress on the Working line (step 2c), e.g. "batch 2 of 10".
+   * Kept here so a question or plan prompt — which takes the line down and puts
+   * it back — does not lose it; a fresh turn starts plain.
+   */
+  private progressText: string | null = null;
+  /** What the live Working line SHOWS (set only once a send or an edit succeeded). */
+  private shownText: string | null = null;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private outbox: Promise<void> = Promise.resolve();
   private idleCount = 0;
@@ -435,6 +443,7 @@ export class Seat {
     policy.onSend();
     if (freshTurn) {
       this.errorToldFor = null;
+      this.progressText = null;
       this.startWorking();
     }
     // Office items ride HERE, at the send, and nowhere earlier: the abort-then-
@@ -1004,11 +1013,36 @@ export class Seat {
   private startWorking(): void {
     this.startTyping();
     if (!this.workingLine) {
-      this.workingLine = this.deps.telegram.sendWorking(this.chatId).catch((err: unknown) => {
+      const posting = this.progressText;
+      this.workingLine = this.deps.telegram.sendWorking(this.chatId, posting ?? undefined).then((id) => {
+        this.shownText = posting;
+        return id;
+      }).catch((err: unknown) => {
         this.log(`could not post the Working line: ${errText(err)}`);
         return null;
       });
     }
+  }
+
+  /**
+   * Step 2c: a batch job's progress on the Working line. Only a CHANGED text is
+   * sent (Telegram refuses an edit that changes nothing), and only while a reply
+   * shows the line; a failed edit is logged — the job itself carries on.
+   */
+  showProgress(text: string | null): void {
+    this.progressText = text;
+    const line = this.workingLine;
+    if (!line) return;
+    this.outbox = this.outbox
+      .then(() => line)
+      .then(async (id) => {
+        // Decided when it is sent, against what the line SHOWS: a failed edit
+        // leaves the old text, so the next one is sent even if it repeats (review).
+        if (id === null || text === this.shownText) return;
+        await this.deps.telegram.editWorking(this.chatId, id, text);
+        this.shownText = text;
+      })
+      .catch((err: unknown) => this.log(`could not update the Working line: ${errText(err)}`));
   }
 
   /** The reply is over (or stopped): typing stops and the "Working…" line goes. */

@@ -24,6 +24,7 @@ import { TurnPolicy } from './turnPolicy.js';
 //   {"waitIdle": true}        wait until the seat is idle and its replies went out
 //   {"waitPrompt": true}      wait until the seat posts a question or plan with buttons (120 s)
 //   {"tap": 0}                tap button n of the open prompt (a callback_query update)
+//   {"waitProgress": "batch 3 of"}  wait until the Working line has shown progress containing it (10 min)
 // The driver waits for idle and for the cost log before it exits.
 export type Step =
   | { text: string }
@@ -34,7 +35,8 @@ export type Step =
   | { waitMs: number }
   | { waitIdle: true }
   | { waitPrompt: true }
-  | { tap: number };
+  | { tap: number }
+  | { waitProgress: string };
 
 export class ScriptedTelegram implements TelegramApi {
   private queue: TgUpdate[] = [];
@@ -102,9 +104,18 @@ export class ScriptedTelegram implements TelegramApi {
 
   private nextMessageId = 1;
 
-  async sendWorking(): Promise<number> {
-    console.log('   (Working… ⏹ Stop)');
+  /** Every progress text the seat showed on its Working line (step 2c; the gate waits on these). */
+  readonly progress: string[] = [];
+
+  async sendWorking(_chatId: number, progress?: string): Promise<number> {
+    console.log(`   (Working…${progress ? ` ${progress}` : ''} ⏹ Stop)`);
+    if (progress) this.progress.push(progress);
     return this.nextMessageId++;
+  }
+
+  async editWorking(_chatId: number, _messageId: number, progress: string | null): Promise<void> {
+    console.log(`   (Working…${progress ? ` ${progress}` : ''} ⏹ Stop)`);
+    if (progress) this.progress.push(progress);
   }
 
   async deleteMessage(): Promise<void> {}
@@ -149,6 +160,16 @@ export async function drive(steps: Step[], seat: Seat, tg: ScriptedTelegram): Pr
       await new Promise((r) => setTimeout(r, 200));
       continue;
     }
+    if ('waitProgress' in step) {
+      // Step 2c's gate: Stop a batch job mid-way, at a known batch.
+      const deadline = Date.now() + 600_000;
+      // A substring, since the model sizes the batches: "batch 3 of" matches "batch 3 of 10".
+      while (!tg.progress.some((p) => p.includes(step.waitProgress))) {
+        if (Date.now() > deadline) throw new Error(`driver: the Working line never showed "${step.waitProgress}" within 10 minutes`);
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      continue;
+    }
     if ('waitMs' in step) await new Promise((r) => setTimeout(r, step.waitMs));
     else if ('waitIdle' in step) await seat.whenIdle();
     else if ('text' in step) {
@@ -190,6 +211,7 @@ async function main(argv: string[]): Promise<void> {
   // send the office notice to a fake, or upload scripted turns as their chat.
   const deps = seatDeps(cfg, who, client, tg, new TurnPolicy(), { office: false });
   const seat = new Seat(deps);
+  deps.progress.attach((t) => seat.showProgress(t));
   const loop = seat.run().catch((err: unknown) => {
     console.error(`seat loop failed: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1); // a seat that never started would leave the driver waiting forever

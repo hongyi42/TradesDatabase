@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SeatConfig } from './config.js';
 import { ExportError } from './fileTools.js';
 import type { FetchLike, HttpInit } from './http.js';
-import { exportRows, managerTools, readSkills } from './main.js';
+import { exportRows, managerTools, progressText, ProgressSink, readSkills } from './main.js';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -77,6 +77,7 @@ describe('managerTools', () => {
       'write_file',
       'share_file',
       'export_query',
+      'batch_progress',
     ]);
   });
 });
@@ -101,7 +102,25 @@ describe('readSkills', () => {
   });
 
   it('the real skills folder parses', () => {
-    expect(readSkills(join(process.cwd(), 'Box_Setup_Stuff', 'seat-glue', 'skills')).map((k) => k.name)).toEqual(['spreadsheet']);
+    expect(readSkills(join(process.cwd(), 'Box_Setup_Stuff', 'seat-glue', 'skills')).map((k) => k.name)).toEqual(['batching', 'spreadsheet']);
+  });
+});
+
+describe('progress text (step 2c)', () => {
+  it('says the batch being worked on, then combining, and nothing once cleared', () => {
+    expect(progressText({ done: 0, total: 10 })).toBe('batch 1 of 10');
+    expect(progressText({ done: 3, total: 10 })).toBe('batch 4 of 10');
+    expect(progressText({ done: 10, total: 10 })).toBe('combining the notes');
+    expect(progressText(null)).toBeNull();
+    expect(progressText({ done: 0, total: 0 })).toBeNull();
+  });
+  it('the sink reaches whatever attached to it, and is silent before', () => {
+    const sink = new ProgressSink();
+    sink.emit({ done: 0, total: 2 }); // nothing attached yet: no throw
+    const seen: Array<string | null> = [];
+    sink.attach((t) => void seen.push(t));
+    sink.emit({ done: 1, total: 2 });
+    expect(seen).toEqual(['batch 2 of 2']);
   });
 });
 

@@ -31,9 +31,10 @@ describe('jev.needsPlan', () => {
     });
   });
 
-  it('0.5 plans, 0.49 does not', async () => {
-    expect((await needsPlan(opts(fake(0.5)), 'x')).plan).toBe(true);
-    expect((await needsPlan(opts(fake(0.49)), 'x')).plan).toBe(false);
+  it('only a confident call plans: 0.8 plans, 0.79 and 0.5 do not', async () => {
+    expect((await needsPlan(opts(fake(0.8)), 'x')).plan).toBe(true);
+    expect((await needsPlan(opts(fake(0.79)), 'x')).plan).toBe(false);
+    expect((await needsPlan(opts(fake(0.5)), 'x')).plan).toBe(false);
   });
 
   it('an HTTP error, a missing answer or a timeout means no plan — never a blocked reply', async () => {

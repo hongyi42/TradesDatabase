@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ExportError, FILE_TOOL_NAMES, READ_MAX_BYTES, SHARE_MAX_BYTES, STREAM_TAIL, fileTools, resolvePath, safeName, type ExportResult, type FileTool } from './fileTools.js';
 import type { E2bSandboxLike } from './sandbox.js';
 
-function fakeBox(opts: { fresh?: boolean; exit?: { code: number; out?: string; err?: string }; hang?: boolean; timeout?: boolean; dropped?: boolean; noCode?: boolean; openFails?: boolean } = {}) {
+function fakeBox(opts: { rmFails?: boolean; writeDelayMs?: number; readFails?: (p: string) => boolean; writeFails?: (p: string) => boolean; onProgress?: (p: unknown) => void; fresh?: boolean; exit?: { code: number; out?: string; err?: string }; hang?: boolean; timeout?: boolean; dropped?: boolean; noCode?: boolean; openFails?: boolean } = {}) {
   const files = new Map<string, Uint8Array>();
   const killed: number[] = [];
   const runs: Array<{ cmd: string; opts: unknown }> = [];
@@ -48,6 +48,17 @@ function fakeBox(opts: { fresh?: boolean; exit?: { code: number; out?: string; e
         if (c) return { exitCode: 0, stdout: files.has(c[1]) ? dec(files.get(c[1])!) : '', stderr: '' };
         const nul = /^head -c 8192 '(.+)' \| tr -dc '\\000' \| wc -c$/.exec(cmd);
         if (nul) return { exitCode: 0, stdout: `${files.get(nul[1])!.subarray(0, 8192).filter((x) => x === 0).length}\n`, stderr: '' };
+        const ls = /^ls -1 (\S+) 2>\/dev\/null \|\| true$/.exec(cmd);
+        if (ls) {
+          const names = [...files.keys()].filter((k) => k.startsWith(`${ls[1]}/`)).map((k) => k.slice(ls[1].length + 1));
+          return { exitCode: 0, stdout: names.join('\n'), stderr: '' };
+        }
+        const rm = /^rm -f (\S+\.json)$/.exec(cmd);
+        if (rm) {
+          if (opts.rmFails) throw new Error('sandbox hiccup');
+          files.delete(rm[1]);
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
         const h = /^head -c (\d+) '(.+)'$/.exec(cmd);
         if (h) return { exitCode: 0, stdout: dec(files.get(h[2])!).slice(0, Number(h[1])), stderr: '' };
         return { exitCode: 0, stdout: '', stderr: '' };
@@ -62,10 +73,15 @@ function fakeBox(opts: { fresh?: boolean; exit?: { code: number; out?: string; e
       read: async (path: string, o?: { format: 'bytes' }) => {
         reads.push(path);
         const b = files.get(path);
-        if (!b) throw new Error(`file not found: ${path}`);
+        if (!b) throw Object.assign(new Error(`file not found: ${path}`), { name: 'FileNotFoundError' });
+        if (opts.readFails?.(path)) throw new Error('sandbox hiccup');
         return o?.format === 'bytes' ? b : dec(b);
       },
-      write: async (path: string, data: string) => void files.set(path, enc(data)),
+      write: async (path: string, data: string) => {
+        if (opts.writeFails?.(path)) throw new Error('disk full');
+        if (opts.writeDelayMs) await new Promise((r) => setTimeout(r, opts.writeDelayMs));
+        files.set(path, enc(data));
+      },
       getInfo: async (path: string) => {
         const b = files.get(path);
         if (!b) throw new Error(`file not found: ${path}`);
@@ -76,7 +92,7 @@ function fakeBox(opts: { fresh?: boolean; exit?: { code: number; out?: string; e
   const sent: Array<{ name: string; bytes: Uint8Array; caption?: string }> = [];
   let exported: ExportResult = { csv: 'id,name\r\n1,Acme\r\n2,Chen\r\n', columns: ['id', 'name'], rowCount: 2, truncated: false };
   let exportFails: Error | null = null;
-  const set = fileTools({
+  const deps: Parameters<typeof fileTools>[0] = {
     sandbox: {
       get: async (holdMs?: number) => {
         holds.push(holdMs);
@@ -89,7 +105,9 @@ function fakeBox(opts: { fresh?: boolean; exit?: { code: number; out?: string; e
       return exported;
     },
     sendDocument: async (name, bytes, caption) => void sent.push({ name, bytes, caption }),
-  });
+    onProgress: opts.onProgress,
+  };
+  const set = fileTools(deps);
   const tools = set.tools;
   const tool = (n: string) => tools.find((t) => t.name === n) as FileTool;
   return {
@@ -104,11 +122,13 @@ function fakeBox(opts: { fresh?: boolean; exit?: { code: number; out?: string; e
     sent,
     setExport: (e: ExportResult) => (exported = e),
     failExport: (e: Error) => (exportFails = e),
+    /** A fresh tool set over the same sandbox (a glue restart). */
+    rebuild: () => fileTools(deps).tools,
   };
 }
 
 describe('fileTools', () => {
-  it('are the five named tools the permission handler admits', () => {
+  it('are the named tools the permission handler admits', () => {
     expect(fakeBox().tools.map((t) => t.name).sort()).toEqual([...FILE_TOOL_NAMES].sort());
   });
 
@@ -267,4 +287,100 @@ describe('fileTools', () => {
     expect(await fakeBox({ openFails: true }).tool('read_file').handler({ path: 'a.txt' }, {})).toMatch(/could not be opened.*503/);
     expect(await fakeBox().tool('read_file').handler({ path: 'missing.txt' }, {})).toMatch(/^Error: file not found/);
   });
+
+  it('step 2c: batch_progress persists its checklist in the sandbox; a restart reads it back', async () => {
+    const seen: unknown[] = [];
+    const b = fakeBox({ onProgress: (p) => void seen.push(p) });
+    const bp = b.tool('batch_progress');
+    expect(await bp.handler({ action: 'start', job: 'emails', title: 'Last 30', source: '/home/user/files/emails.csv', batches: ['rows 1–10', 'rows 11–20', 'rows 21–30'] }, {})).toMatch(/^Started/);
+    expect(JSON.parse(new TextDecoder().decode(b.files.get('/home/user/files/.batches/emails.json')))).toMatchObject({ source: '/home/user/files/emails.csv' });
+    await bp.handler({ action: 'begin', job: 'emails', n: 1 }, {});
+    await bp.handler({ action: 'done', job: 'emails', n: 1, note: 'ok' }, {});
+    expect(seen.at(-1)).toEqual({ done: 1, total: 3 });
+    // A restart: a NEW tool set over the same sandbox files.
+    const again = fileToolsOver(b);
+    expect(await again.handler({ action: 'list' }, {})).toMatch(/Last 30 \(emails\): 1 of 3 batches done.*Next: batch 2/);
+    expect(await again.handler({ action: 'clear', job: 'emails' }, {})).toBe('Cleared emails.');
+    expect(b.files.has('/home/user/files/.batches/emails.json')).toBe(false);
+    expect(seen.at(-1)).toBeNull();
+    expect(await again.handler({ action: 'read', job: 'emails' }, {})).toMatch(/no open job named emails/);
+  });
+
+  it('step 2c: two checklist calls fired together both land (one queue per job)', async () => {
+    const b = fakeBox();
+    const bp = b.tool('batch_progress');
+    await bp.handler({ action: 'start', job: 'j', title: 't', source: 's.csv', batches: ['a', 'b', 'c'] }, {});
+    await bp.handler({ action: 'begin', job: 'j', n: 1 }, {});
+    const [d1, b2] = await Promise.all([bp.handler({ action: 'done', job: 'j', n: 1 }, {}), bp.handler({ action: 'begin', job: 'j', n: 2 }, {})]);
+    expect(d1).toMatch(/Batch 1 done/);
+    expect(b2).toMatch(/Began batch 2/);
+    const job = JSON.parse(new TextDecoder().decode(b.files.get('/home/user/files/.batches/j.json')));
+    expect(job.batches.map((x: { status: string }) => x.status)).toEqual(['done', 'in_progress', 'pending']);
+  });
+  it('step 2c: a corrupt or unreadable checklist is never mistaken for "no job" — start cannot overwrite it', async () => {
+    let hiccup = false;
+    const b = fakeBox({ readFails: (p) => hiccup && p.endsWith('/j.json') });
+    const bp = b.tool('batch_progress');
+    await bp.handler({ action: 'start', job: 'j', title: 't', source: 's.csv', batches: ['a', 'b'] }, {});
+    hiccup = true;
+    expect(await bp.handler({ action: 'start', job: 'j', title: 't', source: 's.csv', batches: ['x'] }, {})).toMatch(/could not be read just now; nothing was changed/);
+    hiccup = false;
+    expect(JSON.parse(new TextDecoder().decode(b.files.get('/home/user/files/.batches/j.json'))).batches).toHaveLength(2);
+    b.files.set('/home/user/files/.batches/j.json', new TextEncoder().encode('{not json'));
+    expect(await bp.handler({ action: 'begin', job: 'j', n: 1 }, {})).toMatch(/could not be read/);
+    expect(await bp.handler({ action: 'clear', job: 'j' }, {})).toMatch(/^Cleared j/);
+    expect(b.files.has('/home/user/files/.batches/j.json')).toBe(false);
+  });
+
+  it('step 2c: a clear whose delete fails says so and leaves the progress alone', async () => {
+    const seen: unknown[] = [];
+    const b = fakeBox({ rmFails: true, onProgress: (p) => void seen.push(p) });
+    const bp = b.tool('batch_progress');
+    await bp.handler({ action: 'start', job: 'j', title: 't', source: 's.csv', batches: ['a'] }, {});
+    const before = seen.length;
+    expect(await bp.handler({ action: 'clear', job: 'j' }, {})).toMatch(/could not be saved/);
+    b.files.set('/home/user/files/.batches/j.json', new TextEncoder().encode('{not json'));
+    expect(await bp.handler({ action: 'clear', job: 'j' }, {})).toMatch(/could not be cleared.*still there/);
+    expect(seen).toHaveLength(before);
+    expect(b.files.has('/home/user/files/.batches/j.json')).toBe(true);
+  });
+
+  it('step 2c: list waits for a checklist being written (never reads it half-done)', async () => {
+    const b = fakeBox({ writeDelayMs: 30 });
+    const bp = b.tool('batch_progress');
+    await bp.handler({ action: 'start', job: 'j', title: 'T', source: 's.csv', batches: ['a', 'b'] }, {});
+    await bp.handler({ action: 'begin', job: 'j', n: 1 }, {});
+    const done = bp.handler({ action: 'done', job: 'j', n: 1 }, {}); // a slow write in flight
+    const listed = await bp.handler({ action: 'list' }, {});
+    await done;
+    expect(listed).toMatch(/1 of 2 batches done/);
+  });
+
+  it('step 2c: a failed save is said in words and the next call still works; a refusal reports no progress', async () => {
+    const seen: unknown[] = [];
+    let fail = true;
+    const b = fakeBox({ writeFails: () => fail, onProgress: (p) => void seen.push(p) });
+    const bp = b.tool('batch_progress');
+    expect(await bp.handler({ action: 'start', job: 'j', title: 't', source: 's.csv', batches: ['a'] }, {})).toMatch(/could not be saved/);
+    fail = false;
+    expect(await bp.handler({ action: 'start', job: 'j', title: 't', source: 's.csv', batches: ['a'] }, {})).toMatch(/^Started/);
+    const before = seen.length;
+    expect(await bp.handler({ action: 'begin', job: 'j', n: 7 }, {})).toMatch(/no batch 7/);
+    expect(seen).toHaveLength(before);
+  });
+
+  it('step 2c: list shows every open job', async () => {
+    const b = fakeBox();
+    const bp = b.tool('batch_progress');
+    await bp.handler({ action: 'start', job: 'emails', title: 'Emails', source: 'e.csv', batches: ['a'] }, {});
+    await bp.handler({ action: 'start', job: 'invoices', title: 'Invoices', source: 'i.csv', batches: ['a', 'b'] }, {});
+    const out = await bp.handler({ action: 'list' }, {});
+    expect(out).toMatch(/Emails \(emails\): 0 of 1/);
+    expect(out).toMatch(/Invoices \(invoices\): 0 of 2/);
+  });
 });
+
+/** A second tool set over the SAME fake sandbox files (a glue restart). */
+function fileToolsOver(b: ReturnType<typeof fakeBox>): FileTool {
+  return b.rebuild().find((t) => t.name === 'batch_progress') as FileTool;
+}

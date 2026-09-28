@@ -78,10 +78,21 @@ class FakeTelegram implements TelegramApi {
   readonly working = new Set<number>();
   readonly callbacks: Array<{ id: string; text?: string }> = [];
   private nextId = 100;
-  async sendWorking(): Promise<number> {
+  /** Progress texts shown on the Working line (step 2c): by send, then by edit. */
+  readonly workingTexts: Array<{ id: number; text: string | null; how: 'send' | 'edit' }> = [];
+  failEdit = false;
+  async sendWorking(_chat: number, progress?: string): Promise<number> {
     const id = this.nextId++;
     this.working.add(id);
+    this.workingTexts.push({ id, text: progress ?? null, how: 'send' });
     return id;
+  }
+  async editWorking(_chat: number, id: number, progress: string | null): Promise<void> {
+    if (this.failEdit) throw new Error('telegram: editMessageText failed (HTTP 400)');
+    // Telegram cannot edit a deleted message: a regression that edits a line
+    // already taken down must fail here, not pass quietly.
+    if (!this.working.has(id)) throw new Error(`telegram: message ${id} to edit not found`);
+    this.workingTexts.push({ id, text: progress, how: 'edit' });
   }
   async deleteMessage(_chat: number, id: number): Promise<void> {
     this.working.delete(id);
@@ -1461,6 +1472,105 @@ describe('Seat — a plan that only leaves plan mode (exit_only, live 2026-09-27
     t.session().emit('session.idle', {});
     await tick();
     expect(t.session().sends.map((x) => x.prompt)).toEqual(['cancel the plan']);
+  });
+});
+
+describe('Seat — batch progress on the Working line (step 2c)', () => {
+  it('edits the line in order, skips an unchanged text, and a new turn starts plain', async () => {
+    const t = setup();
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'summarise my last 100 emails' }));
+    await tick();
+    t.seat.showProgress('batch 1 of 10');
+    t.seat.showProgress('batch 1 of 10'); // a resumed begin: same counts, nothing sent
+    t.seat.showProgress('batch 2 of 10');
+    await tick();
+    const line = t.telegram.workingTexts[0];
+    expect(line).toMatchObject({ how: 'send', text: null });
+    expect(t.telegram.workingTexts.slice(1)).toEqual([
+      { id: line.id, text: 'batch 1 of 10', how: 'edit' },
+      { id: line.id, text: 'batch 2 of 10', how: 'edit' },
+    ]);
+    t.session().emit('session.idle', {});
+    await tick();
+    t.seat.showProgress('batch 3 of 10'); // the reply is over: no line to edit
+    await tick();
+    expect(t.telegram.workingTexts.filter((w) => w.how === 'edit')).toHaveLength(2);
+    await t.seat.handleUpdate(upd({ text: 'thanks' }));
+    await tick();
+    expect(t.telegram.workingTexts.at(-1)).toMatchObject({ how: 'send', text: null });
+  });
+
+  it('a question prompt takes the line down; the re-posted line still shows the progress', async () => {
+    const t = setup({ manager: true });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'summarise my last 100 emails' }));
+    await tick();
+    t.seat.showProgress('batch 4 of 10');
+    await tick();
+    const asked = t.hooks()!.onUserInput({ question: 'Include spam?', choices: ['Yes', 'No'] });
+    await tick();
+    await t.seat.handleUpdate(tap(dataOf(t, 1)));
+    await asked;
+    await tick();
+    expect(t.telegram.workingTexts.at(-1)).toMatchObject({ how: 'send', text: 'batch 4 of 10' });
+  });
+
+  it('a failed edit is logged and the reply carries on', async () => {
+    const logs: string[] = [];
+    const t = setup({ log: (m) => void logs.push(m) });
+    t.telegram.failEdit = true;
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'summarise' }));
+    await tick();
+    t.seat.showProgress('batch 1 of 3');
+    await tick();
+    expect(logs.some((l) => /could not update the Working line/.test(l))).toBe(true);
+    t.session().emit('assistant.message', { content: 'done', toolRequests: [] });
+    t.session().emit('session.idle', {});
+    await tick();
+    expect(t.telegram.sent).toContain('done');
+  });
+
+  it('an edit queued just before a prompt takes the line down lands first (never on a deleted line)', async () => {
+    const logs: string[] = [];
+    const t = setup({ manager: true, log: (m) => void logs.push(m) });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'summarise my last 100 emails' }));
+    await tick();
+    t.seat.showProgress('batch 5 of 10');
+    void t.hooks()!.onUserInput({ question: 'Include spam?', choices: ['Yes', 'No'] }); // same tick
+    await tick();
+    expect(logs.filter((l) => /could not update/.test(l))).toEqual([]);
+    expect(t.telegram.workingTexts.find((w) => w.how === 'edit')).toMatchObject({ text: 'batch 5 of 10' });
+  });
+
+  it('a failed edit is retried by the next progress, even with the same text', async () => {
+    const t = setup();
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'summarise' }));
+    await tick();
+    t.telegram.failEdit = true;
+    t.seat.showProgress('batch 2 of 3');
+    await tick();
+    t.telegram.failEdit = false;
+    t.seat.showProgress('batch 2 of 3');
+    await tick();
+    expect(t.telegram.workingTexts.filter((w) => w.how === 'edit').map((w) => w.text)).toEqual(['batch 2 of 3']);
+  });
+
+  it('a steer (a text during a tool) keeps the progress', async () => {
+    const t = setup();
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'summarise' }));
+    await tick();
+    t.seat.showProgress('batch 2 of 3');
+    t.policy.onToolPending('call-1', 'batch_progress');
+    await t.seat.handleUpdate(upd({ text: 'and flag anything about leaks' }));
+    await tick();
+    t.seat.showProgress('batch 2 of 3'); // unchanged after the steer: nothing re-sent
+    await tick();
+    expect(t.telegram.workingTexts.filter((w) => w.how === 'edit').map((w) => w.text)).toEqual(['batch 2 of 3']);
   });
 });
 

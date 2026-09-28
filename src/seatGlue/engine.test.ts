@@ -87,7 +87,7 @@ describe('sessionConfig — the manager seat (step 2a)', () => {
 
 describe('sessionConfig — a manager\'s file tools (step 2b)', () => {
   const tool = (name: string) => ({ name, description: '', parameters: {}, handler: async () => '' });
-  const tools = ['run_command', 'read_file', 'write_file', 'share_file', 'export_query'].map(tool);
+  const tools = ['run_command', 'read_file', 'write_file', 'share_file', 'export_query', 'batch_progress'].map(tool);
 
   it('a manager with tools gets custom:*, the tools, and our skill folders (with the skill tool)', () => {
     const c = sessionConfig({ ...base('manager'), tools, skillsDir: '/opt/seat-glue/skills' }, new TurnPolicy(), hooks) as unknown as Cfg & {
@@ -139,6 +139,8 @@ describe('sessionConfig — a manager\'s file tools (step 2b)', () => {
     expect(perm({ kind: 'custom-tool', toolName: 'write_file', toolCallId: 'w1' })).toEqual({ kind: 'approve-once' });
     expect(policy.toolPending).toBe(true);
     expect(policy.onlyAbortSafePending).toBe(false);
+    // Step 2c: the checklist too — approved and pending like the other file tools.
+    expect(perm({ kind: 'custom-tool', toolName: 'batch_progress', toolCallId: 'b1' })).toEqual({ kind: 'approve-once' });
     expect(perm({ kind: 'custom-tool', toolName: 'format_disk', toolCallId: 'x1' })).toEqual({ kind: 'reject' });
     // Without tools configured, a file-tool name is refused too.
     const bare = (sessionConfig(base('manager'), new TurnPolicy(), hooks) as { onPermissionRequest: Perm }).onPermissionRequest;

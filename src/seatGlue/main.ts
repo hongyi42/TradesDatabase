@@ -7,6 +7,7 @@ import { loadConfig, type SeatConfig } from './config.js';
 import { CostLog } from './costLog.js';
 import { openSession, startEngine, type EngineClient, type EngineConfig } from './engine.js';
 import { ExportError, fileTools, type ExportResult, type FileTool, type FileToolSet } from './fileTools.js';
+import type { Progress } from './batchProgress.js';
 import { defaultFetch, type FetchLike } from './http.js';
 import { seatHeaders } from './identity.js';
 import { ManagerSandbox } from './sandbox.js';
@@ -94,10 +95,31 @@ export async function exportRows(cfg: SeatConfig, sql: string, fetchFn: FetchLik
 }
 
 /**
+ * Step 2c: the batch checklist's progress → the Working line. The file tools are
+ * built here in seatDeps, BEFORE the Seat exists, so the Seat attaches itself
+ * afterwards (main(), drive.ts).
+ */
+export class ProgressSink {
+  private show: ((text: string | null) => void) | null = null;
+  attach(show: (text: string | null) => void): void {
+    this.show = show;
+  }
+  emit(p: Progress | null): void {
+    this.show?.(progressText(p));
+  }
+}
+
+/** "batch 3 of 10" while running, "combining the notes" once all are done. */
+export function progressText(p: Progress | null): string | null {
+  if (!p || p.total <= 0) return null;
+  return p.done >= p.total ? 'combining the notes' : `batch ${p.done + 1} of ${p.total}`;
+}
+
+/**
  * A manager's file tools (step 2b), or none. Built here, not in main(), because
  * the local driver builds its seat through seatDeps too.
  */
-export function managerTools(cfg: SeatConfig, who: SeatWho, telegram: TelegramApi): FileToolSet | undefined {
+export function managerTools(cfg: SeatConfig, who: SeatWho, telegram: TelegramApi, onProgress?: (p: Progress | null) => void): FileToolSet | undefined {
   if (who.tier !== 'manager') return undefined;
   if (!cfg.e2bApiKey) {
     console.warn('seat-glue: no E2B_API_KEY — this manager seat has no file tools');
@@ -114,6 +136,7 @@ export function managerTools(cfg: SeatConfig, who: SeatWho, telegram: TelegramAp
     sandbox,
     exportRows: (sql) => exportRows(cfg, sql),
     sendDocument: (name, bytes, caption) => telegram.sendDocument(who.telegramUserId, name, bytes, caption),
+    onProgress,
   });
 }
 
@@ -141,7 +164,7 @@ export function seatDeps(
   // the REAL seat token against a scripted Telegram, and must never drain the
   // person's real inbox or tell a fake that the office reads the chat.
   opts: { office?: boolean; onSeatChanged?: (code: 0 | 1 | 4) => void } = {},
-): SeatDeps & { costLog: CostLog; transcript?: Transcript } {
+): SeatDeps & { costLog: CostLog; transcript?: Transcript; progress: ProgressSink } {
   const costLog = new CostLog({
     seat: cfg.seatRef,
     tenantId: who.tenantId,
@@ -149,8 +172,10 @@ export function seatDeps(
     stateDir: cfg.stateDir,
     openrouterKey: cfg.openrouterKey,
   });
-  const files = managerTools(cfg, who, telegram);
+  const progress = new ProgressSink();
+  const files = managerTools(cfg, who, telegram, (p) => progress.emit(p));
   return {
+    progress,
     telegram,
     openSession: (id, hooks) => openSession(client, engineConfig(cfg, who, files?.tools), policy, id, hooks),
     ...(files ? { onAbort: () => files.stopRunning() } : {}),
@@ -223,6 +248,7 @@ async function main(argv: string[]): Promise<void> {
   // Turns a previous run could not upload go first.
   await deps.transcript?.load();
   const seat = new Seat(deps);
+  deps.progress.attach((t) => seat.showProgress(t));
 
   // A restart (an upgrade, systemd) must not drop the last reply's cost lines:
   // each waits up to ~2 min for OpenRouter's generation record. Bounded well

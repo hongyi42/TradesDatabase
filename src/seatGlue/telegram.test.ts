@@ -134,5 +134,17 @@ describe('splitText', () => {
     expect(calls).toHaveLength(0);
     await expect(tg.sendDocument(42, 'a.csv', new Uint8Array([1]))).rejects.toThrow(/sendDocument failed/);
   });
+
+  it('step 2c: the Working line carries a batch job\'s progress, sent and edited with its Stop button', async () => {
+    const { f, calls } = fakeFetch(() => ({ json: { ok: true, result: { message_id: 7 } } }));
+    const tg = new TelegramClient('tok', f);
+    await tg.sendWorking(42, 'batch 2 of 10');
+    expect(body(calls[0])).toMatchObject({ text: 'Working… batch 2 of 10', reply_markup: { inline_keyboard: [[{ text: '⏹ Stop' }]] } });
+    await tg.editWorking(42, 7, 'batch 3 of 10');
+    expect(calls[1].url).toMatch(/editMessageText$/);
+    expect(body(calls[1])).toMatchObject({ chat_id: 42, message_id: 7, text: 'Working… batch 3 of 10', reply_markup: { inline_keyboard: [[{ text: '⏹ Stop' }]] } });
+    await tg.editWorking(42, 7, null);
+    expect(body(calls[2]).text).toBe('Working…');
+  });
 });
 

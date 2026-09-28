@@ -24,6 +24,7 @@ import { TurnPolicy } from './turnPolicy.js';
 //   {"waitIdle": true}        wait until the seat is idle and its replies went out
 //   {"waitPrompt": true}      wait until the seat posts a question or plan with buttons (120 s)
 //   {"tap": 0}                tap button n of the open prompt (a callback_query update)
+//   {"waitProgress": "batch 3 of"}  wait until the Working line has shown progress containing it (10 min)
 // The driver waits for idle and for the cost log before it exits.
 export type Step =
   | { text: string }
@@ -34,7 +35,8 @@ export type Step =
   | { waitMs: number }
   | { waitIdle: true }
   | { waitPrompt: true }
-  | { tap: number };
+  | { tap: number }
+  | { waitProgress: string };
 
 export class ScriptedTelegram implements TelegramApi {
   private queue: TgUpdate[] = [];
@@ -156,6 +158,16 @@ export async function drive(steps: Step[], seat: Seat, tg: ScriptedTelegram): Pr
       console.log(`>> TAP: ${step.tap}`);
       tg.pushTap(data, 0);
       await new Promise((r) => setTimeout(r, 200));
+      continue;
+    }
+    if ('waitProgress' in step) {
+      // Step 2c's gate: Stop a batch job mid-way, at a known batch.
+      const deadline = Date.now() + 600_000;
+      // A substring, since the model sizes the batches: "batch 3 of" matches "batch 3 of 10".
+      while (!tg.progress.some((p) => p.includes(step.waitProgress))) {
+        if (Date.now() > deadline) throw new Error(`driver: the Working line never showed "${step.waitProgress}" within 10 minutes`);
+        await new Promise((r) => setTimeout(r, 500));
+      }
       continue;
     }
     if ('waitMs' in step) await new Promise((r) => setTimeout(r, step.waitMs));

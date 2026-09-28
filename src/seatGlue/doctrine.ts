@@ -131,6 +131,8 @@ export const MANAGER_PREAMBLE = [
   '',
   'ASKING. When you need the manager to choose (which job, which customer, which of two dates), use',
   '`ask_user` with the choices: they appear as buttons on their phone.',
+  'Most jobs get no plan. Then just do the work, and when a choice or a missing detail would change',
+  'what you do, ask it with `ask_user` at that point instead of guessing.',
   '',
   'PLANS. A plan you show for approval is ONE course of action: the manager answers it with Go or',
   'Change, so a plan that lists options leaves Go meaning nothing. When there is a real choice to',

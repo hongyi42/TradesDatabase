@@ -55,7 +55,14 @@ async function noul(opts: JevOptions, state: Record<string, unknown>, instructio
   return typeof p === 'number' && Number.isFinite(p) ? p : null;
 }
 
-/** Should this manager message get a plan first? Threshold 0.5 (measured). Failure → no plan. */
+/**
+ * How sure Jev must be before a message gets a plan (operator 2026-09-28: the
+ * bot planned "even for seemingly easy tasks" at 0.5 — only a confident call
+ * plans now). The 48/48 measurement was taken at 0.5.
+ */
+export const PLAN_THRESHOLD = 0.8;
+
+/** Should this manager message get a plan first? Only at p ≥ PLAN_THRESHOLD. Failure → no plan. */
 export async function needsPlan(
   opts: JevOptions,
   message: string,
@@ -63,7 +70,7 @@ export async function needsPlan(
 ): Promise<{ plan: boolean; p: number | null }> {
   try {
     const p = await noul(opts, { message, ...(previous ? { previous } : {}) }, PLAN_Q, PLAN_CRITERIA);
-    return { plan: p !== null && p >= 0.5, p };
+    return { plan: p !== null && p >= PLAN_THRESHOLD, p };
   } catch (err) {
     opts.log?.(`jev needsPlan failed (${err instanceof Error ? err.message : String(err)}) — no plan`);
     return { plan: false, p: null };

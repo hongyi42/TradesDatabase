@@ -172,7 +172,7 @@ helper, `:81-86`) and add `E2B_API_KEY` / `E2B_TEMPLATE` to the env file it writ
       `python3 -c "import urllib.request; urllib.request.urlopen('https://pypi.org', timeout=5)"`
       fails with a NETWORK error (URLError/timeout — not "command not found"); `sandbox.json` holds
       the id; a second `ManagerSandbox` in a new process connects to the same id; kill it after.
-- [ ] Record the gate test's 2-hour check (state, resume ms, files identical, job finished).
+- [x] Record the gate test's 2-hour check (state, resume ms, files identical, job finished) — 05:02 UTC after ~2.5 h paused: state paused, resumed in 541 ms, PDF/XLSX identical, frozen job finished 180/180, libs installed; gate sandbox killed.
 
 ---
 
@@ -228,13 +228,13 @@ sandbox has no internet. The paragraph must not contain the word "technician"
 file in your own computer with your file tools and send it with share_file"; its test updated.
 
 ### Automated verification
-- [ ] typecheck, lint, `npm test` pass
-- [ ] `fileTools.test.ts` (fake sandbox): each tool's happy path; non-zero exit returned; output
+- [x] typecheck, lint, `npm test` pass
+- [x] `fileTools.test.ts` (fake sandbox): each tool's happy path; non-zero exit returned; output
       caps; a `CommandExitError` becomes a result; an aborted `run_command` kills the pid;
       `share_file` refuses `/home/user/../etc/x` and over 50 MB; `export_query` with filename
       `../skills/x` writes `files/skillsx.csv`; it writes the full CSV but returns 5 rows; the
       "earlier files are gone" prefix
-- [ ] `engine.test.ts`: a manager with tools → `custom:*` + tools passed; a custom-tool permission
+- [x] `engine.test.ts`: a manager with tools → `custom:*` + tools passed; a custom-tool permission
       for a file tool is approved AND marked pending; an unknown custom tool is rejected;
       `seat.test.ts`: a Stop during a pending `run_command` aborts at once (abort-safe), during a
       pending `write_file` it waits; technician
@@ -243,14 +243,25 @@ file in your own computer with your file tools and send it with share_file"; its
 ### Live verification (agent-executable)
 - Prerequisites: local rig (seed, `setup-local-seat.mjs`, local spine on 8791, minted seat token),
   `E2B_API_KEY`, the Phase 2 template, both SDKs `--no-save`.
-- [ ] Driver: "make me a spreadsheet of every open job with its customer" → the scripted chat's
+- [x] Driver: "make me a spreadsheet of every open job with its customer" → the scripted chat's
       `documents` holds an .xlsx; opened locally with a reader, its row count equals
       `select count(*) from v_jobs where status open` on the local DB (cross-channel); the tool
       sequence in the session file includes `export_query` and no row-by-row `write_file`
-- [ ] The custom-tool permission request's `toolCallId` equals `tool.execution_complete`'s (logged
+- [x] The custom-tool permission request's `toolCallId` equals `tool.execution_complete`'s (logged
       once, like the MCP serverName) — if not, the pending entry only clears at idle; record which
 
 ---
+
+**Evidence (2026-09-28):** real model + real sandbox on the local rig: export_query → write_file
+(build_excel.py reading the CSV — no rows retyped) → run_command → share_file; the .xlsx's 2 rows =
+the DB's open jobs; every custom-tool toolCallId equalled its completion's. One run hit OpenRouter
+"400 Provider returned error" after the tools had worked (retry clean; also seen once with no custom
+tools). **Measured, and fixed: the SDK's `invocation.signal` does NOT fire on `session.abort()`** — a
+stopped python3 ran on; the Seat now calls `onAbort` → `stopRunning()`, which kills each command's
+process GROUP (`setsid --wait`, pgid file). Live after: `exit 3`→3, self-SIGKILL→137 (setsid alone
+reports 9), "Zoë Müller ✓" uncut, 3 s timeout killed, Stop killed, nothing left in `ps`. Three review
+rounds: output tails via sandbox files (E2B buffers all stdout in the glue), sizes checked before any
+read, only a 400 is "refused", timeout by `TimeoutError` name, the kill awaited before clean-up.
 
 ## Phase 4: the spreadsheet skill
 

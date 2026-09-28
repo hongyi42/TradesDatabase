@@ -1,6 +1,7 @@
 import { seatHeaders } from './identity.js';
 import { MANAGER_DOCTRINE, TECHNICIAN_DOCTRINE } from './doctrine.js';
 import type { TurnPolicy } from './turnPolicy.js';
+import { FILE_TOOL_NAMES, type FileTool } from './fileTools.js';
 
 // The ONLY file that loads @github/copilot-sdk (1.0.14). The SDK is not a
 // dependency of this repo — Render installs the root package.json on every
@@ -92,6 +93,8 @@ export interface EngineConfig {
   seatToken: string;
   /** From /seat/whoami (step 2a): picks the rulebook, Composio and the two built-ins. */
   tier: 'manager' | 'technician';
+  /** Step 2b: a manager's file tools (fileTools.ts). Absent = no sandbox. */
+  tools?: FileTool[];
 }
 
 // The tool servers a seat may call. serverName is the mcpServers KEY (measured
@@ -109,6 +112,7 @@ export const TOOL_SERVERS = new Set([...SPINE_NAMES, 'composio']);
 export const MANAGER_BUILTINS = new Set(['ask_user', 'exit_plan_mode']);
 let loggedServerName = false;
 let loggedNonMcpKind = false;
+let loggedCustomCallId = false;
 
 export async function startEngine(opts: { baseDirectory: string; tz: string }): Promise<EngineClient> {
   const sdk = (await import(SDK_SPECIFIER)) as SdkModule;
@@ -127,6 +131,8 @@ export async function startEngine(opts: { baseDirectory: string; tz: string }): 
 
 export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy, hooks?: SeatHooks): Record<string, unknown> {
   const manager = cfg.tier === 'manager';
+  // File tools are a manager's only (step 2b); a technician config never carries them.
+  const fileTools = manager ? (cfg.tools ?? []) : [];
   const spine = {
     type: 'http',
     url: cfg.spineUrl,
@@ -154,8 +160,9 @@ export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy, hooks?: Sea
       supports: { vision: true },
       limits: { vision: { supported_media_types: ['image/jpeg', 'image/png'] } },
     },
-    // Spine results are capped at 20k chars; a spill file is unreadable anyway
-    // (no file tool in mode "empty").
+    // Spine results are capped at 20k chars. The engine would spill a large one
+    // to a file on the BOX, which no tool can read: a manager's file tools act
+    // on the sandbox (step 2b), and export_query is how full results reach it.
     largeOutput: { enabled: false },
     // NOT reasoningSummary:'none' — measured 2026-09-22 through OpenRouter +
     // @preset/trades-seats, Gemini 3.8 Flash writes its thought summaries
@@ -164,7 +171,10 @@ export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy, hooks?: Sea
     // ends in a tool request. Do not remove that hold on the strength of a setting.
     systemMessage: { mode: 'replace', content: manager ? MANAGER_DOCTRINE : TECHNICIAN_DOCTRINE },
     // All tools loaded, tool search OFF (measured 2026-09-23: a wash at ~49 tools).
-    availableTools: manager ? ['mcp:*', 'builtin:ask_user', 'builtin:exit_plan_mode'] : ['mcp:*'],
+    availableTools: manager
+      ? ['mcp:*', 'builtin:ask_user', 'builtin:exit_plan_mode', ...(fileTools.length ? ['custom:*'] : [])]
+      : ['mcp:*'],
+    ...(fileTools.length ? { tools: fileTools } : {}),
     toolSearch: { enabled: false },
     mcpServers: manager
       ? {
@@ -181,6 +191,16 @@ export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy, hooks?: Sea
       }
       if (r.kind === 'mcp' && r.serverName && TOOL_SERVERS.has(r.serverName)) {
         // Pending from HERE, before the call goes out (turnPolicy rule 2).
+        policy.onToolPending(r.toolCallId, r.toolName);
+        return { kind: 'approve-once' };
+      }
+      // Step 2b: our own file tools. Pending from HERE too, so a Stop waits for
+      // them (run_command alone is abort-safe: its handler kills the process).
+      if (r.kind === 'custom-tool' && fileTools.length && r.toolName && FILE_TOOL_NAMES.has(r.toolName)) {
+        if (!loggedCustomCallId) {
+          loggedCustomCallId = true;
+          console.log(`seat-glue: first custom-tool permission request — toolCallId=${JSON.stringify(r.toolCallId)}`);
+        }
         policy.onToolPending(r.toolCallId, r.toolName);
         return { kind: 'approve-once' };
       }

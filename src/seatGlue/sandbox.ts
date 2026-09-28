@@ -46,6 +46,7 @@ export interface E2bSandboxLike {
     read(path: string, opts: { format: 'bytes' }): Promise<Uint8Array>;
     read(path: string): Promise<string>;
     write(path: string, data: string | ArrayBuffer): Promise<unknown>;
+    getInfo(path: string): Promise<{ size: number }>;
   };
 }
 export interface E2bModuleLike {

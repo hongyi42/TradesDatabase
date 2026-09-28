@@ -72,6 +72,8 @@ export interface SeatDeps {
   pollRetryMs?: number;
   /** After a session.error, how long to wait for an idle before ending the reply. */
   errorIdleWaitMs?: number;
+  /** Step 2b: called as a reply is stopped (Stop, /new) — kills a manager's running sandbox commands. */
+  onAbort?: () => void;
   /** How long a Stop or /new waits for an in-flight spine tool. */
   toolWaitMs?: number;
   /** A manager seat (step 2a): questions and plans reach the person with buttons. */
@@ -498,6 +500,9 @@ export class Seat {
    * for good.
    */
   private async abortAndWait(session: EngineSession, done: Promise<void>): Promise<void> {
+    // Our own tools first (step 2b): the SDK does not cancel a custom tool's call
+    // on abort, so a running sandbox command would carry on (measured live).
+    this.deps.onAbort?.();
     try {
       await session.abort();
     } catch (err) {

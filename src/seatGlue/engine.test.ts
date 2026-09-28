@@ -84,3 +84,39 @@ describe('sessionConfig — the manager seat (step 2a)', () => {
     expect(perm({ kind: 'custom-tool', toolName: 'ask_user' })).toEqual({ kind: 'reject' });
   });
 });
+
+describe('sessionConfig — a manager\'s file tools (step 2b)', () => {
+  const tool = (name: string) => ({ name, description: '', parameters: {}, handler: async () => '' });
+  const tools = ['run_command', 'read_file', 'write_file', 'share_file', 'export_query'].map(tool);
+
+  it('a manager with tools gets custom:* and the tools themselves', () => {
+    const c = sessionConfig({ ...base('manager'), tools }, new TurnPolicy(), hooks) as unknown as Cfg & { tools?: unknown[] };
+    expect(c.availableTools).toEqual(['mcp:*', 'builtin:ask_user', 'builtin:exit_plan_mode', 'custom:*']);
+    expect(c.tools).toBe(tools);
+  });
+
+  it('a technician never carries them, even if handed some: the whole config is unchanged', () => {
+    const withTools = sessionConfig({ ...base('technician'), tools }, new TurnPolicy()) as Record<string, unknown>;
+    const without = sessionConfig(base('technician'), new TurnPolicy()) as Record<string, unknown>;
+    expect(Object.keys(withTools)).toEqual(Object.keys(without));
+    const data = (c: Record<string, unknown>) => JSON.parse(JSON.stringify(c));
+    expect(data(withTools)).toEqual(data(without));
+    expect(withTools.tools).toBeUndefined();
+  });
+
+  it('a file-tool call is approved AND marked pending; an unknown custom tool is refused', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const policy = new TurnPolicy();
+    policy.onSend();
+    const perm = (sessionConfig({ ...base('manager'), tools }, policy, hooks) as { onPermissionRequest: Perm }).onPermissionRequest;
+    expect(perm({ kind: 'custom-tool', toolName: 'write_file', toolCallId: 'w1' })).toEqual({ kind: 'approve-once' });
+    expect(policy.toolPending).toBe(true);
+    expect(policy.onlyAbortSafePending).toBe(false);
+    expect(perm({ kind: 'custom-tool', toolName: 'format_disk', toolCallId: 'x1' })).toEqual({ kind: 'reject' });
+    // Without tools configured, a file-tool name is refused too.
+    const bare = (sessionConfig(base('manager'), new TurnPolicy(), hooks) as { onPermissionRequest: Perm }).onPermissionRequest;
+    expect(bare({ kind: 'custom-tool', toolName: 'run_command', toolCallId: 'r1' })).toEqual({ kind: 'reject' });
+  });
+});
+

@@ -148,13 +148,20 @@ and `drive.ts` (before `:192`) attach `(t) => seat.showProgress(t)`. Text: `batc
 ${total}`, `combining the notes` when all done, `null` after clear.
 
 ### Automated verification
-- [ ] typecheck, lint, `npm test` pass
-- [ ] `telegram.test.ts`: `editWorking` posts `editMessageText` with the Stop button
-- [ ] `seat.test.ts`: progress edits the Working line in order and skips an unchanged text; after a
+- [x] typecheck, lint, `npm test` pass
+- [x] `telegram.test.ts`: `editWorking` posts `editMessageText` with the Stop button
+- [x] `seat.test.ts`: progress edits the Working line in order and skips an unchanged text; after a
       question prompt the re-posted line carries the progress; a new turn starts plain; none after the
       reply ended; a failed edit is logged and the reply carries on
 
 ---
+
+**Evidence (2026-09-28):** `sendWorking(chatId, progress?)` + `editWorking` (three implementers),
+`Seat.showProgress`, `ProgressSink` wired in `seatDeps` and attached before `run()`. Review: no
+correctness bugs; fixed a stale line after a failed edit (the seat now tracks what the line SHOWS and
+decides at send time), the fake refuses edits to a deleted line, and tests prove edit-before-delete, a
+retry after a failed edit, and a steer keeping the progress. The end-to-end wiring is checked live in
+Phase 4 (the driver records every progress text).
 
 ## Phase 3: when and how — the rulebook trigger and the `batching` skill
 

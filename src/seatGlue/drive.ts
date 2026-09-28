@@ -102,9 +102,18 @@ export class ScriptedTelegram implements TelegramApi {
 
   private nextMessageId = 1;
 
-  async sendWorking(): Promise<number> {
-    console.log('   (Working… ⏹ Stop)');
+  /** Every progress text the seat showed on its Working line (step 2c; the gate waits on these). */
+  readonly progress: string[] = [];
+
+  async sendWorking(_chatId: number, progress?: string): Promise<number> {
+    console.log(`   (Working…${progress ? ` ${progress}` : ''} ⏹ Stop)`);
+    if (progress) this.progress.push(progress);
     return this.nextMessageId++;
+  }
+
+  async editWorking(_chatId: number, _messageId: number, progress: string | null): Promise<void> {
+    console.log(`   (Working…${progress ? ` ${progress}` : ''} ⏹ Stop)`);
+    if (progress) this.progress.push(progress);
   }
 
   async deleteMessage(): Promise<void> {}
@@ -190,6 +199,7 @@ async function main(argv: string[]): Promise<void> {
   // send the office notice to a fake, or upload scripted turns as their chat.
   const deps = seatDeps(cfg, who, client, tg, new TurnPolicy(), { office: false });
   const seat = new Seat(deps);
+  deps.progress.attach((t) => seat.showProgress(t));
   const loop = seat.run().catch((err: unknown) => {
     console.error(`seat loop failed: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1); // a seat that never started would leave the driver waiting forever

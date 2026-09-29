@@ -33,6 +33,92 @@ interface GmailSentPayload {
   recipients?: string;
   cc?: string;
   bcc?: string;
+  attachment_list?: unknown;
+  payload?: unknown;
+}
+
+/**
+ * One attachment on the firm's own sent mail (step 2e Phase 4). `attachmentId`
+ * is Gmail's handle for fetching the bytes and never reaches L1 — the capture's
+ * metadata keeps only `{name, mime, size}` (webhook.ts).
+ */
+export interface SentAttachment {
+  attachmentId: string;
+  name: string;
+  mime: string;
+  /** Bytes, when the payload says; null when it does not. */
+  size: number | null;
+}
+
+// A generous bound on what one message can carry into the fetch loop — Gmail
+// caps a message near 25 MB, so a list past this is a malformed payload.
+const MAX_ATTACHMENTS = 25;
+const MAX_PART_DEPTH = 10;
+
+const str = (o: Record<string, unknown>, ...keys: string[]): string | null => {
+  for (const k of keys) {
+    const v = o[k];
+    if (typeof v === 'string' && v) return v;
+  }
+  return null;
+};
+
+const sizeOf = (v: unknown): number | null => {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : NaN;
+  return Number.isFinite(n) && n >= 0 ? n : null;
+};
+
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === 'object' && !Array.isArray(v);
+
+// THE ITEM SHAPE OF `attachment_list` IS UNDECLARED. Composio's live trigger
+// schema (GET /api/v3/triggers_types/GMAIL_EMAIL_SENT_TRIGGER) types it as an
+// array of `{}` — so every spelling seen across Composio's Gmail tools is read,
+// and a list we cannot read falls back to the message's own MIME tree:
+// `payload.parts[]`, Gmail's `MessagePart` (filename, mimeType,
+// body.attachmentId, body.size —
+// https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages).
+// An item with no attachment id is skipped: without it the bytes cannot be
+// fetched, and a name alone keeps nothing.
+export function readSentAttachments(data: { attachment_list?: unknown; payload?: unknown }): SentAttachment[] {
+  const out: SentAttachment[] = [];
+  const seen = new Set<string>();
+  const push = (a: SentAttachment): void => {
+    if (seen.has(a.attachmentId) || out.length >= MAX_ATTACHMENTS) return;
+    seen.add(a.attachmentId);
+    out.push(a);
+  };
+  if (Array.isArray(data.attachment_list)) {
+    for (const item of data.attachment_list) {
+      if (!isObj(item)) continue;
+      const attachmentId = str(item, 'attachmentId', 'attachment_id', 'id');
+      if (!attachmentId) continue;
+      push({
+        attachmentId,
+        name: str(item, 'filename', 'file_name', 'name') ?? 'attachment',
+        mime: str(item, 'mimeType', 'mime_type', 'mimetype') ?? 'application/octet-stream',
+        size: sizeOf(item.size),
+      });
+    }
+  }
+  if (out.length > 0) return out;
+  const walk = (part: unknown, depth: number): void => {
+    if (!isObj(part) || depth > MAX_PART_DEPTH) return;
+    const body = isObj(part.body) ? part.body : {};
+    const filename = str(part, 'filename');
+    const attachmentId = str(body, 'attachmentId', 'attachment_id');
+    if (filename && attachmentId) {
+      push({
+        attachmentId,
+        name: filename,
+        mime: str(part, 'mimeType', 'mime_type') ?? 'application/octet-stream',
+        size: sizeOf(body.size),
+      });
+    }
+    if (Array.isArray(part.parts)) for (const p of part.parts) walk(p, depth + 1);
+  };
+  walk(data.payload, 0);
+  return out;
 }
 
 export const gmailEmailSentNormalizer: Normalizer = (payload: unknown): InboundEnvelope => {
@@ -74,6 +160,9 @@ export const gmailEmailSentNormalizer: Normalizer = (payload: unknown): InboundE
     (typeof data.to === 'string' && data.to ? data.to : undefined) ??
     (typeof data.recipients === 'string' && data.recipients ? data.recipients : undefined);
   const recipients = typeof data.recipients === 'string' && data.recipients ? data.recipients : undefined;
+  // STEP 2E PHASE 4 — the files on the firm's own mail (an invoice PDF, most
+  // often), carried to the door so it can keep them after the capture lands.
+  const attachments = readSentAttachments(data);
 
   return {
     // The direction comes from the TRIGGER TYPE, not from anything in the
@@ -96,6 +185,11 @@ export const gmailEmailSentNormalizer: Normalizer = (payload: unknown): InboundE
       ...(recipients ? { recipients } : {}),
       ...(typeof data.cc === 'string' && data.cc ? { cc: data.cc } : {}),
       ...(typeof data.bcc === 'string' && data.bcc ? { bcc: data.bcc } : {}),
+      // Present-only. The attachment ids ride here for the fetch; the door
+      // writes only {name, mime, size} into L1 (webhook.ts).
+      ...(attachments.length > 0
+        ? { attachments: attachments.map((a) => ({ ...a })) }
+        : {}),
     },
     // THE USER'S RULING STANDS (2026-09-09): a human's own sent mail is gated by
     // the work/personal classifier exactly as inbound is. L1 has no delete, so a

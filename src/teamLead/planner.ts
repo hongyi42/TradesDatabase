@@ -1602,7 +1602,9 @@ export function buildGapView(
   // caller's day and time live in the capture and the model may never repeat
   // them (`dateLabels` below is the only temporal vocabulary it may use, and
   // these kinds add nothing to it).
-  if ((PINGED_KINDS as string[]).includes(n.kind)) {
+  // `outbound_invoice` is pinged like these but is nobody getting in touch —
+  // it has its own block below.
+  if ((PINGED_KINDS as string[]).includes(n.kind) && n.kind !== 'outbound_invoice') {
     const channel = ctxStr(n, 'channel') ?? 'a message';
     const from = ctxStr(n, 'from');
     const ago = elapsedLabel(n.created_at, nowMs);
@@ -1700,6 +1702,61 @@ export function buildGapView(
       // it needs; the age of the text is not.
       lines.push('  you have already texted a manager about this one');
     }
+  }
+  // STEP 2E PHASE 4 — THE MANAGER'S OWN SENT EMAIL THAT LOOKS LIKE AN INVOICE.
+  // Not a caller, not a request, and nothing the firm agreed to: the manager
+  // wrote it from their own Gmail, code saw a PDF or the word "invoice" on it,
+  // and the question is only whether the ledger should carry it. So none of the
+  // inbound lines apply — no "caller's words", no "a job would have to be
+  // opened", no "agreed to come out" — and the block says what it is.
+  if (n.kind === 'outbound_invoice') {
+    const sentTo = ctxStr(n, 'sentTo');
+    const ago = elapsedLabel(n.created_at, nowMs);
+    const retracted = marks?.retracted === true;
+    // WHOSE MAILBOX — the note goes to this person's seat (validate refuses
+    // anybody else while they are an active manager).
+    const owner = ctxStr(n, 'senderName') ?? ctxStr(n, 'technicianRef');
+    const ownerRef = ctxStr(n, 'technicianRef');
+    if (owner) {
+      lines.push(`  sent from ${owner}'s mailbox${ownerRef && ownerRef !== owner ? ` (${ownerRef})` : ''}`);
+    }
+    lines.push(
+      retracted
+        ? '  the email this is about was RETRACTED as recorded in error — its words are no ' +
+          'longer on the record'
+        : "  the manager's own sent email that looks like an invoice" +
+          `${sentTo ? `, sent to ${sentTo}` : ''}${ago ? `, ${ago}` : ''}: ` +
+          `"${flat(ctxStr(n, 'words') ?? '', QUESTION_SHOWN_CHARS)}"`,
+    );
+    // The file names are the email's own words too, so a retraction drops them.
+    const files = (((n.context ?? {}) as Record<string, unknown>).attachments ?? []) as unknown;
+    const named = Array.isArray(files)
+      ? files.flatMap((f) => {
+          const o = (f ?? {}) as Record<string, unknown>;
+          return typeof o.name === 'string' && o.name
+            ? [`${flat(o.name, 120)}${typeof o.mime === 'string' && o.mime ? ` (${o.mime})` : ''}`]
+            : [];
+        })
+      : [];
+    if (!retracted) {
+      lines.push(`  attached: ${named.length > 0 ? named.slice(0, 5).join('; ') : 'nothing'}`);
+    }
+    const customerId = ctxStr(n, 'customerId');
+    lines.push(
+      customerId
+        ? `  customer: ${ctxStr(n, 'customerName') ?? 'unnamed'} (id ${customerId})`
+        : '  customer: nobody on file was matched to the recipient',
+    );
+    lines.push(
+      jobId
+        ? `  filed on: job ${ctxStr(n, 'jobTitle') ?? '(untitled)'} (job id ${jobId})`
+        : '  filed on: no job — the email was not filed onto one',
+    );
+    lines.push(
+      `  capture id: ${ctxStr(n, 'captureId') ?? n.subject_ref}` +
+        (retracted ? '   (retracted — it is not in v_captures)' : '   (spine_read v_captures for the full words)'),
+    );
+    if (marks?.askedAt) lines.push("  you have already sent the manager's seat a note about this one");
   }
   if (n.asked_at) {
     // WHETHER ANYTHING CAME BACK (build 6.5 Phase 5). The age alone made
@@ -2770,10 +2827,14 @@ export function validateDecisions(
     // It is deduped on its own set, so two notes about one call are still
     // refused, and it never enters `seen` — otherwise the ORDER the model happened
     // to list the pair in would decide which half survived.
+    // NOT for `outbound_invoice` (step 2e): there the note to the manager's
+    // own seat IS the ask — the seat puts the question to the manager — so it
+    // is an ordinary send, one per item, and there is no text for it to ride with.
     const isQuietNote =
       action === 'send' &&
       d.as === 'assistant' &&
-      (PINGED_KINDS as string[]).includes(view.nudge.kind);
+      (PINGED_KINDS as string[]).includes(view.nudge.kind) &&
+      view.nudge.kind !== 'outbound_invoice';
     if (isQuietNote) {
       if (quietNotes.has(nudgeId)) {
         push('a second quiet note about the same call — one note, one text');
@@ -2902,6 +2963,39 @@ export function validateDecisions(
           push(
             `send to '${to.ref}' as a chat message — ${limitationOf(a) ?? 'no phone is linked'}. ` +
               'Send it to their assistant instead, or name somebody else.',
+          );
+          continue;
+        }
+      }
+      // STEP 2E REVIEW — THE MANAGER'S OWN SENT INVOICE GOES TO THAT MANAGER. It
+      // is their email and their number; nobody else can say whether to record
+      // it, and a technician never sees money amounts. So the one addressee is
+      // the mailbox owner, or — if they have left or are not active — another
+      // active manager. Never a technician.
+      //
+      // "Gone" includes UNREACHABLE (step 2e final review): an active owner with
+      // no assistant (or, for a text, no phone) cannot be sent anything — the
+      // `to` check refuses them — so the item would be stuck with nobody
+      // allowed to take it. Then another reachable active manager may.
+      if (view.nudge.kind === 'outbound_invoice') {
+        const ownerRef = ctxStr(view.nudge, 'technicianRef');
+        const owner = ownerRef ? reachable.get(ownerRef) : undefined;
+        const ownerLive =
+          !!owner &&
+          owner.tier === 'manager' &&
+          owner.state === 'active' &&
+          (as === 'chat' ? owner.chat : owner.assistant);
+        const recipient = reachable.get(addressee.ref) ?? reachable.get(addressee.technicianId);
+        const ok = ownerLive
+          ? addressee.technicianId === owner.technicianId
+          : !!recipient && recipient.tier === 'manager' && recipient.state === 'active';
+        if (!ok) {
+          push(
+            ownerLive
+              ? `this email was sent from ${owner.displayName}'s mailbox — send the note to ` +
+                  `'${owner.ref}', whose invoice it is, and nobody else`
+              : 'the manager whose mailbox sent this email is not active or cannot be reached — ' +
+                  'send the note to another active manager, never a technician',
           );
           continue;
         }
@@ -3734,6 +3828,12 @@ async function applyDecision(
       const inboundGap = d.nudgeId ? getGap(d.nudgeId) : null;
       const isInboundAsk =
         !!inboundGap && (PINGED_KINDS as string[]).includes(inboundGap.kind);
+      // STEP 2E — THE MANAGER'S OWN SENT INVOICE IS ASKED BY THEIR SEAT. The
+      // note to the manager's assistant is the ask itself (the seat puts the
+      // question and records on a yes), so it takes the ask marker the chat leg
+      // takes everywhere else, and it goes out alone. One ask per email, and the
+      // same one-a-day bound as a text.
+      const seatAsks = inboundGap?.kind === 'outbound_invoice';
       if (isInboundAsk && d.countsAsTheAsk) {
         return {
           outcome: 'refused',
@@ -3750,7 +3850,7 @@ async function applyDecision(
       // as long as the item stayed open, an injected agent turn nobody asked
       // for. The held notes are applied AFTER the sends they ride with, so by
       // the time this runs the stamp either landed or it did not.
-      if (isInboundAsk && d.nudgeId && (d.as ?? 'assistant') !== 'chat') {
+      if (isInboundAsk && !seatAsks && d.nudgeId && (d.as ?? 'assistant') !== 'chat') {
         if (!stampedThisPass.has(d.nudgeId)) {
           return {
             outcome: 'refused',
@@ -3803,20 +3903,29 @@ async function applyDecision(
         // buzzes for it — stamping the ask on it would block the real text for a
         // day while the record claimed the manager had been told.
         let askedStamp: string | null = null;
-        if (isInboundAsk && d.nudgeId && (d.as ?? 'assistant') === 'chat') {
+        if (isInboundAsk && d.nudgeId && ((d.as ?? 'assistant') === 'chat' || seatAsks)) {
           askedStamp = await markAsked(
             d.nudgeId,
             // ASKABLE AGAIN ONCE THE LAST TEXT IS THIS OLD. Note the MINUS: the
             // argument is the threshold a stamp must be OLDER than, so `nowIso`
             // here would mean "always askable" and delete the rail outright.
-            new Date(Date.parse(nowIso) - INBOUND_REASK_MS).toISOString(),
+            //
+            // THE MANAGER'S OWN SENT INVOICE IS ASKED ONCE, EVER (step 2e
+            // review): the epoch is older than any stamp, so once `asked_at` is
+            // set no second note goes out. The manager's answer closes it —
+            // a yes by the ledger row citing the email, a no by a dismiss.
+            seatAsks
+              ? new Date(0).toISOString()
+              : new Date(Date.parse(nowIso) - INBOUND_REASK_MS).toISOString(),
           );
           if (!askedStamp) {
             return {
               outcome: 'refused',
-              detail:
-                'a manager was texted about this call within the last day — leave it with them, ' +
-                'or raise it again tomorrow',
+              detail: seatAsks
+                ? "the manager's seat was already asked about this email — one ask per email. Wait " +
+                  'for their answer, or dismiss it'
+                : 'a manager was texted about this call within the last day — leave it with them, ' +
+                  'or raise it again tomorrow',
             };
           }
         }
@@ -4881,6 +4990,15 @@ export async function runPlanner(
           // taken up, and for them a `job_captures` link is no answer at all:
           // the door writes that link in the same call it raises the ask, so
           // counting it would close every one of them the moment it was raised.
+          // STEP 2E — the manager's own sent invoice asks one thing: is it on
+          // the ledger. A live ledger row citing the email answers it; nothing
+          // else does (the door links the email to its job in the same call it
+          // raises the ask, and a booking is no answer to a bill).
+          if (n.kind === 'outbound_invoice') {
+            return cited.some((c) => c.kind === 'money')
+              ? 'a ledger entry cites this email — the invoice is recorded'
+              : null;
+          }
           if (n.kind === 'inbound_unmatched') {
             const said = [
               cited.some((c) => c.kind === 'customer') ? 'a customer was created from it' : null,

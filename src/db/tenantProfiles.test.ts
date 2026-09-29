@@ -3,7 +3,9 @@ import { Client } from 'pg';
 import { getClient } from './client.js';
 import { createTenant } from './tenants.js';
 import {
+  documentStart,
   getTenantProfile,
+  profileEcho,
   profileGaps,
   upsertTenantProfile,
   type TenantProfile,
@@ -139,6 +141,22 @@ describe('tenant_profiles — upsert patch semantics', () => {
     expect((err as Error & { code?: string }).code).toBe('23503');
   });
 
+  test('numbering starts: default 1001, patched as whole numbers, echoed; bad values refused in words', async () => {
+    const other = await createTenant('Profile Test Numbering Firm');
+    expect(await documentStart(other.id, 'invoice')).toBe(1001); // no profile row at all
+    const saved = await upsertTenantProfile(other.id, { invoiceStart: 5000 });
+    expect(saved.invoice_start).toBe(5000);
+    expect(saved.estimate_start).toBe(1001);
+    expect(await documentStart(other.id, 'invoice')).toBe(5000);
+    expect(await documentStart(other.id, 'estimate')).toBe(1001);
+    expect(profileEcho(saved)).toMatchObject({ invoiceStart: 5000, estimateStart: 1001 });
+    for (const bad of [0, -3, 12.5, '2000' as never]) {
+      await expect(upsertTenantProfile(other.id, { estimateStart: bad })).rejects.toThrow(
+        /estimateStart must be a whole number above 0/,
+      );
+    }
+  });
+
   test('tenant isolation: one firm never reads another firm’s profile', async () => {
     const other = await createTenant('Profile Test Other Firm');
     await upsertTenantProfile(other.id, { displayName: 'Other Firm Plumbing' });
@@ -174,6 +192,8 @@ describe('profileGaps — names the missing invoice-header fields', () => {
     email: 'office@hearth.example',
     license_numbers: [{ label: 'TX TACL', number: 'TACLA12345E' }],
     disclosure_footer: 'Regulated by TDLR…',
+    invoice_start: 1001,
+    estimate_start: 1001,
     created_at: '2026-08-15T00:00:00+00:00',
     updated_at: '2026-08-15T00:00:00+00:00',
   };

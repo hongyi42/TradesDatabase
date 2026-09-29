@@ -144,6 +144,10 @@ function baseDeps(over: InboundWebhookDeps = {}): InboundWebhookDeps {
     listThreadCaptures: async () => ({ messages: [], blockedMessageIds: [] }),
     findCaptureByExternalId: async () => null,
     hasLinkedL2: async () => false,
+    // Step 2e phase 4: never Composio, never the DB.
+    keepAttachments: async () => [],
+    issuedNumberNamed: async () => false,
+    raiseOutboundInvoice: async () => null,
     ...over,
   };
 }
@@ -1438,5 +1442,243 @@ describe('the SENT trigger reaches the same door (rung 10b.4)', () => {
     });
     const r = await handleInboundWebhook(raw, sign(raw), baseDeps());
     expect(r.status).toBe('unrouted');
+  });
+});
+
+describe("the manager's own sent invoices (step 2e phase 4)", () => {
+  let prevSecret: string | undefined;
+  beforeAll(() => {
+    prevSecret = process.env.COMPOSIO_WEBHOOK_SECRET;
+    process.env.COMPOSIO_WEBHOOK_SECRET = SECRET;
+  });
+  afterAll(() => {
+    if (prevSecret === undefined) delete process.env.COMPOSIO_WEBHOOK_SECRET;
+    else process.env.COMPOSIO_WEBHOOK_SECRET = prevSecret;
+  });
+
+  const invoiceMail = (over: Record<string, unknown> = {}) =>
+    body({
+      metadata: { user_id: `${TENANT}:mgr-sam`, trigger_slug: 'GMAIL_EMAIL_SENT_TRIGGER' },
+      data: {
+        message_id: 'gmail-inv-1',
+        sender: 'Sam <sam@firm.test>',
+        subject: 'Your bathroom job',
+        message_text: 'Hi Lee, attached is the bill for the work. $450 due in 30 days.',
+        message_timestamp: '2026-09-29T17:00:00.000Z',
+        to: 'Lee <lee@homeowner.test>',
+        attachment_list: [{ attachmentId: 'att-9', filename: 'Invoice-2231.pdf', mimeType: 'application/pdf', size: 4000 }],
+        ...over,
+      },
+    });
+  const manager = techRow({ id: 'mgr-row', ref: 'mgr-sam', tier: 'manager', composio_connected_account_id: 'ca_sam' });
+
+  function spies() {
+    const raised: unknown[] = [];
+    const kept: Array<Record<string, unknown>> = [];
+    const numberChecks: string[] = [];
+    const fileChecks: string[][] = [];
+    return {
+      raised,
+      kept,
+      numberChecks,
+      fileChecks,
+      deps: {
+        getTechnician: async () => manager,
+        recordFieldNote: recorder({ status: 'matched', captureId: 'cap-inv', customerId: 'cust-lee', jobId: 'job-bath' }).fn,
+        raiseOutboundInvoice: async (input: unknown) => {
+          raised.push(input);
+          return null;
+        },
+        issuedNumberNamed: async (_t: string, text: string, fileNames: string[] = []) => {
+          numberChecks.push(text);
+          fileChecks.push(fileNames);
+          return false;
+        },
+        keepAttachments: async (input: Record<string, unknown>) => {
+          kept.push(input);
+          return [];
+        },
+      } satisfies InboundWebhookDeps,
+    };
+  }
+  const tick = () => new Promise((r) => setImmediate(r));
+
+  test("a manager's invoice email raises ONE outbound_invoice, with the context the office reads", async () => {
+    const raw = invoiceMail();
+    const s = spies();
+    const r = await handleInboundWebhook(raw, sign(raw), baseDeps(s.deps));
+    expect(r).toEqual({ status: 'ingested', captureId: 'cap-inv' });
+    expect(s.raised).toEqual([
+      {
+        tenantId: TENANT,
+        captureId: 'cap-inv',
+        customerId: 'cust-lee',
+        jobId: 'job-bath',
+        sentTo: 'lee@homeowner.test',
+        technicianRef: 'mgr-sam',
+        senderName: 'Tech Test',
+        words: 'Subject: Your bathroom job\n\nHi Lee, attached is the bill for the work. $450 due in 30 days.',
+        attachments: [{ name: 'Invoice-2231.pdf', mime: 'application/pdf' }],
+      },
+    ]);
+    // The number check reads the same words — and the attachments' names,
+    // since an invoice's number is often only in its file name.
+    expect(s.numberChecks).toHaveLength(1);
+    expect(s.fileChecks).toEqual([['Invoice-2231.pdf']]);
+  });
+
+  test('the word "invoice" alone is enough; L1 keeps only name, type and size of a file', async () => {
+    const raw = invoiceMail({ attachment_list: [], subject: 'Invoice for the bathroom' });
+    const s = spies();
+    const rec = recorder({ captureId: 'cap-inv' });
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ ...s.deps, recordFieldNote: rec.fn }));
+    expect(s.raised).toHaveLength(1);
+    const withFile = invoiceMail({ message_id: 'gmail-inv-meta' });
+    const rec2 = recorder({ captureId: 'cap-meta' });
+    await handleInboundWebhook(withFile, sign(withFile), baseDeps({ ...s.deps, recordFieldNote: rec2.fn }));
+    expect((rec2.calls[0].sourceMeta as Record<string, unknown>).attachments).toEqual([
+      { name: 'Invoice-2231.pdf', mime: 'application/pdf', size: 4000 },
+    ]);
+  });
+
+  test("a TECHNICIAN's sent email raises nothing and keeps no files — only a manager's sent work email", async () => {
+    const raw = invoiceMail();
+    const s = spies();
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ ...s.deps, getTechnician: async () => ({ ...manager, tier: 'technician' }) }));
+    await tick();
+    expect(s.raised).toHaveLength(0);
+    expect(s.kept).toHaveLength(0);
+  });
+
+  test('a PENDING-VERIFICATION manager raises nothing and keeps no files (they would carry no pairing stamp)', async () => {
+    const raw = invoiceMail();
+    const s = spies();
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ ...s.deps, getTechnician: async () => ({ ...manager, state: 'pending_verification' }) }));
+    await tick();
+    expect(s.raised).toHaveLength(0);
+    expect(s.kept).toHaveLength(0);
+  });
+
+  test('a seam that throws SYNCHRONOUSLY is caught — it cannot escape the detached run', async () => {
+    const raw = invoiceMail();
+    const s = spies();
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        ...s.deps,
+        keepAttachments: (() => {
+          throw new Error('sync boom');
+        }) as unknown as NonNullable<InboundWebhookDeps['keepAttachments']>,
+      }),
+    );
+    await tick();
+    await tick();
+    expect(r.status).toBe('ingested');
+    expect(err.mock.calls.some((c) => String(c[0]).includes('sync boom'))).toBe(true);
+    err.mockRestore();
+  });
+
+  test('a non-invoice (no PDF, no "invoice") raises nothing', async () => {
+    const raw = invoiceMail({
+      subject: 'Thursday',
+      message_text: 'See you Thursday.',
+      attachment_list: [{ attachmentId: 'p', filename: 'site.jpg', mimeType: 'image/jpeg' }],
+    });
+    const s = spies();
+    await handleInboundWebhook(raw, sign(raw), baseDeps(s.deps));
+    expect(s.raised).toHaveLength(0);
+  });
+
+  test('a duplicate delivery raises nothing and keeps nothing', async () => {
+    const raw = invoiceMail();
+    const s = spies();
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ ...s.deps, recordFieldNote: recorder({ status: 'duplicate' }).fn }));
+    await tick();
+    expect(s.raised).toHaveLength(0);
+    expect(s.kept).toHaveLength(0);
+  });
+
+  test("the agent's own send coming back raises nothing and keeps nothing", async () => {
+    const raw = invoiceMail();
+    const s = spies();
+    const r = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        ...s.deps,
+        findCaptureByExternalId: async () => ({ id: 'cap-agent', metadata: { sentVia: 'GMAIL_SEND_EMAIL' } }) as never,
+      }),
+    );
+    await tick();
+    expect(r.status).toBe('duplicate');
+    expect(s.raised).toHaveLength(0);
+    expect(s.kept).toHaveLength(0);
+  });
+
+  test('one naming a number the firm already issued raises nothing', async () => {
+    const raw = invoiceMail({ subject: 'INV-1004 for the bathroom' });
+    const s = spies();
+    const seen: string[] = [];
+    await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        ...s.deps,
+        issuedNumberNamed: async (_t, text) => {
+          seen.push(text);
+          return text.includes('INV-1004');
+        },
+      }),
+    );
+    expect(seen[0]).toContain('INV-1004');
+    expect(s.raised).toHaveLength(0);
+  });
+
+  test('a failed ask is advisory — the email still lands as ingested', async () => {
+    const raw = invoiceMail();
+    const s = spies();
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({ ...s.deps, raiseOutboundInvoice: async () => { throw new Error('db down'); } }),
+    );
+    err.mockRestore();
+    expect(r.status).toBe('ingested');
+  });
+
+  test('the attachments run through the seam, and only AFTER the handler has answered', async () => {
+    const raw = invoiceMail();
+    const s = spies();
+    let release: () => void = () => {};
+    const blocked = new Promise<void>((r) => { release = r; });
+    const r = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        ...s.deps,
+        keepAttachments: async (input) => {
+          s.kept.push(input as unknown as Record<string, unknown>);
+          await blocked; // a slow Gmail must not hold the response
+          return [];
+        },
+      }),
+    );
+    // Answered, and the fetch has not even started yet.
+    expect(r.status).toBe('ingested');
+    expect(s.kept).toHaveLength(0);
+    await tick();
+    expect(s.kept).toEqual([
+      {
+        tenantId: TENANT,
+        tech: manager,
+        messageId: 'gmail-inv-1', // Gmail's own id, not the sent: storage key
+        attachments: [{ attachmentId: 'att-9', name: 'Invoice-2231.pdf', mime: 'application/pdf', size: 4000 }],
+        target: { jobId: 'job-bath', customerId: 'cust-lee' },
+      },
+    ]);
+    release();
   });
 });

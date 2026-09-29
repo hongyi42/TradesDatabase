@@ -17,6 +17,14 @@ export interface SendEmailInput {
   to: string;
   subject: string;
   body: string;
+  /** One stored file sent attached (step 2e). */
+  attachment?: SendEmailAttachment;
+}
+
+export interface SendEmailAttachment {
+  name: string;
+  mime: string;
+  bytes: Buffer;
 }
 
 export interface SendEmailResult {
@@ -43,15 +51,17 @@ export function requireOutboundCapable(tech: Technician | null): asserts tech is
 // (`data.response_data ?? data` — exact field names live-verified Phase 5).
 export async function sendGmailEmail(
   tech: Technician,
-  { to, subject, body }: SendEmailInput,
+  { to, subject, body, attachment }: SendEmailInput,
   deps: OutboundDeps = {},
 ): Promise<SendEmailResult> {
   requireOutboundCapable(tech);
   const client = deps.client ?? getComposioClient();
+  const args: Record<string, unknown> = { recipient_email: to, subject, body };
+  if (attachment) args.attachment = await uploadAttachment(client, attachment);
   const result = await client.tools.execute('GMAIL_SEND_EMAIL', {
     connectedAccountId: tech.composio_connected_account_id,
     userId: compositeUserId(tech),
-    arguments: { recipient_email: to, subject, body },
+    arguments: args,
     dangerouslySkipVersionCheck: true,
   });
   // A billed tool execution that NEVER traverses the doorman relay — the relay
@@ -84,4 +94,26 @@ export async function sendGmailEmail(
     messageId: pick('id', 'messageId', 'message_id'),
     threadId: pick('threadId', 'thread_id'),
   };
+}
+
+// The attachment goes up to Composio's S3 first and the send names it by its
+// descriptor. Our client is `new Composio()` with no options, so the SDK's
+// auto-upload is OFF and we upload ourselves: `files.upload` takes a File (not
+// a Buffer) plus the tool and toolkit slugs, and returns `{name, mimetype,
+// s3key}` — which GMAIL_SEND_EMAIL's `attachment` takes as ONE object, the
+// safe shape since this send pins no tool version (@composio/core 0.13.1,
+// dist/models/Files.node.d.mts;
+// https://docs.composio.dev/docs/tools-direct/executing-tools). The bytes live
+// on Composio's S3 from here — inherent to the vendor.
+async function uploadAttachment(
+  client: PairingClient,
+  { name, mime, bytes }: SendEmailAttachment,
+): Promise<{ name: string; mimetype: string; s3key: string }> {
+  if (!client.files) throw new Error('this Composio client cannot upload files, so the attachment cannot be sent');
+  const uploaded = await client.files.upload({
+    file: new File([new Uint8Array(bytes)], name, { type: mime }),
+    toolSlug: 'GMAIL_SEND_EMAIL',
+    toolkitSlug: 'gmail',
+  });
+  return { name: uploaded.name, mimetype: uploaded.mimetype, s3key: uploaded.s3key };
 }

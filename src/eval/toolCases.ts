@@ -1559,6 +1559,164 @@ export function buildToolCases(): ToolCase[] {
     ),
   });
 
+  // ── invoices and estimates as records (step 2e, 2026-09-29) ─────────────────
+  // Each write case OPENS ITS OWN JOB first (open_job, forceNewJob, a title no
+  // other case reads) and works only on that: an issued invoice walks its job to
+  // 'invoiced', and on a world job that would perturb every case reading it
+  // (W13's reason for fee_charged). The ids flow from the earlier steps' replies,
+  // so every dependent step is guarded on the id it needs.
+  add({
+    id: 'DOC01',
+    family: 'writes',
+    title: 'an invoice is drafted, issued with a number and a ledger row, listed, and voided',
+    tool: 'draft_document',
+    tenant: 'main',
+    badge: 'manager-sam',
+    steps: [
+      {
+        label: 'open a disposable job',
+        tool: 'open_job',
+        args: (ctx) => ({
+          customerId: customerId(ctx.tenant, 'edge-rich'),
+          title: 'eval: invoice document (DOC01)',
+          jobType: 'hvac',
+          forceNewJob: true,
+        }),
+        check: ok,
+      },
+      {
+        label: 'draft',
+        when: (ctx) => priorId(ctx, 'jobId') !== null,
+        args: (ctx) => ({
+          kind: 'invoice',
+          jobId: priorId(ctx, 'jobId') as string,
+          lines: [
+            { description: 'Capacitor', quantity: 1, unitCents: 8900 },
+            { description: 'Labour (hours)', quantity: 1.5, unitCents: 12000 },
+          ],
+        }),
+        check: all(ok, mentions('26900', 'draft')),
+      },
+      {
+        label: 'issue',
+        tool: 'issue_document',
+        when: (ctx) => priorId(ctx, 'documentId') !== null,
+        args: (ctx) => ({ documentId: priorId(ctx, 'documentId') as string }),
+        check: all(
+          ok,
+          mentions('INV-', 'invoice issued'),
+          dbCheck(
+            'one invoice_issued row for the total, carrying the number',
+            (ctx) => ({
+              text:
+                `select count(*)::int n from money_events where tenant_id = $1 and job_id = $2 ` +
+                `and kind = 'invoice_issued' and amount_cents = 26900 and external_ref like 'INV-%'`,
+              params: [ctx.tenant.id, priorId(ctx, 'jobId')],
+            }),
+            (rows) => count(rows) === 1,
+          ),
+        ),
+      },
+      {
+        label: 'list',
+        tool: 'list_documents',
+        when: (ctx) => priorId(ctx, 'jobId') !== null,
+        args: (ctx) => ({ jobId: priorId(ctx, 'jobId') as string }),
+        check: all(ok, mentions('INV-', 'issued')),
+      },
+      {
+        label: 'void',
+        tool: 'void_document',
+        when: (ctx) => priorId(ctx, 'documentId') !== null,
+        args: (ctx) => ({ documentId: priorId(ctx, 'documentId') as string, reason: 'eval: wrong labour hours' }),
+        check: all(
+          ok,
+          mentions('invoice voided'),
+          dbCheck(
+            'the void cancels the issuing row in the ledger',
+            (ctx) => ({
+              text:
+                `select count(*)::int n from money_events where tenant_id = $1 and job_id = $2 ` +
+                `and kind = 'invoice_voided'`,
+              params: [ctx.tenant.id, priorId(ctx, 'jobId')],
+            }),
+            (rows) => count(rows) === 1,
+          ),
+        ),
+      },
+    ],
+  });
+
+  add({
+    id: 'DOC02',
+    family: 'writes',
+    title: 'an estimate is issued and the customer declines it',
+    tool: 'record_estimate_outcome',
+    tenant: 'main',
+    badge: 'manager-sam',
+    steps: [
+      {
+        label: 'open a disposable job',
+        tool: 'open_job',
+        args: (ctx) => ({
+          customerId: customerId(ctx.tenant, 'edge-rich'),
+          title: 'eval: estimate document (DOC02)',
+          jobType: 'hvac',
+          forceNewJob: true,
+        }),
+        check: ok,
+      },
+      {
+        label: 'draft the estimate',
+        tool: 'draft_document',
+        when: (ctx) => priorId(ctx, 'jobId') !== null,
+        args: (ctx) => ({
+          kind: 'estimate',
+          jobId: priorId(ctx, 'jobId') as string,
+          lines: [{ description: 'Replace condenser unit', quantity: 1, unitCents: 480000 }],
+        }),
+        check: ok,
+      },
+      {
+        label: 'issue the estimate',
+        tool: 'issue_document',
+        when: (ctx) => priorId(ctx, 'documentId') !== null,
+        args: (ctx) => ({ documentId: priorId(ctx, 'documentId') as string }),
+        check: all(ok, mentions('EST-', 'estimate presented')),
+      },
+      {
+        label: 'declined',
+        when: (ctx) => priorId(ctx, 'documentId') !== null,
+        args: (ctx) => ({ documentId: priorId(ctx, 'documentId') as string, outcome: 'declined' }),
+        check: all(
+          ok,
+          mentions('estimate declined'),
+          dbCheck(
+            'one estimate_declined row on the job',
+            (ctx) => ({
+              text:
+                `select count(*)::int n from money_events where tenant_id = $1 and job_id = $2 ` +
+                `and kind = 'estimate_declined'`,
+              params: [ctx.tenant.id, priorId(ctx, 'jobId')],
+            }),
+            (rows) => count(rows) === 1,
+          ),
+        ),
+      },
+    ],
+  });
+
+  one({
+    id: 'G11',
+    family: 'gating',
+    title: 'a technician calling list_documents is refused at dispatch',
+    tool: 'list_documents',
+    tenant: 'main',
+    badge: 'tech-jane',
+    args: (ctx) => ({ jobId: jobId(ctx.tenant, 'job-t1-bk-02') }),
+    check: refused(/manager|not authorized|unknown tool/i),
+  });
+
   return cases;
 }
 
@@ -1567,6 +1725,18 @@ function other(ctx: CaseContext): TenantManifest {
   const t = ctx.world.tenants.find((x) => x.key === 'other');
   if (!t) throw new Error('world has no `other` tenant for the isolation probes');
   return t;
+}
+
+/**
+ * The newest id of this name an earlier step of the case replied with (e.g. the
+ * jobId open_job returned, the documentId draft_document returned), or null.
+ */
+function priorId(ctx: CaseContext, key: string): string | null {
+  for (let i = ctx.prior.length - 1; i >= 0; i--) {
+    const v = (ctx.prior[i].json as Record<string, unknown> | null)?.[key];
+    if (typeof v === 'string') return v;
+  }
+  return null;
 }
 
 /** Every spine tool a case touches — used to prove the corpus covers the surface. */

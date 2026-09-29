@@ -709,6 +709,10 @@ export async function inboundAskFor(
   const floor = Date.now() - CITE_ASK_WINDOW_MS;
   const matches = open.filter((o) => {
     if (!(PINGED_KINDS as string[]).includes(o.kind)) return false;
+    // The manager's own sent invoice (step 2e) is pinged like a call but asks
+    // about the LEDGER, not about work — a booking never answers it, and citing
+    // it would hand the planner a visit as the close of a bill.
+    if (o.kind === 'outbound_invoice') return false;
     // (1) and (2): somebody was actually told, and recently enough that this
     // creation could plausibly be their answer.
     if (!o.asked_at || Date.parse(o.asked_at) < floor) return false;

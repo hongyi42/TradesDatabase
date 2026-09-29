@@ -12,7 +12,7 @@ import { listL2CitingCapture } from '../db/captureMembership.js';
 import { createCustomer, insertCustomerCapture } from '../db/customers.js';
 import { appendJobCorrespondence, createJob, insertJobCapture } from '../db/jobs.js';
 import { createVisit, insertVisitNote, updateVisitStatus } from '../db/visits.js';
-import { createFile } from '../db/files.js';
+import { createFile, deleteFile, linkFile } from '../db/files.js';
 import { upsertJobTypeDuration } from '../db/jobTypeDurations.js';
 import {
   insertTechnician,
@@ -29,7 +29,7 @@ import { createSeat, registerSeatBot } from '../db/seats.js';
 import { createTenant, getTenant, setTenantSeats } from '../db/tenants.js';
 import { servedDayPhrase } from '../schedule/dateResolve.js';
 import { getTechnicianViewRule, insertAccessGrant, setTechnicianViewRule } from '../db/technicianView.js';
-import { PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
+import { PROFILE_INTEGER_FIELDS, PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
 import {
   createObservation,
@@ -3001,6 +3001,128 @@ describe('send_email tool (outbound seam stubbed)', () => {
         tenantId,
         'stamp-sam',
       ]);
+      await setTenantSeats(tenantId, {
+        managerSeats: seatsBefore.manager_seats,
+        technicianSeats: seatsBefore.technician_seats,
+      });
+    }
+  });
+
+  // STEP 2E — ONE STORED FILE SENT ATTACHED. Checked at stage (the person
+  // approves a preview naming it) and read again at confirm BEFORE the token is
+  // spent, so a file gone since staging costs nothing but a re-stage.
+  test('an attachment: staged by name, sent as bytes, refused in words, and the token survives a vanished file', { timeout: 30_000 }, async () => {
+    const seatsBefore = (
+      await pg.query<{ manager_seats: number; technician_seats: number }>(
+        'select manager_seats, technician_seats from tenants where id=$1',
+        [tenantId],
+      )
+    ).rows[0];
+    await setTenantSeats(tenantId, {
+      managerSeats: seatsBefore.manager_seats,
+      technicianSeats: seatsBefore.technician_seats + 1,
+    });
+    const ann = await insertTechnician({ tenantId, ref: 'attach-ann', displayName: 'Attach Ann' });
+    await setTechnicianState(ann.id, 'active');
+    await updateTechnician(ann.id, {
+      composio_connected_account_id: 'ca_attach',
+      connected_email: 'attach.ann@gmail.com',
+    });
+    const sendCalls: Array<{ to: string; attachment?: { name: string; mime: string; bytes: Buffer } }> = [];
+    let n = 0;
+    const stubs: Partial<ServerDeps> = {
+      sendEmail: async (_t, msg) => {
+        sendCalls.push(msg);
+        return { messageId: `attach-m-${++n}`, threadId: `attach-t-${n}` };
+      },
+    };
+    const pdf = (fileName: string, uploadedByRef: string, uploadedBy: string | null, body = '%PDF-1.7 invoice') =>
+      createFile({
+        tenantId,
+        kind: 'document',
+        fileName,
+        mimeType: 'application/pdf',
+        bytes: Buffer.from(body),
+        uploadedByRef,
+        uploadedBy,
+        source: 'sandbox',
+      });
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'attach-ann' }, stubs);
+    const isOpen = async (id: string) =>
+      (await pg.query<{ status: string }>('select status from review_items where id = $1', [id])).rows[0]
+        ?.status === 'open';
+    try {
+      const cust = await createCustomer({ tenantId, name: 'Attach Customer', phone: '555-7401' });
+      const job = await createJob({ tenantId, customerId: cust.id, title: 'Attach furnace' });
+      // A manager's invoice on a job she can see (the firm's rule is whole-firm
+      // here), and a manager's file on nothing, which no technician sees.
+      const invoice = await pdf('INV-1001.pdf', 'mgr-test', null, '%PDF-1.7 INV-1001');
+      await linkFile(tenantId, invoice.id, { jobId: job.id }, 'mgr-test');
+      const hidden = await pdf('private.pdf', 'mgr-test', null);
+      const msg = { to: 'attach.customer@example.com', subject: 'Your invoice', body: 'Attached.' };
+
+      // Out of her view, malformed, or missing: refused at stage, nothing staged.
+      for (const fileId of [hidden.id, 'not-a-uuid', '00000000-0000-0000-0000-000000000000']) {
+        const refused = await callWith('send_email', { ...msg, fileId });
+        expect(refused.isError).toBe(true);
+        expect(refused.text).toContain('no such file to attach');
+      }
+
+      // Over 18 MB (a row within the table's 20 MB check; the bytes need not be
+      // real for a refusal that reads only the size): refused at stage in words.
+      const big = await pdf('scan.pdf', 'attach-ann', ann.id);
+      await pg.query('update files set size_bytes = $2 where id = $1', [big.id, 18 * 1024 * 1024 + 1]);
+      const tooBig = await callWith('send_email', { ...msg, fileId: big.id });
+      expect(tooBig.isError).toBe(true);
+      expect(tooBig.text).toContain('scan.pdf is too big to send by email (over 18 MB)');
+
+      // Stage: the preview names the file. Confirm: its bytes reach the send.
+      const staged = await callWith('send_email', { ...msg, jobId: job.id, fileId: invoice.id });
+      expect(staged.data).toMatchObject({ status: 'needs_confirmation', attachment: 'INV-1001.pdf' });
+      expect(sendCalls).toHaveLength(0);
+      const sent = await callWith('send_email', { confirmId: staged.data.confirmId });
+      expect(sent.data).toMatchObject({ status: 'sent', attachment: 'INV-1001.pdf', captured: true });
+      expect(sendCalls).toHaveLength(1);
+      expect(sendCalls[0].attachment?.name).toBe('INV-1001.pdf');
+      expect(sendCalls[0].attachment?.mime).toBe('application/pdf');
+      expect(sendCalls[0].attachment?.bytes.toString()).toBe('%PDF-1.7 INV-1001');
+      // The L1 copy says what went with it: the id and the name, never the bytes.
+      const meta = (
+        await pg.query<{ metadata: Record<string, unknown> }>(
+          'select metadata from raw_captures where external_id = $1',
+          ['sent:attach-m-1'],
+        )
+      ).rows[0]?.metadata;
+      expect(meta?.attachment).toEqual({ fileId: invoice.id, name: 'INV-1001.pdf' });
+
+      // A send without a file carries no attachment anywhere.
+      const plain = await callWith('send_email', { ...msg, subject: 'No file' });
+      expect(plain.data).not.toHaveProperty('attachment');
+      await callWith('send_email', { confirmId: plain.data.confirmId });
+      expect(sendCalls[1]).not.toHaveProperty('attachment');
+
+      // Her own file, deleted after staging: the confirm refuses in words and
+      // the token stays open — nothing sent, nothing spent.
+      const own = await pdf('photo-notes.pdf', 'attach-ann', ann.id);
+      const doomed = await callWith('send_email', { ...msg, fileId: own.id });
+      expect(doomed.data.attachment).toBe('photo-notes.pdf');
+      expect(await deleteFile(tenantId, own.id, 'mgr-test')).toBe('deleted');
+      const gone = await callWith('send_email', { confirmId: doomed.data.confirmId });
+      expect(gone.isError).toBe(true);
+      expect(gone.text).toContain('the attached file is no longer there');
+      expect(await isOpen(doomed.data.confirmId)).toBe(true);
+      const again = await callWith('send_email', { confirmId: doomed.data.confirmId });
+      expect(again.text).toContain('the attached file is no longer there'); // still open, still refused
+      expect(sendCalls).toHaveLength(2);
+      // Re-staged with another file, the send goes.
+      const restaged = await callWith('send_email', { ...msg, fileId: invoice.id });
+      expect(await isOpen(doomed.data.confirmId)).toBe(false); // superseded
+      const resent = await callWith('send_email', { confirmId: restaged.data.confirmId });
+      expect(resent.data).toMatchObject({ status: 'sent', attachment: 'INV-1001.pdf' });
+      expect(sendCalls).toHaveLength(3);
+    } finally {
+      await client.close();
+      await pg.query('delete from technicians where tenant_id=$1 and ref=$2', [tenantId, 'attach-ann']);
       await setTenantSeats(tenantId, {
         managerSeats: seatsBefore.manager_seats,
         technicianSeats: seatsBefore.technician_seats,
@@ -7389,6 +7511,11 @@ describe('record_money_event + money reads (money-ledger plan phase 2)', () => {
 });
 
 describe('set_firm_profile (firm-profile plan)', () => {
+  // The seed tenant is shared with the local live rig (a driven invoice leaves a
+  // profile there); these assertions start from no profile.
+  beforeAll(async () => {
+    await pg.query('delete from tenant_profiles where tenant_id = $1', [tenantId]);
+  });
   test('manager sets, patches, clears, reads; technician refused; echo carries gaps', async () => {
     const { client: mgrC, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
@@ -7403,7 +7530,7 @@ describe('set_firm_profile (firm-profile plan)', () => {
       const schema = (await mgrC.listTools()).tools.find((t) => t.name === 'set_firm_profile')!
         .inputSchema as { properties: Record<string, unknown> };
       expect(Object.keys(schema.properties).sort()).toEqual(
-        [...PROFILE_STRING_FIELDS, 'licenseNumbers'].sort(),
+        [...PROFILE_STRING_FIELDS, 'licenseNumbers', ...PROFILE_INTEGER_FIELDS].sort(),
       );
 
       // Before any write, the no-arg call is a clean READ of nothing.
@@ -11300,6 +11427,31 @@ describe('files (step 2d)', () => {
     }
   });
 
+  test("a kept sent-mail file is the manager's own: a technician on the job never lists it (step 2e)", async () => {
+    const c = await createCustomer({ tenantId, name: 'Filesent Sol', phone: '555-7309' });
+    const j = await createJob({ tenantId, customerId: c.id, title: 'Filesent job' });
+    await createVisit({ tenantId, jobId: j.id, technicianId: techMcpId, startsAt: null, endsAt: null });
+    const photo = await upload('mgr-test');
+    const pdf = await createFile({
+      tenantId, kind: 'document', fileName: 'INV-77.pdf', mimeType: 'application/pdf', bytes: Buffer.from('%PDF'),
+      uploadedByRef: 'mgr-test', uploadedBy: null, source: 'email', managerOnly: true,
+    });
+    const { client: mc, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      await mgr('link_file', { fileId: photo.id, jobId: j.id });
+      await mgr('link_file', { fileId: pdf.id, jobId: j.id });
+      // Her view includes the job — the photo lists, the invoice does not.
+      expect((await call('list_files', { jobId: j.id })).data.files.map((f: { id: string }) => f.id)).toEqual([photo.id]);
+      // …and she cannot attach it anywhere either (it reads as missing).
+      expect((await call('link_file', { fileId: pdf.id, jobId: j.id })).data.status).toBe('not_found');
+      expect((await mgr('list_files', { jobId: j.id })).data.files.map((f: { id: string }) => f.id).sort()).toEqual(
+        [photo.id, pdf.id].sort(),
+      );
+    } finally {
+      await mc.close();
+    }
+  });
+
   test('delete: the sender or a manager; anyone else is refused; a deleted file is gone from lists', async () => {
     const c = await createCustomer({ tenantId, name: 'Filedel Dee', phone: '555-7304' });
     const j = await createJob({ tenantId, customerId: c.id, title: 'Filedel job' });
@@ -11331,5 +11483,282 @@ describe('files (step 2d)', () => {
     const two = await call('link_file', { fileId: f.id, jobId: 'x', customerId: 'y' });
     expect(two.isError).toBe(true);
     expect(two.text).toContain('exactly one');
+  });
+});
+
+describe('money documents (step 2e)', () => {
+  // Numbering assertions start from INV-1001 / EST-1001 on the seed tenant: clear
+  // any documents (and a numbering start) a local live-rig run left behind.
+  beforeAll(async () => {
+    await pg.query('truncate table money_documents cascade');
+    await pg.query('delete from tenant_profiles where tenant_id = $1', [tenantId]);
+  });
+  const DOC_TOOLS = ['draft_document', 'issue_document', 'void_document', 'record_estimate_outcome', 'list_documents'];
+  const line = (description: string, quantity: number, unitCents: number) => ({ description, quantity, unitCents });
+
+  test('a manager drafts, changes, issues, lists and voids an invoice', { timeout: 30_000 }, async () => {
+    const { client: mc, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const cust = await createCustomer({ tenantId, name: 'Docs Lee', phone: '555-7401' });
+      const job = await createJob({ tenantId, customerId: cust.id, title: 'Lee bathroom' });
+
+      const draft = await mgr('draft_document', {
+        kind: 'invoice',
+        jobId: job.id,
+        lines: [line('Vanity install', 1, 30000), line('Labour (hours)', 1.5, 10000)],
+        notes: 'Thank you',
+      });
+      expect(draft.isError).toBe(false);
+      expect(draft.data).toMatchObject({ kind: 'invoice', status: 'draft', number: null, totalCents: 45000, notes: 'Thank you' });
+      expect(draft.data.lines[1]).toEqual({ description: 'Labour (hours)', quantity: 1.5, unitCents: 10000, amountCents: 15000 });
+      const id = draft.data.documentId as string;
+      // Drafting records nothing.
+      const none = await pg.query('select count(*)::int n from money_events where job_id = $1', [job.id]);
+      expect(none.rows[0].n).toBe(0);
+
+      // Changing the draft replaces its lines whole; the total follows.
+      const changed = await mgr('draft_document', {
+        kind: 'invoice', jobId: job.id, documentId: id, lines: [line('Vanity install', 1, 32000)],
+      });
+      expect(changed.data).toMatchObject({ documentId: id, status: 'draft', totalCents: 32000 });
+      expect(changed.data.lines).toHaveLength(1);
+
+      const issued = await mgr('issue_document', { documentId: id });
+      expect(issued.isError).toBe(false);
+      expect(issued.data).toMatchObject({
+        number: 'INV-1001', status: 'issued', totalCents: 32000, recorded: 'invoice issued',
+        jobStatusChange: { from: 'open', to: 'invoiced' },
+      });
+      expect(issued.data.money).toMatchObject({ invoicedCents: 32000, balanceDueCents: 32000 });
+      // Safe to repeat: nothing new is written.
+      const again = await mgr('issue_document', { documentId: id });
+      expect(again.data).toMatchObject({ number: 'INV-1001', alreadyIssued: true });
+      const rows = await pg.query("select count(*)::int n from money_events where job_id = $1 and kind = 'invoice_issued'", [job.id]);
+      expect(rows.rows[0].n).toBe(1);
+      // An issued document is not edited.
+      const edit = await mgr('draft_document', { kind: 'invoice', jobId: job.id, documentId: id, lines: [line('x', 1, 1)] });
+      expect(edit.isError).toBe(true);
+      expect(edit.text).toContain('INV-1001 is issued and cannot be edited');
+
+      const listed = await mgr('list_documents', { jobId: job.id });
+      expect(listed.data.documents).toHaveLength(1);
+      expect(listed.data.documents[0]).toMatchObject({ documentId: id, number: 'INV-1001', status: 'issued', totalCents: 32000, unsettled: false });
+      const byCustomer = await mgr('list_documents', { customerId: cust.id });
+      expect(byCustomer.data.documents.map((d: { documentId: string }) => d.documentId)).toEqual([id]);
+
+      const voided = await mgr('void_document', { documentId: id, reason: 'wrong vanity price' });
+      expect(voided.isError).toBe(false);
+      expect(voided.data).toMatchObject({
+        number: 'INV-1001', status: 'void', recorded: 'invoice voided',
+        jobStatusChange: { from: 'invoiced', to: 'completed' }, // the ledger's own walk-back
+      });
+      expect(voided.data.money.invoicedCents).toBe(0);
+      const afterVoid = await mgr('list_documents', { jobId: job.id });
+      expect(afterVoid.data.documents[0]).toMatchObject({ status: 'void', voidReason: 'wrong vanity price', unsettled: false });
+      // A void needs a reason, and a void document refuses to be issued.
+      expect((await mgr('void_document', { documentId: id })).text).toContain('reason is required');
+      const reissue = await mgr('issue_document', { documentId: id });
+      expect(reissue.isError).toBe(true);
+      expect(reissue.text).toContain('INV-1001 is void');
+    } finally {
+      await mc.close();
+    }
+  });
+
+  test('a progress invoice leaves the job status alone', async () => {
+    const { client: mc, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const cust = await createCustomer({ tenantId, name: 'Docs Park', phone: '555-7402' });
+      const job = await createJob({ tenantId, customerId: cust.id, title: 'Park repipe' });
+      const d = await mgr('draft_document', { kind: 'invoice', jobId: job.id, lines: [line('Deposit', 1, 100000)] });
+      expect((await mgr('issue_document', { documentId: d.data.documentId, progress: 'yes' })).text).toContain('progress must be true or false');
+      const issued = await mgr('issue_document', { documentId: d.data.documentId, progress: true });
+      expect(issued.data.recorded).toBe('invoice issued');
+      expect(issued.data.jobStatusChange).toBeUndefined();
+      expect(issued.data.money.invoicedCents).toBe(100000);
+      const status = await pg.query('select status from jobs where id = $1', [job.id]);
+      expect(status.rows[0].status).toBe('open');
+      // Re-issued WITHOUT progress: "whatever it was issued as" — already, not refused.
+      const again = await mgr('issue_document', { documentId: d.data.documentId });
+      expect(again.isError).toBe(false);
+      expect(again.text).toContain('already issued');
+    } finally {
+      await mc.close();
+    }
+  });
+
+  test('an estimate is issued and accepted (quoted set); another is declined', async () => {
+    const { client: mc, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const cust = await createCustomer({ tenantId, name: 'Docs Ortiz', phone: '555-7403' });
+      const job = await createJob({ tenantId, customerId: cust.id, title: 'Ortiz furnace' });
+      const d = await mgr('draft_document', { kind: 'estimate', jobId: job.id, lines: [line('Furnace', 1, 520000)] });
+      // Still a draft: no answer yet.
+      const early = await mgr('record_estimate_outcome', { documentId: d.data.documentId, outcome: 'accepted' });
+      expect(early.text).toContain('still a draft');
+      const issued = await mgr('issue_document', { documentId: d.data.documentId });
+      expect(issued.data).toMatchObject({ number: 'EST-1001', recorded: 'estimate presented' });
+      expect(issued.data.jobStatusChange).toBeUndefined();
+      const bad = await mgr('record_estimate_outcome', { documentId: d.data.documentId, outcome: 'maybe' });
+      expect(bad.text).toContain("outcome must be 'accepted' or 'declined'");
+      const accepted = await mgr('record_estimate_outcome', { documentId: d.data.documentId, outcome: 'accepted' });
+      expect(accepted.data).toMatchObject({ number: 'EST-1001', outcome: 'accepted', recorded: 'estimate approved' });
+      expect(accepted.data.money.quotedCents).toBe(520000);
+      const twice = await mgr('record_estimate_outcome', { documentId: d.data.documentId, outcome: 'declined' });
+      expect(twice.isError).toBe(true);
+      expect(twice.text).toContain('EST-1001 is already recorded as accepted');
+
+      const d2 = await mgr('draft_document', { kind: 'estimate', jobId: job.id, lines: [line('Heat pump', 1, 900000)] });
+      expect((await mgr('issue_document', { documentId: d2.data.documentId })).data.number).toBe('EST-1002');
+      const declined = await mgr('record_estimate_outcome', { documentId: d2.data.documentId, outcome: 'declined' });
+      expect(declined.data).toMatchObject({ outcome: 'declined', recorded: 'estimate declined' });
+      expect(declined.data.money.quotedCents).toBe(520000); // the accepted one still stands
+      // An invoice has no outcome.
+      const inv = await mgr('draft_document', { kind: 'invoice', jobId: job.id, lines: [line('Visit', 1, 9000)] });
+      expect((await mgr('record_estimate_outcome', { documentId: inv.data.documentId, outcome: 'accepted' })).text)
+        .toContain('only an estimate has an outcome');
+    } finally {
+      await mc.close();
+    }
+  });
+
+  test('a technician is refused every document tool at the admin gate', async () => {
+    const cust = await createCustomer({ tenantId, name: 'Docs Gate', phone: '555-7404' });
+    const job = await createJob({ tenantId, customerId: cust.id, title: 'gate job' });
+    const listed = (await client.listTools()).tools.map((t) => t.name);
+    for (const name of DOC_TOOLS) {
+      expect(listed).not.toContain(name);
+      const r = await call(name, { jobId: job.id, documentId: job.id, kind: 'invoice', lines: [line('x', 1, 1)], reason: 'r', outcome: 'accepted' });
+      expect(r.isError, name).toBe(true);
+      expect(r.text, name).toContain('manager badge');
+    }
+    const n = await pg.query('select count(*)::int n from money_documents where job_id = $1', [job.id]);
+    expect(n.rows[0].n).toBe(0);
+  });
+
+  test('bad ids and bad arguments come back as plain words', async () => {
+    const { client: mc, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const cust = await createCustomer({ tenantId, name: 'Docs Words', phone: '555-7405' });
+      const job = await createJob({ tenantId, customerId: cust.id, title: 'words job' });
+      const ghost = '00000000-0000-4000-8000-000000000000';
+      expect((await mgr('issue_document', { documentId: 'INV-1001' })).text).toContain('documentId must be a document id');
+      expect((await mgr('issue_document', {})).text).toContain('documentId is required');
+      expect((await mgr('issue_document', { documentId: ghost })).text).toContain('no such document');
+      expect((await mgr('void_document', { documentId: ghost, reason: 'x' })).text).toContain('no such document');
+      expect((await mgr('record_estimate_outcome', { documentId: ghost, outcome: 'accepted' })).text).toContain('no such document');
+      expect((await mgr('draft_document', { kind: 'invoice', jobId: ghost, lines: [line('x', 1, 1)] })).text)
+        .toContain('no such job on this firm');
+      expect((await mgr('draft_document', { kind: 'invoice', jobId: 'job-1', lines: [line('x', 1, 1)] })).text)
+        .toContain('jobId must be a job id');
+      expect((await mgr('draft_document', { kind: 'bill', jobId: job.id, lines: [line('x', 1, 1)] })).text)
+        .toContain("kind must be 'invoice' or 'estimate'");
+      expect((await mgr('draft_document', { kind: 'invoice', jobId: job.id, lines: [] })).text)
+        .toContain('at least one line');
+      expect((await mgr('draft_document', { kind: 'invoice', jobId: job.id, lines: [line('x', 1, 12.5)] })).text)
+        .toContain('line 1: unitCents must be a whole number');
+      expect((await mgr('draft_document', { kind: 'invoice', jobId: job.id, lines: [line('x', 1, 1)], notes: 5 })).text)
+        .toContain('notes must be a string');
+      expect((await mgr('list_documents', {})).text).toContain('exactly one of jobId, customerId');
+      expect((await mgr('list_documents', { jobId: job.id, customerId: cust.id })).text).toContain('exactly one');
+      expect((await mgr('list_documents', { jobId: job.id })).data).toMatchObject({ documents: [] });
+      // A draft cannot be voided — it was never recorded.
+      const d = await mgr('draft_document', { kind: 'invoice', jobId: job.id, lines: [line('x', 1, 100)] });
+      expect((await mgr('void_document', { documentId: d.data.documentId, reason: 'x' })).text).toContain('never issued');
+    } finally {
+      await mc.close();
+    }
+  });
+
+  test('an explicit null on an optional arg reads as absent; a wrong type is still refused', async () => {
+    const { client: mc, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const cust = await createCustomer({ tenantId, name: 'Docs Null', phone: '555-7407' });
+      const job = await createJob({ tenantId, customerId: cust.id, title: 'null job' });
+      // documentId: null = a NEW draft, not "documentId is required".
+      const d = await mgr('draft_document', { kind: 'invoice', jobId: job.id, lines: [line('Visit', 1, 9000)], documentId: null, notes: 'Net 14' });
+      expect(d.isError).toBe(false);
+      expect(d.data).toMatchObject({ status: 'draft', totalCents: 9000, notes: 'Net 14' });
+      // notes: null is the advertised CLEAR, not absent.
+      const cleared = await mgr('draft_document', { kind: 'invoice', jobId: job.id, documentId: d.data.documentId, lines: [line('Visit', 1, 9000)], notes: null });
+      expect(cleared.data.notes).toBeUndefined();
+      expect((await mgr('draft_document', { kind: 'invoice', jobId: job.id, lines: [line('x', 1, 1)], documentId: 42 })).text)
+        .toContain('documentId must be a document id');
+      // progress: null = a final invoice.
+      expect((await mgr('issue_document', { documentId: d.data.documentId, progress: 0 })).text).toContain('progress must be true or false');
+      const issued = await mgr('issue_document', { documentId: d.data.documentId, progress: null });
+      expect(issued.isError).toBe(false);
+      expect(issued.data.jobStatusChange).toEqual({ from: 'open', to: 'invoiced' });
+      // list: a null target is not a target.
+      const listed = await mgr('list_documents', { jobId: job.id, customerId: null });
+      expect(listed.data.documents).toHaveLength(1);
+      expect((await mgr('list_documents', { jobId: null, customerId: null })).text).toContain('exactly one of jobId, customerId');
+    } finally {
+      await mc.close();
+    }
+  });
+
+  test("another firm's manager cannot reach this firm's documents", async () => {
+    const { client: mc, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    const otherTenantId = (await createTenant('docs-cross-firm', { managerSeats: 1 })).id;
+    const otherMgr = await insertTechnician({ tenantId: otherTenantId, ref: 'docs-other-mgr', displayName: 'Docs Other', tier: 'manager' });
+    await setTechnicianState(otherMgr.id, 'active');
+    const { client: oc, callWith: other } = await clientFor({ tenantId: otherTenantId, technicianRef: 'docs-other-mgr' });
+    try {
+      const cust = await createCustomer({ tenantId, name: 'Docs Firm A', phone: '555-7408' });
+      const job = await createJob({ tenantId, customerId: cust.id, title: 'firm A job' });
+      const inv = await mgr('draft_document', { kind: 'invoice', jobId: job.id, lines: [line('Visit', 1, 9000)] });
+      const est = await mgr('draft_document', { kind: 'estimate', jobId: job.id, lines: [line('Unit', 1, 90000)] });
+      const draftA = await mgr('draft_document', { kind: 'invoice', jobId: job.id, lines: [line('Still a draft', 1, 100)] });
+      await mgr('issue_document', { documentId: inv.data.documentId });
+      await mgr('issue_document', { documentId: est.data.documentId });
+
+      const says = async (name: string, args: Record<string, unknown>, words: string) => {
+        const r = await other(name, args);
+        expect(r.isError, name).toBe(true);
+        expect(r.text, name).toContain(words);
+      };
+      await says('issue_document', { documentId: draftA.data.documentId }, 'no such document');
+      await says('void_document', { documentId: inv.data.documentId, reason: 'x' }, 'no such document');
+      await says('record_estimate_outcome', { documentId: est.data.documentId, outcome: 'accepted' }, 'no such document');
+      // Updating firm A's draft from firm B: the job is refused first (no oracle either way).
+      await says('draft_document', { kind: 'invoice', jobId: job.id, documentId: draftA.data.documentId, lines: [line('x', 1, 1)] }, 'no such job on this firm');
+      expect((await other('list_documents', { jobId: job.id })).data.documents).toEqual([]);
+      expect((await other('list_documents', { customerId: cust.id })).data.documents).toEqual([]);
+
+      // Nothing of firm A moved.
+      const a = await mgr('list_documents', { jobId: job.id });
+      const byId = new Map(a.data.documents.map((d: { documentId: string }) => [d.documentId, d]));
+      expect(byId.get(inv.data.documentId)).toMatchObject({ status: 'issued' });
+      expect(byId.get(est.data.documentId)).not.toHaveProperty('outcome');
+      expect(byId.get(draftA.data.documentId)).toMatchObject({ status: 'draft', totalCents: 100 });
+    } finally {
+      await mc.close();
+      await oc.close();
+    }
+  });
+
+  test('set_firm_profile round-trips the numbering starts, and the next issue uses them', async () => {
+    const { client: mc, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const set = await mgr('set_firm_profile', { invoiceStart: 5000, estimateStart: 700 });
+      expect(set.isError).toBe(false);
+      expect(set.data.profile).toMatchObject({ invoiceStart: 5000, estimateStart: 700 });
+      expect((await mgr('set_firm_profile', {})).data.profile).toMatchObject({ invoiceStart: 5000, estimateStart: 700 });
+      const zero = await mgr('set_firm_profile', { invoiceStart: 0 });
+      expect(zero.isError).toBe(true);
+      expect(zero.text).toContain('invoiceStart must be a whole number above 0');
+      expect((await mgr('set_firm_profile', { invoiceStart: '5000' })).isError).toBe(true);
+
+      const cust = await createCustomer({ tenantId, name: 'Docs Start', phone: '555-7406' });
+      const job = await createJob({ tenantId, customerId: cust.id, title: 'start job' });
+      const inv = await mgr('draft_document', { kind: 'invoice', jobId: job.id, lines: [line('Visit', 1, 9000)] });
+      expect((await mgr('issue_document', { documentId: inv.data.documentId })).data.number).toBe('INV-5000');
+      // A start below numbers already used never reuses one: EST-1001..1003 exist (the tests above).
+      const est = await mgr('draft_document', { kind: 'estimate', jobId: job.id, lines: [line('Visit', 1, 9000)] });
+      expect((await mgr('issue_document', { documentId: est.data.documentId })).data.number).toBe('EST-1004');
+    } finally {
+      await mc.close();
+    }
   });
 });

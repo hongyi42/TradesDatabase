@@ -48,6 +48,19 @@ export interface PairingClient {
     use(id: string, opts?: Record<string, unknown>): Promise<Record<string, unknown>>;
     delete(id: string): Promise<unknown>;
   };
+  // File upload to Composio's S3, for a tool argument that takes a file (an
+  // email attachment, step 2e). OPTIONAL so the test fakes that never attach
+  // need not stub it; the real client has it. @composio/core 0.13.1
+  // `files.upload({file: File|string, toolSlug, toolkitSlug})` →
+  // `{name, mimetype, s3key}` (dist/models/Files.node.d.mts;
+  // https://docs.composio.dev/docs/tools-direct/executing-tools).
+  files?: {
+    upload(input: { file: File; toolSlug: string; toolkitSlug: string }): Promise<{
+      name: string;
+      mimetype: string;
+      s3key: string;
+    }>;
+  };
 }
 
 // Lazy singleton: importing this module must not require the key (the MCP

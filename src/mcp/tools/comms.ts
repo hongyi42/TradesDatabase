@@ -12,6 +12,7 @@
 import {
   requireOutboundCapable,
   sendGmailEmail as liveSendGmailEmail,
+  type SendEmailAttachment,
 } from '../../composio/outbound.js';
 import {
   annotateResolvedReviewItem,
@@ -19,6 +20,7 @@ import {
   findCustomersByEmail,
   getJob,
   getOpenReviewItem,
+  readFileBytes,
   resolveOpenReviewItemFor,
   resolveReviewItem,
   upsertOpenReviewItem,
@@ -39,6 +41,10 @@ import {
   fetchPageText,
 } from '../../web/fetchPage.js';
 import {
+  viewerOf,
+  visibleFile,
+} from './files.js';
+import {
   safeEnvInt,
 } from './shared.js';
 import type {
@@ -57,7 +63,8 @@ const BASE_TOOLS = [
       'email is permanently recorded. ALWAYS pass jobId when this email is about a job you ' +
       'already have on screen: it files the sent copy on that job, so the record shows both ' +
       'halves of the conversation. Without it the send is filed on the recipient only when ' +
-      'their address is on exactly one customer.',
+      'their address is on exactly one customer. To send a stored file with it (an invoice ' +
+      'PDF, a photo), pass its fileId: one file, up to 18 MB.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -69,6 +76,11 @@ const BASE_TOOLS = [
           description:
             'The job this email is about, when you know it (first call only). Files the sent ' +
             'copy on that job.',
+        },
+        fileId: {
+          type: 'string',
+          description:
+            'One stored file to attach, by id — e.g. an invoice PDF (first call only). Up to 18 MB.',
         },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
@@ -197,6 +209,11 @@ async function handleReadWebpage(toolCtx: ToolContext): Promise<unknown> {
       };
 }
 
+// An attachment's cap: base64 adds about a third on the wire and Gmail caps a
+// whole message near 25 MB, so 18 MB of file is what fits with room for the
+// body (plan 2026-09-29 step 2e, "Attachment out").
+const ATTACHMENT_MAX_BYTES = 18 * 1024 * 1024;
+
 async function handleSendEmail(toolCtx: ToolContext): Promise<unknown> {
   const { deps, identity, tenantId, str, caller } = toolCtx;
       // Both steps require an active, paired caller — checked FIRST so a
@@ -223,6 +240,21 @@ async function handleSendEmail(toolCtx: ToolContext): Promise<unknown> {
           const target = await getJob(sendJobId);
           if (!target || target.tenant_id !== tenantId) throw new Error('job not found');
         }
+        // The attachment is checked HERE too, for the same reason: the person
+        // approves a preview naming it. Missing, deleted and out of her view
+        // all read the same (the files rule, visibleFile).
+        const fileId = str('fileId');
+        let fileName: string | null = null;
+        if (fileId) {
+          const file = await visibleFile(toolCtx, await viewerOf(toolCtx), fileId);
+          if (!file) throw new Error('no such file to attach — check the id with list_files');
+          if (file.size_bytes > ATTACHMENT_MAX_BYTES) {
+            throw new Error(
+              `${file.file_name} is too big to send by email (over 18 MB) — nothing was staged`,
+            );
+          }
+          fileName = file.file_name;
+        }
         await resolveOpenReviewItemFor(
           tenantId,
           'pending_outbound_send',
@@ -239,6 +271,7 @@ async function handleSendEmail(toolCtx: ToolContext): Promise<unknown> {
             subject,
             body,
             ...(sendJobId ? { jobId: sendJobId } : {}),
+            ...(fileId ? { fileId, fileName } : {}),
             stagedAt: new Date().toISOString(),
           },
         });
@@ -246,13 +279,19 @@ async function handleSendEmail(toolCtx: ToolContext): Promise<unknown> {
         // can make the upsert return the other call's open row (partial-unique
         // conflict), and the staged copy is what gets sent — the person must
         // be shown exactly that copy (review finding).
-        const staged = (item.detail ?? {}) as { to?: string; subject?: string; body?: string };
+        const staged = (item.detail ?? {}) as {
+          to?: string;
+          subject?: string;
+          body?: string;
+          fileName?: string;
+        };
         return {
           status: 'needs_confirmation',
           confirmId: item.id,
           to: staged.to ?? to,
           subject: staged.subject ?? subject,
           body: staged.body ?? body,
+          ...(staged.fileName ? { attachment: staged.fileName } : {}),
           note: 'Nothing was sent. Show the person exactly this content; on their approval call send_email again with ONLY confirmId.',
         };
       }
@@ -270,6 +309,7 @@ async function handleSendEmail(toolCtx: ToolContext): Promise<unknown> {
         subject?: string;
         body?: string;
         jobId?: string;
+        fileId?: string;
         stagedAt?: string;
       };
       if (!detail.to || !detail.subject || detail.body === undefined) {
@@ -278,6 +318,30 @@ async function handleSendEmail(toolCtx: ToolContext): Promise<unknown> {
       if (detail.stagedAt && Date.now() - Date.parse(detail.stagedAt) > 15 * 60_000) {
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
         throw new Error('confirmation expired — restage the send and confirm again');
+      }
+      // THE ATTACHMENT, READ BEFORE THE TOKEN IS SPENT. A file deleted (or
+      // moved out of this person's view) since staging refuses here with the
+      // token still open: nothing was sent, and the person can re-stage
+      // without it or with another file. Read after consumption, the same
+      // failure would cost a fresh stage for no reason.
+      let attachment: (SendEmailAttachment & { fileId: string }) | undefined;
+      if (detail.fileId) {
+        const file = await visibleFile(toolCtx, await viewerOf(toolCtx), detail.fileId);
+        if (!file) {
+          throw new Error(
+            'the attached file is no longer there — nothing was sent; restage without it, or with another file',
+          );
+        }
+        let bytes: Buffer;
+        try {
+          bytes = await readFileBytes(file);
+        } catch (err) {
+          throw new Error(
+            `could not read the attached file (${err instanceof Error ? err.message : String(err)}) — ` +
+              'nothing was sent; confirm again, or restage without it',
+          );
+        }
+        attachment = { fileId: file.id, name: file.file_name, mime: file.mime_type, bytes };
       }
       // CONSUME FIRST, send second (at-most-once): losing this race means
       // someone else already confirmed or cancelled — never send twice.
@@ -296,6 +360,9 @@ async function handleSendEmail(toolCtx: ToolContext): Promise<unknown> {
           to: detail.to,
           subject: detail.subject,
           body: detail.body,
+          ...(attachment
+            ? { attachment: { name: attachment.name, mime: attachment.mime, bytes: attachment.bytes } }
+            : {}),
         });
       } catch (err) {
         // The token is consumed and the email was NOT sent: report plainly and
@@ -393,6 +460,7 @@ async function handleSendEmail(toolCtx: ToolContext): Promise<unknown> {
             subject: detail.subject,
             sentVia: 'GMAIL_SEND_EMAIL',
             threadId: sent.threadId,
+            ...(attachment ? { attachment: { fileId: attachment.fileId, name: attachment.name } } : {}),
           },
         });
         captured = true;
@@ -404,6 +472,7 @@ async function handleSendEmail(toolCtx: ToolContext): Promise<unknown> {
         to: detail.to,
         subject: detail.subject,
         messageId: sent.messageId,
+        ...(attachment ? { attachment: attachment.name } : {}),
         captured,
       };
 }

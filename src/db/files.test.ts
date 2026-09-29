@@ -15,9 +15,11 @@ import {
   linksOf,
   listFiles,
   readFileBytes,
+  storeFileOnce,
   targetVisibleTo,
 } from './files.js';
 import { createJob } from './jobs.js';
+import { saveDraft } from './moneyDocuments.js';
 import { appendMoneyEvent } from './moneyEvents.js';
 import { createTenant } from './tenants.js';
 import type { TechnicianView } from './technicianView.js';
@@ -101,6 +103,77 @@ describe('the file store (step 2d)', () => {
     expect(links.find((l) => l.kind === 'money')).toMatchObject({ jobId: job.id, customerId: cust.id });
   });
 
+  test('link to an invoice/estimate: it resolves as money, under its job and customer (step 2e)', async () => {
+    const cust = await createCustomer({ tenantId, name: 'Doc File Cust' });
+    const job = await createJob({ tenantId, customerId: cust.id, title: 'Invoice PDF' });
+    const doc = await saveDraft({
+      tenantId, kind: 'invoice', jobId: job.id, byRef: 'mgr',
+      lines: [{ description: 'Service call', quantity: 1, unitCents: 8900 }],
+    });
+    const f = await newFile({ kind: 'document', fileName: 'INV-1001.pdf', mimeType: 'application/pdf', source: 'sandbox' });
+    expect(await linkFile(tenantId, f.id, { documentId: doc.id }, 'mgr')).toBe('linked');
+    expect(await linkFile(tenantId, f.id, { documentId: doc.id }, 'mgr')).toBe('already');
+    expect(await linkFile(tenantId, f.id, { jobId: job.id }, 'mgr')).toBe('linked');
+    expect((await listFiles(tenantId, { documentId: doc.id })).map((r) => r.id)).toEqual([f.id]);
+    const links = await linksOf(tenantId, f.id);
+    expect(links).toContainEqual({ kind: 'money', jobId: job.id, customerId: cust.id });
+    expect(links).toContainEqual({ kind: 'job', jobId: job.id, customerId: cust.id });
+    // On a job she can see AND on a document: hidden from a technician without money.
+    const view: TechnicianView = {
+      allScope: false,
+      jobIds: new Set([job.id]),
+      customerIds: new Set([cust.id]),
+      moneyAll: false,
+      moneyJobIds: new Set(),
+      moneyCustomerIds: new Set(),
+    };
+    const tech: FileViewer = { tier: 'technician', ref: 'tech-b', personId: null, view };
+    expect(fileVisibleTo(f, links, tech)).toBe(false);
+    expect(fileVisibleTo(f, links, { ...tech, view: { ...view, moneyJobIds: new Set([job.id]) } })).toBe(true);
+    // Another firm's document id reads as not found.
+    const foreignFile = await createFile({
+      tenantId: otherTenantId, kind: 'document', fileName: 'x.pdf', mimeType: 'application/pdf',
+      bytes: bytesOf('pdf'), uploadedByRef: 'o', uploadedBy: null, source: 'sandbox',
+    });
+    await expect(linkFile(otherTenantId, foreignFile.id, { documentId: doc.id }, 'o')).rejects.toThrow('target not found');
+  });
+
+  test('storeFileOnce: a sourceRef is kept once per firm; a repeat says "already"; another firm stores its own', async () => {
+    const ref = `gmail:msg-${Date.now()}:att-1`;
+    const input = {
+      tenantId, kind: 'document' as const, fileName: 'invoice.pdf', mimeType: 'application/pdf',
+      bytes: bytesOf('pdf bytes'), uploadedByRef: 'mgr', uploadedBy: null, source: 'email' as const, sourceRef: ref,
+    };
+    const first = await storeFileOnce(input);
+    expect(first.status).toBe('stored');
+    expect(first.file?.source_ref).toBe(ref);
+    const again = await storeFileOnce(input);
+    expect(again).toEqual({ status: 'already', file: first.file });
+    const count = async () =>
+      Number((await pg.query('select count(*) n from files where source_ref = $1 and tenant_id = $2', [ref, tenantId])).rows[0].n);
+    expect(await count()).toBe(1);
+    // Two racing deliveries: one stores, the other reads it.
+    const ref2 = `${ref}-race`;
+    const raced = await Promise.all([storeFileOnce({ ...input, sourceRef: ref2 }), storeFileOnce({ ...input, sourceRef: ref2 })]);
+    expect(raced.map((r) => r.status).sort()).toEqual(['already', 'stored']);
+    expect(raced[0].file?.id).toBe(raced[1].file?.id);
+    expect((await storeFileOnce({ ...input, tenantId: otherTenantId })).status).toBe('stored');
+  });
+
+  test('storeFileOnce: a file the manager DELETED stays deleted when the webhook redelivers it', async () => {
+    const ref = `gmail:msg-${Date.now()}:att-deleted`;
+    const input = {
+      tenantId, kind: 'document' as const, fileName: 'invoice.pdf', mimeType: 'application/pdf',
+      bytes: bytesOf('pdf bytes'), uploadedByRef: 'mgr', uploadedBy: null, source: 'email' as const, sourceRef: ref,
+    };
+    const first = await storeFileOnce(input);
+    expect(await deleteFile(tenantId, first.file!.id, 'mgr')).toBe('deleted');
+    expect(await storeFileOnce(input)).toEqual({ status: 'deleted', file: null });
+    const rows = (await pg.query('select deleted_at from files where source_ref = $1 and tenant_id = $2', [ref, tenantId])).rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].deleted_at).not.toBeNull();
+  });
+
   test('tenant guard: another firm’s file or target reads as not found', async () => {
     const foreignCust = await createCustomer({ tenantId: otherTenantId, name: 'Foreign' });
     const f = await newFile();
@@ -113,6 +186,16 @@ describe('the file store (step 2d)', () => {
     const f = await newFile();
     const cust = await createCustomer({ tenantId, name: 'Two Targets' });
     const job = await createJob({ tenantId, customerId: cust.id, title: 'J' });
+    const doc = await saveDraft({
+      tenantId, kind: 'estimate', jobId: job.id, byRef: 'mgr',
+      lines: [{ description: 'x', quantity: 1, unitCents: 1 }],
+    });
+    await expect(
+      pg.query(
+        'insert into file_links (tenant_id, file_id, job_id, document_id, linked_by_ref) values ($1, $2, $3, $4, $5)',
+        [tenantId, f.id, job.id, doc.id, 'x'],
+      ),
+    ).rejects.toThrow(/file_links_one_target/);
     await expect(
       pg.query('insert into file_links (tenant_id, file_id, linked_by_ref) values ($1, $2, $3)', [tenantId, f.id, 'x']),
     ).rejects.toThrow(/file_links_one_target/);

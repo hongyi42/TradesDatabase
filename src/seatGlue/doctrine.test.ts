@@ -81,6 +81,13 @@ describe('manager doctrine (step 2a)', () => {
     // Step 2c: when to batch (the how lives in the batching skill).
     expect(FILES_SECTION).toContain('BIG JOBS. A job over about 20 items');
     expect(FILES_SECTION).toContain('load the `batching` skill');
+    // Step 2e: the document tools and "recorded when final" for every manager; the drawing only with a computer.
+    expect(MANAGER_PREAMBLE).toContain('INVOICES AND ESTIMATES.');
+    expect(MANAGER_PREAMBLE).toContain('ONLY when the manager says it is final');
+    expect(MANAGER_PREAMBLE).toContain('spine-record_estimate_outcome');
+    expect(MANAGER_PREAMBLE).toContain('sourceCaptureId');
+    expect(MANAGER_PREAMBLE).not.toContain('reportlab');
+    expect(FILES_SECTION).toContain('DRAWING AN INVOICE OR ESTIMATE.');
     expect(MANAGER_PREAMBLE).not.toContain('technician');
     expect(MANAGER_DOCTRINE).not.toContain('## Long or bulk tasks');
   });

@@ -218,6 +218,24 @@ export async function getMoneyEvent(id: number): Promise<MoneyEvent | null> {
   return data;
 }
 
+/**
+ * The row a dedupe key already wrote, or null — what a writer re-reads after its
+ * insert lost a 23505 on uq_money_events_dedupe (the key is unique per tenant).
+ */
+export async function getMoneyEventByDedupeKey(
+  tenantId: string,
+  dedupeKey: string,
+): Promise<MoneyEvent | null> {
+  const { data, error } = await getClient()
+    .from('money_events')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('dedupe_key', dedupeKey)
+    .maybeSingle();
+  if (error) throw wrapDbError('getMoneyEventByDedupeKey failed', error);
+  return data;
+}
+
 /** All events for one job, in ledger (id) order — the fold's required input. */
 export async function listMoneyEventsForJob(tenantId: string, jobId: string): Promise<MoneyEvent[]> {
   const { data, error } = await getClient()
@@ -564,6 +582,9 @@ function transitionPath(from: JobStatus, to: JobStatus): JobStatus[] | null {
 
 const isConcurrentTransition = (err: unknown): boolean =>
   err instanceof Error && err.message.includes('changed concurrently');
+// The exact prefix updateJobStatus throws for an edge the machine does not have.
+const isIllegalTransition = (err: unknown): boolean =>
+  err instanceof Error && err.message.startsWith('Illegal job status transition');
 
 /**
  * Re-derive the job's money-target and walk the status there through LEGAL
@@ -587,13 +608,23 @@ export async function syncJobStatusForMoney(
     if (!target) return null;
     const path = transitionPath(job.status, target);
     if (!path || path.length === 0) return null;
+    // Where the walk has got to: the status after the last hop that landed.
+    let at: JobStatus = job.status;
     try {
       for (const hop of path) {
         await updateJobStatus(jobId, hop);
+        at = hop;
       }
       return { from: job.status, to: target };
     } catch (err) {
-      if (!isConcurrentTransition(err)) throw err;
+      // updateJobStatus re-reads the job before its CAS, so a writer that moved
+      // it between OUR last hop and that read surfaces as an "illegal
+      // transition" (e.g. invoiced → invoiced when two issues sync at once), not
+      // as "changed concurrently". Only THAT error, and only when the job really
+      // is no longer where our walk left it, is a race; anything else re-throws.
+      const movedUnderUs =
+        isIllegalTransition(err) && (await getJob(jobId))?.status !== at;
+      if (!isConcurrentTransition(err) && !movedUnderUs) throw err;
       // Concurrent transition — loop re-reads and re-derives once, then gives up.
     }
   }

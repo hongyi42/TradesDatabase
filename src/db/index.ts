@@ -27,6 +27,7 @@ export * from './technicianView.js';
 export * from './webRequests.js';
 export * from './costs.js';
 export * from './moneyEvents.js';
+export * from './moneyDocuments.js';
 export * from './files.js';
 export * from './tenantProfiles.js';
 export * from './tenantSettings.js';

@@ -308,6 +308,35 @@ describe('money_events — append, validation, DB guards', () => {
     expect((await getJob(jobId))?.status).toBe('paid');
   });
 
+  test('a walk whose SECOND hop fails for a reason other than a race re-throws, mid-path', async () => {
+    const { jobId } = await freshJob();
+    await appendMoneyEvent({ tenantId, jobId, kind: 'invoice_issued', amountCents: 10_000 });
+    // Every walk's first hop lands and its second is refused by the database
+    // (standing in for a network or grant failure): update #1 open → in_progress
+    // lands, #2 → completed fails; were that swallowed as a race, the retry's
+    // #3 in_progress → completed would land and #4 → invoiced fail and be
+    // swallowed too — the walk would end silently mid-path. The job moving since
+    // the walk began is our OWN hop, not someone else's.
+    await pg.query('create sequence zz_walk_hops');
+    await pg.query(`
+      create function zz_refuse_second_hop() returns trigger language plpgsql as $$
+      begin
+        if new.id = '${jobId}' and nextval('zz_walk_hops') in (2, 4) then raise exception 'simulated outage'; end if;
+        return new;
+      end $$`);
+    await pg.query(
+      'create trigger zz_refuse_second_hop before update on jobs for each row execute function zz_refuse_second_hop()',
+    );
+    try {
+      await expect(syncJobStatusForMoney(tenantId, jobId)).rejects.toThrow('simulated outage');
+      expect((await getJob(jobId))?.status).toBe('in_progress');
+    } finally {
+      await pg.query('drop trigger zz_refuse_second_hop on jobs');
+      await pg.query('drop function zz_refuse_second_hop()');
+      await pg.query('drop sequence zz_walk_hops');
+    }
+  });
+
   test('progress invoice on a fresh job: event records, status untouched', async () => {
     const { jobId } = await freshJob();
     await appendMoneyEvent({

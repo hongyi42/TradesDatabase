@@ -399,7 +399,15 @@ export async function setObservationStatus(
 // proved it: `inbound_unmatched` was appended here and every helper below —
 // plus the heartbeat probe, the planner's gap block and the MCP filters —
 // followed with no edit of their own.
-export const PINGED_KINDS: ReviewKind[] = ['inbound_new_job', 'inbound_commitment', 'inbound_unmatched'];
+// `outbound_invoice` (step 2e) is the first kind here that is not somebody
+// getting in touch: the planner's gap block, moot fact and prompt each branch on
+// it by name, and a booking never cites it (inboundAskFor).
+export const PINGED_KINDS: ReviewKind[] = [
+  'inbound_new_job',
+  'inbound_commitment',
+  'inbound_unmatched',
+  'outbound_invoice',
+];
 
 // Has this capture already been noticed? The write-path's dedup arm — an
 // observation is the only L2-side trace a "matched customer, nothing created"

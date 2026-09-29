@@ -7,7 +7,7 @@ import { type TechnicianView, viewHasCustomer, viewHasJob, viewShowsMoney } from
 
 // The file store (plan 2026-09-28-step-2d-files): photos and documents people
 // send their seats, and files the manager's bot makes, kept and attached to a
-// customer, job, visit or ledger entry. Bytes in Storage (fileStore.ts); one
+// customer, job, visit, ledger entry or (2e) invoice/estimate. Bytes in Storage (fileStore.ts); one
 // `files` row each; one `file_links` row per attachment.
 //
 // Deletable (operator 2026-09-28): the row is stamped deleted FIRST, then the
@@ -17,7 +17,7 @@ import { type TechnicianView, viewHasCustomer, viewHasJob, viewShowsMoney } from
 export type FileRow = Database['public']['Tables']['files']['Row'];
 export type FileLinkRow = Database['public']['Tables']['file_links']['Row'];
 export type FileKind = 'photo' | 'document';
-export type FileSource = 'telegram' | 'sandbox';
+export type FileSource = 'telegram' | 'sandbox' | 'email';
 
 /** 20 MB — Telegram's bot download limit, and the one ceiling for every way in. */
 export const FILE_MAX_BYTES = 20 * 1024 * 1024;
@@ -26,7 +26,9 @@ export type FileTarget =
   | { customerId: string }
   | { jobId: string }
   | { visitId: string }
-  | { moneyEventId: number };
+  | { moneyEventId: number }
+  // An invoice or estimate (step 2e). Resolves as kind 'money': a document is money.
+  | { documentId: string };
 
 /** A link's target, with the job and customer it sits under (for the view check). */
 export interface ResolvedLink {
@@ -43,14 +45,17 @@ export interface FileViewer {
   view: TechnicianView | null;
 }
 
-const targetColumn = (t: FileTarget): { col: 'customer_id' | 'job_id' | 'visit_id' | 'money_event_id'; value: string | number } =>
+type TargetCol = 'customer_id' | 'job_id' | 'visit_id' | 'money_event_id' | 'document_id';
+const targetColumn = (t: FileTarget): { col: TargetCol; value: string | number } =>
   'customerId' in t
     ? { col: 'customer_id', value: t.customerId }
     : 'jobId' in t
       ? { col: 'job_id', value: t.jobId }
       : 'visitId' in t
         ? { col: 'visit_id', value: t.visitId }
-        : { col: 'money_event_id', value: t.moneyEventId };
+        : 'documentId' in t
+          ? { col: 'document_id', value: t.documentId }
+          : { col: 'money_event_id', value: t.moneyEventId };
 
 /**
  * Where a target sits: its customer and job, or null when it does not exist in
@@ -79,6 +84,16 @@ export async function resolveTarget(tenantId: string, t: FileTarget): Promise<Re
     if (!data) return null;
     const job = data.jobs as unknown as { customer_id: string } | null;
     return { kind: 'visit', customerId: job?.customer_id ?? null, jobId: data.job_id };
+  }
+  if ('documentId' in t) {
+    const { data, error } = await db
+      .from('money_documents')
+      .select('id, job_id, customer_id')
+      .eq('id', t.documentId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (error) throw wrapDbError('resolveTarget (document) failed', error);
+    return data ? { kind: 'money', customerId: data.customer_id, jobId: data.job_id } : null;
   }
   const { data, error } = await db
     .from('money_events')
@@ -117,6 +132,9 @@ export function fileVisibleTo(file: FileRow, links: ResolvedLink[], who: FileVie
   // Her own by ROSTER ROW only: a ref could be reissued once a removed person's
   // row is gone (uploaded_by → null), and must not inherit their files.
   if (who.personId && file.uploaded_by === who.personId) return true;
+  // A manager's own correspondence (a kept sent-mail invoice PDF, step 2e) is
+  // never a technician's, whatever it is linked to.
+  if (file.manager_only) return false;
   if (links.some((l) => l.kind === 'money' && !targetVisibleTo(l, who))) return false;
   return links.some((l) => targetVisibleTo(l, who));
 }
@@ -130,6 +148,13 @@ export interface CreateFileInput {
   uploadedByRef: string;
   uploadedBy: string | null;
   source: FileSource;
+  /**
+   * Where it came from outside us, unique per firm (gmail:<messageId>:<attachmentId>).
+   * Store such a file through storeFileOnce, which says what a repeat found.
+   */
+  sourceRef?: string | null;
+  /** Hidden from every technician but its uploader (step 2e: sent-mail attachments). */
+  managerOnly?: boolean;
 }
 
 /** Bytes first, then the row; if the row fails, the bytes are removed (best effort). */
@@ -153,6 +178,8 @@ export async function createFile(input: CreateFileInput): Promise<FileRow> {
       uploaded_by_ref: input.uploadedByRef,
       uploaded_by: input.uploadedBy,
       source: input.source,
+      source_ref: input.sourceRef ?? null,
+      manager_only: input.managerOnly ?? false,
     })
     .select()
     .single();
@@ -161,6 +188,50 @@ export async function createFile(input: CreateFileInput): Promise<FileRow> {
     throw wrapDbError('createFile failed', error);
   }
   return data;
+}
+
+/**
+ * What storing an outside file found: stored now, already kept (live), or kept
+ * once and since DELETED by the firm — which stays deleted: a redelivered
+ * webhook must never bring back a file the manager removed, so there is no row
+ * to link and the caller skips it.
+ */
+export type StoreOnceResult =
+  | { status: 'stored'; file: FileRow }
+  | { status: 'already'; file: FileRow }
+  | { status: 'deleted'; file: null };
+
+async function bySourceRef(tenantId: string, sourceRef: string): Promise<FileRow | null> {
+  const { data, error } = await getClient()
+    .from('files')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('source_ref', sourceRef)
+    .maybeSingle();
+  if (error) throw wrapDbError('storeFileOnce (source_ref) failed', error);
+  return data;
+}
+
+const seen = (row: FileRow): StoreOnceResult =>
+  row.deleted_at ? { status: 'deleted', file: null } : { status: 'already', file: row };
+
+/**
+ * Store a file from outside once per firm and source_ref. The unique index
+ * spans deleted rows ON PURPOSE — that is what keeps a deleted file deleted.
+ * Looked up first so a redelivery uploads no bytes; a racing store loses the
+ * insert (23505) and reads the winner.
+ */
+export async function storeFileOnce(input: CreateFileInput & { sourceRef: string }): Promise<StoreOnceResult> {
+  const prior = await bySourceRef(input.tenantId, input.sourceRef);
+  if (prior) return seen(prior);
+  try {
+    return { status: 'stored', file: await createFile(input) };
+  } catch (err) {
+    if ((err as Error & { code?: string }).code !== '23505') throw err;
+    const winner = await bySourceRef(input.tenantId, input.sourceRef);
+    if (!winner) throw err;
+    return seen(winner);
+  }
 }
 
 /** One LIVE file of this firm, or null (a deleted one reads as missing: its bytes are gone). */
@@ -180,7 +251,7 @@ async function getFileRow(tenantId: string, id: string): Promise<FileRow | null>
 export async function linksOf(tenantId: string, fileId: string): Promise<ResolvedLink[]> {
   const { data, error } = await getClient()
     .from('file_links')
-    .select('customer_id, job_id, visit_id, money_event_id')
+    .select('customer_id, job_id, visit_id, money_event_id, document_id')
     .eq('tenant_id', tenantId)
     .eq('file_id', fileId);
   if (error) throw wrapDbError('linksOf failed', error);
@@ -194,7 +265,9 @@ export async function linksOf(tenantId: string, fileId: string): Promise<Resolve
           ? { visitId: l.visit_id }
           : l.money_event_id !== null
             ? { moneyEventId: l.money_event_id }
-            : null;
+            : l.document_id
+              ? { documentId: l.document_id }
+              : null;
     const r = t ? await resolveTarget(tenantId, t) : null;
     if (r) out.push(r);
   }
@@ -225,6 +298,7 @@ export async function linkFile(
       job_id: 'jobId' in target ? target.jobId : null,
       visit_id: 'visitId' in target ? target.visitId : null,
       money_event_id: 'moneyEventId' in target ? target.moneyEventId : null,
+      document_id: 'documentId' in target ? target.documentId : null,
     });
   if (!error) return 'linked';
   const err = wrapDbError('linkFile failed', error) as Error & { code?: string };

@@ -2,7 +2,7 @@
 date: 2026-09-28
 task: Step 2d — a file store: photos and documents kept, linked to customers/jobs/visits/ledger entries, deletable, seen per the technician view
 research: thoughts/shared/research/2026-09-28-step-2d-files.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -201,10 +201,13 @@ s5, then a phone test: send a photo, attach it, ask for it back, delete it.
 3. `journalctl -u seat-glue@s2/s5`: polling.
 
 ### Live verification (agent-executable)
-- [ ] After the phone test: pilot `files` + `file_links` rows for the photo (read-only SQL via the supabase-test MCP), and after the delete, `deleted_at` set and the object gone (Storage list shows no `<tenant>/<id>`)
+- [x] After the phone test: pilot `files` + `file_links` rows for the photo (read-only SQL via the supabase-test MCP), and after the delete, `deleted_at` set and the object gone (Storage list shows no `<tenant>/<id>`)
+      — 2026-09-29: 3 rows. Sam's photo → link job "Furnace inspection" (Tom Becker); Sam's PDF deleted_at 16:53:24 by manager-sam, no links; Ben's photo → link visit on "Visit for Maria Gonzalez". storage.objects in `files` holds only the two photos: the PDF's bytes are gone.
 
 ### Manual verification
-- [ ] From Sam's phone (s2): send a job photo → the bot asks or says which job it attached it to; "send me that photo" → it comes back; send a PDF → saved and attached; "delete that photo" → gone
-- [ ] From Ben's phone (s5): a photo on his job is kept and attached; asking for a photo from a job he is not on → "can't find that"
+- [x] From Sam's phone (s2): send a job photo → the bot asks or says which job it attached it to; "send me that photo" → it comes back; send a PDF → saved and attached; "delete that photo" → gone
+      — asked with buttons, attached to Tom Becker's furnace inspection, sent back; the PDF (a driving-school receipt) was opened in the sandbox, read, left unattached on the operator's say, then deleted. Note: the sandbox has no PDF reader (pypdf / pdftotext); the bot decoded the streams with zlib.
+- [x] From Ben's phone (s5): a photo on his job is kept and attached; asking for a photo from a job he is not on → "can't find that"
+      — kept, attached, sent back; Tom Becker's photo → "outside your view", offered the access ask. The photo landed on "Visit for Maria Gonzalez" (the pilot has two open "HVAC inspection" jobs for her; record_field_note routed the note there and minted a trip) — operator: the bot handled it fine; the pilot's unresolved open jobs are the cause. Left as is.
 
 *Pause after Phase 4 (phone checks).*

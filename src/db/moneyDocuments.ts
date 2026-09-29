@@ -267,6 +267,9 @@ export async function issueDocument(
           number_seq: seq,
           number: `${PREFIX[kind]}-${seq}`,
           issued_at: new Date().toISOString(),
+          // Stored with the number, so a retry or a racing call writes the
+          // ledger from what was decided here, never from its own arguments.
+          progress: !!opts.progress,
         })
         .eq('id', docId)
         .eq('tenant_id', tenantId)
@@ -285,6 +288,14 @@ export async function issueDocument(
     if (doc.status === 'draft') throw new Error('could not number the document — try again');
     if (doc.status === 'void') throw new Error(`${nameOf(doc)} is void — make a new ${doc.kind} instead`);
   }
+  // A retry (or the loser of a race) that disagrees with what was issued is
+  // refused, not silently overridden: the ledger row says what the document says.
+  if (!!opts.progress !== doc.progress) {
+    throw new Error(
+      `${nameOf(doc)} was issued ${doc.progress ? 'as a progress (deposit) invoice' : 'as a final invoice'} — ` +
+        'void it and issue a new one to change that',
+    );
+  }
 
   if (doc.money_event_id != null) {
     const event = await getMoneyEvent(doc.money_event_id);
@@ -300,19 +311,28 @@ export async function issueDocument(
     externalRef: doc.number,
     actorRef: byRef,
     dedupeKey: `doc:${doc.id}:issue`,
-    detail: { documentId: doc.id, ...(opts.progress ? { progress: true } : {}) },
+    detail: { documentId: doc.id, ...(doc.progress ? { progress: true } : {}) },
   });
   const { data, error } = await getClient()
     .from('money_documents')
     .update({ money_event_id: event.id })
     .eq('id', doc.id)
     .eq('tenant_id', tenantId)
+    .eq('status', 'issued')
     .is('money_event_id', null)
     .select()
     .maybeSingle();
   if (error) throw wrapDbError('issueDocument (ledger link) failed', error);
   const document = data ?? (await getDocument(tenantId, id));
   if (!document) throw new Error('no such document');
+  // Voided while this ledger write was in flight: the void found no issuing row
+  // to cancel, so cancel the one just written (the :void key dedupes a void
+  // that did see it).
+  if (!data && document.status === 'void') {
+    await writeVoidLedger(document, byRef);
+    await syncJobStatusForMoney(tenantId, doc.job_id);
+    throw new Error(`${nameOf(document)} was voided while it was being issued — it stands cancelled`);
+  }
   const statusChange = await syncJobStatusForMoney(tenantId, doc.job_id);
   return { document, event, already: false, statusChange };
 }
@@ -326,11 +346,50 @@ export interface VoidResult {
 }
 
 /**
+ * The ledger row that cancels a document, under doc:<id>:void — or null when
+ * the ledger holds nothing of it to cancel. An invoice: invoice_voided against
+ * its issuing row (by the link, or by its key when the link was never stamped).
+ * An estimate: a correction of its estimate_approved row, looked up by KEY
+ * whatever the document's outcome column says — an outcome whose ledger write
+ * landed but whose stamp had not yet would otherwise keep `quoted` alive.
+ * Every caller (void, and an issue or outcome that finds the document voided
+ * under it) converges on the one row.
+ */
+async function writeVoidLedger(doc: MoneyDocument, byRef: string): Promise<MoneyEvent | null> {
+  const detail: Json = { documentId: doc.id, ...(doc.void_reason ? { reason: doc.void_reason } : {}) };
+  const target =
+    doc.kind === 'invoice'
+      ? doc.money_event_id != null
+        ? await getMoneyEvent(doc.money_event_id)
+        : await getMoneyEventByDedupeKey(doc.tenant_id, `doc:${doc.id}:issue`)
+      : await getMoneyEventByDedupeKey(doc.tenant_id, `doc:${doc.id}:outcome`);
+  const kind = doc.kind === 'invoice' ? 'invoice_voided' : 'correction';
+  if (!target || target.kind !== (doc.kind === 'invoice' ? 'invoice_issued' : 'estimate_approved')) return null;
+  return appendOnce({
+    tenantId: doc.tenant_id,
+    jobId: doc.job_id,
+    kind,
+    correctsEventId: target.id,
+    externalRef: doc.number,
+    actorRef: byRef,
+    dedupeKey: `doc:${doc.id}:void`,
+    detail,
+  });
+}
+
+/**
  * Cancel an issued document. An invoice: invoice_voided against its issuing row
  * (the job walks back through the existing sync). An estimate: void, plus a
- * correction of its estimate_approved row if it was accepted — else `quoted`
- * would keep an estimate nobody stands behind. A draft is not recorded anywhere,
- * so there is nothing to void: change it, or leave it.
+ * correction of its estimate_approved row if the ledger holds one — else
+ * `quoted` would keep an estimate nobody stands behind. A draft is not recorded
+ * anywhere, so there is nothing to void: change it, or leave it.
+ *
+ * STATUS FIRST, LEDGER SECOND — the order is what closes the races. An issue or
+ * an outcome whose own write lands AFTER the status flips finds the document
+ * void (its compare-and-set on status='issued' misses) and cancels its row
+ * itself; one that landed BEFORE is there for the lookup below. A void repeated
+ * after a crash between the two steps writes the missing row (the :void key
+ * makes every path converge on one).
  */
 export async function voidDocument(
   tenantId: string,
@@ -343,56 +402,26 @@ export async function voidDocument(
   if (doc.status === 'draft') {
     throw new Error(`${nameOf(doc)} was never issued, so there is nothing to void — change it or leave it`);
   }
-  if (doc.status === 'void') return { document: doc, event: null, already: true, statusChange: null };
 
-  const why = reason?.trim() || null;
-  const detail: Json = { documentId: doc.id, ...(why ? { reason: why } : {}) };
-  let event: MoneyEvent | null = null;
-  if (doc.kind === 'invoice') {
-    // The issuing row by its link, or by its key when the link was never stamped.
-    const issuedId =
-      doc.money_event_id ?? (await getMoneyEventByDedupeKey(tenantId, `doc:${doc.id}:issue`))?.id ?? null;
-    if (issuedId != null) {
-      event = await appendOnce({
-        tenantId,
-        jobId: doc.job_id,
-        kind: 'invoice_voided',
-        correctsEventId: issuedId,
-        externalRef: doc.number,
-        actorRef: byRef,
-        dedupeKey: `doc:${doc.id}:void`,
-        detail,
-      });
-    }
-  } else if (doc.outcome === 'accepted') {
-    const approved = await getMoneyEventByDedupeKey(tenantId, `doc:${doc.id}:outcome`);
-    if (approved?.kind === 'estimate_approved') {
-      event = await appendOnce({
-        tenantId,
-        jobId: doc.job_id,
-        kind: 'correction',
-        correctsEventId: approved.id,
-        externalRef: doc.number,
-        actorRef: byRef,
-        dedupeKey: `doc:${doc.id}:void`,
-        detail,
-      });
-    }
+  let flipped = false;
+  if (doc.status === 'issued') {
+    const why = reason?.trim() || null;
+    const { data, error } = await getClient()
+      .from('money_documents')
+      .update({ status: 'void', voided_at: new Date().toISOString(), void_reason: why })
+      .eq('id', doc.id)
+      .eq('tenant_id', tenantId)
+      .eq('status', 'issued')
+      .select()
+      .maybeSingle();
+    if (error) throw wrapDbError('voidDocument failed', error);
+    flipped = !!data;
   }
-
-  const { data, error } = await getClient()
-    .from('money_documents')
-    .update({ status: 'void', voided_at: new Date().toISOString(), void_reason: why })
-    .eq('id', doc.id)
-    .eq('tenant_id', tenantId)
-    .eq('status', 'issued')
-    .select()
-    .maybeSingle();
-  if (error) throw wrapDbError('voidDocument failed', error);
-  const document = data ?? (await getDocument(tenantId, id));
+  const document = await getDocument(tenantId, id);
   if (!document) throw new Error('no such document');
+  const event = await writeVoidLedger(document, byRef);
   const statusChange = await syncJobStatusForMoney(tenantId, doc.job_id);
-  return { document, event, already: !data, statusChange };
+  return { document, event, already: !flipped, statusChange };
 }
 
 /**
@@ -430,7 +459,16 @@ export async function recordEstimateOutcome(
     detail: { documentId: doc.id },
   });
   if (event.kind !== want) {
-    const was = event.kind === 'estimate_approved' ? 'accepted' : 'declined';
+    // The ledger already holds the OTHER answer (a racing call, or one whose
+    // stamp never landed): make the document say what the ledger says, then refuse.
+    const was: EstimateOutcome = event.kind === 'estimate_approved' ? 'accepted' : 'declined';
+    const { error } = await getClient()
+      .from('money_documents')
+      .update({ outcome: was, outcome_at: new Date().toISOString() })
+      .eq('id', doc.id)
+      .eq('tenant_id', tenantId)
+      .is('outcome', null);
+    if (error) throw wrapDbError('recordEstimateOutcome (stamp) failed', error);
     throw new Error(`${nameOf(doc)} is already recorded as ${was}`);
   }
   const { data, error } = await getClient()
@@ -438,11 +476,18 @@ export async function recordEstimateOutcome(
     .update({ outcome, outcome_at: new Date().toISOString() })
     .eq('id', doc.id)
     .eq('tenant_id', tenantId)
+    .eq('status', 'issued')
     .is('outcome', null)
     .select()
     .maybeSingle();
   if (error) throw wrapDbError('recordEstimateOutcome failed', error);
   const document = data ?? (await getDocument(tenantId, id));
   if (!document) throw new Error('no such document');
+  // Voided while the answer was being written: the void may have looked before
+  // this row existed, so cancel it here (the :void key dedupes one it did see).
+  if (!data && document.status === 'void') {
+    await writeVoidLedger(document, byRef);
+    throw new Error(`${nameOf(document)} was voided — the answer is not recorded`);
+  }
   return { document, event };
 }

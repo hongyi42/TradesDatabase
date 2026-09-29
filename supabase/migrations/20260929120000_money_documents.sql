@@ -26,6 +26,9 @@ create table money_documents (
   -- The ledger row that issuing wrote. Null on an issued document = the ledger
   -- write has not landed yet; a second issue retries it (dedupe_key makes it safe).
   money_event_id  bigint references money_events(id),
+  -- A progress (deposit) invoice: set with the number at issue, and the ledger
+  -- row's detail.progress is written FROM this, so a retry cannot flip it.
+  progress        boolean not null default false,
   outcome         text,
   void_reason     text,
   created_by_ref  text not null,

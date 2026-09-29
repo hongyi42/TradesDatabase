@@ -582,6 +582,9 @@ function transitionPath(from: JobStatus, to: JobStatus): JobStatus[] | null {
 
 const isConcurrentTransition = (err: unknown): boolean =>
   err instanceof Error && err.message.includes('changed concurrently');
+// The exact prefix updateJobStatus throws for an edge the machine does not have.
+const isIllegalTransition = (err: unknown): boolean =>
+  err instanceof Error && err.message.startsWith('Illegal job status transition');
 
 /**
  * Re-derive the job's money-target and walk the status there through LEGAL
@@ -605,17 +608,23 @@ export async function syncJobStatusForMoney(
     if (!target) return null;
     const path = transitionPath(job.status, target);
     if (!path || path.length === 0) return null;
+    // Where the walk has got to: the status after the last hop that landed.
+    let at: JobStatus = job.status;
     try {
       for (const hop of path) {
         await updateJobStatus(jobId, hop);
+        at = hop;
       }
       return { from: job.status, to: target };
     } catch (err) {
       // updateJobStatus re-reads the job before its CAS, so a writer that moved
-      // it between OUR read and that one surfaces as an "illegal transition"
-      // (e.g. invoiced → invoiced when two issues sync at once), not as
-      // "changed concurrently". Both mean the same thing: the job moved under us.
-      if (!isConcurrentTransition(err) && (await getJob(jobId))?.status === job.status) throw err;
+      // it between OUR last hop and that read surfaces as an "illegal
+      // transition" (e.g. invoiced → invoiced when two issues sync at once), not
+      // as "changed concurrently". Only THAT error, and only when the job really
+      // is no longer where our walk left it, is a race; anything else re-throws.
+      const movedUnderUs =
+        isIllegalTransition(err) && (await getJob(jobId))?.status !== at;
+      if (!isConcurrentTransition(err) && !movedUnderUs) throw err;
       // Concurrent transition — loop re-reads and re-derives once, then gives up.
     }
   }

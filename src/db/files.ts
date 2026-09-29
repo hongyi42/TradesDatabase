@@ -146,8 +146,8 @@ export interface CreateFileInput {
   uploadedBy: string | null;
   source: FileSource;
   /**
-   * Where it came from outside us, unique per firm (gmail:<messageId>:<attachmentId>):
-   * a second store of the same ref returns the first row instead of a copy.
+   * Where it came from outside us, unique per firm (gmail:<messageId>:<attachmentId>).
+   * Store such a file through storeFileOnce, which says what a repeat found.
    */
   sourceRef?: string | null;
 }
@@ -179,21 +179,53 @@ export async function createFile(input: CreateFileInput): Promise<FileRow> {
     .single();
   if (error || !data) {
     await removeObject(storagePath).catch(() => {});
-    const err = wrapDbError('createFile failed', error) as Error & { code?: string };
-    // Only a source_ref can collide (the id and path are fresh): already kept.
-    if (err.code === '23505' && input.sourceRef) {
-      const existing = await getClient()
-        .from('files')
-        .select()
-        .eq('tenant_id', input.tenantId)
-        .eq('source_ref', input.sourceRef)
-        .maybeSingle();
-      if (existing.error) throw wrapDbError('createFile (existing source_ref) failed', existing.error);
-      if (existing.data) return existing.data;
-    }
-    throw err;
+    throw wrapDbError('createFile failed', error);
   }
   return data;
+}
+
+/**
+ * What storing an outside file found: stored now, already kept (live), or kept
+ * once and since DELETED by the firm — which stays deleted: a redelivered
+ * webhook must never bring back a file the manager removed, so there is no row
+ * to link and the caller skips it.
+ */
+export type StoreOnceResult =
+  | { status: 'stored'; file: FileRow }
+  | { status: 'already'; file: FileRow }
+  | { status: 'deleted'; file: null };
+
+async function bySourceRef(tenantId: string, sourceRef: string): Promise<FileRow | null> {
+  const { data, error } = await getClient()
+    .from('files')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('source_ref', sourceRef)
+    .maybeSingle();
+  if (error) throw wrapDbError('storeFileOnce (source_ref) failed', error);
+  return data;
+}
+
+const seen = (row: FileRow): StoreOnceResult =>
+  row.deleted_at ? { status: 'deleted', file: null } : { status: 'already', file: row };
+
+/**
+ * Store a file from outside once per firm and source_ref. The unique index
+ * spans deleted rows ON PURPOSE — that is what keeps a deleted file deleted.
+ * Looked up first so a redelivery uploads no bytes; a racing store loses the
+ * insert (23505) and reads the winner.
+ */
+export async function storeFileOnce(input: CreateFileInput & { sourceRef: string }): Promise<StoreOnceResult> {
+  const prior = await bySourceRef(input.tenantId, input.sourceRef);
+  if (prior) return seen(prior);
+  try {
+    return { status: 'stored', file: await createFile(input) };
+  } catch (err) {
+    if ((err as Error & { code?: string }).code !== '23505') throw err;
+    const winner = await bySourceRef(input.tenantId, input.sourceRef);
+    if (!winner) throw err;
+    return seen(winner);
+  }
 }
 
 /** One LIVE file of this firm, or null (a deleted one reads as missing: its bytes are gone). */

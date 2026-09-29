@@ -12,7 +12,7 @@ import {
   voidDocument,
   type MoneyDocumentKind,
 } from './moneyDocuments.js';
-import { listMoneyEventsForJob, summarizeMoney } from './moneyEvents.js';
+import { appendMoneyEvent, listMoneyEventsForJob, summarizeMoney } from './moneyEvents.js';
 import { upsertTenantProfile } from './tenantProfiles.js';
 import { createTenant } from './tenants.js';
 
@@ -39,6 +39,8 @@ async function freshJob(tid = tenantId, status: JobStatus = 'completed') {
 
 const draft = (tid: string, jobId: string, kind: MoneyDocumentKind = 'invoice') =>
   saveDraft({ tenantId: tid, kind, jobId, lines: LINES, byRef: 'mgr-sam' });
+
+const summary = async (jobId: string) => summarizeMoney(await listMoneyEventsForJob(tenantId, jobId));
 
 const ledgerCount = async (jobId: string, kind: string): Promise<number> =>
   Number(
@@ -232,6 +234,128 @@ describe('issue and void write the ledger', () => {
     expect(r.event.id).toBe(first.event.id);
     expect(r.document.money_event_id).toBe(first.event.id);
     expect(await ledgerCount(job.id, 'invoice_issued')).toBe(1);
+  });
+});
+
+describe('progress is decided once, at issue', () => {
+  test('stored with the number; the ledger row is written from the stored value; a disagreeing retry is refused', async () => {
+    const job = await freshJob(tenantId, 'open');
+    const d = await draft(tenantId, job.id);
+    const r = await issueDocument(tenantId, d.id, 'mgr', { progress: true });
+    expect(r.document.progress).toBe(true);
+    expect(r.event.detail).toMatchObject({ progress: true });
+    await expect(issueDocument(tenantId, d.id, 'mgr')).rejects.toThrow('was issued as a progress (deposit) invoice');
+    expect((await issueDocument(tenantId, d.id, 'mgr', { progress: true })).already).toBe(true);
+
+    // The retry of a ledger write that never landed takes progress from the document.
+    const d2 = await draft(tenantId, job.id);
+    await pg.query(
+      "update money_documents set status = 'issued', number_seq = 9101, number = 'INV-9101', progress = true where id = $1",
+      [d2.id],
+    );
+    await expect(issueDocument(tenantId, d2.id, 'mgr')).rejects.toThrow('progress');
+    expect(await ledgerCount(job.id, 'invoice_issued')).toBe(1);
+    const retried = await issueDocument(tenantId, d2.id, 'mgr', { progress: true });
+    expect(retried.event.detail).toMatchObject({ progress: true });
+  });
+
+  test('concurrent issues with DIFFERENT progress end with one row matching the stored document', async () => {
+    for (let i = 0; i < 4; i++) {
+      const job = await freshJob(tenantId, 'open');
+      const d = await draft(tenantId, job.id);
+      const results = await Promise.allSettled([
+        issueDocument(tenantId, d.id, 'mgr', { progress: true }),
+        issueDocument(tenantId, d.id, 'mgr', { progress: false }),
+      ]);
+      expect(results.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
+      const stored = await getDocument(tenantId, d.id);
+      const rows = (await pg.query("select detail from money_events where job_id = $1 and kind = 'invoice_issued'", [job.id])).rows;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].detail.progress === true).toBe(stored?.progress);
+    }
+  });
+});
+
+describe('void racing issue and outcome', () => {
+  test('an invoice retry racing a void leaves no live invoice and the job walked back', async () => {
+    for (let i = 0; i < 5; i++) {
+      const job = await freshJob(tenantId, 'completed');
+      const d = await draft(tenantId, job.id);
+      // Numbered, ledger write never landed (a crash); now a retry and a void race.
+      await pg.query(
+        "update money_documents set status = 'issued', number_seq = $2, number = $3, issued_at = now() where id = $1",
+        [d.id, 9200 + i, `INV-${9200 + i}`],
+      );
+      await Promise.allSettled([issueDocument(tenantId, d.id, 'mgr'), voidDocument(tenantId, d.id, 'race', 'mgr')]);
+      expect((await getDocument(tenantId, d.id))?.status).toBe('void');
+      expect((await summary(job.id)).invoicedCents).toBe(0);
+      expect((await getJob(job.id))?.status).toBe('completed');
+    }
+  });
+
+  test('a void repeated after a crash between the status flip and the ledger write writes the missing row', async () => {
+    const job = await freshJob(tenantId, 'completed');
+    const d = await draft(tenantId, job.id);
+    await issueDocument(tenantId, d.id, 'mgr');
+    await pg.query("update money_documents set status = 'void', voided_at = now() where id = $1", [d.id]);
+    const v = await voidDocument(tenantId, d.id, null, 'mgr');
+    expect(v.already).toBe(true);
+    expect(v.event?.kind).toBe('invoice_voided');
+    expect((await summary(job.id)).invoicedCents).toBe(0);
+    expect((await getJob(job.id))?.status).toBe('completed');
+    expect((await voidDocument(tenantId, d.id, null, 'mgr')).event?.id).toBe(v.event?.id);
+  });
+
+  test('a void racing an accepted outcome ends void with nothing quoted', async () => {
+    for (let i = 0; i < 5; i++) {
+      const job = await freshJob(tenantId, 'open');
+      const d = await draft(tenantId, job.id, 'estimate');
+      await issueDocument(tenantId, d.id, 'mgr');
+      await Promise.allSettled([
+        recordEstimateOutcome(tenantId, d.id, 'accepted', 'mgr'),
+        voidDocument(tenantId, d.id, 'race', 'mgr'),
+      ]);
+      expect((await getDocument(tenantId, d.id))?.status).toBe('void');
+      expect((await summary(job.id)).quotedCents).toBe(0);
+    }
+  });
+
+  test('void cancels an approval the ledger holds even when the outcome was never stamped', async () => {
+    const job = await freshJob(tenantId, 'open');
+    const d = await draft(tenantId, job.id, 'estimate');
+    const issued = await issueDocument(tenantId, d.id, 'mgr');
+    // The outcome's ledger write landed; its stamp on the document did not.
+    await appendMoneyEvent({
+      tenantId, jobId: job.id, kind: 'estimate_approved', amountCents: TOTAL,
+      externalRef: issued.document.number, dedupeKey: `doc:${d.id}:outcome`,
+    });
+    expect((await getDocument(tenantId, d.id))?.outcome).toBeNull();
+    const v = await voidDocument(tenantId, d.id, null, 'mgr');
+    expect(v.event?.kind).toBe('correction');
+    expect((await summary(job.id)).quotedCents).toBe(0);
+  });
+
+  test('an outcome after a void is refused and leaves no live approval', async () => {
+    const job = await freshJob(tenantId, 'open');
+    const d = await draft(tenantId, job.id, 'estimate');
+    await issueDocument(tenantId, d.id, 'mgr');
+    await voidDocument(tenantId, d.id, null, 'mgr');
+    await expect(recordEstimateOutcome(tenantId, d.id, 'accepted', 'mgr')).rejects.toThrow('is void');
+    expect(await ledgerCount(job.id, 'estimate_approved')).toBe(0);
+    expect((await summary(job.id)).quotedCents).toBe(0);
+  });
+
+  test('a refused second answer stamps the document with the answer the ledger holds', async () => {
+    const job = await freshJob(tenantId, 'open');
+    const d = await draft(tenantId, job.id, 'estimate');
+    const issued = await issueDocument(tenantId, d.id, 'mgr');
+    await appendMoneyEvent({
+      tenantId, jobId: job.id, kind: 'estimate_declined',
+      externalRef: issued.document.number, dedupeKey: `doc:${d.id}:outcome`,
+    });
+    await expect(recordEstimateOutcome(tenantId, d.id, 'accepted', 'mgr')).rejects.toThrow('already recorded as declined');
+    expect((await getDocument(tenantId, d.id))?.outcome).toBe('declined');
+    expect(await ledgerCount(job.id, 'estimate_approved')).toBe(0);
   });
 });
 

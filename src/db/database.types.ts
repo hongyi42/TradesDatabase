@@ -1443,6 +1443,7 @@ export type Database = {
           number_seq: number | null
           outcome: string | null
           outcome_at: string | null
+          progress: boolean
           status: string
           tenant_id: string
           total_cents: number
@@ -1465,6 +1466,7 @@ export type Database = {
           number_seq?: number | null
           outcome?: string | null
           outcome_at?: string | null
+          progress?: boolean
           status?: string
           tenant_id: string
           total_cents?: number
@@ -1487,6 +1489,7 @@ export type Database = {
           number_seq?: number | null
           outcome?: string | null
           outcome_at?: string | null
+          progress?: boolean
           status?: string
           tenant_id?: string
           total_cents?: number

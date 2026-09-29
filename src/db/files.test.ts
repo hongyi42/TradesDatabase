@@ -15,6 +15,7 @@ import {
   linksOf,
   listFiles,
   readFileBytes,
+  storeFileOnce,
   targetVisibleTo,
 } from './files.js';
 import { createJob } from './jobs.js';
@@ -137,15 +138,40 @@ describe('the file store (step 2d)', () => {
     await expect(linkFile(otherTenantId, foreignFile.id, { documentId: doc.id }, 'o')).rejects.toThrow('target not found');
   });
 
-  test('a sourceRef is kept once per firm: a second store returns the first row, another firm stores its own', async () => {
+  test('storeFileOnce: a sourceRef is kept once per firm; a repeat says "already"; another firm stores its own', async () => {
     const ref = `gmail:msg-${Date.now()}:att-1`;
-    const first = await newFile({ source: 'email', sourceRef: ref, fileName: 'invoice.pdf' });
-    expect(first.source_ref).toBe(ref);
-    const second = await newFile({ source: 'email', sourceRef: ref, fileName: 'invoice.pdf' });
-    expect(second.id).toBe(first.id);
-    expect(Number((await pg.query('select count(*) n from files where source_ref = $1 and tenant_id = $2', [ref, tenantId])).rows[0].n)).toBe(1);
-    const theirs = await newFile({ tenantId: otherTenantId, source: 'email', sourceRef: ref });
-    expect(theirs.id).not.toBe(first.id);
+    const input = {
+      tenantId, kind: 'document' as const, fileName: 'invoice.pdf', mimeType: 'application/pdf',
+      bytes: bytesOf('pdf bytes'), uploadedByRef: 'mgr', uploadedBy: null, source: 'email' as const, sourceRef: ref,
+    };
+    const first = await storeFileOnce(input);
+    expect(first.status).toBe('stored');
+    expect(first.file?.source_ref).toBe(ref);
+    const again = await storeFileOnce(input);
+    expect(again).toEqual({ status: 'already', file: first.file });
+    const count = async () =>
+      Number((await pg.query('select count(*) n from files where source_ref = $1 and tenant_id = $2', [ref, tenantId])).rows[0].n);
+    expect(await count()).toBe(1);
+    // Two racing deliveries: one stores, the other reads it.
+    const ref2 = `${ref}-race`;
+    const raced = await Promise.all([storeFileOnce({ ...input, sourceRef: ref2 }), storeFileOnce({ ...input, sourceRef: ref2 })]);
+    expect(raced.map((r) => r.status).sort()).toEqual(['already', 'stored']);
+    expect(raced[0].file?.id).toBe(raced[1].file?.id);
+    expect((await storeFileOnce({ ...input, tenantId: otherTenantId })).status).toBe('stored');
+  });
+
+  test('storeFileOnce: a file the manager DELETED stays deleted when the webhook redelivers it', async () => {
+    const ref = `gmail:msg-${Date.now()}:att-deleted`;
+    const input = {
+      tenantId, kind: 'document' as const, fileName: 'invoice.pdf', mimeType: 'application/pdf',
+      bytes: bytesOf('pdf bytes'), uploadedByRef: 'mgr', uploadedBy: null, source: 'email' as const, sourceRef: ref,
+    };
+    const first = await storeFileOnce(input);
+    expect(await deleteFile(tenantId, first.file!.id, 'mgr')).toBe('deleted');
+    expect(await storeFileOnce(input)).toEqual({ status: 'deleted', file: null });
+    const rows = (await pg.query('select deleted_at from files where source_ref = $1 and tenant_id = $2', [ref, tenantId])).rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].deleted_at).not.toBeNull();
   });
 
   test('tenant guard: another firm’s file or target reads as not found', async () => {

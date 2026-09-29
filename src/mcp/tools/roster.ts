@@ -18,6 +18,7 @@ import {
   teardownPersonSession as liveTeardownSession,
 } from '../../composio/sessions.js';
 import {
+  PROFILE_INTEGER_FIELDS,
   PROFILE_STRING_FIELDS,
   annotateResolvedReviewItem,
   cancelSandboxRetirement as liveCancelRetirement,
@@ -204,7 +205,8 @@ const ADMIN_TOOLS = [
     description:
       "Set the firm's business-identity profile (manager only) — what customer-facing " +
       'documents (invoices, estimates) will print: business/legal name, address, phone, ' +
-      'email, contractor license numbers, and a disclosure footer. ONE call, commits ' +
+      'email, contractor license numbers, a disclosure footer, and where invoice/estimate ' +
+      'numbers start. ONE call, commits ' +
       'immediately — pass any subset of fields and only those change (null clears a field); ' +
       'call with NO fields to just see the current profile. The reply echoes the full saved ' +
       'profile plus gaps (likely-required fields still missing) — relay BOTH to the manager. ' +
@@ -269,6 +271,18 @@ const ADMIN_TOOLS = [
           description:
             'Free-text footer printed on customer documents — state-mandated disclosure ' +
             'wording lives here. null clears.',
+        },
+        invoiceStart: {
+          type: 'integer',
+          minimum: 1,
+          description:
+            'The number the firm\'s invoices count up from (INV-1001 by default) — e.g. to carry on ' +
+            'from their old system. A number already used is never reused.',
+        },
+        estimateStart: {
+          type: 'integer',
+          minimum: 1,
+          description: 'The same for estimates (EST-1001 by default).',
         },
       },
       required: [],
@@ -957,7 +971,7 @@ async function handleSetFirmProfile(toolCtx: ToolContext): Promise<unknown> {
       // validation (string-ness, empty strings, state format, license entry
       // shape) lives in that typed layer — the single write-side guard for
       // every surface; its errors are instructive, surface them verbatim.
-      const knownKeys = [...PROFILE_STRING_FIELDS, 'licenseNumbers'];
+      const knownKeys = [...PROFILE_STRING_FIELDS, 'licenseNumbers', ...PROFILE_INTEGER_FIELDS];
       const unknown = Object.keys(args).filter((k) => !knownKeys.includes(k as never));
       if (unknown.length > 0) {
         throw new Error(
@@ -971,6 +985,10 @@ async function handleSetFirmProfile(toolCtx: ToolContext): Promise<unknown> {
       }
       if (args.licenseNumbers !== undefined) {
         patch.licenseNumbers = args.licenseNumbers as LicenseNumber[] | null;
+      }
+      // Value checks (a whole number above 0) live in the typed layer.
+      for (const k of PROFILE_INTEGER_FIELDS) {
+        if (args[k] !== undefined) patch[k] = args[k] as number;
       }
       // No fields = a READ: echo the current profile without writing (plan
       // decision: the echo IS the get — no separate get tool).

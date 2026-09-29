@@ -46,6 +46,7 @@ import { accessTools } from './tools/access.js';
 import { capturesTools } from './tools/captures.js';
 import { commsTools } from './tools/comms.js';
 import { customersTools } from './tools/customers.js';
+import { documentsTools } from './tools/documents.js';
 import { filesTools } from './tools/files.js';
 import { memoryTools } from './tools/memory.js';
 import { moneyTools } from './tools/money.js';
@@ -340,6 +341,7 @@ const ADMIN_TOOLS = [
   ...scheduleTools.admin,
   ...rosterTools.admin,
   ...moneyTools.admin,
+  ...documentsTools.admin,
   ...memoryTools.admin,
   {
     name: 'query_spine',
@@ -580,6 +582,7 @@ const DOMAIN_HANDLERS: Record<string, ToolHandler> = {
   ...capturesTools.handlers,
   ...commsTools.handlers,
   ...customersTools.handlers,
+  ...documentsTools.handlers,
   ...filesTools.handlers,
   ...memoryTools.handlers,
   ...moneyTools.handlers,

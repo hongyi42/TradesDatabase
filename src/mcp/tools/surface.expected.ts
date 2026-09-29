@@ -55,11 +55,14 @@ export const MANAGER_ONLY_TOOLS = [
   'cancel_job', // the terminal verb (2026-07-25)
   'deactivate_technician_seat',
   'decline_access', // access plan B (2026-09-19): say no to a technician's request
+  'draft_document', // step 2e (2026-09-29): invoices and estimates as records
   'find_slots',
   'get_availability', // the read half of set_availability (2026-08-04)
   'get_team_schedule',
   'grant_access', // access plan A (2026-09-19): open a record to one technician
+  'issue_document', // step 2e
   'list_access', // access plan A: the firm's rule + live grants
+  'list_documents', // step 2e
   'list_my_memory', // step 2a (2026-09-24): the manager seat's own notes
   'list_team',
   'move_visit',
@@ -67,6 +70,7 @@ export const MANAGER_ONLY_TOOLS = [
   'query_spine', // ad-hoc read fallback (2026-08-06)
   'reactivate_technician_seat',
   'read_my_memory', // step 2a
+  'record_estimate_outcome', // step 2e
   'record_money_event', // the money ledger (2026-08-15)
   'remove_time_off',
   'revoke_access', // access plan A
@@ -79,6 +83,7 @@ export const MANAGER_ONLY_TOOLS = [
   'set_timezone', // the firm's IANA zone (2026-09-20) — no writer existed before it
   'unschedule_visit',
   'update_job',
+  'void_document', // step 2e
   'write_my_memory', // step 2a
 ] as const;
 

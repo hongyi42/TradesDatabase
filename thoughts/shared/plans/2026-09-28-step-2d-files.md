@@ -66,6 +66,12 @@ Mine (implementation):
 - **The glue tells the model a file's id in the message**: `[photo saved as file <id>]` /
   `[document "<name>" saved as file <id>]`; a failed save says `[photo could not be saved]` and
   never blocks the reply. The 7-day box copy is left as it is.
+- **Known limits (phase 3 review):** updates are handled one at a time, so a Stop behind a 20 MB
+  document can wait up to ~2 min (60 s Telegram download + 60 s upload, and a retry doubles the
+  upload's share); nothing waits forever. A save is retried ONCE (Render may be waking from its
+  free-plan sleep); a photo that still fails is not kept — the model is told, and there is no later
+  retry. Stored Telegram photos are all named `photo.jpg`; `open_file` prefixes the id so two never
+  collide.
 - **Discovery is a tool, not a context change**: `list_files` (by target); get_job /
   get_customer_context are not touched in 2d.
 
@@ -131,9 +137,12 @@ s5, then a phone test: send a photo, attach it, ask for it back, delete it.
 **`src/db/files.test.ts`** (new, local stack — the FIRST test to touch real Supabase Storage; the local stack runs Storage, `config.toml [storage]`, kept by `second-stack.sh:101`) — create → get → bytes round-trip; tenant guard on link and get; `num_nonnulls` check; duplicate link; delete removes the object and hides the row from `listFiles`/`getFile`; deleting a job cascades its links but not the file; visibility table: manager, uploader, job-in-view, job-out-of-view, visit→job, customer, money link with and without `viewShowsMoney`, unlinked file of someone else.
 
 ### Automated verification
-- [ ] `npx supabase migration up` (local) applies; `select id, public from storage.buckets where id='files'` on the local stack returns one private row; `npm run gen:types:local`
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`
-- [ ] `files.test.ts` passes, including the object really gone from the bucket after delete (read-back through Storage, not the row)
+- [x] `npx supabase migration up` (local) applies; `select id, public from storage.buckets where id='files'` on the local stack returns one private row; `npm run gen:types:local`
+      — applied; `[ { id: 'files', public: false } ]`; types added only `files` + `file_links`.
+- [x] `npm run typecheck`, `npm run lint`, `npm test`
+      — 3917 passed (phase 1 commit 6e0451a; review fixes 975d3b1).
+- [x] `files.test.ts` passes, including the object really gone from the bucket after delete (read-back through Storage, not the row)
+      — 12 passed: `objectExists` true before, false after, and `storage.download` errors after delete.
 
 ## Phase 2: the spine's doors
 
@@ -159,8 +168,10 @@ s5, then a phone test: send a photo, attach it, ask for it back, delete it.
 **Tests** — `src/mcp/server.test.ts` new `describe('files (step 2d)')`: tool tiers + visibility cases through `call`; `src/mcp/httpServer.test.ts`: upload (401/400/413/200) and download (404 outside view / deleted, 200 bytes + headers), round-trip bytes identical.
 
 ### Automated verification
-- [ ] typecheck, lint, `npm test`; the new suites pass
-- [ ] against the local spine (`MCP_HTTP_PORT` + a minted seat token): `curl --data-binary @photo.jpg` → id; `curl GET` → identical bytes (`cmp`)
+- [x] typecheck, lint, `npm test`; the new suites pass
+      — 3926 passed (52faf9c); review fixes 17f28b0 (a real 413, active-manager downloads, malformed ids, ownership by roster row).
+- [x] against the local spine (`MCP_HTTP_PORT` + a minted seat token): `curl --data-binary @photo.jpg` → id; `curl GET` → identical bytes (`cmp`)
+      — 300 KB random bytes up → id → GET 200 → `cmp` BYTES IDENTICAL.
 
 ## Phase 3: the bots
 
@@ -178,8 +189,10 @@ s5, then a phone test: send a photo, attach it, ask for it back, delete it.
 **Tests** — inbound (document, tooBig), seat (photo/document → upload called, id in the message, failed or timed-out upload still delivers; a document closes an open prompt), fileTools (send_file picks sendPhoto/sendDocument; save_file size refusal; open_file writes), engine (technician gets `custom:*` + `send_file` only), doctrine (manager and technician text mention link_file).
 
 ### Automated verification
-- [ ] typecheck, lint, `npm test`, `npm run build`
-- [ ] **Live, local rig** (the 2c rig: local spine on 8791, `setup-local-seat.mjs`, driver): drive a photo, then "attach that to the Lee job", then "send it back to me" — evidence: a `files` row + a `file_links` row with the job id (read back with SQL), the driver's `documents`/photo send with identical bytes (`cmp`), and a second seat (technician not on that job) gets "not found" from `send_file`
+- [x] typecheck, lint, `npm test`, `npm run build`
+      — 3941 passed, build clean (d85f70e).
+- [x] **Live, local rig** (the 2c rig: local spine on 8791, `setup-local-seat.mjs`, driver): drive a photo, then "attach that to the Lee job", then "send it back to me" — evidence: a `files` row + a `file_links` row with the job id (read back with SQL), the driver's `documents`/photo send with identical bytes (`cmp`), and a second seat (technician not on that job) gets "not found" from `send_file`
+      — driver on s2: photo in → "I've attached the photo to Tom Becker's furnace inspection job." → "send me that photo back" → photo out; `cmp` identical (63,280 bytes); SQL: files row (photo, manager-sam, telegram) + file_links → Furnace inspection. Technician seat s9 (not on that job): GET → 404; the manager: 200. (Used the seeded Becker job, not "Lee".)
 
 ## Phase 4: live on the pilot
 

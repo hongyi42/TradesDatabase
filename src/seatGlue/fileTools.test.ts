@@ -168,8 +168,15 @@ describe('fileTools', () => {
     const box = fakeBox();
     box.stored.set('f1', { bytes: encode('rows'), name: '../../etc/evil name.csv', mime: 'text/csv' });
     const out = await box.tool('open_file').handler({ fileId: 'f1' }, {});
-    expect(out).toContain('/home/user/files/evil_name.csv');
-    expect(new TextDecoder().decode(box.files.get('/home/user/files/evil_name.csv'))).toBe('rows');
+    expect(out).toContain('/home/user/files/f1-evil_name.csv');
+    expect(new TextDecoder().decode(box.files.get('/home/user/files/f1-evil_name.csv'))).toBe('rows');
+    // Two photos both named photo.jpg land side by side, never over each other.
+    box.stored.set('aaaaaaaa-1', { bytes: encode('one'), name: 'photo.jpg', mime: 'image/jpeg' });
+    box.stored.set('bbbbbbbb-2', { bytes: encode('two'), name: 'photo.jpg', mime: 'image/jpeg' });
+    await box.tool('open_file').handler({ fileId: 'aaaaaaaa-1' }, {});
+    await box.tool('open_file').handler({ fileId: 'bbbbbbbb-2' }, {});
+    expect(new TextDecoder().decode(box.files.get('/home/user/files/aaaaaaaa-photo.jpg'))).toBe('one');
+    expect(new TextDecoder().decode(box.files.get('/home/user/files/bbbbbbbb-photo.jpg'))).toBe('two');
     expect(await box.tool('open_file').handler({ fileId: 'missing' }, {})).toBe('No such file.');
   });
 

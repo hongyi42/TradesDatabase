@@ -412,7 +412,9 @@ export function fileTools(deps: FileToolDeps): FileToolSet {
           return `Error: the file could not be fetched just now (${errText(err)}). Try again in a minute.`;
         }
         if (!file) return 'No such file.';
-        const path = resolvePath(storedName(file.name));
+        // Unique per file: every Telegram photo is stored as "photo.jpg", and a
+        // second open must never silently replace the first.
+        const path = resolvePath(`${fileId.trim().slice(0, 8)}-${storedName(file.name)}`);
         if (!path) return 'Error: that file name cannot be written here.';
         const stored = file;
         return withBox(undefined, async (sbx) => {

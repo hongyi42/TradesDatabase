@@ -71,6 +71,19 @@ describe('send_file (step 2d)', () => {
     expect(c.docs).toEqual(['big.jpg']);
   });
 
+  it('a photo Telegram refuses (its dimensions) goes as a document instead', async () => {
+    const docs: string[] = [];
+    const tool = sendFileTool({
+      downloadFile: async () => ({ bytes: new Uint8Array(3), name: 'tall.png', mime: 'image/png' }),
+      sendPhoto: async () => {
+        throw new Error('telegram: sendPhoto failed (HTTP 400)');
+      },
+      sendDocument: async (n) => void docs.push(n),
+    });
+    expect(await tool.handler({ fileId: ID }, {})).toBe('Sent tall.png to the chat.');
+    expect(docs).toEqual(['tall.png']);
+  });
+
   it('every failure is words, never a throw', async () => {
     expect(await setup(null).tool.handler({ fileId: ID }, {})).toContain('No such file');
     expect(await setup(new Error('HTTP 503')).tool.handler({ fileId: ID }, {})).toContain('could not be fetched');

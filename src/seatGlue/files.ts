@@ -116,8 +116,15 @@ export function sendFileTool(deps: SendFileDeps): FileTool {
       }
       if (!file) return 'No such file (or it is not one your person may see).';
       try {
-        if (IMAGE.test(file.mime) && file.bytes.length <= TELEGRAM_MAX_PHOTO) await deps.sendPhoto(file.bytes, cap);
-        else await deps.sendDocument(file.name, file.bytes, cap);
+        let asPhoto = IMAGE.test(file.mime) && file.bytes.length <= TELEGRAM_MAX_PHOTO;
+        if (asPhoto) {
+          // Telegram also refuses photos on their dimensions (a very tall
+          // screenshot): then it goes as a document instead.
+          await deps.sendPhoto(file.bytes, cap).catch(() => {
+            asPhoto = false;
+          });
+        }
+        if (!asPhoto) await deps.sendDocument(file.name, file.bytes, cap);
       } catch (err) {
         return `Error: Telegram did not take the file (${err instanceof Error ? err.message : String(err)}).`;
       }

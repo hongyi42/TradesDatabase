@@ -594,9 +594,11 @@ describe('Seat', () => {
     expect(t.session().sends.at(-1)!.attachments?.[0]).toMatchObject({ type: 'blob', mimeType: 'image/jpeg', displayName: 'site.jpg' });
   });
 
-  it('step 2d: a failed or slow save is said to the model and never blocks the turn', async () => {
+  it('step 2d: a failed or slow save is retried once, then said to the model, and never blocks the turn', async () => {
+    let tries = 0;
     const t = setup({
       uploadFile: async () => {
+        tries += 1;
         throw new Error('The operation was aborted due to timeout');
       },
     });
@@ -604,6 +606,32 @@ describe('Seat', () => {
     t.telegram.files.set('d', Buffer.from('x'));
     await t.seat.handleUpdate(upd({ document: { file_id: 'd', file_name: 'a.pdf', mime_type: 'application/pdf' } }));
     expect(t.session().sends[0].prompt).toBe('[document "a.pdf" could not be saved]');
+    expect(tries).toBe(2);
+  });
+
+  it('step 2d: one failed upload then a good one keeps the file (the retry)', async () => {
+    let tries = 0;
+    const t = setup({
+      uploadFile: async () => {
+        tries += 1;
+        if (tries === 1) throw new Error('Render answered HTTP 502');
+        return 'f-ok';
+      },
+    });
+    await t.seat.start();
+    t.telegram.files.set('p', Buffer.from('J'));
+    await t.seat.handleUpdate(upd({ photo: [{ file_id: 'p', width: 1, height: 1 }] }));
+    expect(t.session().sends[0].prompt).toBe('(photo)\n[photo saved as file f-ok]');
+  });
+
+  it('step 2d: a document whose size Telegram did not say, found too big on download, is refused in words', async () => {
+    const t = setup();
+    await t.seat.start();
+    t.telegram.download = async () => {
+      throw new Error('telegram: file over 20 MB');
+    };
+    await t.seat.handleUpdate(upd({ document: { file_id: 'nosize', file_name: 'x.zip' } }));
+    expect(t.telegram.sent.at(-1)).toContain('over 20 MB');
   });
 
   it('step 2d: a document over 20 MB is refused in words, never fetched', async () => {

@@ -346,7 +346,14 @@ export class Seat {
         return this.deliver(`${msg.caption ?? '(photo)'}\n${note}`, [photo]);
       }
       case 'document': {
-        const buf = await this.deps.telegram.download(msg.fileId);
+        let buf: Buffer;
+        try {
+          buf = await this.deps.telegram.download(msg.fileId);
+        } catch (err) {
+          // Telegram may not say a document's size up front; the download finds out.
+          if (/over 20 MB/.test(errText(err))) return this.say(TEXT.tooBig);
+          throw err;
+        }
         const saved = await this.store({ kind: 'document', name: msg.fileName, mime: msg.mimeType, bytes: buf });
         const quoted = JSON.stringify(msg.fileName);
         const note = saved ? `[document ${quoted} saved as file ${saved}]` : `[document ${quoted} could not be saved]`;
@@ -984,18 +991,24 @@ export class Seat {
     void this.deps.telegram.clearButtons(this.chatId, messageId).catch((err: unknown) => this.log(`could not clear buttons: ${errText(err)}`));
   }
 
-  /** The 7-day box copy is a convenience: failing to keep it must never lose the message. */
-  /** Step 2d: the file store's id, or null — a failed or slow save is logged and said, never blocks the turn. */
+  /**
+   * Step 2d: the file store's id, or null — a failed save is logged and said,
+   * never blocks the turn. ONE retry: an upload only happens on arrival, so a
+   * miss is permanent, and the likeliest miss is Render waking from its sleep.
+   */
   private async store(f: { kind: 'photo' | 'document'; name: string; mime: string; bytes: Buffer }): Promise<string | null> {
     if (!this.deps.uploadFile) return null;
-    try {
-      return await this.deps.uploadFile(f);
-    } catch (err) {
-      this.log(`keeping the ${f.kind} failed: ${errText(err)}`);
-      return null;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        return await this.deps.uploadFile(f);
+      } catch (err) {
+        this.log(`keeping the ${f.kind} failed (attempt ${attempt}): ${errText(err)}`);
+      }
     }
+    return null;
   }
 
+  /** The 7-day box copy is a convenience: failing to keep it must never lose the message. */
   private async keepCopy(buf: Buffer, ext: string): Promise<void> {
     try {
       await this.deps.saveMedia(buf, ext);

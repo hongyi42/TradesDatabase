@@ -20,11 +20,13 @@ const line = readFileSync(join(dirname(common), '.env'), 'utf8').split('\n').fin
 if (!line) throw new Error('E2B_API_KEY missing from .env');
 const apiKey = line.slice('E2B_API_KEY='.length).trim().replace(/^["']|["']$/g, '');
 
-// openpyxl + xlsxwriter: spreadsheets; reportlab: PDFs (2d's invoices);
-// pandas: the CSV that export_query writes.
+// openpyxl + xlsxwriter: spreadsheets; reportlab: making PDFs (2d's invoices);
+// pypdf: READING PDFs a person sends (step 2d phone test, 2026-09-29: with no
+// reader the bot decoded a receipt's streams by hand); pandas: the CSV that
+// export_query writes.
 const template = Template()
   .fromPythonImage('3.12')
-  .pipInstall(['openpyxl', 'xlsxwriter', 'reportlab', 'pandas']);
+  .pipInstall(['openpyxl', 'xlsxwriter', 'reportlab', 'pypdf', 'pandas']);
 
 const info = await Template.build(template, name, { apiKey, cpuCount: 2, memoryMB: 2048, onBuildLogs: defaultBuildLogger() });
 console.log(`built template ${name}:`, JSON.stringify({ templateId: info.templateId, buildId: info.buildId }));

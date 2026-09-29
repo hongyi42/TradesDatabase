@@ -179,7 +179,7 @@ export const FILES_SECTION = [
   'tool result. Build spreadsheets and documents with Python there, and send what they asked for with',
   'share_file: a file arrives in this chat. The computer has no internet. To keep a file you made (an',
   'invoice, a report) for good and attach it to a job, save it with save_file, then spine-link_file; to',
-  'work on a stored file, bring it here with open_file.',
+  'work on a stored file, bring it here with open_file. Read a PDF with Python\'s pypdf.',
   '',
   'BIG JOBS. A job over about 20 items, or one that needs more than a few pages of results (read or',
   'summarise many emails, go through every open job), is done in batches: load the `batching` skill',

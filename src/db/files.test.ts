@@ -70,6 +70,12 @@ describe('the file store (step 2d)', () => {
     expect(await objectExists(f.storage_path)).toBe(true);
   });
 
+  test('a long name is cut by character, never through an emoji', async () => {
+    const f = await newFile({ fileName: `${'a'.repeat(254)}📷📷.jpg` });
+    expect(Array.from(f.file_name)).toHaveLength(255);
+    expect(f.file_name.endsWith('📷')).toBe(true);
+  });
+
   test('empty and oversized files are refused', async () => {
     await expect(newFile({ bytes: Buffer.alloc(0) })).rejects.toThrow('empty');
     await expect(newFile({ bytes: Buffer.alloc(20 * 1024 * 1024 + 1) })).rejects.toThrow('20 MB');
@@ -122,11 +128,16 @@ describe('the file store (step 2d)', () => {
     const cust = await createCustomer({ tenantId, name: 'Delete Cust' });
     const f = await newFile();
     await linkFile(tenantId, f.id, { customerId: cust.id }, 'mgr');
+    expect(await objectExists(f.storage_path)).toBe(true); // the helper can say yes here
     expect(await deleteFile(tenantId, f.id, 'mgr')).toBe('deleted');
     const row = (await pg.query('select deleted_at, deleted_by_ref from files where id = $1', [f.id])).rows[0];
     expect(row.deleted_at).not.toBeNull();
     expect(row.deleted_by_ref).toBe('mgr');
     expect(await objectExists(f.storage_path)).toBe(false);
+    // Read back through Storage itself: the bytes are gone.
+    const dl = await getClient().storage.from(FILES_BUCKET).download(f.storage_path);
+    expect(dl.error).not.toBeNull();
+    expect(await getFile(tenantId, f.id)).toBeNull();
     expect(await listFiles(tenantId, { customerId: cust.id })).toEqual([]);
     await expect(linkFile(tenantId, f.id, { customerId: cust.id }, 'mgr')).rejects.toThrow('file not found');
     expect(await deleteFile(tenantId, f.id, 'mgr')).toBe('already');
@@ -183,6 +194,13 @@ describe('who may see a file (fileVisibleTo)', () => {
     expect(fileVisibleTo(file(), [job('job-out'), job('job-in')], tech())).toBe(true); // any one link
     expect(fileVisibleTo(file(), [job('anything')], tech(view({ allScope: true })))).toBe(true);
     expect(fileVisibleTo(file({ uploaded_by: 'p-b', deleted_at: 'x' }), [], tech())).toBe(false);
+  });
+
+  test('a money file stays hidden even when it also hangs on a job she can see; her own upload stays hers', () => {
+    const both = [job('job-in'), money('job-in')];
+    expect(fileVisibleTo(file(), both, tech())).toBe(false);
+    expect(fileVisibleTo(file(), both, tech(view({ moneyAll: true })))).toBe(true);
+    expect(fileVisibleTo(file({ uploaded_by: 'p-b' }), both, tech())).toBe(true);
   });
 
   test('money files need the job in view AND money open', () => {

@@ -53,7 +53,9 @@ Mine (implementation):
 - **Visibility is checked in TypeScript with the existing view** (`getTechnicianView`,
   `viewHasJob`, `viewHasCustomer`, `viewShowsMoney`): manager/planner see all; a technician sees
   a live file she uploaded, or one with at least one link she may see — customer in view; job in
-  view; visit whose job is in view; ledger entry whose job is in view AND `viewShowsMoney`. An
+  view; visit whose job is in view; ledger entry whose job is in view AND `viewShowsMoney` — and a
+  file on a ledger entry whose money is closed to her stays hidden even if it also hangs on a job
+  she can see (phase 1 review); her own upload stays hers either way. An
   unlinked file is her own or nobody's (managers aside). Job-level, like the chat rule (the board's
   visit rule is not used). A file outside her view reads as NOT FOUND, never "forbidden".
 - **Bytes go glue → Render → Storage** over two new seat-token routes; Render is the only

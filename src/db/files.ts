@@ -105,13 +105,17 @@ export function targetVisibleTo(link: ResolvedLink, who: FileViewer): boolean {
 
 /**
  * The file rule (plan Decisions): managers and the planner see every live file;
- * a technician sees one she sent, or one with at least one link she may see.
- * An unlinked file is its sender's (and the managers').
+ * a technician sees one she sent, or one with at least one link she may see —
+ * UNLESS it is attached to a ledger entry whose money is closed to her: a money
+ * file stays hidden even when it also hangs on a job she can see (review
+ * finding). Her own upload stays hers either way; it holds nothing she did not
+ * already have. An unlinked file is its sender's (and the managers').
  */
 export function fileVisibleTo(file: FileRow, links: ResolvedLink[], who: FileViewer): boolean {
   if (file.deleted_at) return false;
   if (who.tier !== 'technician') return true;
   if ((who.personId && file.uploaded_by === who.personId) || file.uploaded_by_ref === who.ref) return true;
+  if (links.some((l) => l.kind === 'money' && !targetVisibleTo(l, who))) return false;
   return links.some((l) => targetVisibleTo(l, who));
 }
 
@@ -139,7 +143,8 @@ export async function createFile(input: CreateFileInput): Promise<FileRow> {
       id,
       tenant_id: input.tenantId,
       kind: input.kind,
-      file_name: input.fileName.slice(0, 255) || 'file',
+      // By character, never through an emoji's surrogate pair (Postgres refuses half of one).
+      file_name: Array.from(input.fileName).slice(0, 255).join('') || 'file',
       mime_type: input.mimeType || 'application/octet-stream',
       size_bytes: input.bytes.length,
       storage_path: storagePath,
@@ -156,8 +161,14 @@ export async function createFile(input: CreateFileInput): Promise<FileRow> {
   return data;
 }
 
-/** One file of this firm, live or deleted (callers decide), or null. */
+/** One LIVE file of this firm, or null (a deleted one reads as missing: its bytes are gone). */
 export async function getFile(tenantId: string, id: string): Promise<FileRow | null> {
+  const row = await getFileRow(tenantId, id);
+  return row && !row.deleted_at ? row : null;
+}
+
+/** The row whatever its state — for deleteFile, which must tell "already deleted" from "missing". */
+async function getFileRow(tenantId: string, id: string): Promise<FileRow | null> {
   const { data, error } = await getClient().from('files').select().eq('id', id).eq('tenant_id', tenantId).maybeSingle();
   if (error) throw wrapDbError('getFile failed', error);
   return data;
@@ -246,7 +257,7 @@ export async function readFileBytes(file: FileRow): Promise<Buffer> {
  * error: the row is already hidden everywhere.
  */
 export async function deleteFile(tenantId: string, id: string, byRef: string): Promise<'deleted' | 'already' | 'not_found'> {
-  const file = await getFile(tenantId, id);
+  const file = await getFileRow(tenantId, id);
   if (!file) return 'not_found';
   if (file.deleted_at) return 'already';
   const { data, error } = await getClient()

@@ -95,20 +95,27 @@ async function readRawBody(req: http.IncomingMessage, maxBytes?: number): Promis
   return Buffer.concat(chunks).toString('utf8');
 }
 
-// Raw bytes, for the file store's upload (step 2d). Same cap/abort idiom as
-// readRawBody, but never decoded: a photo is not text.
-async function readBinaryBody(req: http.IncomingMessage, maxBytes: number): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    const buf = chunk as Buffer;
-    total += buf.length;
-    // Stop reading, but leave the socket to the caller: it writes the 413 and
-    // closes it, so the client hears "too big" rather than a dropped connection.
-    if (total > maxBytes) throw Object.assign(new Error('request body exceeds cap'), { code: 'BODY_TOO_LARGE' });
-    chunks.push(buf);
-  }
-  return Buffer.concat(chunks);
+// Raw bytes, for the file store's upload (step 2d). Over the cap it stops
+// KEEPING bytes but reads on to the end, so the caller's 413 reaches a client
+// that is still sending (answering mid-upload breaks the client's write and it
+// never sees the reply). Past twice the cap it gives up and cuts the
+// connection: nobody gets to make the server read forever.
+function readBinaryBody(req: http.IncomingMessage, maxBytes: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const tooLarge = () => Object.assign(new Error('request body exceeds cap'), { code: 'BODY_TOO_LARGE' });
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total <= maxBytes) chunks.push(chunk);
+      else if (total > 2 * maxBytes) {
+        req.destroy();
+        reject(tooLarge());
+      }
+    });
+    req.once('end', () => (total > maxBytes ? reject(tooLarge()) : resolve(Buffer.concat(chunks))));
+    req.once('error', reject);
+  });
 }
 
 async function readBody(req: http.IncomingMessage): Promise<unknown> {
@@ -528,11 +535,11 @@ async function handleSeatFileUpload(req: http.IncomingMessage, res: http.ServerR
       json(400, { error: 'name is required' });
       return;
     }
-    // Too big is answered, then the connection closed: a declared length is
-    // refused before a byte is read; a stream that runs over, when it does.
+    // Too big is answered 413 and the connection closed: a declared length is
+    // refused before a byte is read; a stream that runs over, once it ends.
     const tooBig = () => {
       res.writeHead(413, { 'content-type': 'application/json', connection: 'close' });
-      res.end(JSON.stringify({ error: 'the file is over 20 MB' }), () => req.destroy());
+      res.end(JSON.stringify({ error: 'the file is over 20 MB' }));
     };
     if (Number(req.headers['content-length'] ?? 0) > FILE_MAX_BYTES) {
       tooBig();

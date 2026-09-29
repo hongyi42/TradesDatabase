@@ -1354,6 +1354,22 @@ describe('seat tokens: POST /control/seat-token, GET /seat/whoami, /mcp', () => 
       const big = await upload(token, Buffer.alloc(20 * 1024 * 1024 + 1));
       expect(big.status).toBe(413);
       expect(((await big.json()) as { error: string }).error).toContain('20 MB');
+      // A STREAMED body (no declared length) that runs over is answered 413 too, not a dropped socket.
+      const chunk = new Uint8Array(1024 * 1024);
+      let sentMb = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        pull(c) {
+          if (sentMb++ > 21) c.close();
+          else c.enqueue(chunk);
+        },
+      });
+      const streamed = await fetch(`${base}/seat/files?kind=document&name=big.bin`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/octet-stream' },
+        body: stream,
+        duplex: 'half',
+      } as RequestInit & { duplex: 'half' });
+      expect(streamed.status).toBe(413);
       // A malformed id is a 404, never a database error.
       expect((await download(token, '-'.repeat(36))).status).toBe(404);
       expect((await upload('st_' + '0'.repeat(64), 'x')).status).toBe(401);

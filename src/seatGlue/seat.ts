@@ -35,6 +35,9 @@ export const TEXT = {
   disclosure: 'Heads up from your AI assistant: the office can read our chats here, and your managers can ask it about them.',
 } as const;
 
+/** Step 2d: the largest image sent "as a file" that also goes to the model inline. */
+export const INLINE_IMAGE_MAX = 5 * 1024 * 1024;
+
 /** How long a typed plan reply may wait on Jev before it counts as a change request. */
 export const APPROVE_WAIT_MS = 3_500;
 
@@ -350,16 +353,19 @@ export class Seat {
         try {
           buf = await this.deps.telegram.download(msg.fileId);
         } catch (err) {
-          // Telegram may not say a document's size up front; the download finds out.
-          if (/over 20 MB/.test(errText(err))) return this.say(TEXT.tooBig);
+          // Telegram may not say a document's size up front: then getFile itself
+          // refuses a file over its 20 MB bot limit (HTTP 400, "file is too big").
+          if (/over 20 MB|getFile failed \(HTTP 400\)/.test(errText(err))) return this.say(TEXT.tooBig);
           throw err;
         }
         const saved = await this.store({ kind: 'document', name: msg.fileName, mime: msg.mimeType, bytes: buf });
         const quoted = JSON.stringify(msg.fileName);
         const note = saved ? `[document ${quoted} saved as file ${saved}]` : `[document ${quoted} could not be saved]`;
         this.deps.transcript?.person(`${msg.caption ? `${msg.caption} ` : ''}(file ${msg.fileName})`, this.sessionId);
-        // A jpeg/png sent "as a file" is still a picture the model can look at.
-        const image = /^image\/(jpeg|png)$/i.test(msg.mimeType)
+        // A jpeg/png sent "as a file" is still a picture the model can look at —
+        // but uncompressed it can be 20 MB, too big to send inline: then the
+        // model gets only the note (the file itself is kept either way).
+        const image = /^image\/(jpeg|png)$/i.test(msg.mimeType) && buf.length <= INLINE_IMAGE_MAX
           ? [{ type: 'blob' as const, data: buf.toString('base64'), mimeType: msg.mimeType.toLowerCase(), displayName: msg.fileName }]
           : undefined;
         return this.deliver(`${msg.caption ? `${msg.caption}\n` : ''}${note}`, image);

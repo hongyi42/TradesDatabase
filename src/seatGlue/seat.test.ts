@@ -624,14 +624,26 @@ describe('Seat', () => {
     expect(t.session().sends[0].prompt).toBe('(photo)\n[photo saved as file f-ok]');
   });
 
-  it('step 2d: a document whose size Telegram did not say, found too big on download, is refused in words', async () => {
+  it('step 2d: a document whose size Telegram did not say, refused by getFile as too big, is refused in words', async () => {
     const t = setup();
     await t.seat.start();
-    t.telegram.download = async () => {
-      throw new Error('telegram: file over 20 MB');
-    };
-    await t.seat.handleUpdate(upd({ document: { file_id: 'nosize', file_name: 'x.zip' } }));
-    expect(t.telegram.sent.at(-1)).toContain('over 20 MB');
+    for (const msg of ['telegram: file over 20 MB', 'telegram: getFile failed (HTTP 400)']) {
+      t.telegram.download = async () => {
+        throw new Error(msg);
+      };
+      await t.seat.handleUpdate(upd({ document: { file_id: 'nosize', file_name: 'x.zip' } }));
+      expect(t.telegram.sent.at(-1)).toContain('over 20 MB');
+    }
+  });
+
+  it('step 2d: a big image sent as a file is kept and noted, but not sent to the model inline', async () => {
+    const t = setup({ uploadFile: async () => 'f-big' });
+    await t.seat.start();
+    t.telegram.files.set('huge', Buffer.alloc(6 * 1024 * 1024));
+    await t.seat.handleUpdate(upd({ document: { file_id: 'huge', file_name: 'site.jpg', mime_type: 'image/jpeg' } }));
+    const sent = t.session().sends.at(-1)!;
+    expect(sent.prompt).toBe('[document "site.jpg" saved as file f-big]');
+    expect(sent.attachments).toBeUndefined();
   });
 
   it('step 2d: a document over 20 MB is refused in words, never fetched', async () => {

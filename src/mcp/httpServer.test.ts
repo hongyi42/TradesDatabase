@@ -38,7 +38,9 @@ import {
 import { setTenantSeats } from '../db/tenants.js';
 import { createSeat } from '../db/seats.js';
 import { createCustomer } from '../db/customers.js';
-import { createFile, deleteFile } from '../db/files.js';
+import { createFile, deleteFile, linkFile } from '../db/files.js';
+import { createJob } from '../db/jobs.js';
+import { createVisit } from '../db/visits.js';
 import { fetchWhoami } from '../seatGlue/whoami.js';
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -1407,6 +1409,33 @@ describe('seat tokens: POST /control/seat-token, GET /seat/whoami, /mcp', () => 
         await pg.query("update technicians set state = 'active' where id = $1", [seatTechId]);
       }
     });
+  });
+
+  test("/seat/files: a kept sent-mail file is the manager's — a technician on the job gets 404, a manager the bytes (step 2e)", async () => {
+    const token = ((await (await mint(hostToken, 'g_probe001')).json()) as { token: string }).token;
+    const c = await createCustomer({ tenantId, name: 'Sentmail Probe' });
+    const job = await createJob({ tenantId, customerId: c.id, title: 'sent-mail probe job' });
+    await createVisit({ tenantId, jobId: job.id, technicianId: seatTechId, startsAt: null, endsAt: null });
+    const make = (managerOnly: boolean) =>
+      createFile({
+        tenantId, kind: 'document', fileName: managerOnly ? 'INV-9.pdf' : 'site.pdf', mimeType: 'application/pdf',
+        bytes: Buffer.from('%PDF'), uploadedByRef: 'mgr-x', uploadedBy: null, source: 'email', managerOnly,
+      });
+    const plain = await make(false);
+    const invoice = await make(true);
+    await linkFile(tenantId, plain.id, { jobId: job.id }, 'mgr-x');
+    await linkFile(tenantId, invoice.id, { jobId: job.id }, 'mgr-x');
+    const get = (t: string, id: string) => fetch(`${base}/seat/files/${id}`, { headers: { authorization: `Bearer ${t}` } });
+    // Her view includes the job (the plain file downloads) — the invoice still does not.
+    expect((await get(token, plain.id)).status).toBe(200);
+    expect((await get(token, invoice.id)).status).toBe(404);
+    await pg.query("update technicians set tier = 'manager', state = 'active' where id = $1", [seatTechId]);
+    try {
+      const mt = ((await (await mint(hostToken, 'g_probe001')).json()) as { token: string }).token;
+      expect((await get(mt, invoice.id)).status).toBe(200);
+    } finally {
+      await pg.query("update technicians set tier = 'technician', state = 'active' where id = $1", [seatTechId]);
+    }
   });
 
   test('/mcp: the real MCP client lists the technician tools with only the seat token', async () => {

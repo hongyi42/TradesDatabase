@@ -77,6 +77,10 @@ alter table files drop constraint files_source_check;
 alter table files add constraint files_source_check check (source in ('telegram', 'sandbox', 'email'));
 alter table files add column source_ref text;
 create unique index uq_files_source_ref on files (tenant_id, source_ref) where source_ref is not null;
+-- The manager's own correspondence: a kept sent-mail attachment (an invoice PDF)
+-- is manager-only — a technician on the job never lists or downloads it
+-- (technicians see no money amounts), unless she uploaded it herself.
+alter table files add column manager_only boolean not null default false;
 
 -- ── capture_records gains a money arm ───────────────────────────────────────
 -- A LIVE ledger row citing the capture (source_capture_id) is an answer to it —

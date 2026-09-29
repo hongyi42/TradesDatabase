@@ -878,6 +878,7 @@ export type Database = {
           file_name: string
           id: string
           kind: string
+          manager_only: boolean
           mime_type: string
           size_bytes: number
           source: string
@@ -894,6 +895,7 @@ export type Database = {
           file_name: string
           id?: string
           kind: string
+          manager_only?: boolean
           mime_type: string
           size_bytes: number
           source: string
@@ -910,6 +912,7 @@ export type Database = {
           file_name?: string
           id?: string
           kind?: string
+          manager_only?: boolean
           mime_type?: string
           size_bytes?: number
           source?: string

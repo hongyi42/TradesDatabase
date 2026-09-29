@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, test } from 'vitest';
 import { readCaptureRecords } from '../db/captureMembership.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
-import { issueDocument, namesIssuedNumber, numberCandidates, saveDraft } from '../db/moneyDocuments.js';
+import { issueDocument, namesIssuedNumber, numberCandidates, saveDraft, voidDocument } from '../db/moneyDocuments.js';
 import { appendMoneyEvent } from '../db/moneyEvents.js';
 import { createObservation, markObservationAsked } from '../db/observations.js';
 import { appendRawCapture } from '../db/rawCaptures.js';
@@ -53,6 +53,10 @@ describe('namesIssuedNumber — no double ask', () => {
     expect(numberCandidates('no digits here')).toEqual([]);
     // BARE DIGITS WITHOUT A CUE are an address, an amount, a phone — not a number.
     expect(numberCandidates('Work done at 1004 Pine St, 450 dollars, call 5551234')).toEqual([]);
+    // A file name: the extension and separators fall away, and a glued cue counts.
+    expect(numberCandidates('Invoice_INV-1004.pdf')).toEqual(expect.arrayContaining(['INV-1004']));
+    expect(numberCandidates('Invoice_INV-1004.pdf')).not.toContain('INV-1004.pdf');
+    expect(numberCandidates('invoice-2231.pdf')).toEqual(expect.arrayContaining(['INV-2231']));
   });
 
   test("a document number this firm issued, or a ledger row's external ref, is named — another firm's is not", async () => {
@@ -67,6 +71,23 @@ describe('namesIssuedNumber — no double ask', () => {
     expect(await namesIssuedNumber(tenantId, `Invoice for the job at ${digits} Pine St`)).toBe(false);
     expect(await namesIssuedNumber(tenantId, `invoice #${digits}`)).toBe(true);
     expect(await namesIssuedNumber(tenantId, `Re: invoice ${digits}`)).toBe(true);
+  });
+
+  test('a bare body with the issued number only in the ATTACHMENT NAME still names it — no double ask', async () => {
+    const body = 'Subject: Your bathroom\n\nPlease find your invoice attached';
+    expect(await namesIssuedNumber(tenantId, body)).toBe(false);
+    expect(await namesIssuedNumber(tenantId, body, [`${issuedNumber}.pdf`])).toBe(true);
+    expect(await namesIssuedNumber(tenantId, body, ['site-photo.jpg'])).toBe(false);
+  });
+
+  test('a VOID document no longer suppresses the ask', async () => {
+    const d = await saveDraft({
+      tenantId, kind: 'invoice', jobId, lines: [{ description: 'Grout', quantity: 1, unitCents: 1000 }], byRef: 'mgr-sam',
+    });
+    const n = (await issueDocument(tenantId, d.id, 'mgr-sam')).document.number!;
+    expect(await namesIssuedNumber(tenantId, `invoice ${n}`)).toBe(true);
+    await voidDocument(tenantId, d.id, 'issued in error', 'mgr-sam');
+    expect(await namesIssuedNumber(tenantId, `invoice ${n}`)).toBe(false);
   });
 
   test("a payment's reference, or a voided invoice row's, is not an issued number", async () => {

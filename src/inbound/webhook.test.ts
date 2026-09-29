@@ -1476,10 +1476,12 @@ describe("the manager's own sent invoices (step 2e phase 4)", () => {
     const raised: unknown[] = [];
     const kept: Array<Record<string, unknown>> = [];
     const numberChecks: string[] = [];
+    const fileChecks: string[][] = [];
     return {
       raised,
       kept,
       numberChecks,
+      fileChecks,
       deps: {
         getTechnician: async () => manager,
         recordFieldNote: recorder({ status: 'matched', captureId: 'cap-inv', customerId: 'cust-lee', jobId: 'job-bath' }).fn,
@@ -1487,8 +1489,9 @@ describe("the manager's own sent invoices (step 2e phase 4)", () => {
           raised.push(input);
           return null;
         },
-        issuedNumberNamed: async (_t: string, text: string) => {
+        issuedNumberNamed: async (_t: string, text: string, fileNames: string[] = []) => {
           numberChecks.push(text);
+          fileChecks.push(fileNames);
           return false;
         },
         keepAttachments: async (input: Record<string, unknown>) => {
@@ -1518,8 +1521,10 @@ describe("the manager's own sent invoices (step 2e phase 4)", () => {
         attachments: [{ name: 'Invoice-2231.pdf', mime: 'application/pdf' }],
       },
     ]);
-    // The number check reads the same words.
+    // The number check reads the same words — and the attachments' names,
+    // since an invoice's number is often only in its file name.
     expect(s.numberChecks).toHaveLength(1);
+    expect(s.fileChecks).toEqual([['Invoice-2231.pdf']]);
   });
 
   test('the word "invoice" alone is enough; L1 keeps only name, type and size of a file', async () => {

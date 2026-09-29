@@ -87,6 +87,7 @@ describe('keepSentAttachments (step 2e phase 4)', () => {
     const onJob = (await listFiles(tenantId, { jobId })).find((x) => x.source_ref === `gmail:${messageId}:att-1`);
     expect(onJob).toMatchObject({
       source: 'email', kind: 'document', mime_type: 'application/pdf', uploaded_by_ref: 'mgr-sent', uploaded_by: tech.id,
+      manager_only: true, // the manager's own correspondence — never a technician's
     });
     expect((await readFileBytes(onJob!)).toString()).toBe('%PDF https://s3.test/att-1');
   });

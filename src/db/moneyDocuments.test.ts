@@ -238,25 +238,36 @@ describe('issue and void write the ledger', () => {
 });
 
 describe('progress is decided once, at issue', () => {
-  test('stored with the number; the ledger row is written from the stored value; a disagreeing retry is refused', async () => {
+  test('stored with the number; the ledger row is written from the stored value; only an EXPLICIT disagreeing retry is refused', async () => {
     const job = await freshJob(tenantId, 'open');
     const d = await draft(tenantId, job.id);
     const r = await issueDocument(tenantId, d.id, 'mgr', { progress: true });
     expect(r.document.progress).toBe(true);
     expect(r.event.detail).toMatchObject({ progress: true });
-    await expect(issueDocument(tenantId, d.id, 'mgr')).rejects.toThrow('was issued as a progress (deposit) invoice');
+    await expect(issueDocument(tenantId, d.id, 'mgr', { progress: false })).rejects.toThrow(
+      'was issued as a progress (deposit) invoice',
+    );
     expect((await issueDocument(tenantId, d.id, 'mgr', { progress: true })).already).toBe(true);
+    // OMITTED means "whatever it was issued as": a repeat succeeds as already,
+    // and the status walk is retried (statusChange is reported, not refused).
+    const again = await issueDocument(tenantId, d.id, 'mgr');
+    expect(again.already).toBe(true);
+    expect(again).toHaveProperty('statusChange');
+    expect(await ledgerCount(job.id, 'invoice_issued')).toBe(1);
 
-    // The retry of a ledger write that never landed takes progress from the document.
+    // The retry of a ledger write that never landed takes progress from the
+    // document — with progress omitted too.
     const d2 = await draft(tenantId, job.id);
     await pg.query(
       "update money_documents set status = 'issued', number_seq = 9101, number = 'INV-9101', progress = true where id = $1",
       [d2.id],
     );
-    await expect(issueDocument(tenantId, d2.id, 'mgr')).rejects.toThrow('progress');
+    await expect(issueDocument(tenantId, d2.id, 'mgr', { progress: false })).rejects.toThrow('progress');
     expect(await ledgerCount(job.id, 'invoice_issued')).toBe(1);
-    const retried = await issueDocument(tenantId, d2.id, 'mgr', { progress: true });
+    const retried = await issueDocument(tenantId, d2.id, 'mgr');
+    expect(retried.already).toBe(false);
     expect(retried.event.detail).toMatchObject({ progress: true });
+    expect(await ledgerCount(job.id, 'invoice_issued')).toBe(2);
   });
 
   test('concurrent issues with DIFFERENT progress end with one row matching the stored document', async () => {

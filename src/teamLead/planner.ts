@@ -2972,10 +2972,19 @@ export function validateDecisions(
       // it, and a technician never sees money amounts. So the one addressee is
       // the mailbox owner, or — if they have left or are not active — another
       // active manager. Never a technician.
+      //
+      // "Gone" includes UNREACHABLE (step 2e final review): an active owner with
+      // no assistant (or, for a text, no phone) cannot be sent anything — the
+      // `to` check refuses them — so the item would be stuck with nobody
+      // allowed to take it. Then another reachable active manager may.
       if (view.nudge.kind === 'outbound_invoice') {
         const ownerRef = ctxStr(view.nudge, 'technicianRef');
         const owner = ownerRef ? reachable.get(ownerRef) : undefined;
-        const ownerLive = !!owner && owner.tier === 'manager' && owner.state === 'active';
+        const ownerLive =
+          !!owner &&
+          owner.tier === 'manager' &&
+          owner.state === 'active' &&
+          (as === 'chat' ? owner.chat : owner.assistant);
         const recipient = reachable.get(addressee.ref) ?? reachable.get(addressee.technicianId);
         const ok = ownerLive
           ? addressee.technicianId === owner.technicianId
@@ -2985,8 +2994,8 @@ export function validateDecisions(
             ownerLive
               ? `this email was sent from ${owner.displayName}'s mailbox — send the note to ` +
                   `'${owner.ref}', whose invoice it is, and nobody else`
-              : 'the manager whose mailbox sent this email is not active — send the note to ' +
-                  'another active manager, never a technician',
+              : 'the manager whose mailbox sent this email is not active or cannot be reached — ' +
+                  'send the note to another active manager, never a technician',
           );
           continue;
         }

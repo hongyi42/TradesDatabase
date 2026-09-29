@@ -566,7 +566,11 @@ export async function handleInboundWebhook(
       if (manager && looksLikeInvoice({ subject: meta.subject, body: meta.body, attachments })) {
         try {
           const words = invoiceWords(meta.subject, meta.body);
-          const named = await (deps.issuedNumberNamed ?? namesIssuedNumber)(tenantId, words);
+          const named = await (deps.issuedNumberNamed ?? namesIssuedNumber)(
+            tenantId,
+            words,
+            attachments.map((a) => a.name),
+          );
           if (!named) {
             await (deps.raiseOutboundInvoice ?? raiseOutboundInvoiceObservation)({
               tenantId,

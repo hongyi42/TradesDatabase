@@ -7511,6 +7511,11 @@ describe('record_money_event + money reads (money-ledger plan phase 2)', () => {
 });
 
 describe('set_firm_profile (firm-profile plan)', () => {
+  // The seed tenant is shared with the local live rig (a driven invoice leaves a
+  // profile there); these assertions start from no profile.
+  beforeAll(async () => {
+    await pg.query('delete from tenant_profiles where tenant_id = $1', [tenantId]);
+  });
   test('manager sets, patches, clears, reads; technician refused; echo carries gaps', async () => {
     const { client: mgrC, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
@@ -11422,6 +11427,31 @@ describe('files (step 2d)', () => {
     }
   });
 
+  test("a kept sent-mail file is the manager's own: a technician on the job never lists it (step 2e)", async () => {
+    const c = await createCustomer({ tenantId, name: 'Filesent Sol', phone: '555-7309' });
+    const j = await createJob({ tenantId, customerId: c.id, title: 'Filesent job' });
+    await createVisit({ tenantId, jobId: j.id, technicianId: techMcpId, startsAt: null, endsAt: null });
+    const photo = await upload('mgr-test');
+    const pdf = await createFile({
+      tenantId, kind: 'document', fileName: 'INV-77.pdf', mimeType: 'application/pdf', bytes: Buffer.from('%PDF'),
+      uploadedByRef: 'mgr-test', uploadedBy: null, source: 'email', managerOnly: true,
+    });
+    const { client: mc, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      await mgr('link_file', { fileId: photo.id, jobId: j.id });
+      await mgr('link_file', { fileId: pdf.id, jobId: j.id });
+      // Her view includes the job — the photo lists, the invoice does not.
+      expect((await call('list_files', { jobId: j.id })).data.files.map((f: { id: string }) => f.id)).toEqual([photo.id]);
+      // …and she cannot attach it anywhere either (it reads as missing).
+      expect((await call('link_file', { fileId: pdf.id, jobId: j.id })).data.status).toBe('not_found');
+      expect((await mgr('list_files', { jobId: j.id })).data.files.map((f: { id: string }) => f.id).sort()).toEqual(
+        [photo.id, pdf.id].sort(),
+      );
+    } finally {
+      await mc.close();
+    }
+  });
+
   test('delete: the sender or a manager; anyone else is refused; a deleted file is gone from lists', async () => {
     const c = await createCustomer({ tenantId, name: 'Filedel Dee', phone: '555-7304' });
     const j = await createJob({ tenantId, customerId: c.id, title: 'Filedel job' });
@@ -11457,6 +11487,12 @@ describe('files (step 2d)', () => {
 });
 
 describe('money documents (step 2e)', () => {
+  // Numbering assertions start from INV-1001 / EST-1001 on the seed tenant: clear
+  // any documents (and a numbering start) a local live-rig run left behind.
+  beforeAll(async () => {
+    await pg.query('truncate table money_documents cascade');
+    await pg.query('delete from tenant_profiles where tenant_id = $1', [tenantId]);
+  });
   const DOC_TOOLS = ['draft_document', 'issue_document', 'void_document', 'record_estimate_outcome', 'list_documents'];
   const line = (description: string, quantity: number, unitCents: number) => ({ description, quantity, unitCents });
 
@@ -11542,6 +11578,10 @@ describe('money documents (step 2e)', () => {
       expect(issued.data.money.invoicedCents).toBe(100000);
       const status = await pg.query('select status from jobs where id = $1', [job.id]);
       expect(status.rows[0].status).toBe('open');
+      // Re-issued WITHOUT progress: "whatever it was issued as" — already, not refused.
+      const again = await mgr('issue_document', { documentId: d.data.documentId });
+      expect(again.isError).toBe(false);
+      expect(again.text).toContain('already issued');
     } finally {
       await mc.close();
     }

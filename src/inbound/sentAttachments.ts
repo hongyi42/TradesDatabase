@@ -191,6 +191,9 @@ export async function keepSentAttachments(input: KeepSentAttachmentsInput): Prom
             uploadedBy: tech.id,
             source: 'email',
             sourceRef: `gmail:${messageId}:${a.attachmentId}`,
+            // The manager's own correspondence — often an invoice with its
+            // amounts — so no technician on the job lists or downloads it.
+            managerOnly: true,
           }),
           Math.max(1, deadline - Date.now()),
         );

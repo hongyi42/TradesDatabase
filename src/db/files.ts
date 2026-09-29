@@ -132,6 +132,9 @@ export function fileVisibleTo(file: FileRow, links: ResolvedLink[], who: FileVie
   // Her own by ROSTER ROW only: a ref could be reissued once a removed person's
   // row is gone (uploaded_by → null), and must not inherit their files.
   if (who.personId && file.uploaded_by === who.personId) return true;
+  // A manager's own correspondence (a kept sent-mail invoice PDF, step 2e) is
+  // never a technician's, whatever it is linked to.
+  if (file.manager_only) return false;
   if (links.some((l) => l.kind === 'money' && !targetVisibleTo(l, who))) return false;
   return links.some((l) => targetVisibleTo(l, who));
 }
@@ -150,6 +153,8 @@ export interface CreateFileInput {
    * Store such a file through storeFileOnce, which says what a repeat found.
    */
   sourceRef?: string | null;
+  /** Hidden from every technician but its uploader (step 2e: sent-mail attachments). */
+  managerOnly?: boolean;
 }
 
 /** Bytes first, then the row; if the row fails, the bytes are removed (best effort). */
@@ -174,6 +179,7 @@ export async function createFile(input: CreateFileInput): Promise<FileRow> {
       uploaded_by: input.uploadedBy,
       source: input.source,
       source_ref: input.sourceRef ?? null,
+      manager_only: input.managerOnly ?? false,
     })
     .select()
     .single();

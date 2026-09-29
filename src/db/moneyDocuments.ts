@@ -353,7 +353,10 @@ export async function issueDocument(
   }
   // A retry (or the loser of a race) that disagrees with what was issued is
   // refused, not silently overridden: the ledger row says what the document says.
-  if (!!opts.progress !== doc.progress) {
+  // ONLY AN EXPLICIT disagreement: an omitted `progress` on a repeat means
+  // "whatever it was issued as", so re-issuing a deposit invoice without
+  // restating it retries the ledger write / status walk instead of refusing.
+  if (opts.progress !== undefined && opts.progress !== doc.progress) {
     throw new Error(
       `${nameOf(doc)} was issued ${doc.progress ? 'as a progress (deposit) invoice' : 'as a final invoice'} — ` +
         'void it and issue a new one to change that',
@@ -612,21 +615,32 @@ export async function recordEstimateOutcome(
 // spreadsheet cannot become a thousand-term query.
 const MAX_NUMBER_TOKENS = 100;
 const NUMBER_CUE = /(?:\binvoice|\binv|\bno\.?|\bnumber|#)\s*[:#]?\s*$/i;
+// A cue glued to its number inside one token ("invoice-1004", "inv1004").
+const GLUED_CUE = /^(?:invoice|inv|no|number)[-#]?(\d+)$/i;
 
+// Tokens split on everything but letters, digits and '-' — so a file name's
+// extension and separators fall away ("Invoice_INV-1004.pdf" → "Invoice",
+// "INV-1004", "pdf"), and the number is read the same in a subject, a body or
+// an attachment's name.
 export function numberCandidates(text: string): string[] {
   const out = new Set<string>();
-  for (const m of text.matchAll(/[A-Za-z0-9#][A-Za-z0-9#_./-]*/g)) {
+  const addBare = (digits: string): void => {
+    out.add(digits);
+    out.add(`INV-${digits}`);
+    out.add(`EST-${digits}`);
+  };
+  for (const m of text.matchAll(/#?[A-Za-z0-9][A-Za-z0-9-]*/g)) {
     const raw = m[0];
     if (!/\d/.test(raw)) continue;
-    const token = raw.replace(/^#+/, '').replace(/[._/-]+$/, '');
+    const token = raw.replace(/^#+/, '').replace(/-+$/, '');
     if (!token || token.length > 64) continue;
     if (/^\d+$/.test(token)) {
       const cued = raw.startsWith('#') || NUMBER_CUE.test(text.slice(Math.max(0, m.index - 24), m.index));
       if (!cued) continue;
-      out.add(token);
-      out.add(`INV-${token}`);
-      out.add(`EST-${token}`);
+      addBare(token);
     } else {
+      const glued = GLUED_CUE.exec(token);
+      if (glued) addBare(glued[1]);
       out.add(token);
       out.add(token.toUpperCase());
     }
@@ -640,14 +654,23 @@ export function numberCandidates(text: string): string[] {
  * LIVE invoice/estimate ledger row's external ref? A payment's reference, or a
  * voided/corrected row's, is not an issued number.
  */
-export async function namesIssuedNumber(tenantId: string, text: string): Promise<boolean> {
-  const candidates = numberCandidates(text);
+export async function namesIssuedNumber(
+  tenantId: string,
+  text: string,
+  // The attachments' file names (step 2e review): "Please find your invoice
+  // attached" with INV-1004.pdf names the number only in the file name.
+  fileNames: string[] = [],
+): Promise<boolean> {
+  const candidates = numberCandidates([text, ...fileNames].join('\n'));
   if (candidates.length === 0) return false;
   const [docs, events] = await Promise.all([
     getClient()
       .from('money_documents')
       .select('id')
       .eq('tenant_id', tenantId)
+      // A void document's number is not on the books any more — an email
+      // naming it is not a double ask.
+      .neq('status', 'void')
       .in('number', candidates)
       .limit(1),
     getClient()

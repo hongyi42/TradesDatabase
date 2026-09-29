@@ -7848,6 +7848,32 @@ describe('rung 10 — inbound requests reach the planner', () => {
     }
   });
 
+  test('(22e) the owner ACTIVE but unreachable (no assistant) → another reachable active manager may take it; never a technician', async () => {
+    const stranded = { ...MANAGER, host_id: null } as unknown as Technician;
+    const ok = sendTo({ as: 'assistant', to: 'max-mgr', message: 'Ask whether to record invoice 2231.' });
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    const { summary } = await liveSend([ok], {
+      listTeam: async () => [stranded, OTHER_MGR, TECH],
+      listObservations: async () => [invoiceObs()],
+      runLoop: loopReturning([ok]),
+      createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+      markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
+    });
+    expect(summary.applied).toBe(1);
+    expect(createOffice).toHaveBeenCalledWith(expect.objectContaining({ technicianId: 'mgr-2', via: 'assistant' }));
+
+    const bad = sendTo({ as: 'assistant', to: 'tina-tech', message: 'Ask whether to record invoice 2231.' });
+    const seen: { errors?: string[] } = {};
+    const r = await liveSend([bad], {
+      listTeam: async () => [stranded, OTHER_MGR, TECH],
+      listObservations: async () => [invoiceObs()],
+      runLoop: loopReturning([bad], seen),
+      markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
+    });
+    expect(r.summary.applied).toBe(0);
+    expect(seen.errors?.join(' ')).toContain('never a technician');
+  });
+
   test('(22d) the owner gone → another ACTIVE manager may take it; a technician still may not', async () => {
     const gone = { ...MANAGER, state: 'offboarded' } as unknown as Technician;
     const ok = sendTo({ as: 'assistant', to: 'max-mgr', message: 'Ask whether to record invoice 2231.' });

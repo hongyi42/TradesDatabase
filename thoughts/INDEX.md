@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 305 documents · 291 live · 14 superseded.
+Regenerate with `npm run decisions:index`. 306 documents · 291 live · 15 superseded.
 
 ## Superseded — do not build on these
 
@@ -45,6 +45,7 @@ Regenerate with `npm run decisions:index`. 305 documents · 291 live · 14 super
 - `2026-08-31` ~~[2026-08-31-the-planners-inbox](shared/plans/2026-08-31-the-planners-inbox.md)~~ → **[2026-09-02-the-record-has-authors](shared/plans/2026-09-02-the-record-has-authors.md)**
 - `2026-08-26` ~~[2026-08-26-the-decline-verb](shared/plans/2026-08-26-the-decline-verb.md)~~ → **[2026-08-31-a-gap-is-not-an-ask](shared/plans/2026-08-31-a-gap-is-not-an-ask.md)**
 - `2026-08-22` ~~[2026-08-22-brain-memory-foundations](shared/research/2026-08-22-brain-memory-foundations.md)~~ → **[2026-08-23-memory-architecture-substrate](shared/research/2026-08-23-memory-architecture-substrate.md)**
+- `2026-08-15` ~~[2026-08-15-invoice-creation-v1](shared/plans/2026-08-15-invoice-creation-v1.md)~~ → **[2026-09-29-step-2e-invoices-estimates](shared/plans/2026-09-29-step-2e-invoices-estimates.md)**
 - `2026-08-04` ~~[2026-08-04-query-spine-design](shared/plans/2026-08-04-query-spine-design.md)~~ → **[2026-08-23-the-brain-can-look](shared/plans/2026-08-23-the-brain-can-look.md)**
 - `2026-07-04` ~~[2026-07-04-feature-B-outbound-composio-actions](shared/plans/2026-07-04-feature-B-outbound-composio-actions.md)~~ → **[2026-07-04-feature-B-outbound-composio-sessions](shared/plans/2026-07-04-feature-B-outbound-composio-sessions.md)**
 - `2026-07-03` ~~[2026-07-03-scheduling-foundation](shared/plans/2026-07-03-scheduling-foundation.md)~~ → **[2026-09-05-the-visit-is-one-object](shared/plans/2026-09-05-the-visit-is-one-object.md)**
@@ -53,6 +54,7 @@ Regenerate with `npm run decisions:index`. 305 documents · 291 live · 14 super
 
 ## Live
 
+- `2026-09-29` `plan` [2026-09-29-step-2e-invoices-estimates](shared/plans/2026-09-29-step-2e-invoices-estimates.md) `describes 3 deleted files` · _draft_ — Step 2e — invoices and estimates as records, recorded when final, emailed with the PDF attached, and the mana…
 - `2026-09-29` `research` [2026-09-29-step-2e-invoices-estimates](shared/research/2026-09-29-step-2e-invoices-estimates.md) `landed` — Step 2e — invoices and estimates as their own records, email attachments, recording an invoice when it is sent
 - `2026-09-28` `plan` [2026-09-28-step-2b-manager-files-sandbox-skills](shared/plans/2026-09-28-step-2b-manager-files-sandbox-skills.md) · _draft_ — Step 2b — the manager seat gets files: an E2B sandbox per manager, the glue's own file tools, export_query, a…
 - `2026-09-28` `plan` [2026-09-28-step-2c-batching](shared/plans/2026-09-28-step-2c-batching.md) — Step 2c — batching for a manager seat's big jobs: the model recognises a job too big for one pass and follows…
@@ -219,7 +221,6 @@ Regenerate with `npm run decisions:index`. 305 documents · 291 live · 14 super
 - `2026-08-15` `plan` [2026-08-15-feature-B-intelligent-spine-stage1-voice](shared/plans/2026-08-15-feature-B-intelligent-spine-stage1-voice.md) `describes 3 deleted files` `drift 205` — "Feature B — Intelligent spine Stage 1 (the voice): team-leader outreach through the person's own agent, capp…
 - `2026-08-15` `plan` [2026-08-15-firm-profile-v1](shared/plans/2026-08-15-firm-profile-v1.md) `drift 71` — Firm profile v1 — the tenant business-identity store (name, address, license numbers, disclosure footer) + th…
 - `2026-08-15` `plan` [2026-08-15-intelligent-spine-direction](shared/plans/2026-08-15-intelligent-spine-direction.md) · _direction_ — Direction — the intelligent spine (a spine-side "team leader" agent; fleet becomes a team)
-- `2026-08-15` `plan` [2026-08-15-invoice-creation-v1](shared/plans/2026-08-15-invoice-creation-v1.md) `describes 3 deleted files` `drift 89` · _draft_ — Invoice creation v1 — firm profile, ledger-drafted invoices, PDF render, delivery via the audited Gmail send,…
 - `2026-08-15` `plan` [2026-08-15-money-inference-v1](shared/plans/2026-08-15-money-inference-v1.md) `describes 3 deleted files` `drift 121` · _draft_ — Money ledger v1 (part B) — evidence-class-tiered money inference (email + notes), assert-only-cited reads, re…
 - `2026-08-15` `plan` [2026-08-15-money-ledger-v1](shared/plans/2026-08-15-money-ledger-v1.md) `drift 112` — Money ledger v1 (part A) — workflow-agnostic money event ledger, derived job money-state, manager tool + tier…
 - `2026-08-15` `research` [2026-08-15-feature-A-intelligent-spine-stage-0-watchers](shared/research/2026-08-15-feature-A-intelligent-spine-stage-0-watchers.md) `landed` `describes 1 deleted file` `drift 167` — Feature A — Intelligent-spine Stage 0 ("the watchers"): deterministic gap detectors over the spine on the exi…

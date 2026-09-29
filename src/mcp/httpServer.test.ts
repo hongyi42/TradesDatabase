@@ -38,6 +38,7 @@ import {
 import { setTenantSeats } from '../db/tenants.js';
 import { createSeat } from '../db/seats.js';
 import { createCustomer } from '../db/customers.js';
+import { createFile, deleteFile } from '../db/files.js';
 import { fetchWhoami } from '../seatGlue/whoami.js';
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -1310,6 +1311,75 @@ describe('seat tokens: POST /control/seat-token, GET /seat/whoami, /mcp', () => 
         expect((await exportCsv(t, { sql: 'select id from v_customers' })).status).toBe(403);
       });
       expect((await exportCsv('st_' + '0'.repeat(64), { sql: 'select 1' })).status).toBe(401);
+    });
+  });
+
+  describe('/seat/files (step 2d)', () => {
+    const tokenOf = async () => ((await (await mint(hostToken, 'g_probe001')).json()) as { token: string }).token;
+    const upload = (token: string, bytes: Buffer | string, query = 'kind=photo&name=before%20one.jpg', headers: Record<string, string> = {}) =>
+      fetch(`${base}/seat/files?${query}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'image/jpeg', ...headers },
+        body: typeof bytes === 'string' ? bytes : new Uint8Array(bytes),
+      });
+    const download = (token: string, id: string) =>
+      fetch(`${base}/seat/files/${id}`, { headers: { authorization: `Bearer ${token}` } });
+
+    test('upload then download: identical bytes, name and type; the row names the sender', async () => {
+      const token = await tokenOf();
+      const bytes = Buffer.from([0xff, 0xd8, 0xff, 0x00, 0x01, 0x80, 0xfe]); // not valid UTF-8
+      const res = await upload(token, bytes);
+      expect(res.status).toBe(200);
+      const { id, fileName, sizeBytes } = (await res.json()) as { id: string; fileName: string; sizeBytes: number };
+      expect(fileName).toBe('before one.jpg');
+      expect(sizeBytes).toBe(7);
+      const row = (await pg.query('select uploaded_by, uploaded_by_ref, kind, source from files where id = $1', [id])).rows[0];
+      expect(row).toMatchObject({ uploaded_by: seatTechId, uploaded_by_ref: 'seat-probe', kind: 'photo', source: 'telegram' });
+      const got = await download(token, id);
+      expect(got.status).toBe(200);
+      expect(got.headers.get('content-type')).toBe('image/jpeg');
+      expect(decodeURIComponent(got.headers.get('x-file-name') ?? '')).toBe('before one.jpg');
+      expect(Buffer.from(await got.arrayBuffer()).equals(bytes)).toBe(true);
+      const sb = await upload(token, 'csv,data', 'kind=document&name=rows.csv', { 'content-type': 'text/csv', 'x-file-source': 'sandbox' });
+      const sid = ((await sb.json()) as { id: string }).id;
+      expect((await pg.query('select source from files where id = $1', [sid])).rows[0].source).toBe('sandbox');
+    });
+
+    test('bad kind, no name, empty body, over 20 MB; unknown token 401', async () => {
+      const token = await tokenOf();
+      expect((await upload(token, 'x', 'kind=video&name=a')).status).toBe(400);
+      expect((await upload(token, 'x', 'kind=photo')).status).toBe(400);
+      expect((await upload(token, Buffer.alloc(0))).status).toBe(400);
+      const big = await upload(token, Buffer.alloc(20 * 1024 * 1024 + 1)).catch(() => null);
+      // The server aborts the oversized stream: a 413, or the socket closed mid-send.
+      expect(big === null || big.status === 413).toBe(true);
+      expect((await upload('st_' + '0'.repeat(64), 'x')).status).toBe(401);
+      expect((await download('st_' + '0'.repeat(64), '00000000-0000-0000-0000-000000000000')).status).toBe(401);
+    });
+
+    test("someone else's unlinked file, a deleted file and a missing id all read 404; a deactivated person is 403", async () => {
+      const token = await tokenOf();
+      const other = await createFile({
+        tenantId,
+        kind: 'photo',
+        fileName: 'theirs.jpg',
+        mimeType: 'image/jpeg',
+        bytes: Buffer.from('theirs'),
+        uploadedByRef: 'someone-else',
+        uploadedBy: null,
+        source: 'telegram',
+      });
+      expect((await download(token, other.id)).status).toBe(404);
+      const mine = ((await (await upload(token, 'mine')).json()) as { id: string }).id;
+      await deleteFile(tenantId, mine, 'seat-probe');
+      expect((await download(token, mine)).status).toBe(404);
+      expect((await download(token, '00000000-0000-0000-0000-000000000000')).status).toBe(404);
+      await pg.query("update technicians set state = 'offboarded' where id = $1", [seatTechId]);
+      try {
+        expect((await upload(token, 'x')).status).toBe(403);
+      } finally {
+        await pg.query("update technicians set state = 'active' where id = $1", [seatTechId]);
+      }
     });
   });
 

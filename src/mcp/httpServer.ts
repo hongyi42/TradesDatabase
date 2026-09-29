@@ -14,8 +14,15 @@ import { buildBadgeResponse } from '../control/badgeFile.js';
 import { buildNudgeDelivery, completeNudgeDelivery } from '../control/nudgeQueue.js';
 import { buildOfficeDelivery, completeOfficeDelivery } from '../control/officeQueue.js';
 import {
+  FILE_MAX_BYTES,
   clearSandboxAssignmentIfRef,
   completeSandboxRecycle,
+  createFile,
+  fileVisibleTo,
+  getFile,
+  getTechnicianView,
+  linksOf,
+  readFileBytes,
   getHostByTokenHash,
   getSeatBotUsername,
   getSeatByHostRef,
@@ -86,6 +93,23 @@ async function readRawBody(req: http.IncomingMessage, maxBytes?: number): Promis
     chunks.push(buf);
   }
   return Buffer.concat(chunks).toString('utf8');
+}
+
+// Raw bytes, for the file store's upload (step 2d). Same cap/abort idiom as
+// readRawBody, but never decoded: a photo is not text.
+async function readBinaryBody(req: http.IncomingMessage, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const buf = chunk as Buffer;
+    total += buf.length;
+    if (total > maxBytes) {
+      req.destroy();
+      throw Object.assign(new Error('request body exceeds cap'), { code: 'BODY_TOO_LARGE' });
+    }
+    chunks.push(buf);
+  }
+  return Buffer.concat(chunks);
 }
 
 async function readBody(req: http.IncomingMessage): Promise<unknown> {
@@ -467,6 +491,112 @@ async function handleSeatExport(req: http.IncomingMessage, res: http.ServerRespo
     }
     const { csv, columns } = toCsv(result.rows);
     json(200, { csv, columns, rowCount: result.rowCount, truncated: result.truncated });
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
+// THE FILE STORE'S BYTES (plan 2026-09-28-step-2d-files, Phase 2). A seat
+// uploads a photo or document its person sent (or a sandbox file), and
+// downloads one its person may see. Seat token via seatOfRequest: 401 unknown,
+// 403 a deactivated person — resolveIdentity alone checks only the seat's
+// retirement. Bytes never leave through anything but these two routes.
+const FILE_ID_PATH = /^\/seat\/files\/([0-9a-f-]{36})$/;
+
+async function handleSeatFileUpload(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const json = (code: number, body: unknown) => {
+    res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    const who = await seatOfRequest(req);
+    if ('status' in who) {
+      res.writeHead(who.status);
+      res.end();
+      return;
+    }
+    const url = new URL(req.url ?? '', 'http://internal');
+    const kind = url.searchParams.get('kind');
+    const name = (url.searchParams.get('name') ?? '').trim();
+    if (kind !== 'photo' && kind !== 'document') {
+      json(400, { error: 'kind must be photo or document' });
+      return;
+    }
+    if (!name) {
+      json(400, { error: 'name is required' });
+      return;
+    }
+    let bytes: Buffer;
+    try {
+      bytes = await readBinaryBody(req, FILE_MAX_BYTES);
+    } catch (err) {
+      if ((err as { code?: unknown }).code === 'BODY_TOO_LARGE') {
+        json(413, { error: 'the file is over 20 MB' });
+        return;
+      }
+      throw err;
+    }
+    if (bytes.length === 0) {
+      json(400, { error: 'the file is empty' });
+      return;
+    }
+    const mime = (req.headers['content-type'] ?? '').split(';')[0].trim() || 'application/octet-stream';
+    const file = await createFile({
+      tenantId: who.seat.tenant_id,
+      kind,
+      fileName: name,
+      mimeType: mime,
+      bytes,
+      uploadedByRef: who.person.ref,
+      uploadedBy: who.person.id,
+      source: req.headers['x-file-source'] === 'sandbox' ? 'sandbox' : 'telegram',
+    });
+    json(200, { id: file.id, fileName: file.file_name, sizeBytes: file.size_bytes });
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
+async function handleSeatFileDownload(req: http.IncomingMessage, res: http.ServerResponse, fileId: string): Promise<void> {
+  try {
+    const who = await seatOfRequest(req);
+    if ('status' in who) {
+      res.writeHead(who.status);
+      res.end();
+      return;
+    }
+    const tenantId = who.seat.tenant_id;
+    const file = await getFile(tenantId, fileId);
+    const manager = who.person.tier === 'manager';
+    const visible =
+      !!file &&
+      fileVisibleTo(file, manager ? [] : await linksOf(tenantId, fileId), {
+        tier: manager ? 'manager' : 'technician',
+        ref: who.person.ref,
+        personId: who.person.id,
+        view: manager ? null : await getTechnicianView(tenantId, who.person.id),
+      });
+    // Missing, deleted and out of view all read the same: a 404 never
+    // confirms that a file exists.
+    if (!file || !visible) {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    const bytes = await readFileBytes(file);
+    res.writeHead(200, {
+      'content-type': file.mime_type,
+      'content-length': String(bytes.length),
+      'x-file-name': encodeURIComponent(file.file_name),
+      'cache-control': 'no-store',
+    });
+    res.end(bytes);
   } catch {
     if (!res.headersSent) {
       res.writeHead(500);
@@ -1389,6 +1519,20 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (req.url === '/seat/export' && req.method === 'POST') {
       await handleSeatExport(req, res);
       return;
+    }
+    // Step 2d: the file store's bytes. Matched on the PATH — the upload carries
+    // its kind and name in the query string.
+    {
+      const path = new URL(req.url ?? '', 'http://internal').pathname;
+      if (path === '/seat/files' && req.method === 'POST') {
+        await handleSeatFileUpload(req, res);
+        return;
+      }
+      const m = FILE_ID_PATH.exec(path);
+      if (m && req.method === 'GET') {
+        await handleSeatFileDownload(req, res, m[1]);
+        return;
+      }
     }
     // Step 3: a glue seat's inbox — its own person's office items, and its
     // report per item. Seat token only; before allowed() like whoami.

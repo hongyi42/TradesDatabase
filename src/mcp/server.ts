@@ -46,6 +46,7 @@ import { accessTools } from './tools/access.js';
 import { capturesTools } from './tools/captures.js';
 import { commsTools } from './tools/comms.js';
 import { customersTools } from './tools/customers.js';
+import { filesTools } from './tools/files.js';
 import { memoryTools } from './tools/memory.js';
 import { moneyTools } from './tools/money.js';
 import { officeTools } from './tools/office.js';
@@ -113,6 +114,7 @@ const TOOLS = [
   ...scheduleTools.base,
   ...commsTools.base,
   ...officeTools.base,
+  ...filesTools.base,
   {
     // The office's waiting doors (plan 2026-09-22; was the Q&A desk). The
     // office itself answers, so it may take a few minutes — the seat's tool-call
@@ -578,6 +580,7 @@ const DOMAIN_HANDLERS: Record<string, ToolHandler> = {
   ...capturesTools.handlers,
   ...commsTools.handlers,
   ...customersTools.handlers,
+  ...filesTools.handlers,
   ...memoryTools.handlers,
   ...moneyTools.handlers,
   ...officeTools.handlers,

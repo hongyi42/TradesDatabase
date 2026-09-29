@@ -11,7 +11,7 @@ import {
 } from './captureMembership.js';
 import { createCustomer } from './customers.js';
 import { createJob, insertJobCapture, listJobsWithCustomerByIds } from './jobs.js';
-import { listJobIdsWithCostEvents } from './moneyEvents.js';
+import { appendMoneyEvent, listJobIdsWithCostEvents } from './moneyEvents.js';
 import { createVisit, insertVisitNote, updateVisitStatus } from './visits.js';
 import { createTenant } from './tenants.js';
 import { nl } from './time.js';
@@ -481,6 +481,23 @@ describe('readCaptureRecords / listL2CitingCapture', () => {
     ]);
 
     await updateVisitStatus(visit.id, 'cancelled', 'test');
+    expect(await listL2CitingCapture(tenantId, [cap.id])).toEqual([]);
+  });
+
+  test('a LIVE ledger row citing the capture comes back as money — not once it is voided (step 2e)', async () => {
+    const cap = await capture({ tenantId, jobId: null, text: 'Invoice INV-77 attached, $450', at: after });
+    const customer = await createCustomer({ tenantId, name: 'Invoiced From Gmail' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'sent invoice' });
+    const issued = await appendMoneyEvent({
+      tenantId, jobId: job.id, kind: 'invoice_issued', amountCents: 45000,
+      externalRef: 'INV-77', sourceCaptureId: cap.id,
+    });
+    expect(await listL2CitingCapture(tenantId, [cap.id])).toEqual([
+      { kind: 'money', id: String(issued.id), captureId: cap.id, jobId: job.id },
+    ]);
+    expect(await listL2CitingCapture(otherTenantId, [cap.id])).toEqual([]);
+
+    await appendMoneyEvent({ tenantId, jobId: job.id, kind: 'invoice_voided', correctsEventId: issued.id });
     expect(await listL2CitingCapture(tenantId, [cap.id])).toEqual([]);
   });
 

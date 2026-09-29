@@ -32,6 +32,9 @@ export interface TenantProfilePatch {
   /** FULL replacement of the list, never a merge. null (or []) clears. */
   licenseNumbers?: LicenseNumber[] | null;
   disclosureFooter?: string | null;
+  /** The first number an invoice / estimate gets (INV-1001…). A whole number > 0; never null. */
+  invoiceStart?: number;
+  estimateStart?: number;
 }
 
 // camelCase arg name → snake_case column. `satisfies` pins every column name
@@ -53,6 +56,21 @@ const STRING_COLUMNS = {
   email: 'email',
   disclosureFooter: 'disclosure_footer',
 } as const satisfies Record<string, keyof TenantProfileUpdate>;
+
+// The numbering starts (plan 2026-09-29-step-2e): whole numbers, not null — the
+// column default (1001) is what "never set" means, so there is nothing to clear.
+const INTEGER_COLUMNS = {
+  invoiceStart: 'invoice_start',
+  estimateStart: 'estimate_start',
+} as const satisfies Record<string, keyof TenantProfileUpdate>;
+
+/** The camelCase integer-field names — the tool-arg roster for the numbering starts. */
+export const PROFILE_INTEGER_FIELDS = Object.keys(INTEGER_COLUMNS) as Array<
+  keyof typeof INTEGER_COLUMNS
+>;
+
+/** What a firm with no profile row (or never set) numbers from. */
+export const DEFAULT_DOCUMENT_START = 1001;
 
 /** The camelCase string-field names — the tool-arg roster, ONE definition. */
 export const PROFILE_STRING_FIELDS = Object.keys(STRING_COLUMNS) as Array<
@@ -134,6 +152,16 @@ function patchToColumns(patch: TenantProfilePatch): TenantProfileUpdate {
   if (patch.licenseNumbers !== undefined) {
     cols.license_numbers = normalizeLicenseNumbers(patch.licenseNumbers);
   }
+  for (const key of PROFILE_INTEGER_FIELDS) {
+    const value = patch[key];
+    if (value === undefined) continue;
+    // Runtime too (the string branch's reason): the DB check would refuse 0,
+    // but not with words the manager can act on, and it cannot refuse 12.5.
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+      throw new Error(`${key} must be a whole number above 0 (e.g. 1001)`);
+    }
+    cols[INTEGER_COLUMNS[key]] = value;
+  }
   return cols;
 }
 
@@ -188,7 +216,15 @@ export function profileEcho(p: TenantProfile): Record<string, Json> {
   return {
     ...Object.fromEntries(PROFILE_STRING_FIELDS.map((k) => [k, p[STRING_COLUMNS[k]]])),
     licenseNumbers: p.license_numbers,
+    ...Object.fromEntries(PROFILE_INTEGER_FIELDS.map((k) => [k, p[INTEGER_COLUMNS[k]]])),
   };
+}
+
+/** The number a firm's next invoice / estimate starts from — 1001 with no profile row. */
+export async function documentStart(tenantId: string, kind: 'invoice' | 'estimate'): Promise<number> {
+  const profile = await getTenantProfile(tenantId);
+  if (!profile) return DEFAULT_DOCUMENT_START;
+  return kind === 'invoice' ? profile.invoice_start : profile.estimate_start;
 }
 
 /**

@@ -27,21 +27,24 @@ const TARGET_PROPS = {
   jobId: { type: 'string', description: 'A job id.' },
   visitId: { type: 'string', description: 'A visit (trip) id.' },
   moneyEventId: { type: 'number', description: 'A ledger entry id (managers only).' },
+  documentId: { type: 'string', description: 'An invoice or estimate id (managers only).' },
 } as const;
 
 const BASE_TOOLS: readonly ToolDef[] = [
   {
     name: 'list_files',
     description:
-      'List the photos and documents attached to ONE customer, job, visit or ledger entry, newest ' +
-      'first. Give exactly one of customerId, jobId, visitId, moneyEventId. To send one to your ' +
+      'List the photos and documents attached to ONE customer, job, visit, ledger entry, invoice or ' +
+      'estimate, newest first. Give exactly one of customerId, jobId, visitId, moneyEventId, ' +
+      'documentId. To send one to your ' +
       'person, use send_file with its id.',
     inputSchema: { type: 'object', properties: { ...TARGET_PROPS }, required: [] },
   },
   {
     name: 'link_file',
     description:
-      'Attach a stored file to the customer, job, visit or ledger entry it belongs to. A photo or ' +
+      'Attach a stored file to the customer, job, visit, ledger entry, invoice or estimate it ' +
+      'belongs to. A photo or ' +
       'document your person sends arrives already saved, with its file id in the message ' +
       '("[photo saved as file <id>]"): attach it where it belongs. If you cannot tell which job or ' +
       'visit, ask them first; a photo of nothing work-related is left unattached. One file may be ' +
@@ -69,6 +72,7 @@ function targetOf(ctx: ToolContext): FileTarget {
   const j = ctx.str('jobId');
   const v = ctx.str('visitId');
   const m = ctx.args.moneyEventId;
+  const d = ctx.str('documentId');
   if (c) given.push({ customerId: c });
   if (j) given.push({ jobId: j });
   if (v) given.push({ visitId: v });
@@ -77,15 +81,25 @@ function targetOf(ctx: ToolContext): FileTarget {
     if (!Number.isSafeInteger(n) || n <= 0) throw new Error('moneyEventId must be a ledger entry id (a whole number)');
     given.push({ moneyEventId: n });
   }
-  if (given.length !== 1) throw new Error('give exactly one of customerId, jobId, visitId, moneyEventId');
+  if (d) given.push({ documentId: d });
+  if (given.length !== 1) throw new Error('give exactly one of customerId, jobId, visitId, moneyEventId, documentId');
   return given[0];
 }
 
 /** A malformed id names nothing: said as not found, never a database error. */
 const wellFormed = (t: FileTarget): boolean =>
-  'customerId' in t ? UUID_RE.test(t.customerId) : 'jobId' in t ? UUID_RE.test(t.jobId) : 'visitId' in t ? UUID_RE.test(t.visitId) : true;
+  'customerId' in t
+    ? UUID_RE.test(t.customerId)
+    : 'jobId' in t
+      ? UUID_RE.test(t.jobId)
+      : 'visitId' in t
+        ? UUID_RE.test(t.visitId)
+        : 'documentId' in t
+          ? UUID_RE.test(t.documentId)
+          : true;
 
-async function viewerOf(ctx: ToolContext): Promise<FileViewer> {
+/** Who is asking, for the file rule — exported for send_email's attachment (2e). */
+export async function viewerOf(ctx: ToolContext): Promise<FileViewer> {
   const tier = callerTierOf(ctx);
   const personId = viewerIdOf(ctx);
   return {
@@ -107,7 +121,7 @@ const shape = (f: FileRow) => ({
 });
 
 /** The file if this viewer may see it, else null (missing, deleted or out of view read the same). */
-async function visibleFile(ctx: ToolContext, who: FileViewer, fileId: string): Promise<FileRow | null> {
+export async function visibleFile(ctx: ToolContext, who: FileViewer, fileId: string): Promise<FileRow | null> {
   if (!UUID_RE.test(fileId)) return null;
   const file = await getFile(ctx.tenantId, fileId);
   if (!file || file.deleted_at) return null;
@@ -144,7 +158,7 @@ async function handleLinkFile(ctx: ToolContext): Promise<unknown> {
   // Attaching to the ledger is a manager's job; to a technician an entry
   // she may not see money on is simply not there.
   if (!resolved || (resolved.kind === 'money' && who.tier === 'technician')) {
-    return { status: 'not_found', note: 'no such customer, job, visit or ledger entry' };
+    return { status: 'not_found', note: 'no such customer, job, visit, ledger entry or document' };
   }
   if (!targetVisibleTo(resolved, who)) return { status: 'outside_view', note: OUTSIDE_VIEW_NOTE };
   const outcome = await linkFile(ctx.tenantId, fileId, target, ctx.identity.technicianRef);

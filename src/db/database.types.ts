@@ -701,6 +701,7 @@ export type Database = {
         Row: {
           created_at: string
           customer_id: string | null
+          document_id: string | null
           file_id: string
           id: number
           job_id: string | null
@@ -712,6 +713,7 @@ export type Database = {
         Insert: {
           created_at?: string
           customer_id?: string | null
+          document_id?: string | null
           file_id: string
           id?: never
           job_id?: string | null
@@ -723,6 +725,7 @@ export type Database = {
         Update: {
           created_at?: string
           customer_id?: string | null
+          document_id?: string | null
           file_id?: string
           id?: never
           job_id?: string | null
@@ -780,6 +783,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "v_schedule"
             referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "file_links_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "money_documents"
+            referencedColumns: ["id"]
           },
           {
             foreignKeyName: "file_links_file_id_fkey"
@@ -871,6 +881,7 @@ export type Database = {
           mime_type: string
           size_bytes: number
           source: string
+          source_ref: string | null
           storage_path: string
           tenant_id: string
           uploaded_by: string | null
@@ -886,6 +897,7 @@ export type Database = {
           mime_type: string
           size_bytes: number
           source: string
+          source_ref?: string | null
           storage_path: string
           tenant_id: string
           uploaded_by?: string | null
@@ -901,6 +913,7 @@ export type Database = {
           mime_type?: string
           size_bytes?: number
           source?: string
+          source_ref?: string | null
           storage_path?: string
           tenant_id?: string
           uploaded_by?: string | null
@@ -1413,6 +1426,174 @@ export type Database = {
           summary?: Json
         }
         Relationships: []
+      }
+      money_documents: {
+        Row: {
+          created_at: string
+          created_by_ref: string
+          customer_id: string
+          id: string
+          issued_at: string | null
+          job_id: string
+          kind: string
+          lines: Json
+          money_event_id: number | null
+          notes: string | null
+          number: string | null
+          number_seq: number | null
+          outcome: string | null
+          outcome_at: string | null
+          status: string
+          tenant_id: string
+          total_cents: number
+          updated_at: string
+          void_reason: string | null
+          voided_at: string | null
+        }
+        Insert: {
+          created_at?: string
+          created_by_ref: string
+          customer_id: string
+          id?: string
+          issued_at?: string | null
+          job_id: string
+          kind: string
+          lines?: Json
+          money_event_id?: number | null
+          notes?: string | null
+          number?: string | null
+          number_seq?: number | null
+          outcome?: string | null
+          outcome_at?: string | null
+          status?: string
+          tenant_id: string
+          total_cents?: number
+          updated_at?: string
+          void_reason?: string | null
+          voided_at?: string | null
+        }
+        Update: {
+          created_at?: string
+          created_by_ref?: string
+          customer_id?: string
+          id?: string
+          issued_at?: string | null
+          job_id?: string
+          kind?: string
+          lines?: Json
+          money_event_id?: number | null
+          notes?: string | null
+          number?: string | null
+          number_seq?: number | null
+          outcome?: string | null
+          outcome_at?: string | null
+          status?: string
+          tenant_id?: string
+          total_cents?: number
+          updated_at?: string
+          void_reason?: string | null
+          voided_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "money_documents_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "money_documents_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_access_grants"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "money_documents_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "money_documents_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "money_documents_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "money_documents_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_money_events"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "money_documents_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "money_documents_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "money_documents_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "money_documents_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "money_documents_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "money_documents_money_event_id_fkey"
+            columns: ["money_event_id"]
+            isOneToOne: false
+            referencedRelation: "money_events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "money_documents_money_event_id_fkey"
+            columns: ["money_event_id"]
+            isOneToOne: false
+            referencedRelation: "v_money_events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "money_documents_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       money_events: {
         Row: {
@@ -3131,6 +3312,8 @@ export type Database = {
           disclosure_footer: string | null
           display_name: string | null
           email: string | null
+          estimate_start: number
+          invoice_start: number
           legal_name: string | null
           license_numbers: Json
           phone: string | null
@@ -3147,6 +3330,8 @@ export type Database = {
           disclosure_footer?: string | null
           display_name?: string | null
           email?: string | null
+          estimate_start?: number
+          invoice_start?: number
           legal_name?: string | null
           license_numbers?: Json
           phone?: string | null
@@ -3163,6 +3348,8 @@ export type Database = {
           disclosure_footer?: string | null
           display_name?: string | null
           email?: string | null
+          estimate_start?: number
+          invoice_start?: number
           legal_name?: string | null
           license_numbers?: Json
           phone?: string | null

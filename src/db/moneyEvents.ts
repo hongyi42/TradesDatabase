@@ -218,6 +218,24 @@ export async function getMoneyEvent(id: number): Promise<MoneyEvent | null> {
   return data;
 }
 
+/**
+ * The row a dedupe key already wrote, or null — what a writer re-reads after its
+ * insert lost a 23505 on uq_money_events_dedupe (the key is unique per tenant).
+ */
+export async function getMoneyEventByDedupeKey(
+  tenantId: string,
+  dedupeKey: string,
+): Promise<MoneyEvent | null> {
+  const { data, error } = await getClient()
+    .from('money_events')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('dedupe_key', dedupeKey)
+    .maybeSingle();
+  if (error) throw wrapDbError('getMoneyEventByDedupeKey failed', error);
+  return data;
+}
+
 /** All events for one job, in ledger (id) order — the fold's required input. */
 export async function listMoneyEventsForJob(tenantId: string, jobId: string): Promise<MoneyEvent[]> {
   const { data, error } = await getClient()
@@ -593,7 +611,11 @@ export async function syncJobStatusForMoney(
       }
       return { from: job.status, to: target };
     } catch (err) {
-      if (!isConcurrentTransition(err)) throw err;
+      // updateJobStatus re-reads the job before its CAS, so a writer that moved
+      // it between OUR read and that one surfaces as an "illegal transition"
+      // (e.g. invoiced → invoiced when two issues sync at once), not as
+      // "changed concurrently". Both mean the same thing: the job moved under us.
+      if (!isConcurrentTransition(err) && (await getJob(jobId))?.status === job.status) throw err;
       // Concurrent transition — loop re-reads and re-derives once, then gives up.
     }
   }

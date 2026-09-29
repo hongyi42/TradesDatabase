@@ -124,12 +124,16 @@ export async function listJobActivitySince(
 //                the link has no row id of its own, so `id` is the job's
 //   'note'     — the capture was attached to a live TRIP (`visit_notes`); `id` is
 //                the visit's
+//   'money'    — a live ledger row cites it (`money_events.source_capture_id`);
+//                `id` is the row's bigint id as a string (step 2e: "record the
+//                invoice in your sent email?" answered). Voided/corrected rows
+//                are not answers.
 // A CANCELLED job or trip is not an answer. The two linking kinds are not
 // closers for `inbound_new_job` / `inbound_commitment`: the door writes that
 // link in the same call it raises those asks (the planner's moot fact is
 // kind-aware for exactly that reason).
 export interface L2CitingCapture {
-  kind: 'job' | 'visit' | 'customer' | 'link' | 'note';
+  kind: 'job' | 'visit' | 'customer' | 'link' | 'note' | 'money';
   id: string;
   captureId: string;
   jobId: string | null;
@@ -171,6 +175,11 @@ export async function readCaptureRecords(
       case 'visit_note':
         if (visitId) citing.push({ kind: 'note', id: visitId, captureId, jobId });
         break;
+      case 'money': {
+        const id = asString(r.id);
+        if (id) citing.push({ kind: 'money', id, captureId, jobId });
+        break;
+      }
     }
   }
   const retracted = asArray(body?.retracted)

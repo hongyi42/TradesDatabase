@@ -438,6 +438,7 @@ describe('the ping markers (rung 10)', () => {
       'inbound_new_job',
       'inbound_commitment',
       'inbound_unmatched',
+      'outbound_invoice', // step 2e phase 4
     ]);
   });
 

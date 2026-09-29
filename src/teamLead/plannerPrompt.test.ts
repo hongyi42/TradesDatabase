@@ -28,17 +28,32 @@ const NEW_SEND_HOW_TAIL = [
   '           learn what someone already told their assistant, or what it was told, read it',
   '           with `read_conversation` rather than sending their assistant a question.',
 ].join('\n');
+// Step 2e phase 4: the `outbound_invoice` paragraph in CALLS. Remove it and the
+// hash must hold.
+const OUTBOUND_INVOICE_PARAGRAPH = [
+  '  ONE MORE KIND RIDES THIS LOOP, AND NOBODY GOT IN TOUCH. `outbound_invoice` is a manager\'s own',
+  '  sent work email that looks like an invoice — a PDF on it, or the word "invoice". If it is an',
+  '  invoice the firm issued and THE RECORD line does not say it is on the ledger, send that',
+  '  manager\'s assistant a note (`as:"assistant"`, naming the item in `nudgeId`) naming the',
+  '  customer, the job, the amount and their invoice number, asking whether to record it. That',
+  '  note is the whole ask — no text goes with it, and one note per email. Anything else — a',
+  '  supplier\'s bill, a question about a payment, an invoice already on the ledger — dismiss it and',
+  '  say why in one line. Everything below about calls, texts and quiet notes is about the other',
+  '  three kinds, not this one.',
+  '',
+  '',
+].join('\n');
 // sha256 of PLANNER_SYSTEM at 532720f, before the split.
 const PRE_SPLIT_SHA256 = '4b5fda2b3abfce787f0c692ec2f0d167ccd46398e405fd74fc5d4b6e4c4f75bb';
 
 describe('PLANNER_SYSTEM — split into sections without changing it', () => {
-  test('only the ACCESS paragraph and the step 3 SEND lines differ from the pre-split prompt', () => {
+  test('only the ACCESS paragraph, the step 3 SEND lines and the step 2e outbound_invoice paragraph differ from the pre-split prompt', () => {
     expect(prompt.PLANNER_SYSTEM).toContain(NEW_ACCESS_HEAD);
     expect(prompt.PLANNER_SYSTEM).toContain(NEW_SEND_HOW_TAIL);
-    const restored = prompt.PLANNER_SYSTEM.replace(NEW_ACCESS_HEAD, OLD_ACCESS_HEAD).replace(
-      NEW_SEND_HOW_TAIL,
-      OLD_SEND_HOW_TAIL,
-    );
+    expect(prompt.PLANNER_SYSTEM).toContain(OUTBOUND_INVOICE_PARAGRAPH);
+    const restored = prompt.PLANNER_SYSTEM.replace(NEW_ACCESS_HEAD, OLD_ACCESS_HEAD)
+      .replace(NEW_SEND_HOW_TAIL, OLD_SEND_HOW_TAIL)
+      .replace(OUTBOUND_INVOICE_PARAGRAPH, '');
     expect(createHash('sha256').update(restored).digest('hex')).toBe(PRE_SPLIT_SHA256);
   });
 

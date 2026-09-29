@@ -7668,6 +7668,140 @@ describe('rung 10 — inbound requests reach the planner', () => {
       expect(user).toContain(outbound ? 'nobody on file is the person it went to' : 'nobody on file matches this sender');
     }
   });
+
+  // ── STEP 2E PHASE 4 — the manager's own sent email that looks like an invoice ──
+  const invoiceObs = (over: Partial<Observation> = {}): Observation =>
+    inboundObs({
+      kind: 'outbound_invoice',
+      context: {
+        outbound: true,
+        channel: 'outbound_email',
+        captureId: CAP,
+        customerId: CUST,
+        customerName: 'Lee Park',
+        jobId: JOB,
+        jobTitle: 'Bathroom remodel',
+        sentTo: 'lee@homeowner.test',
+        words: 'Subject: Invoice 2231\n\nHi Lee, attached is invoice 2231 for $450.',
+        attachments: [{ name: 'Invoice-2231.pdf', mime: 'application/pdf' }],
+      } as never,
+      ...over,
+    });
+
+  test('(20) the gap block names the manager\'s own sent invoice — never a caller, a new job or a visit', () => {
+    const view = buildGapView(
+      observationAsGapRow(invoiceObs()),
+      Date.parse(NOW),
+      [],
+      false,
+      new Set(),
+      [],
+      [],
+      'UTC',
+      null,
+      null,
+      null,
+      new Map(),
+      { askedAt: null },
+    );
+    expect(view.block).toContain('kind: outbound_invoice');
+    expect(view.block).toContain("the manager's own sent email that looks like an invoice, sent to lee@homeowner.test");
+    expect(view.block).toContain('invoice 2231 for $450');
+    expect(view.block).toContain('attached: Invoice-2231.pdf (application/pdf)');
+    expect(view.block).toContain(`customer: Lee Park (id ${CUST})`);
+    expect(view.block).toContain(`filed on: job Bathroom remodel (job id ${JOB})`);
+    expect(view.block).toContain(`capture id: ${CAP}`);
+    expect(view.block).not.toContain("the caller's words");
+    expect(view.block).not.toContain('a job would have to be opened');
+    expect(view.block).not.toContain('agreed to come out');
+    expect(view.block).not.toContain("YOUR FIRM'S OWN reply");
+  });
+
+  test('(20b) retracted: the words and the file names are gone', () => {
+    const view = buildGapView(
+      observationAsGapRow(invoiceObs()),
+      Date.parse(NOW),
+      [],
+      false,
+      new Set(),
+      [],
+      [],
+      'UTC',
+      null,
+      null,
+      null,
+      new Map(),
+      { askedAt: '2026-08-16T10:00:00.000Z', retracted: true },
+    );
+    expect(view.block).toContain('the email this is about was RETRACTED');
+    expect(view.block).not.toContain('$450');
+    expect(view.block).not.toContain('Invoice-2231.pdf');
+    expect(view.block).toContain("you have already sent the manager's seat a note about this one");
+  });
+
+  test('(21) THE RECORD closes it only on a ledger row citing the email — a job link is no answer', async () => {
+    const blockFor = async (citing: Array<{ kind: 'job' | 'visit' | 'customer' | 'link' | 'note' | 'money'; id: string; captureId: string; jobId: string | null }>) => {
+      const seen: { user?: string } = {};
+      await runPlanner(
+        NOW,
+        'shadow',
+        baseDeps({
+          listNudges: async () => [],
+          listObservations: async () => [invoiceObs()],
+          listCiting: async () => ({ citing, retracted: [] }),
+          listVisitsSince: async () => [
+            { id: 'v-9', jobId: JOB, customerId: CUST, createdAt: '2026-08-16T11:58:00.000Z' },
+          ],
+          runLoop: capturingLoop(seen),
+        }),
+      );
+      return seen.user ?? '';
+    };
+    expect(await blockFor([{ kind: 'money', id: '42', captureId: CAP, jobId: JOB }])).toContain(
+      'THE RECORD: a ledger entry cites this email — the invoice is recorded',
+    );
+    // The door links the email to its job in the same call it raises the ask,
+    // and a hand-booked visit is not a bill — neither closes it.
+    const open = await blockFor([{ kind: 'link', id: JOB, captureId: CAP, jobId: JOB }]);
+    expect(open).not.toContain('THE RECORD: a');
+    expect(open).not.toContain('citing no capture');
+  });
+
+  test("(22) the note to the manager's seat IS the ask: alone, accepted, and it takes the marker", async () => {
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    const asks: string[] = [];
+    const note = sendTo({
+      as: 'assistant',
+      message: 'Sam emailed Lee Park invoice 2231 for $450 on the bathroom job. Ask Sam whether to record it.',
+    });
+    const { summary } = await liveSend([note], {
+      listObservations: async () => [invoiceObs()],
+      runLoop: loopReturning([note]),
+      createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+      markAsked: (async (id: string) => {
+        asks.push(id);
+        return NOW;
+      }) as unknown as NonNullable<PlannerDeps['markAsked']>,
+    });
+    expect(summary.applied).toBe(1);
+    expect(summary.dropped ?? 0).toBe(0);
+    expect(asks).toEqual(['obs-1']);
+    expect(createOffice).toHaveBeenCalledWith(expect.objectContaining({ via: 'assistant', technicianId: 'mgr-1' }));
+  });
+
+  test('(22b) …and one per email: a second note inside the day is refused, nothing delivered', async () => {
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    const note = sendTo({ as: 'assistant', message: 'Ask Sam whether to record invoice 2231.' });
+    const { summary, recorded } = await liveSend([note], {
+      listObservations: async () => [invoiceObs()],
+      runLoop: loopReturning([note]),
+      createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+      markAsked: (async () => null) as unknown as NonNullable<PlannerDeps['markAsked']>,
+    });
+    expect(summary.applied).toBe(0);
+    expect(createOffice).not.toHaveBeenCalled();
+    expect(recorded[0].outcomeDetail).toContain('within the last day');
+  });
 });
 
 describe('noteRefusal — what the model was told no with (2026-09-11)', () => {

@@ -211,6 +211,57 @@ describe('gmailEmailSentNormalizer', () => {
     expect(env.externalId).toBe('sent:gmail-sent-1');
   });
 
+  describe('attachments (step 2e phase 4)', () => {
+    test('the attachment_list is read in any of its spellings', () => {
+      const env = gmailEmailSentNormalizer({
+        ...sent,
+        attachment_list: [
+          { attachmentId: 'a1', filename: 'INV-77.pdf', mimeType: 'application/pdf', size: 1200 },
+          { attachment_id: 'a2', file_name: 'photo.jpg', mime_type: 'image/jpeg', size: '300' },
+          { id: 'a3', name: 'notes.txt', mimetype: 'text/plain' },
+          { filename: 'no-id.pdf' }, // no id → cannot be fetched → skipped
+          'junk',
+        ],
+      });
+      expect((env.sourceMeta as { attachments?: unknown }).attachments).toEqual([
+        { attachmentId: 'a1', name: 'INV-77.pdf', mime: 'application/pdf', size: 1200 },
+        { attachmentId: 'a2', name: 'photo.jpg', mime: 'image/jpeg', size: 300 },
+        { attachmentId: 'a3', name: 'notes.txt', mime: 'text/plain', size: null },
+      ]);
+    });
+
+    test('an unreadable list falls back to the MIME tree (payload.parts, nested)', () => {
+      const env = gmailEmailSentNormalizer({
+        ...sent,
+        attachment_list: [{}],
+        payload: {
+          mimeType: 'multipart/mixed',
+          parts: [
+            { mimeType: 'text/plain', filename: '', body: { size: 40 } },
+            {
+              mimeType: 'multipart/related',
+              parts: [
+                { mimeType: 'application/pdf', filename: 'Invoice 1004.pdf', body: { attachmentId: 'p1', size: 5000 } },
+              ],
+            },
+            { mimeType: 'image/png', filename: 'logo.png', body: { attachmentId: 'p2', size: 90 } },
+          ],
+        },
+      });
+      expect((env.sourceMeta as { attachments?: unknown }).attachments).toEqual([
+        { attachmentId: 'p1', name: 'Invoice 1004.pdf', mime: 'application/pdf', size: 5000 },
+        { attachmentId: 'p2', name: 'logo.png', mime: 'image/png', size: 90 },
+      ]);
+    });
+
+    test('no attachments → no key at all', () => {
+      expect(gmailEmailSentNormalizer(sent).sourceMeta).not.toHaveProperty('attachments');
+      expect(
+        gmailEmailSentNormalizer({ ...sent, attachment_list: [], payload: { parts: [] } }).sourceMeta,
+      ).not.toHaveProperty('attachments');
+    });
+  });
+
   test('it is REGISTERED, or the webhook answers `unrouted` and discards the mail', () => {
     expect(resolveNormalizer('GMAIL', 'GMAIL_EMAIL_SENT_TRIGGER')).toBe(gmailEmailSentNormalizer);
     // …and the two doors stay distinct.

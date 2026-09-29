@@ -594,3 +594,55 @@ export async function recordEstimateOutcome(
   }
   return { document, event };
 }
+
+// ── "Is this a number the firm already issued?" (step 2e Phase 4) ─────────────
+//
+// The no-double-ask guard on the manager's own sent mail: an email that names a
+// number this firm already issued (INV-/EST-, or a ledger row's `external_ref`)
+// is about money already on the books, so the office must not ask to record it
+// again. Candidate tokens are read out of the words (anything carrying a digit,
+// edge punctuation trimmed, a leading '#' dropped) and looked up exactly — a
+// bare "#1004" also tries INV-1004 / EST-1004, since that is how people write
+// the number in a sentence. Capped so a pasted spreadsheet cannot become a
+// thousand-term query.
+const MAX_NUMBER_TOKENS = 100;
+
+export function numberCandidates(text: string): string[] {
+  const out = new Set<string>();
+  for (const raw of text.match(/[A-Za-z0-9#][A-Za-z0-9#_./-]*/g) ?? []) {
+    if (!/\d/.test(raw)) continue;
+    const token = raw.replace(/^#+/, '').replace(/[._/-]+$/, '');
+    if (!token || token.length > 64) continue;
+    out.add(token);
+    out.add(token.toUpperCase());
+    if (/^\d+$/.test(token)) {
+      out.add(`INV-${token}`);
+      out.add(`EST-${token}`);
+    }
+    if (out.size >= MAX_NUMBER_TOKENS) break;
+  }
+  return [...out].slice(0, MAX_NUMBER_TOKENS);
+}
+
+/** Does this text name a number this firm already issued — a document's, or a ledger row's external ref? */
+export async function namesIssuedNumber(tenantId: string, text: string): Promise<boolean> {
+  const candidates = numberCandidates(text);
+  if (candidates.length === 0) return false;
+  const [docs, events] = await Promise.all([
+    getClient()
+      .from('money_documents')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .in('number', candidates)
+      .limit(1),
+    getClient()
+      .from('money_events')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .in('external_ref', candidates)
+      .limit(1),
+  ]);
+  if (docs.error) throw wrapDbError('namesIssuedNumber (documents) failed', docs.error);
+  if (events.error) throw wrapDbError('namesIssuedNumber (ledger) failed', events.error);
+  return (docs.data?.length ?? 0) > 0 || (events.data?.length ?? 0) > 0;
+}

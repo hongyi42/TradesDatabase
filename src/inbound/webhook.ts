@@ -20,6 +20,14 @@ import {
 import type { WorkClassifier } from '../email/classify.js';
 import { resolveNormalizer as liveResolveNormalizer } from './normalize.js';
 import type { Normalizer } from './normalize.js';
+import type { SentAttachment } from './gmailSent.js';
+import { keepSentAttachments } from './sentAttachments.js';
+import {
+  invoiceWords,
+  looksLikeInvoice,
+  raiseOutboundInvoiceObservation,
+} from './outboundInvoice.js';
+import { namesIssuedNumber } from '../db/index.js';
 import './gmail.js'; // self-registers the Gmail received normalizer
 import './gmailSent.js'; // …and the Gmail SENT one (rung 10b.4)
 
@@ -103,6 +111,21 @@ export interface InboundWebhookDeps {
   // everything else here is — a test must not need a DB.
   findCaptureByExternalId?: typeof getRawCaptureByExternalId;
   hasLinkedL2?: typeof captureHasLinkedL2;
+  // STEP 2E PHASE 4 — the manager's own sent mail. Three seams, so a test of
+  // this door never reaches Composio or the database:
+  //   keepAttachments   — fetch and keep the files, run DETACHED after the
+  //                       response (sentAttachments.ts);
+  //   issuedNumberNamed — does the email name a number already on the books;
+  //   raiseOutboundInvoice — the `outbound_invoice` observation.
+  keepAttachments?: (input: {
+    tenantId: string;
+    tech: NonNullable<Awaited<ReturnType<typeof liveGetTechnician>>>;
+    messageId: string;
+    attachments: SentAttachment[];
+    target: { jobId?: string | null; customerId?: string | null };
+  }) => Promise<unknown>;
+  issuedNumberNamed?: typeof namesIssuedNumber;
+  raiseOutboundInvoice?: typeof raiseOutboundInvoiceObservation;
 }
 
 // The handler classifies every outcome into one status; httpServer maps each status
@@ -230,7 +253,11 @@ export async function handleInboundWebhook(
     cc?: string;
     bcc?: string;
     labelIds?: string[];
+    attachments?: SentAttachment[];
   };
+  // The files on the firm's own sent mail (gmailSent.ts). Their Gmail ids are
+  // for the fetch only; L1 keeps {name, mime, size}.
+  const attachments = outboundAttachments(meta.attachments);
   // GMAIL'S OWN ID FOR THIS MESSAGE. Not the same thing as `externalId` any
   // more: an outbound delivery is keyed `sent:<messageId>` so that the trigger,
   // `send_email` and `logIngest` share one L1 key. Anything comparing against
@@ -490,6 +517,12 @@ export async function handleInboundWebhook(
         ...(meta.cc ? { cc: meta.cc } : {}),
         ...(meta.bcc ? { bcc: meta.bcc } : {}),
         ...(meta.labelIds ? { labelIds: meta.labelIds } : {}),
+        // WHAT WAS ATTACHED (step 2e). Names, types and sizes only — the Gmail
+        // attachment ids are a fetch handle, not a fact about the email, and L1
+        // is append-only. Present-only.
+        ...(attachments.length > 0
+          ? { attachments: attachments.map((a) => ({ name: a.name, mime: a.mime, size: a.size })) }
+          : {}),
         // The account id keys the stamp to a pairing EPISODE: across a
         // wrong-mailbox → dismiss → re-pair loop, a bare boolean couldn't say
         // which rows came from which mailbox (review finding), and L1's
@@ -517,9 +550,83 @@ export async function handleInboundWebhook(
         /* advisory */
       }
     }
+    if (outbound && tech && r.status !== 'duplicate') {
+      // STEP 2E PHASE 4 — THE MANAGER'S OWN INVOICE, ASKED ABOUT ONCE. Only
+      // here, after the capture is fully filed: an observation on the capture
+      // counts as "processed" to the door's own dedup (captureHasLinkedL2), so
+      // raising it any earlier would make a half-filed capture's redelivery
+      // stop short. Advisory — the email has landed, and a failed ask must not
+      // turn it into a 503 whose redelivery would then read as a duplicate and
+      // never ask at all.
+      const manager = tech.tier === 'manager' && tech.state === 'active';
+      if (manager && looksLikeInvoice({ subject: meta.subject, body: meta.body, attachments })) {
+        try {
+          const words = invoiceWords(meta.subject, meta.body);
+          const named = await (deps.issuedNumberNamed ?? namesIssuedNumber)(tenantId, words);
+          if (!named) {
+            await (deps.raiseOutboundInvoice ?? raiseOutboundInvoiceObservation)({
+              tenantId,
+              captureId: r.captureId,
+              customerId: r.customerId ?? null,
+              jobId: r.jobId ?? null,
+              sentTo: soleRecipientOf(meta.to) ?? meta.to ?? null,
+              words,
+              attachments: attachments.map((a) => ({ name: a.name, mime: a.mime })),
+            });
+          }
+        } catch (err) {
+          console.error(
+            `inbound: the sent-invoice ask for ${r.captureId} was not raised — ` +
+              `${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      // THE FILES, AFTER THE RESPONSE. Fetching a PDF from Gmail is seconds of
+      // network inside Composio's delivery request; stall past its timeout and
+      // the delivery is redelivered into the same stall. So the fetch is
+      // scheduled for after this handler returns and the response is written,
+      // bounded (60 s total) and best-effort inside keepSentAttachments.
+      if (attachments.length > 0) {
+        const keep = deps.keepAttachments ?? keepSentAttachments;
+        const job = {
+          tenantId,
+          tech,
+          messageId: selfMessageId,
+          attachments,
+          target: { jobId: r.jobId ?? null, customerId: r.customerId ?? null },
+        };
+        setImmediate(() => {
+          keep(job).catch((err: unknown) => {
+            console.error(
+              `inbound: sent attachments for ${r.captureId} not kept — ` +
+                `${err instanceof Error ? err.message : String(err)}`,
+            );
+          });
+        });
+      }
+    }
     return { status: r.status === 'duplicate' ? 'duplicate' : 'ingested', captureId: r.captureId };
   } catch (err) {
     if (isForeignKeyViolation(err)) return { status: 'unknown_tenant' };
     return { status: 'transient_error' };
   }
+}
+
+// The normalizer's list, re-checked at the door: sourceMeta is JSON by type, so
+// anything malformed is dropped rather than trusted.
+function outboundAttachments(raw: unknown): SentAttachment[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((a): SentAttachment[] => {
+    if (!a || typeof a !== 'object') return [];
+    const o = a as Record<string, unknown>;
+    if (typeof o.attachmentId !== 'string' || !o.attachmentId) return [];
+    return [
+      {
+        attachmentId: o.attachmentId,
+        name: typeof o.name === 'string' && o.name ? o.name : 'attachment',
+        mime: typeof o.mime === 'string' && o.mime ? o.mime : 'application/octet-stream',
+        size: typeof o.size === 'number' ? o.size : null,
+      },
+    ];
+  });
 }

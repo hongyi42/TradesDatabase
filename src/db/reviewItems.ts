@@ -107,7 +107,16 @@ export type ReviewKind =
   // set until a manager answers, so the planner can chase or tell the
   // technician it is still waiting; NOT in PINGED_KINDS, because the managers
   // are already texted the moment it is filed.
-  | 'access_request';
+  | 'access_request'
+  // STEP 2E PHASE 4 — THE MANAGER'S OWN SENT EMAIL THAT LOOKS LIKE AN INVOICE
+  // (a PDF on it, or the word "invoice"), naming no number already on the
+  // books. Raised by the webhook once the capture is filed; subject_ref is the
+  // L1 capture id, author 'detector', so the once-ever index keeps it to one
+  // ask per email. Pinged (PINGED_KINDS): the office decides whether it is an
+  // invoice the firm issued and, if so, has the manager's seat ask to record it.
+  // Closed on the record by a ledger row citing the capture (capture_records'
+  // money arm).
+  | 'outbound_invoice';
 
 export interface UpsertOpenReviewItemInput {
   tenantId: string;

@@ -12,7 +12,7 @@ import { listL2CitingCapture } from '../db/captureMembership.js';
 import { createCustomer, insertCustomerCapture } from '../db/customers.js';
 import { appendJobCorrespondence, createJob, insertJobCapture } from '../db/jobs.js';
 import { createVisit, insertVisitNote, updateVisitStatus } from '../db/visits.js';
-import { createFile } from '../db/files.js';
+import { createFile, deleteFile, linkFile } from '../db/files.js';
 import { upsertJobTypeDuration } from '../db/jobTypeDurations.js';
 import {
   insertTechnician,
@@ -3001,6 +3001,128 @@ describe('send_email tool (outbound seam stubbed)', () => {
         tenantId,
         'stamp-sam',
       ]);
+      await setTenantSeats(tenantId, {
+        managerSeats: seatsBefore.manager_seats,
+        technicianSeats: seatsBefore.technician_seats,
+      });
+    }
+  });
+
+  // STEP 2E — ONE STORED FILE SENT ATTACHED. Checked at stage (the person
+  // approves a preview naming it) and read again at confirm BEFORE the token is
+  // spent, so a file gone since staging costs nothing but a re-stage.
+  test('an attachment: staged by name, sent as bytes, refused in words, and the token survives a vanished file', { timeout: 30_000 }, async () => {
+    const seatsBefore = (
+      await pg.query<{ manager_seats: number; technician_seats: number }>(
+        'select manager_seats, technician_seats from tenants where id=$1',
+        [tenantId],
+      )
+    ).rows[0];
+    await setTenantSeats(tenantId, {
+      managerSeats: seatsBefore.manager_seats,
+      technicianSeats: seatsBefore.technician_seats + 1,
+    });
+    const ann = await insertTechnician({ tenantId, ref: 'attach-ann', displayName: 'Attach Ann' });
+    await setTechnicianState(ann.id, 'active');
+    await updateTechnician(ann.id, {
+      composio_connected_account_id: 'ca_attach',
+      connected_email: 'attach.ann@gmail.com',
+    });
+    const sendCalls: Array<{ to: string; attachment?: { name: string; mime: string; bytes: Buffer } }> = [];
+    let n = 0;
+    const stubs: Partial<ServerDeps> = {
+      sendEmail: async (_t, msg) => {
+        sendCalls.push(msg);
+        return { messageId: `attach-m-${++n}`, threadId: `attach-t-${n}` };
+      },
+    };
+    const pdf = (fileName: string, uploadedByRef: string, uploadedBy: string | null, body = '%PDF-1.7 invoice') =>
+      createFile({
+        tenantId,
+        kind: 'document',
+        fileName,
+        mimeType: 'application/pdf',
+        bytes: Buffer.from(body),
+        uploadedByRef,
+        uploadedBy,
+        source: 'sandbox',
+      });
+    const { client, callWith } = await clientFor({ tenantId, technicianRef: 'attach-ann' }, stubs);
+    const isOpen = async (id: string) =>
+      (await pg.query<{ status: string }>('select status from review_items where id = $1', [id])).rows[0]
+        ?.status === 'open';
+    try {
+      const cust = await createCustomer({ tenantId, name: 'Attach Customer', phone: '555-7401' });
+      const job = await createJob({ tenantId, customerId: cust.id, title: 'Attach furnace' });
+      // A manager's invoice on a job she can see (the firm's rule is whole-firm
+      // here), and a manager's file on nothing, which no technician sees.
+      const invoice = await pdf('INV-1001.pdf', 'mgr-test', null, '%PDF-1.7 INV-1001');
+      await linkFile(tenantId, invoice.id, { jobId: job.id }, 'mgr-test');
+      const hidden = await pdf('private.pdf', 'mgr-test', null);
+      const msg = { to: 'attach.customer@example.com', subject: 'Your invoice', body: 'Attached.' };
+
+      // Out of her view, malformed, or missing: refused at stage, nothing staged.
+      for (const fileId of [hidden.id, 'not-a-uuid', '00000000-0000-0000-0000-000000000000']) {
+        const refused = await callWith('send_email', { ...msg, fileId });
+        expect(refused.isError).toBe(true);
+        expect(refused.text).toContain('no such file to attach');
+      }
+
+      // Over 18 MB (a row within the table's 20 MB check; the bytes need not be
+      // real for a refusal that reads only the size): refused at stage in words.
+      const big = await pdf('scan.pdf', 'attach-ann', ann.id);
+      await pg.query('update files set size_bytes = $2 where id = $1', [big.id, 18 * 1024 * 1024 + 1]);
+      const tooBig = await callWith('send_email', { ...msg, fileId: big.id });
+      expect(tooBig.isError).toBe(true);
+      expect(tooBig.text).toContain('scan.pdf is too big to send by email (over 18 MB)');
+
+      // Stage: the preview names the file. Confirm: its bytes reach the send.
+      const staged = await callWith('send_email', { ...msg, jobId: job.id, fileId: invoice.id });
+      expect(staged.data).toMatchObject({ status: 'needs_confirmation', attachment: 'INV-1001.pdf' });
+      expect(sendCalls).toHaveLength(0);
+      const sent = await callWith('send_email', { confirmId: staged.data.confirmId });
+      expect(sent.data).toMatchObject({ status: 'sent', attachment: 'INV-1001.pdf', captured: true });
+      expect(sendCalls).toHaveLength(1);
+      expect(sendCalls[0].attachment?.name).toBe('INV-1001.pdf');
+      expect(sendCalls[0].attachment?.mime).toBe('application/pdf');
+      expect(sendCalls[0].attachment?.bytes.toString()).toBe('%PDF-1.7 INV-1001');
+      // The L1 copy says what went with it: the id and the name, never the bytes.
+      const meta = (
+        await pg.query<{ metadata: Record<string, unknown> }>(
+          'select metadata from raw_captures where external_id = $1',
+          ['sent:attach-m-1'],
+        )
+      ).rows[0]?.metadata;
+      expect(meta?.attachment).toEqual({ fileId: invoice.id, name: 'INV-1001.pdf' });
+
+      // A send without a file carries no attachment anywhere.
+      const plain = await callWith('send_email', { ...msg, subject: 'No file' });
+      expect(plain.data).not.toHaveProperty('attachment');
+      await callWith('send_email', { confirmId: plain.data.confirmId });
+      expect(sendCalls[1]).not.toHaveProperty('attachment');
+
+      // Her own file, deleted after staging: the confirm refuses in words and
+      // the token stays open — nothing sent, nothing spent.
+      const own = await pdf('photo-notes.pdf', 'attach-ann', ann.id);
+      const doomed = await callWith('send_email', { ...msg, fileId: own.id });
+      expect(doomed.data.attachment).toBe('photo-notes.pdf');
+      expect(await deleteFile(tenantId, own.id, 'mgr-test')).toBe('deleted');
+      const gone = await callWith('send_email', { confirmId: doomed.data.confirmId });
+      expect(gone.isError).toBe(true);
+      expect(gone.text).toContain('the attached file is no longer there');
+      expect(await isOpen(doomed.data.confirmId)).toBe(true);
+      const again = await callWith('send_email', { confirmId: doomed.data.confirmId });
+      expect(again.text).toContain('the attached file is no longer there'); // still open, still refused
+      expect(sendCalls).toHaveLength(2);
+      // Re-staged with another file, the send goes.
+      const restaged = await callWith('send_email', { ...msg, fileId: invoice.id });
+      expect(await isOpen(doomed.data.confirmId)).toBe(false); // superseded
+      const resent = await callWith('send_email', { confirmId: restaged.data.confirmId });
+      expect(resent.data).toMatchObject({ status: 'sent', attachment: 'INV-1001.pdf' });
+      expect(sendCalls).toHaveLength(3);
+    } finally {
+      await client.close();
+      await pg.query('delete from technicians where tenant_id=$1 and ref=$2', [tenantId, 'attach-ann']);
       await setTenantSeats(tenantId, {
         managerSeats: seatsBefore.manager_seats,
         technicianSeats: seatsBefore.technician_seats,

@@ -202,3 +202,57 @@ describe('sendGmailEmail', () => {
     });
   });
 });
+
+// Step 2e: one stored file sent attached. Our client has auto-upload OFF, so
+// the send uploads first and names the upload's descriptor as `attachment`.
+describe('sendGmailEmail with an attachment', () => {
+  const PDF = { name: 'INV-1001.pdf', mime: 'application/pdf', bytes: Buffer.from('%PDF-1.7 test') };
+
+  test('uploads a File of the right name, type and bytes, then passes the descriptor as attachment', async () => {
+    const { client, calls } = clientStub({ successful: true, data: { id: 'm-att' } });
+    const uploads: Array<{ file: File; toolSlug: string; toolkitSlug: string }> = [];
+    client.files = {
+      upload: async (input) => {
+        uploads.push(input);
+        return { name: 'INV-1001.pdf', mimetype: 'application/pdf', s3key: 's3/key-1' };
+      },
+    };
+    await sendGmailEmail(tech(), { ...MSG, attachment: PDF }, { client, recordCost: noCost });
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].toolSlug).toBe('GMAIL_SEND_EMAIL');
+    expect(uploads[0].toolkitSlug).toBe('gmail');
+    expect(uploads[0].file).toBeInstanceOf(File);
+    expect(uploads[0].file.name).toBe('INV-1001.pdf');
+    expect(uploads[0].file.type).toBe('application/pdf');
+    expect(Buffer.from(await uploads[0].file.arrayBuffer()).equals(PDF.bytes)).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body.arguments).toEqual({
+      recipient_email: MSG.to,
+      subject: MSG.subject,
+      body: MSG.body,
+      attachment: { name: 'INV-1001.pdf', mimetype: 'application/pdf', s3key: 's3/key-1' },
+    });
+  });
+
+  test('no attachment → no upload and no attachment argument', async () => {
+    const { client, calls } = clientStub({ successful: true, data: { id: 'm-plain' } });
+    let uploaded = 0;
+    client.files = {
+      upload: async () => {
+        uploaded++;
+        return { name: 'x', mimetype: 'x', s3key: 'x' };
+      },
+    };
+    await sendGmailEmail(tech(), MSG, { client, recordCost: noCost });
+    expect(uploaded).toBe(0);
+    expect(calls[0].body.arguments).not.toHaveProperty('attachment');
+  });
+
+  test('a client with no files API refuses clearly and sends nothing', async () => {
+    const { client, calls } = clientStub({ successful: true, data: {} });
+    await expect(
+      sendGmailEmail(tech(), { ...MSG, attachment: PDF }, { client, recordCost: noCost }),
+    ).rejects.toThrow('cannot upload files');
+    expect(calls).toHaveLength(0);
+  });
+});

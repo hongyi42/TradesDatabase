@@ -20,7 +20,8 @@ import type { TurnPolicy } from './turnPolicy.js';
 export const TEXT = {
   stopped: 'Stopped.',
   fresh: 'Starting fresh.',
-  unsupported: 'I can read texts, photos and voice notes.',
+  unsupported: 'I can read texts, photos, voice notes and files.',
+  tooBig: 'That file is over 20 MB, too big for me to keep.',
   voiceFailed: "I couldn't make out that voice note. Could you type it?",
   replyFailed: "I couldn't answer that just now. Try again in a minute.",
   promptClosed: 'This question has closed.',
@@ -33,6 +34,9 @@ export const TEXT = {
   // runs with the office wired in. No em dashes; names AI (customer-facing copy).
   disclosure: 'Heads up from your AI assistant: the office can read our chats here, and your managers can ask it about them.',
 } as const;
+
+/** Step 2d: the largest image sent "as a file" that also goes to the model inline. */
+export const INLINE_IMAGE_MAX = 5 * 1024 * 1024;
 
 /** How long a typed plan reply may wait on Jev before it counts as a change request. */
 export const APPROVE_WAIT_MS = 3_500;
@@ -59,6 +63,11 @@ export interface SeatDeps {
   transcribe(buf: Buffer, mime: string): Promise<{ text: string; generationId: string | null }>;
   /** Keeps the bytes on the box for a while. The returned path must never reach the model. */
   saveMedia(buf: Buffer, ext: string): Promise<string>;
+  /**
+   * Step 2d: keep a photo or document in the file store (Render /seat/files);
+   * returns its file id. Absent (tests, an unwired seat) = "could not be saved".
+   */
+  uploadFile?(f: { kind: 'photo' | 'document'; name: string; mime: string; bytes: Uint8Array }): Promise<string>;
   sweepMedia(): Promise<number>;
   readState(): Promise<SeatState>;
   writeState(state: SeatState): Promise<void>;
@@ -305,9 +314,10 @@ export class Seat {
     // /new ends it first, so the engine's handler is never left waiting.
     // Stop, /new or a photo end a decision in progress too (the plan comes back as
     // stopped), so nothing sent afterwards is swallowed into a dead loop's feedback.
-    if (msg.kind === 'stop' || msg.kind === 'new' || msg.kind === 'photo') this.endDeciding();
+    if (msg.kind === 'stop' || msg.kind === 'new' || msg.kind === 'photo' || msg.kind === 'document') this.endDeciding();
     if (this.prompts.isOpen) {
       if (msg.kind === 'photo') this.cancelPrompts('the manager sent a photo instead, which follows as their next message');
+      if (msg.kind === 'document') this.cancelPrompts('the manager sent a file instead, which follows as their next message');
       if (msg.kind === 'stop') this.cancelPrompts('the manager pressed Stop');
       if (msg.kind === 'new') this.cancelPrompts('the manager started a new conversation');
     }
@@ -316,6 +326,8 @@ export class Seat {
         return;
       case 'unsupported':
         return this.say(TEXT.unsupported);
+      case 'tooBig':
+        return this.say(TEXT.tooBig);
       case 'stop':
         return this.stopReply(msg.callbackQueryId, msg.workingMessageId);
       case 'tap':
@@ -328,11 +340,35 @@ export class Seat {
       case 'photo': {
         const buf = await this.deps.telegram.download(msg.fileId);
         await this.keepCopy(buf, 'jpg');
-        // Bytes only. The saved path never goes near the model: L1 is permanent
-        // and the file is deleted in a week.
+        // Bytes only. The saved BOX path never goes near the model; the file
+        // store's id does (step 2d), so the model can attach it.
+        const saved = await this.store({ kind: 'photo', name: 'photo.jpg', mime: 'image/jpeg', bytes: buf });
         const photo: BlobAttachment = { type: 'blob', data: buf.toString('base64'), mimeType: 'image/jpeg', displayName: 'photo.jpg' };
         this.deps.transcript?.person(msg.caption ?? '(photo)', this.sessionId);
-        return this.deliver(msg.caption ?? '(photo)', [photo]);
+        const note = saved ? `[photo saved as file ${saved}]` : '[photo could not be saved]';
+        return this.deliver(`${msg.caption ?? '(photo)'}\n${note}`, [photo]);
+      }
+      case 'document': {
+        let buf: Buffer;
+        try {
+          buf = await this.deps.telegram.download(msg.fileId);
+        } catch (err) {
+          // Telegram may not say a document's size up front: then getFile itself
+          // refuses a file over its 20 MB bot limit (HTTP 400, "file is too big").
+          if (/over 20 MB|getFile failed \(HTTP 400\)/.test(errText(err))) return this.say(TEXT.tooBig);
+          throw err;
+        }
+        const saved = await this.store({ kind: 'document', name: msg.fileName, mime: msg.mimeType, bytes: buf });
+        const quoted = JSON.stringify(msg.fileName);
+        const note = saved ? `[document ${quoted} saved as file ${saved}]` : `[document ${quoted} could not be saved]`;
+        this.deps.transcript?.person(`${msg.caption ? `${msg.caption} ` : ''}(file ${msg.fileName})`, this.sessionId);
+        // A jpeg/png sent "as a file" is still a picture the model can look at —
+        // but uncompressed it can be 20 MB, too big to send inline: then the
+        // model gets only the note (the file itself is kept either way).
+        const image = /^image\/(jpeg|png)$/i.test(msg.mimeType) && buf.length <= INLINE_IMAGE_MAX
+          ? [{ type: 'blob' as const, data: buf.toString('base64'), mimeType: msg.mimeType.toLowerCase(), displayName: msg.fileName }]
+          : undefined;
+        return this.deliver(`${msg.caption ? `${msg.caption}\n` : ''}${note}`, image);
       }
       case 'voice': {
         const buf = await this.deps.telegram.download(msg.fileId);
@@ -959,6 +995,23 @@ export class Seat {
 
   private clearPromptButtons(messageId: number): void {
     void this.deps.telegram.clearButtons(this.chatId, messageId).catch((err: unknown) => this.log(`could not clear buttons: ${errText(err)}`));
+  }
+
+  /**
+   * Step 2d: the file store's id, or null — a failed save is logged and said,
+   * never blocks the turn. ONE retry: an upload only happens on arrival, so a
+   * miss is permanent, and the likeliest miss is Render waking from its sleep.
+   */
+  private async store(f: { kind: 'photo' | 'document'; name: string; mime: string; bytes: Buffer }): Promise<string | null> {
+    if (!this.deps.uploadFile) return null;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        return await this.deps.uploadFile(f);
+      } catch (err) {
+        this.log(`keeping the ${f.kind} failed (attempt ${attempt}): ${errText(err)}`);
+      }
+    }
+    return null;
   }
 
   /** The 7-day box copy is a convenience: failing to keep it must never lose the message. */

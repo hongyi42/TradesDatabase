@@ -70,7 +70,7 @@ describe('managerTools', () => {
     expect(managerTools(cfg, who('manager'), tg)).toBeUndefined();
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/no E2B_API_KEY/));
   });
-  it('a manager with a key gets the five tools', () => {
+  it('a manager with a key gets the sandbox tools', () => {
     expect(managerTools({ ...cfg, e2bApiKey: 'e2b_k' }, who('manager'), tg)?.tools.map((t) => t.name)).toEqual([
       'run_command',
       'read_file',
@@ -78,6 +78,8 @@ describe('managerTools', () => {
       'share_file',
       'export_query',
       'batch_progress',
+      'save_file',
+      'open_file',
     ]);
   });
 });

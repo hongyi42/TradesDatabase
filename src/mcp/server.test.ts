@@ -12,6 +12,7 @@ import { listL2CitingCapture } from '../db/captureMembership.js';
 import { createCustomer, insertCustomerCapture } from '../db/customers.js';
 import { appendJobCorrespondence, createJob, insertJobCapture } from '../db/jobs.js';
 import { createVisit, insertVisitNote, updateVisitStatus } from '../db/visits.js';
+import { createFile } from '../db/files.js';
 import { upsertJobTypeDuration } from '../db/jobTypeDurations.js';
 import {
   insertTechnician,
@@ -11213,5 +11214,122 @@ describe('the access request flow', () => {
     expect(row.what).toContain('another firm');
     expect(row.what).toContain('opens nothing');
     expect(row.what).not.toContain('untitled');
+  });
+});
+
+// THE FILE STORE (plan 2026-09-28-step-2d-files, Phase 2): list / link / delete
+// through the tools, as a technician (the shipped default view) and a manager.
+describe('files (step 2d)', () => {
+  beforeAll(async () => {
+    await setTechnicianViewRule(tenantId, null, 'server.test');
+  });
+  afterAll(async () => {
+    await setTechnicianViewRule(tenantId, { jobScope: 'whole_firm' }, 'server.test');
+  });
+  const upload = (ref: string, uploadedBy: string | null = null) =>
+    createFile({
+      tenantId,
+      kind: 'photo',
+      fileName: 'before.jpg',
+      mimeType: 'image/jpeg',
+      bytes: Buffer.from('jpeg'),
+      uploadedByRef: ref,
+      uploadedBy,
+      source: 'telegram',
+    });
+
+  test('a technician attaches her photo to her job, lists it, and cannot reach other jobs or the ledger', { timeout: 30_000 }, async () => {
+    const mine = await createCustomer({ tenantId, name: 'Filemine Moss', phone: '555-7301' });
+    const myJob = await createJob({ tenantId, customerId: mine.id, title: 'Filemine boiler' });
+    const myVisit = await createVisit({ tenantId, jobId: myJob.id, technicianId: techMcpId, startsAt: null, endsAt: null });
+    const other = await createCustomer({ tenantId, name: 'Fileother Oak', phone: '555-7302' });
+    const otherJob = await createJob({ tenantId, customerId: other.id, title: 'Fileother roof' });
+    const photo = await upload('tech-mcp', techMcpId);
+
+    expect((await call('link_file', { fileId: photo.id, jobId: myJob.id })).data.status).toBe('linked');
+    expect((await call('link_file', { fileId: photo.id, jobId: myJob.id })).data.status).toBe('already_linked');
+    expect((await call('link_file', { fileId: photo.id, visitId: myVisit.id })).data.status).toBe('linked');
+    const listed = await call('list_files', { jobId: myJob.id });
+    expect(listed.data.files.map((f: { id: string }) => f.id)).toEqual([photo.id]);
+    expect(listed.data.files[0]).toMatchObject({ kind: 'photo', fileName: 'before.jpg', uploadedBy: 'tech-mcp' });
+
+    // Out of view: said in words, nothing listed or attached.
+    expect((await call('link_file', { fileId: photo.id, jobId: otherJob.id })).data.status).toBe('outside_view');
+    const out = await call('list_files', { jobId: otherJob.id });
+    expect(out.data.files).toEqual([]);
+    expect(out.data.note).toContain('outside your view');
+
+    // The ledger is a manager's: a technician cannot attach to it, and its files read as missing.
+    const { client: mc, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const est = await mgr('record_money_event', { jobId: myJob.id, kind: 'estimate_presented', amountCents: 50000 });
+      const eventId = est.data.event?.id ?? est.data.eventId ?? est.data.id;
+      expect(typeof eventId).toBe('number');
+      expect((await call('link_file', { fileId: photo.id, moneyEventId: eventId })).data.status).toBe('not_found');
+      const quote = await upload('mgr-test');
+      expect((await mgr('link_file', { fileId: quote.id, moneyEventId: eventId })).data.status).toBe('linked');
+      expect((await mgr('link_file', { fileId: quote.id, jobId: myJob.id })).data.status).toBe('linked');
+      expect((await call('list_files', { moneyEventId: eventId })).data).toMatchObject({ files: [], note: 'not found' });
+      // On her job's list the money file does not appear (money closed), her photo does.
+      expect((await call('list_files', { jobId: myJob.id })).data.files.map((f: { id: string }) => f.id)).toEqual([photo.id]);
+      expect((await mgr('list_files', { jobId: myJob.id })).data.files.map((f: { id: string }) => f.id).sort()).toEqual(
+        [photo.id, quote.id].sort(),
+      );
+      // Managers reach everything, including the other job.
+      expect((await mgr('link_file', { fileId: quote.id, jobId: otherJob.id })).data.status).toBe('linked');
+    } finally {
+      await mc.close();
+    }
+  });
+
+  test('list_files hides a money file from a technician even on her own job', async () => {
+    // (covered above through the job list; kept as its own guard on the rule)
+    const c = await createCustomer({ tenantId, name: 'Filemoney Mae', phone: '555-7303' });
+    const j = await createJob({ tenantId, customerId: c.id, title: 'Filemoney job' });
+    await createVisit({ tenantId, jobId: j.id, technicianId: techMcpId, startsAt: null, endsAt: null });
+    const { client: mc, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const inv = await mgr('record_money_event', { jobId: j.id, kind: 'invoice_issued', amountCents: 90000 });
+      const eventId = inv.data.event?.id ?? inv.data.eventId ?? inv.data.id;
+      const pdf = await upload('mgr-test');
+      await mgr('link_file', { fileId: pdf.id, moneyEventId: eventId });
+      await mgr('link_file', { fileId: pdf.id, jobId: j.id });
+      expect((await call('list_files', { jobId: j.id })).data.files).toEqual([]);
+    } finally {
+      await mc.close();
+    }
+  });
+
+  test('delete: the sender or a manager; anyone else is refused; a deleted file is gone from lists', async () => {
+    const c = await createCustomer({ tenantId, name: 'Filedel Dee', phone: '555-7304' });
+    const j = await createJob({ tenantId, customerId: c.id, title: 'Filedel job' });
+    await createVisit({ tenantId, jobId: j.id, technicianId: techMcpId, startsAt: null, endsAt: null });
+    const hers = await upload('tech-mcp', techMcpId);
+    const someoneElses = await upload('mgr-test');
+    const { client: mc, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      await mgr('link_file', { fileId: someoneElses.id, jobId: j.id });
+      expect((await call('delete_file', { fileId: someoneElses.id })).data.status).toBe('refused');
+      expect((await call('delete_file', { fileId: hers.id })).data).toMatchObject({ status: 'deleted', fileName: 'before.jpg' });
+      expect((await call('delete_file', { fileId: hers.id })).data.status).toBe('not_found');
+      expect((await mgr('delete_file', { fileId: someoneElses.id })).data.status).toBe('deleted');
+      expect((await mgr('list_files', { jobId: j.id })).data.files).toEqual([]);
+    } finally {
+      await mc.close();
+    }
+  });
+
+  test('a malformed id reads as not found, never a database error', async () => {
+    expect((await call('list_files', { jobId: 'not-a-uuid' })).data).toMatchObject({ files: [], note: 'not found' });
+    expect((await call('link_file', { fileId: 'nope', jobId: 'nope' })).data.status).toBe('not_found');
+    expect((await call('delete_file', { fileId: '-'.repeat(36) })).data.status).toBe('not_found');
+  });
+
+  test('exactly one target is required', async () => {
+    const f = await upload('tech-mcp', techMcpId);
+    expect((await call('list_files', {})).isError).toBe(true);
+    const two = await call('link_file', { fileId: f.id, jobId: 'x', customerId: 'y' });
+    expect(two.isError).toBe(true);
+    expect(two.text).toContain('exactly one');
   });
 });

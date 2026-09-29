@@ -150,8 +150,12 @@ export async function startEngine(opts: { baseDirectory: string; tz: string }): 
 
 export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy, hooks?: SeatHooks): Record<string, unknown> {
   const manager = cfg.tier === 'manager';
-  // File tools are a manager's only (step 2b); a technician config never carries them.
-  const fileTools = manager ? (cfg.tools ?? []) : [];
+  // The glue's own tools. Step 2d: every seat has send_file; a manager's sandbox
+  // tools (step 2b) come only with E2B. The rulebook's FILES section, skills and
+  // the manager builtins follow the SANDBOX tools and the tier — never a count.
+  const glueTools = cfg.tools ?? [];
+  const sandboxTools = manager && glueTools.some((t) => FILE_TOOL_NAMES.has(t.name));
+  const glueToolNames = new Set(glueTools.map((t) => t.name));
   const spine = {
     type: 'http',
     url: cfg.spineUrl,
@@ -193,8 +197,8 @@ export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy, hooks?: Sea
       content: manager
         ? [
             MANAGER_DOCTRINE,
-            fileTools.length ? FILES_SECTION : '',
-            fileTools.length && cfg.skillsDir ? skillsSection(cfg.skills ?? []) : '',
+            sandboxTools ? FILES_SECTION : '',
+            sandboxTools && cfg.skillsDir ? skillsSection(cfg.skills ?? []) : '',
           ]
             .filter(Boolean)
             .join('\n\n')
@@ -202,13 +206,19 @@ export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy, hooks?: Sea
     },
     // All tools loaded, tool search OFF (measured 2026-09-23: a wash at ~49 tools).
     availableTools: manager
-      ? ['mcp:*', 'builtin:ask_user', 'builtin:exit_plan_mode', ...(fileTools.length ? ['custom:*', 'builtin:skill'] : [])]
-      : ['mcp:*'],
-    ...(fileTools.length ? { tools: fileTools } : {}),
+      ? [
+          'mcp:*',
+          'builtin:ask_user',
+          'builtin:exit_plan_mode',
+          ...(glueTools.length ? ['custom:*'] : []),
+          ...(sandboxTools ? ['builtin:skill'] : []),
+        ]
+      : ['mcp:*', ...(glueTools.length ? ['custom:*'] : [])],
+    ...(glueTools.length ? { tools: glueTools } : {}),
     // Skills (step 2b): our own folders only — mode "empty" already leaves out
     // every runtime-bundled skill. A manager without file tools gets none: a
     // skill's scripts run on the sandbox.
-    ...(fileTools.length && cfg.skillsDir ? { enableSkills: true, skillDirectories: [cfg.skillsDir] } : {}),
+    ...(sandboxTools && cfg.skillsDir ? { enableSkills: true, skillDirectories: [cfg.skillsDir] } : {}),
     toolSearch: { enabled: false },
     mcpServers: manager
       ? {
@@ -230,7 +240,7 @@ export function sessionConfig(cfg: EngineConfig, policy: TurnPolicy, hooks?: Sea
       }
       // Step 2b: our own file tools. Pending from HERE too, so a Stop waits for
       // them (run_command alone is abort-safe: its handler kills the process).
-      if (r.kind === 'custom-tool' && fileTools.length && r.toolName && FILE_TOOL_NAMES.has(r.toolName)) {
+      if (r.kind === 'custom-tool' && r.toolName && glueToolNames.has(r.toolName)) {
         if (!loggedCustomCallId) {
           loggedCustomCallId = true;
           console.log(`seat-glue: first custom-tool permission request — toolCallId=${JSON.stringify(r.toolCallId)}`);

@@ -190,6 +190,42 @@ export function buildToolCases(): ToolCase[] {
     check: all(ok, mentions('Kastellani', 'gate_code')),
   });
 
+  // THE FILE STORE (step 2d): coverage probes that write nothing — the world
+  // seeds no files, so a list reads empty and a link/delete of an unknown id
+  // answers not_found (never an error, never "forbidden").
+  one({
+    id: 'FS01',
+    family: 'reads',
+    title: 'list_files on a job with no files reads an empty list',
+    tool: 'list_files',
+    tenant: 'main',
+    badge: 'manager-sam',
+    args: (ctx) => ({ jobId: jobId(ctx.tenant, 'job-rich-1') }),
+    check: all(ok, mentions('"files"')),
+  });
+
+  one({
+    id: 'FS02',
+    family: 'reads',
+    title: 'link_file with an unknown file id answers not_found',
+    tool: 'link_file',
+    tenant: 'main',
+    badge: 'manager-sam',
+    args: (ctx) => ({ fileId: '00000000-0000-0000-0000-000000000000', jobId: jobId(ctx.tenant, 'job-rich-1') }),
+    check: all(ok, mentions('not_found')),
+  });
+
+  one({
+    id: 'FS03',
+    family: 'reads',
+    title: 'delete_file with an unknown file id answers not_found',
+    tool: 'delete_file',
+    tenant: 'main',
+    badge: 'manager-sam',
+    args: () => ({ fileId: '00000000-0000-0000-0000-000000000000' }),
+    check: all(ok, mentions('not_found')),
+  });
+
   one({
     id: 'R03',
     family: 'reads',

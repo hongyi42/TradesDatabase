@@ -697,6 +697,232 @@ export type Database = {
           },
         ]
       }
+      file_links: {
+        Row: {
+          created_at: string
+          customer_id: string | null
+          file_id: string
+          id: number
+          job_id: string | null
+          linked_by_ref: string
+          money_event_id: number | null
+          tenant_id: string
+          visit_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          customer_id?: string | null
+          file_id: string
+          id?: never
+          job_id?: string | null
+          linked_by_ref: string
+          money_event_id?: number | null
+          tenant_id: string
+          visit_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          customer_id?: string | null
+          file_id?: string
+          id?: never
+          job_id?: string | null
+          linked_by_ref?: string
+          money_event_id?: number | null
+          tenant_id?: string
+          visit_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "file_links_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "file_links_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_access_grants"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "file_links_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "file_links_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "file_links_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "file_links_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_money_events"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "file_links_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "file_links_file_id_fkey"
+            columns: ["file_id"]
+            isOneToOne: false
+            referencedRelation: "files"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "file_links_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "file_links_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "file_links_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "file_links_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "file_links_money_event_id_fkey"
+            columns: ["money_event_id"]
+            isOneToOne: false
+            referencedRelation: "money_events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "file_links_money_event_id_fkey"
+            columns: ["money_event_id"]
+            isOneToOne: false
+            referencedRelation: "v_money_events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "file_links_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "file_links_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["visit_id"]
+          },
+          {
+            foreignKeyName: "file_links_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["visit_id"]
+          },
+          {
+            foreignKeyName: "file_links_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "visits"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      files: {
+        Row: {
+          created_at: string
+          deleted_at: string | null
+          deleted_by_ref: string | null
+          file_name: string
+          id: string
+          kind: string
+          mime_type: string
+          size_bytes: number
+          source: string
+          storage_path: string
+          tenant_id: string
+          uploaded_by: string | null
+          uploaded_by_ref: string
+        }
+        Insert: {
+          created_at?: string
+          deleted_at?: string | null
+          deleted_by_ref?: string | null
+          file_name: string
+          id?: string
+          kind: string
+          mime_type: string
+          size_bytes: number
+          source: string
+          storage_path: string
+          tenant_id: string
+          uploaded_by?: string | null
+          uploaded_by_ref: string
+        }
+        Update: {
+          created_at?: string
+          deleted_at?: string | null
+          deleted_by_ref?: string | null
+          file_name?: string
+          id?: string
+          kind?: string
+          mime_type?: string
+          size_bytes?: number
+          source?: string
+          storage_path?: string
+          tenant_id?: string
+          uploaded_by?: string | null
+          uploaded_by_ref?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "files_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "files_uploaded_by_fkey"
+            columns: ["uploaded_by"]
+            isOneToOne: false
+            referencedRelation: "technicians"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       host_metrics: {
         Row: {
           cpu_cores: number | null

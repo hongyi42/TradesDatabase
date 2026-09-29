@@ -25,6 +25,7 @@
 /** What every badge sees, manager or not (the hub's `TOOLS`). */
 export const TECHNICIAN_TOOLS = [
   'ask_team_lead', // the Q&A desk (build 5.5 Phase 2)
+  'delete_file', // the file store (step 2d, 2026-09-28)
   'find_customer',
   'get_capture', // one note in full (the retrieval layer, 2026-09-15)
   'get_customer_context', // the contents page (2026-09-15)
@@ -32,6 +33,8 @@ export const TECHNICIAN_TOOLS = [
   'get_schedule', // the technician route view — hidden from managers, see below
   'inform_team_lead', // the planner's inbox, inbound half (build 5.5)
   'inform_teammate', // seat-to-seat informs (build 5.5 Phase 3)
+  'link_file', // the file store (step 2d)
+  'list_files', // the file store (step 2d)
   'list_recent_captures', // one page of notes (2026-09-15)
   'read_webpage',
   'record_field_note',

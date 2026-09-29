@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
@@ -19,6 +19,7 @@ import { TurnPolicy } from './turnPolicy.js';
 //   {"text": "…"}            a text message
 //   {"photo": "path.jpg", "caption"?: "…"}
 //   {"voice": "path.wav"}     mime type from the extension (.wav → audio/wav, else audio/ogg)
+//   {"document": "path.pdf", "caption"?: "…"}   a file sent as a file (step 2d)
 //   {"stop": true} | {"new": true}
 //   {"waitMs": 1500}          pause before the next step (a double text mid-answer)
 //   {"waitIdle": true}        wait until the seat is idle and its replies went out
@@ -30,6 +31,7 @@ export type Step =
   | { text: string }
   | { photo: string; caption?: string }
   | { voice: string }
+  | { document: string; caption?: string }
   | { stop: true }
   | { new: true }
   | { waitMs: number }
@@ -37,6 +39,15 @@ export type Step =
   | { waitPrompt: true }
   | { tap: number }
   | { waitProgress: string };
+
+/** A driver document's type from its extension (Telegram sends one with every file). */
+function mimeOf(path: string): string {
+  const ext = extname(path).toLowerCase();
+  return (
+    { '.pdf': 'application/pdf', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.csv': 'text/csv', '.txt': 'text/plain' }[ext] ??
+    'application/octet-stream'
+  );
+}
 
 export class ScriptedTelegram implements TelegramApi {
   private queue: TgUpdate[] = [];
@@ -133,6 +144,20 @@ export class ScriptedTelegram implements TelegramApi {
     console.log(`\n<< SEAT sent a file: ${filename} (${bytes.length} bytes)${caption ? ` — ${caption}` : ''}${where ? ` → ${where}` : ''}\n`);
   }
 
+  /** Photos the seat sent back (step 2d send_file). */
+  readonly photos: Array<{ bytes: Uint8Array }> = [];
+
+  async sendPhoto(_chatId: number, bytes: Uint8Array, caption?: string): Promise<void> {
+    this.photos.push({ bytes });
+    let where = '';
+    if (this.documentsDir) {
+      await mkdir(this.documentsDir, { recursive: true });
+      where = join(this.documentsDir, `photo-${this.photos.length}.jpg`);
+      await writeFile(where, bytes);
+    }
+    console.log(`\n<< SEAT sent a photo (${bytes.length} bytes)${caption ? ` — ${caption}` : ''}${where ? ` → ${where}` : ''}\n`);
+  }
+
   /** In the driver a file id IS a local path. */
   async download(fileId: string): Promise<Buffer> {
     return readFile(fileId);
@@ -178,6 +203,13 @@ export async function drive(steps: Step[], seat: Seat, tg: ScriptedTelegram): Pr
     } else if ('photo' in step) {
       console.log(`>> TECH: [photo ${step.photo}] ${step.caption ?? ''}`);
       tg.push({ photo: [{ file_id: step.photo, width: 1280, height: 960 }], caption: step.caption });
+    } else if ('document' in step) {
+      console.log(`>> TECH: [file ${step.document}] ${step.caption ?? ''}`);
+      const size = (await stat(step.document)).size;
+      tg.push({
+        document: { file_id: step.document, file_name: basename(step.document), mime_type: mimeOf(step.document), file_size: size },
+        caption: step.caption,
+      });
     } else if ('voice' in step) {
       console.log(`>> TECH: [voice ${step.voice}]`);
       tg.push({ voice: { file_id: step.voice, mime_type: extname(step.voice) === '.wav' ? 'audio/wav' : 'audio/ogg' } });

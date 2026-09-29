@@ -77,10 +77,10 @@ function fakeBox(opts: { rmFails?: boolean; writeDelayMs?: number; readFails?: (
         if (opts.readFails?.(path)) throw new Error('sandbox hiccup');
         return o?.format === 'bytes' ? b : dec(b);
       },
-      write: async (path: string, data: string) => {
+      write: async (path: string, data: string | ArrayBuffer) => {
         if (opts.writeFails?.(path)) throw new Error('disk full');
         if (opts.writeDelayMs) await new Promise((r) => setTimeout(r, opts.writeDelayMs));
-        files.set(path, enc(data));
+        files.set(path, typeof data === 'string' ? enc(data) : new Uint8Array(data));
       },
       getInfo: async (path: string) => {
         const b = files.get(path);
@@ -92,6 +92,9 @@ function fakeBox(opts: { rmFails?: boolean; writeDelayMs?: number; readFails?: (
   const sent: Array<{ name: string; bytes: Uint8Array; caption?: string }> = [];
   let exported: ExportResult = { csv: 'id,name\r\n1,Acme\r\n2,Chen\r\n', columns: ['id', 'name'], rowCount: 2, truncated: false };
   let exportFails: Error | null = null;
+  const uploads: Array<{ kind: string; name: string; mime: string; bytes: Uint8Array; source: string }> = [];
+  const stored = new Map<string, { bytes: Uint8Array; name: string; mime: string }>();
+  let uploadFails: Error | null = null;
   const deps: Parameters<typeof fileTools>[0] = {
     sandbox: {
       get: async (holdMs?: number) => {
@@ -106,6 +109,13 @@ function fakeBox(opts: { rmFails?: boolean; writeDelayMs?: number; readFails?: (
     },
     sendDocument: async (name, bytes, caption) => void sent.push({ name, bytes, caption }),
     onProgress: opts.onProgress,
+    // Step 2d: the file store, in memory.
+    uploadFile: async (f) => {
+      if (uploadFails) throw uploadFails;
+      uploads.push(f);
+      return `00000000-0000-0000-0000-00000000000${uploads.length}`;
+    },
+    downloadFile: async (id) => stored.get(id) ?? null,
   };
   const set = fileTools(deps);
   const tools = set.tools;
@@ -120,6 +130,9 @@ function fakeBox(opts: { rmFails?: boolean; writeDelayMs?: number; readFails?: (
     holds,
     reads,
     sent,
+    uploads,
+    stored,
+    failUpload: (e: Error) => (uploadFails = e),
     setExport: (e: ExportResult) => (exported = e),
     failExport: (e: Error) => (exportFails = e),
     /** A fresh tool set over the same sandbox (a glue restart). */
@@ -127,9 +140,44 @@ function fakeBox(opts: { rmFails?: boolean; writeDelayMs?: number; readFails?: (
   };
 }
 
+const encode = (t: string) => new TextEncoder().encode(t);
+
 describe('fileTools', () => {
   it('are the named tools the permission handler admits', () => {
     expect(fakeBox().tools.map((t) => t.name).sort()).toEqual([...FILE_TOOL_NAMES].sort());
+  });
+
+  it('save_file keeps a sandbox file in the store (photo by extension) and names its id; limits and failures in words', async () => {
+    const box = fakeBox();
+    box.files.set('/home/user/files/quote.pdf', encode('%PDF-1.7'));
+    box.files.set('/home/user/files/site.jpg', encode('jpeg'));
+    const pdf = await box.tool('save_file').handler({ path: 'quote.pdf' }, {});
+    expect(pdf).toContain('Saved quote.pdf as file 00000000-0000-0000-0000-000000000001');
+    expect(pdf).toContain('spine-link_file');
+    expect(box.uploads[0]).toMatchObject({ kind: 'document', name: 'quote.pdf', mime: 'application/pdf', source: 'sandbox' });
+    await box.tool('save_file').handler({ path: 'site.jpg' }, {});
+    expect(box.uploads[1]).toMatchObject({ kind: 'photo', mime: 'image/jpeg' });
+    box.files.set('/home/user/files/huge.bin', new Uint8Array(20 * 1024 * 1024 + 1));
+    expect(await box.tool('save_file').handler({ path: 'huge.bin' }, {})).toContain('at most 20 MB');
+    expect(await box.tool('save_file').handler({ path: '/etc/passwd' }, {})).toContain('outside your files');
+    box.failUpload(new Error('Render answered HTTP 503'));
+    expect(await box.tool('save_file').handler({ path: 'quote.pdf' }, {})).toContain('could not be kept');
+  });
+
+  it('open_file writes a stored file into the files folder under a safe name', async () => {
+    const box = fakeBox();
+    box.stored.set('f1', { bytes: encode('rows'), name: '../../etc/evil name.csv', mime: 'text/csv' });
+    const out = await box.tool('open_file').handler({ fileId: 'f1' }, {});
+    expect(out).toContain('/home/user/files/f1-evil_name.csv');
+    expect(new TextDecoder().decode(box.files.get('/home/user/files/f1-evil_name.csv'))).toBe('rows');
+    // Two photos both named photo.jpg land side by side, never over each other.
+    box.stored.set('aaaaaaaa-1', { bytes: encode('one'), name: 'photo.jpg', mime: 'image/jpeg' });
+    box.stored.set('bbbbbbbb-2', { bytes: encode('two'), name: 'photo.jpg', mime: 'image/jpeg' });
+    await box.tool('open_file').handler({ fileId: 'aaaaaaaa-1' }, {});
+    await box.tool('open_file').handler({ fileId: 'bbbbbbbb-2' }, {});
+    expect(new TextDecoder().decode(box.files.get('/home/user/files/aaaaaaaa-photo.jpg'))).toBe('one');
+    expect(new TextDecoder().decode(box.files.get('/home/user/files/bbbbbbbb-photo.jpg'))).toBe('two');
+    expect(await box.tool('open_file').handler({ fileId: 'missing' }, {})).toBe('No such file.');
   });
 
   it('paths resolve under /home/user only; export names lose folders', () => {

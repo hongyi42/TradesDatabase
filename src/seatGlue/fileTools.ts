@@ -1,6 +1,7 @@
 import { posix } from 'node:path';
 import { batchProgressTool, type Progress } from './batchProgress.js';
 import { FILES_DIR, type E2bSandboxLike } from './sandbox.js';
+import type { StoredFile } from './files.js';
 
 // A manager's file tools (step 2b, plan 2026-09-28-step-2b-manager-files-
 // sandbox-skills): the glue's OWN tools, run against the manager's E2B sandbox
@@ -9,7 +10,18 @@ import { FILES_DIR, type E2bSandboxLike } from './sandbox.js';
 // Every result is text for the model, never a throw: a failed command, a bad
 // path or a sandbox that could not be opened comes back as words it can act on.
 
-export const FILE_TOOL_NAMES = new Set(['run_command', 'read_file', 'write_file', 'share_file', 'export_query', 'batch_progress']);
+export const FILE_TOOL_NAMES = new Set([
+  'run_command',
+  'read_file',
+  'write_file',
+  'share_file',
+  'export_query',
+  'batch_progress',
+  'save_file',
+  'open_file',
+]);
+/** The file store's ceiling (step 2d): Telegram's bot download limit. */
+export const STORE_MAX_BYTES = 20 * 1024 * 1024;
 
 /** What a tool result may carry into the model's context. */
 export const OUTPUT_MAX = 20_000;
@@ -49,6 +61,10 @@ export interface FileToolDeps {
   sendDocument(filename: string, bytes: Uint8Array, caption?: string): Promise<void>;
   /** Step 2c: a batch job's progress after every checklist change (null = cleared), for the Working line. */
   onProgress?(p: Progress | null): void;
+  /** Step 2d: keep a sandbox file in the file store (Render /seat/files); returns its id. */
+  uploadFile(f: { kind: 'photo' | 'document'; name: string; mime: string; bytes: Uint8Array; source: 'sandbox' }): Promise<string>;
+  /** Step 2d: a stored file this manager may see, or null. */
+  downloadFile(id: string): Promise<StoredFile | null>;
 }
 
 /** The SDK's Tool shape (1.0.14 types.d.ts:523-578), as plain objects. */
@@ -65,6 +81,28 @@ const GONE = 'Your earlier files are gone (your computer was replaced). ';
 export function resolvePath(p: string): string | null {
   const full = posix.resolve(FILES_DIR, p);
   return full.startsWith(HOME) ? full : null;
+}
+
+/** A type for a sandbox file by its extension (what the store records and echoes back). */
+export function mimeByExt(name: string): string {
+  const ext = posix.extname(name).toLowerCase();
+  const known: Record<string, string> = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.pdf': 'application/pdf',
+    '.csv': 'text/csv',
+    '.txt': 'text/plain',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  };
+  return known[ext] ?? 'application/octet-stream';
+}
+
+/** A stored file's name, safe to write under the files folder: no folders, no leading dots, extension kept. */
+export function storedName(name: string): string {
+  const cleaned = posix.basename(name).replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '');
+  return (cleaned || 'file').slice(0, 120);
 }
 
 /** A file name for export_query: letters, digits, dot, dash, underscore — no folders. */
@@ -331,6 +369,60 @@ export function fileTools(deps: FileToolDeps): FileToolSet {
     },
     // Step 2c: the batch checklist (batchProgress.ts).
     batchProgressTool({ sandbox: deps.sandbox, onProgress: deps.onProgress }),
+    // Step 2d: the file store, both ways.
+    {
+      name: 'save_file',
+      description:
+        `Keep a file from your computer in the firm's file store (up to 20 MB), so it outlives this computer and can ` +
+        `be attached to a customer, job, visit or ledger entry. Returns its file id: attach it with spine-link_file.`,
+      parameters: obj({ path: { type: 'string' } }, ['path']),
+      handler: async (args) => {
+        const path = pathOrRefuse((args as { path?: unknown } | null)?.path);
+        if (typeof path !== 'string') return path.refused;
+        return withBox(undefined, async (sbx) => {
+          const { size } = await sbx.files.getInfo(path);
+          if (size > STORE_MAX_BYTES) return `Error: ${path} is ${size} bytes; the file store takes at most 20 MB.`;
+          if (size === 0) return `Error: ${path} is empty.`;
+          const bytes = await sbx.files.read(path, { format: 'bytes' });
+          const name = posix.basename(path);
+          const mime = mimeByExt(name);
+          let id: string;
+          try {
+            id = await deps.uploadFile({ kind: mime.startsWith('image/') ? 'photo' : 'document', name, mime, bytes, source: 'sandbox' });
+          } catch (err) {
+            return `Error: ${name} could not be kept just now (${errText(err)}). Try again in a minute.`;
+          }
+          return `Saved ${name} as file ${id}. Attach it with spine-link_file.`;
+        });
+      },
+    },
+    {
+      name: 'open_file',
+      description:
+        `Bring a stored file (a photo, a document your manager sent, one you saved) onto your computer under ${FILES_DIR}, ` +
+        `to read or work on it. Give its fileId.`,
+      parameters: obj({ fileId: { type: 'string' } }, ['fileId']),
+      handler: async (args) => {
+        const fileId = (args as { fileId?: unknown } | null)?.fileId;
+        if (typeof fileId !== 'string' || !fileId.trim()) return 'Error: give the fileId.';
+        let file: StoredFile | null;
+        try {
+          file = await deps.downloadFile(fileId.trim());
+        } catch (err) {
+          return `Error: the file could not be fetched just now (${errText(err)}). Try again in a minute.`;
+        }
+        if (!file) return 'No such file.';
+        // Unique per file: every Telegram photo is stored as "photo.jpg", and a
+        // second open must never silently replace the first.
+        const path = resolvePath(`${fileId.trim().slice(0, 8)}-${storedName(file.name)}`);
+        if (!path) return 'Error: that file name cannot be written here.';
+        const stored = file;
+        return withBox(undefined, async (sbx) => {
+          await sbx.files.write(path, new Uint8Array(stored.bytes).buffer);
+          return `Wrote ${path} (${stored.bytes.length} bytes).`;
+        });
+      },
+    },
   ];
   return {
     tools,

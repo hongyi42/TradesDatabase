@@ -389,6 +389,39 @@ describe('void racing issue and outcome', () => {
     expect(again.statusChange).toEqual({ from: 'invoiced', to: 'completed' });
   });
 
+  test('an issue whose job status walk fails is said in words, and a repeat moves the job', async () => {
+    const job = await freshJob(tenantId, 'completed');
+    const d = await draft(tenantId, job.id);
+    await pg.query(`
+      create function zz_refuse_job_update() returns trigger language plpgsql as $$
+      begin
+        if new.id = '${job.id}' then raise exception 'simulated outage'; end if;
+        return new;
+      end $$`);
+    await pg.query('create trigger zz_refuse_job_update before update on jobs for each row execute function zz_refuse_job_update()');
+    try {
+      const first = await issueDocument(tenantId, d.id, 'mgr');
+      expect(first.already).toBe(false);
+      expect(first.statusChange).toBeNull();
+      expect(first.note).toMatch(/stands issued and recorded, but the job's status could not be moved.*issue it again/);
+      expect(await ledgerCount(job.id, 'invoice_issued')).toBe(1);
+      expect((await getJob(job.id))?.status).toBe('completed');
+      // A repeat while the fault lasts says the same, and still writes nothing.
+      const stillDown = await issueDocument(tenantId, d.id, 'mgr');
+      expect(stillDown.already).toBe(true);
+      expect(stillDown.note).toMatch(/issue it again/);
+    } finally {
+      await pg.query('drop trigger zz_refuse_job_update on jobs');
+      await pg.query('drop function zz_refuse_job_update()');
+    }
+    const again = await issueDocument(tenantId, d.id, 'mgr');
+    expect(again.already).toBe(true);
+    expect(again.note).toBeUndefined();
+    expect(again.statusChange).toEqual({ from: 'completed', to: 'invoiced' });
+    expect(await ledgerCount(job.id, 'invoice_issued')).toBe(1);
+    expect((await getJob(job.id))?.status).toBe('invoiced');
+  });
+
   test('an outcome is never stamped onto a void estimate (racing a void with the other answer in the ledger)', async () => {
     for (let i = 0; i < 8; i++) {
       const job = await freshJob(tenantId, 'open');

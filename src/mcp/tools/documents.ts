@@ -145,6 +145,13 @@ function idArg(ctx: ToolContext, key: string, what: string): string {
   return v;
 }
 
+/**
+ * An optional arg the caller actually gave. An explicit null is "not given"
+ * (models send null for an unset optional); a wrong type is still refused by
+ * the caller's own check.
+ */
+const given = (ctx: ToolContext, key: string): boolean => ctx.args[key] !== undefined && ctx.args[key] !== null;
+
 function onlyStrings(ctx: ToolContext, keys: string[]): void {
   for (const k of keys) {
     const v = ctx.args[k];
@@ -191,12 +198,14 @@ async function handleDraftDocument(ctx: ToolContext): Promise<unknown> {
   const kind = args.kind;
   if (kind !== 'invoice' && kind !== 'estimate') throw new Error("kind must be 'invoice' or 'estimate'");
   const jobId = idArg(ctx, 'jobId', 'a job');
-  const documentId = args.documentId === undefined ? undefined : idArg(ctx, 'documentId', 'a document');
+  const documentId = given(ctx, 'documentId') ? idArg(ctx, 'documentId', 'a document') : undefined;
   const doc = await saveDraft({
     tenantId,
     kind: kind as MoneyDocumentKind,
     jobId,
     lines: args.lines as DocumentLineInput[],
+    // notes: null is the schema's advertised CLEAR ("null clears"), so it is
+    // passed on as null, not read as absent — absent keeps the draft's notes.
     notes: args.notes as string | null | undefined,
     byRef: identity.technicianRef,
     documentId,
@@ -212,11 +221,11 @@ async function handleDraftDocument(ctx: ToolContext): Promise<unknown> {
 async function handleIssueDocument(ctx: ToolContext): Promise<unknown> {
   const { args, tenantId, identity } = ctx;
   const documentId = idArg(ctx, 'documentId', 'a document');
-  if (args.progress !== undefined && typeof args.progress !== 'boolean') {
+  if (given(ctx, 'progress') && typeof args.progress !== 'boolean') {
     throw new Error('progress must be true or false');
   }
   const r = await issueDocument(tenantId, documentId, identity.technicianRef, {
-    progress: args.progress as boolean | undefined,
+    progress: given(ctx, 'progress') ? (args.progress as boolean) : undefined,
   });
   const d = r.document;
   return {
@@ -229,6 +238,7 @@ async function handleIssueDocument(ctx: ToolContext): Promise<unknown> {
     ...(r.already ? { alreadyIssued: true } : {}),
     ...(await moneyAfter(tenantId, d.job_id)),
     ...(r.statusChange ? { jobStatusChange: r.statusChange } : {}),
+    ...(r.note ? { warning: r.note } : {}),
     note:
       (r.already ? `${d.number} was already issued — nothing new recorded. ` : `${d.number} is final and recorded. `) +
       'Now draw the final PDF with this number, save_file it and link_file it to this documentId ' +
@@ -282,11 +292,11 @@ async function handleRecordEstimateOutcome(ctx: ToolContext): Promise<unknown> {
 }
 
 async function handleListDocuments(ctx: ToolContext): Promise<unknown> {
-  const { args, tenantId } = ctx;
-  const given = ['jobId', 'customerId'].filter((k) => args[k] !== undefined);
-  if (given.length !== 1) throw new Error('give exactly one of jobId, customerId');
+  const { tenantId } = ctx;
+  const targets = ['jobId', 'customerId'].filter((k) => given(ctx, k));
+  if (targets.length !== 1) throw new Error('give exactly one of jobId, customerId');
   const filter =
-    given[0] === 'jobId'
+    targets[0] === 'jobId'
       ? { jobId: idArg(ctx, 'jobId', 'a job') }
       : { customerId: idArg(ctx, 'customerId', 'a customer') };
   const docs = await listDocuments(tenantId, filter);

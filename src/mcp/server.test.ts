@@ -11508,6 +11508,74 @@ describe('money documents (step 2e)', () => {
     }
   });
 
+  test('an explicit null on an optional arg reads as absent; a wrong type is still refused', async () => {
+    const { client: mc, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const cust = await createCustomer({ tenantId, name: 'Docs Null', phone: '555-7407' });
+      const job = await createJob({ tenantId, customerId: cust.id, title: 'null job' });
+      // documentId: null = a NEW draft, not "documentId is required".
+      const d = await mgr('draft_document', { kind: 'invoice', jobId: job.id, lines: [line('Visit', 1, 9000)], documentId: null, notes: 'Net 14' });
+      expect(d.isError).toBe(false);
+      expect(d.data).toMatchObject({ status: 'draft', totalCents: 9000, notes: 'Net 14' });
+      // notes: null is the advertised CLEAR, not absent.
+      const cleared = await mgr('draft_document', { kind: 'invoice', jobId: job.id, documentId: d.data.documentId, lines: [line('Visit', 1, 9000)], notes: null });
+      expect(cleared.data.notes).toBeUndefined();
+      expect((await mgr('draft_document', { kind: 'invoice', jobId: job.id, lines: [line('x', 1, 1)], documentId: 42 })).text)
+        .toContain('documentId must be a document id');
+      // progress: null = a final invoice.
+      expect((await mgr('issue_document', { documentId: d.data.documentId, progress: 0 })).text).toContain('progress must be true or false');
+      const issued = await mgr('issue_document', { documentId: d.data.documentId, progress: null });
+      expect(issued.isError).toBe(false);
+      expect(issued.data.jobStatusChange).toEqual({ from: 'open', to: 'invoiced' });
+      // list: a null target is not a target.
+      const listed = await mgr('list_documents', { jobId: job.id, customerId: null });
+      expect(listed.data.documents).toHaveLength(1);
+      expect((await mgr('list_documents', { jobId: null, customerId: null })).text).toContain('exactly one of jobId, customerId');
+    } finally {
+      await mc.close();
+    }
+  });
+
+  test("another firm's manager cannot reach this firm's documents", async () => {
+    const { client: mc, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    const otherTenantId = (await createTenant('docs-cross-firm', { managerSeats: 1 })).id;
+    const otherMgr = await insertTechnician({ tenantId: otherTenantId, ref: 'docs-other-mgr', displayName: 'Docs Other', tier: 'manager' });
+    await setTechnicianState(otherMgr.id, 'active');
+    const { client: oc, callWith: other } = await clientFor({ tenantId: otherTenantId, technicianRef: 'docs-other-mgr' });
+    try {
+      const cust = await createCustomer({ tenantId, name: 'Docs Firm A', phone: '555-7408' });
+      const job = await createJob({ tenantId, customerId: cust.id, title: 'firm A job' });
+      const inv = await mgr('draft_document', { kind: 'invoice', jobId: job.id, lines: [line('Visit', 1, 9000)] });
+      const est = await mgr('draft_document', { kind: 'estimate', jobId: job.id, lines: [line('Unit', 1, 90000)] });
+      const draftA = await mgr('draft_document', { kind: 'invoice', jobId: job.id, lines: [line('Still a draft', 1, 100)] });
+      await mgr('issue_document', { documentId: inv.data.documentId });
+      await mgr('issue_document', { documentId: est.data.documentId });
+
+      const says = async (name: string, args: Record<string, unknown>, words: string) => {
+        const r = await other(name, args);
+        expect(r.isError, name).toBe(true);
+        expect(r.text, name).toContain(words);
+      };
+      await says('issue_document', { documentId: draftA.data.documentId }, 'no such document');
+      await says('void_document', { documentId: inv.data.documentId, reason: 'x' }, 'no such document');
+      await says('record_estimate_outcome', { documentId: est.data.documentId, outcome: 'accepted' }, 'no such document');
+      // Updating firm A's draft from firm B: the job is refused first (no oracle either way).
+      await says('draft_document', { kind: 'invoice', jobId: job.id, documentId: draftA.data.documentId, lines: [line('x', 1, 1)] }, 'no such job on this firm');
+      expect((await other('list_documents', { jobId: job.id })).data.documents).toEqual([]);
+      expect((await other('list_documents', { customerId: cust.id })).data.documents).toEqual([]);
+
+      // Nothing of firm A moved.
+      const a = await mgr('list_documents', { jobId: job.id });
+      const byId = new Map(a.data.documents.map((d: { documentId: string }) => [d.documentId, d]));
+      expect(byId.get(inv.data.documentId)).toMatchObject({ status: 'issued' });
+      expect(byId.get(est.data.documentId)).not.toHaveProperty('outcome');
+      expect(byId.get(draftA.data.documentId)).toMatchObject({ status: 'draft', totalCents: 100 });
+    } finally {
+      await mc.close();
+      await oc.close();
+    }
+  });
+
   test('set_firm_profile round-trips the numbering starts, and the next issue uses them', async () => {
     const { client: mc, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
@@ -11524,9 +11592,9 @@ describe('money documents (step 2e)', () => {
       const job = await createJob({ tenantId, customerId: cust.id, title: 'start job' });
       const inv = await mgr('draft_document', { kind: 'invoice', jobId: job.id, lines: [line('Visit', 1, 9000)] });
       expect((await mgr('issue_document', { documentId: inv.data.documentId })).data.number).toBe('INV-5000');
-      // A start below numbers already used never reuses one: EST-1001/1002 exist.
+      // A start below numbers already used never reuses one: EST-1001..1003 exist (the tests above).
       const est = await mgr('draft_document', { kind: 'estimate', jobId: job.id, lines: [line('Visit', 1, 9000)] });
-      expect((await mgr('issue_document', { documentId: est.data.documentId })).data.number).toBe('EST-1003');
+      expect((await mgr('issue_document', { documentId: est.data.documentId })).data.number).toBe('EST-1004');
     } finally {
       await mc.close();
     }

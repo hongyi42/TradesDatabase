@@ -275,6 +275,26 @@ export interface IssueResult {
   /** True when it was already issued and recorded — nothing new was written. */
   already: boolean;
   statusChange: { from: JobStatus; to: JobStatus } | null;
+  /** Set when it is issued and recorded but the job's status walk failed (issue it again to retry). */
+  note?: string;
+}
+
+/** Said when an issue is recorded but the job's status could not follow it. */
+const ISSUE_WALK_FAILED =
+  "the job's status could not be moved to match (a passing fault) — issue it again to retry the move";
+
+/**
+ * Walk the job's status after an issue — on the first call AND on a repeat,
+ * because "safe to repeat" must also mean "a repeat finishes what the first
+ * left undone": a walk that failed after the ledger row landed is retried here
+ * (syncJobStatusForMoney is idempotent). A failure is words, never a throw —
+ * the invoice stands issued, and a throw would read as "the issue failed".
+ */
+async function walkAfterIssue(doc: MoneyDocument): Promise<Pick<IssueResult, 'statusChange' | 'note'>> {
+  const { statusChange, walkFailed } = await walkAfterCancel(doc, 'issued and recorded');
+  return walkFailed
+    ? { statusChange, note: `${nameOf(doc)} stands issued and recorded, but ${ISSUE_WALK_FAILED}` }
+    : { statusChange };
 }
 
 /**
@@ -343,7 +363,7 @@ export async function issueDocument(
   if (doc.money_event_id != null) {
     const event = await getMoneyEvent(doc.money_event_id);
     if (!event) throw new Error(`issueDocument: ledger row ${doc.money_event_id} is missing`);
-    return { document: doc, event, already: true, statusChange: null };
+    return { document: doc, event, already: true, ...(await walkAfterIssue(doc)) };
   }
 
   const event = await appendOnce({
@@ -374,8 +394,7 @@ export async function issueDocument(
   if (!data && document.status === 'void') {
     return refuseVoid(document, byRef, `${nameOf(document)} was voided while it was being issued — it stands cancelled`);
   }
-  const statusChange = await syncJobStatusForMoney(tenantId, doc.job_id);
-  return { document, event, already: false, statusChange };
+  return { document, event, already: false, ...(await walkAfterIssue(document)) };
 }
 
 export interface VoidResult {
@@ -399,11 +418,12 @@ const WALK_FAILED =
  */
 async function walkAfterCancel(
   doc: MoneyDocument,
+  what = 'cancelled in the ledger',
 ): Promise<{ statusChange: { from: JobStatus; to: JobStatus } | null; walkFailed: boolean }> {
   try {
     return { statusChange: await syncJobStatusForMoney(doc.tenant_id, doc.job_id), walkFailed: false };
   } catch (err) {
-    console.error(`[moneyDocuments] ${doc.id}: cancelled in the ledger, status walk failed`, err);
+    console.error(`[moneyDocuments] ${doc.id}: ${what}, status walk failed`, err);
     return { statusChange: null, walkFailed: true };
   }
 }

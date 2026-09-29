@@ -1713,6 +1713,13 @@ export function buildGapView(
     const sentTo = ctxStr(n, 'sentTo');
     const ago = elapsedLabel(n.created_at, nowMs);
     const retracted = marks?.retracted === true;
+    // WHOSE MAILBOX — the note goes to this person's seat (validate refuses
+    // anybody else while they are an active manager).
+    const owner = ctxStr(n, 'senderName') ?? ctxStr(n, 'technicianRef');
+    const ownerRef = ctxStr(n, 'technicianRef');
+    if (owner) {
+      lines.push(`  sent from ${owner}'s mailbox${ownerRef && ownerRef !== owner ? ` (${ownerRef})` : ''}`);
+    }
     lines.push(
       retracted
         ? '  the email this is about was RETRACTED as recorded in error — its words are no ' +
@@ -2960,6 +2967,30 @@ export function validateDecisions(
           continue;
         }
       }
+      // STEP 2E REVIEW — THE MANAGER'S OWN SENT INVOICE GOES TO THAT MANAGER. It
+      // is their email and their number; nobody else can say whether to record
+      // it, and a technician never sees money amounts. So the one addressee is
+      // the mailbox owner, or — if they have left or are not active — another
+      // active manager. Never a technician.
+      if (view.nudge.kind === 'outbound_invoice') {
+        const ownerRef = ctxStr(view.nudge, 'technicianRef');
+        const owner = ownerRef ? reachable.get(ownerRef) : undefined;
+        const ownerLive = !!owner && owner.tier === 'manager' && owner.state === 'active';
+        const recipient = reachable.get(addressee.ref) ?? reachable.get(addressee.technicianId);
+        const ok = ownerLive
+          ? addressee.technicianId === owner.technicianId
+          : !!recipient && recipient.tier === 'manager' && recipient.state === 'active';
+        if (!ok) {
+          push(
+            ownerLive
+              ? `this email was sent from ${owner.displayName}'s mailbox — send the note to ` +
+                  `'${owner.ref}', whose invoice it is, and nobody else`
+              : 'the manager whose mailbox sent this email is not active — send the note to ' +
+                  'another active manager, never a technician',
+          );
+          continue;
+        }
+      }
       // RUNG 10 REFUSED an assistant-leg send that named an inbound item, on the
       // grounds that the assistant leg injects a silent turn nobody delivers, so
       // the record would say a manager had been told when nobody had.
@@ -3869,14 +3900,23 @@ async function applyDecision(
             // ASKABLE AGAIN ONCE THE LAST TEXT IS THIS OLD. Note the MINUS: the
             // argument is the threshold a stamp must be OLDER than, so `nowIso`
             // here would mean "always askable" and delete the rail outright.
-            new Date(Date.parse(nowIso) - INBOUND_REASK_MS).toISOString(),
+            //
+            // THE MANAGER'S OWN SENT INVOICE IS ASKED ONCE, EVER (step 2e
+            // review): the epoch is older than any stamp, so once `asked_at` is
+            // set no second note goes out. The manager's answer closes it —
+            // a yes by the ledger row citing the email, a no by a dismiss.
+            seatAsks
+              ? new Date(0).toISOString()
+              : new Date(Date.parse(nowIso) - INBOUND_REASK_MS).toISOString(),
           );
           if (!askedStamp) {
             return {
               outcome: 'refused',
-              detail:
-                'a manager was texted about this call within the last day — leave it with them, ' +
-                'or raise it again tomorrow',
+              detail: seatAsks
+                ? "the manager's seat was already asked about this email — one ask per email. Wait " +
+                  'for their answer, or dismiss it'
+                : 'a manager was texted about this call within the last day — leave it with them, ' +
+                  'or raise it again tomorrow',
             };
           }
         }

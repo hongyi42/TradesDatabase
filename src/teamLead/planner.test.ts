@@ -7682,6 +7682,8 @@ describe('rung 10 — inbound requests reach the planner', () => {
         jobId: JOB,
         jobTitle: 'Bathroom remodel',
         sentTo: 'lee@homeowner.test',
+        technicianRef: 'sam-ortiz',
+        senderName: 'Sam',
         words: 'Subject: Invoice 2231\n\nHi Lee, attached is invoice 2231 for $450.',
         attachments: [{ name: 'Invoice-2231.pdf', mime: 'application/pdf' }],
       } as never,
@@ -7705,6 +7707,7 @@ describe('rung 10 — inbound requests reach the planner', () => {
       { askedAt: null },
     );
     expect(view.block).toContain('kind: outbound_invoice');
+    expect(view.block).toContain("sent from Sam's mailbox (sam-ortiz)");
     expect(view.block).toContain("the manager's own sent email that looks like an invoice, sent to lee@homeowner.test");
     expect(view.block).toContain('invoice 2231 for $450');
     expect(view.block).toContain('attached: Invoice-2231.pdf (application/pdf)');
@@ -7770,6 +7773,7 @@ describe('rung 10 — inbound requests reach the planner', () => {
   test("(22) the note to the manager's seat IS the ask: alone, accepted, and it takes the marker", async () => {
     const createOffice = vi.fn(async (input: unknown) => input as never);
     const asks: string[] = [];
+    const thresholds: string[] = [];
     const note = sendTo({
       as: 'assistant',
       message: 'Sam emailed Lee Park invoice 2231 for $450 on the bathroom job. Ask Sam whether to record it.',
@@ -7778,18 +7782,22 @@ describe('rung 10 — inbound requests reach the planner', () => {
       listObservations: async () => [invoiceObs()],
       runLoop: loopReturning([note]),
       createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
-      markAsked: (async (id: string) => {
+      markAsked: (async (id: string, reaskAfter: string) => {
         asks.push(id);
+        thresholds.push(reaskAfter);
         return NOW;
       }) as unknown as NonNullable<PlannerDeps['markAsked']>,
     });
     expect(summary.applied).toBe(1);
     expect(summary.dropped ?? 0).toBe(0);
     expect(asks).toEqual(['obs-1']);
+    // ONCE, EVER: the threshold is older than any stamp, so a set asked_at
+    // always refuses — there is no daily re-ask for this kind.
+    expect(thresholds).toEqual([new Date(0).toISOString()]);
     expect(createOffice).toHaveBeenCalledWith(expect.objectContaining({ via: 'assistant', technicianId: 'mgr-1' }));
   });
 
-  test('(22b) …and one per email: a second note inside the day is refused, nothing delivered', async () => {
+  test('(22b) …and one per email, EVER: a second note once asked is refused, nothing delivered', async () => {
     const createOffice = vi.fn(async (input: unknown) => input as never);
     const note = sendTo({ as: 'assistant', message: 'Ask Sam whether to record invoice 2231.' });
     const { summary, recorded } = await liveSend([note], {
@@ -7800,7 +7808,70 @@ describe('rung 10 — inbound requests reach the planner', () => {
     });
     expect(summary.applied).toBe(0);
     expect(createOffice).not.toHaveBeenCalled();
-    expect(recorded[0].outcomeDetail).toContain('within the last day');
+    expect(recorded[0].outcomeDetail).toContain("the manager's seat was already asked about this email");
+  });
+
+  const TECH = {
+    ...MANAGER,
+    id: 'tech-9',
+    ref: 'tina-tech',
+    display_name: 'Tina',
+    tier: 'technician',
+    telegram_user_id: '5509',
+  } as unknown as Technician;
+  const OTHER_MGR = {
+    ...MANAGER,
+    id: 'mgr-2',
+    ref: 'max-mgr',
+    display_name: 'Max',
+    telegram_user_id: '5502',
+  } as unknown as Technician;
+
+  test('(22c) the note goes to the mailbox owner — never a technician, nor another manager while the owner is active', async () => {
+    for (const [to, team] of [
+      ['tina-tech', [MANAGER, TECH]],
+      ['max-mgr', [MANAGER, OTHER_MGR]],
+    ] as const) {
+      const createOffice = vi.fn(async (input: unknown) => input as never);
+      const note = sendTo({ as: 'assistant', to, message: 'Ask whether to record invoice 2231.' });
+      const seen: { errors?: string[] } = {};
+      const { summary } = await liveSend([note], {
+        listTeam: async () => [...team],
+        listObservations: async () => [invoiceObs()],
+        runLoop: loopReturning([note], seen),
+        createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+        markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
+      });
+      expect(summary.applied, to).toBe(0);
+      expect(createOffice, to).not.toHaveBeenCalled();
+      expect(seen.errors?.join(' '), to).toContain("sent from Sam's mailbox");
+    }
+  });
+
+  test('(22d) the owner gone → another ACTIVE manager may take it; a technician still may not', async () => {
+    const gone = { ...MANAGER, state: 'offboarded' } as unknown as Technician;
+    const ok = sendTo({ as: 'assistant', to: 'max-mgr', message: 'Ask whether to record invoice 2231.' });
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    const { summary } = await liveSend([ok], {
+      listTeam: async () => [gone, OTHER_MGR, TECH],
+      listObservations: async () => [invoiceObs()],
+      runLoop: loopReturning([ok]),
+      createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+      markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
+    });
+    expect(summary.applied).toBe(1);
+    expect(createOffice).toHaveBeenCalledWith(expect.objectContaining({ technicianId: 'mgr-2', via: 'assistant' }));
+
+    const bad = sendTo({ as: 'assistant', to: 'tina-tech', message: 'Ask whether to record invoice 2231.' });
+    const seen: { errors?: string[] } = {};
+    const r = await liveSend([bad], {
+      listTeam: async () => [gone, OTHER_MGR, TECH],
+      listObservations: async () => [invoiceObs()],
+      runLoop: loopReturning([bad], seen),
+      markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
+    });
+    expect(r.summary.applied).toBe(0);
+    expect(seen.errors?.join(' ')).toContain('never a technician');
   });
 });
 

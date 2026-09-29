@@ -1512,6 +1512,8 @@ describe("the manager's own sent invoices (step 2e phase 4)", () => {
         customerId: 'cust-lee',
         jobId: 'job-bath',
         sentTo: 'lee@homeowner.test',
+        technicianRef: 'mgr-sam',
+        senderName: 'Tech Test',
         words: 'Subject: Your bathroom job\n\nHi Lee, attached is the bill for the work. $450 due in 30 days.',
         attachments: [{ name: 'Invoice-2231.pdf', mime: 'application/pdf' }],
       },
@@ -1534,20 +1536,43 @@ describe("the manager's own sent invoices (step 2e phase 4)", () => {
     ]);
   });
 
-  test("a TECHNICIAN's invoice-looking email raises nothing (the files are still kept)", async () => {
+  test("a TECHNICIAN's sent email raises nothing and keeps no files — only a manager's sent work email", async () => {
     const raw = invoiceMail();
     const s = spies();
     await handleInboundWebhook(raw, sign(raw), baseDeps({ ...s.deps, getTechnician: async () => ({ ...manager, tier: 'technician' }) }));
-    expect(s.raised).toHaveLength(0);
     await tick();
-    expect(s.kept).toHaveLength(1);
+    expect(s.raised).toHaveLength(0);
+    expect(s.kept).toHaveLength(0);
   });
 
-  test('a manager who is not ACTIVE raises nothing', async () => {
+  test('a PENDING-VERIFICATION manager raises nothing and keeps no files (they would carry no pairing stamp)', async () => {
     const raw = invoiceMail();
     const s = spies();
     await handleInboundWebhook(raw, sign(raw), baseDeps({ ...s.deps, getTechnician: async () => ({ ...manager, state: 'pending_verification' }) }));
+    await tick();
     expect(s.raised).toHaveLength(0);
+    expect(s.kept).toHaveLength(0);
+  });
+
+  test('a seam that throws SYNCHRONOUSLY is caught — it cannot escape the detached run', async () => {
+    const raw = invoiceMail();
+    const s = spies();
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        ...s.deps,
+        keepAttachments: (() => {
+          throw new Error('sync boom');
+        }) as unknown as NonNullable<InboundWebhookDeps['keepAttachments']>,
+      }),
+    );
+    await tick();
+    await tick();
+    expect(r.status).toBe('ingested');
+    expect(err.mock.calls.some((c) => String(c[0]).includes('sync boom'))).toBe(true);
+    err.mockRestore();
   });
 
   test('a non-invoice (no PDF, no "invoice") raises nothing', async () => {

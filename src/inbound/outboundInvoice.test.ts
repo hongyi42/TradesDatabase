@@ -46,9 +46,13 @@ describe('looksLikeInvoice — the cheap guard', () => {
 
 describe('namesIssuedNumber — no double ask', () => {
   test('candidates carry the number however it is written in a sentence', () => {
-    const c = numberCandidates('Re: inv-1001, and #1002. Thanks!');
-    expect(c).toEqual(expect.arrayContaining(['inv-1001', 'INV-1001', '1002', 'INV-1002', 'EST-1002']));
+    const c = numberCandidates('Re: inv-1001, and #1002. Invoice 1003, invoice no. 1005. Thanks!');
+    expect(c).toEqual(
+      expect.arrayContaining(['inv-1001', 'INV-1001', '1002', 'INV-1002', 'EST-1002', 'INV-1003', 'INV-1005']),
+    );
     expect(numberCandidates('no digits here')).toEqual([]);
+    // BARE DIGITS WITHOUT A CUE are an address, an amount, a phone — not a number.
+    expect(numberCandidates('Work done at 1004 Pine St, 450 dollars, call 5551234')).toEqual([]);
   });
 
   test("a document number this firm issued, or a ledger row's external ref, is named — another firm's is not", async () => {
@@ -58,6 +62,20 @@ describe('namesIssuedNumber — no double ask', () => {
     expect(await namesIssuedNumber(tenantId, 'Your invoice QB-5521 is attached')).toBe(true);
     expect(await namesIssuedNumber(tenantId, 'Invoice 2231 for $450')).toBe(false);
     expect(await namesIssuedNumber(otherTenantId, `Subject: ${issuedNumber}`)).toBe(false);
+    const digits = issuedNumber.replace(/\D/g, '');
+    // "1004 Pine St" — the same digits as an issued number, but an address.
+    expect(await namesIssuedNumber(tenantId, `Invoice for the job at ${digits} Pine St`)).toBe(false);
+    expect(await namesIssuedNumber(tenantId, `invoice #${digits}`)).toBe(true);
+    expect(await namesIssuedNumber(tenantId, `Re: invoice ${digits}`)).toBe(true);
+  });
+
+  test("a payment's reference, or a voided invoice row's, is not an issued number", async () => {
+    await appendMoneyEvent({ tenantId, jobId, kind: 'payment_received', amountCents: 100, externalRef: 'CHK-7781' });
+    expect(await namesIssuedNumber(tenantId, 'invoice paid by CHK-7781')).toBe(false);
+    const row = await appendMoneyEvent({ tenantId, jobId, kind: 'invoice_issued', amountCents: 100, externalRef: 'OLD-4410' });
+    expect(await namesIssuedNumber(tenantId, 'invoice OLD-4410')).toBe(true);
+    await appendMoneyEvent({ tenantId, jobId, kind: 'invoice_voided', correctsEventId: row.id });
+    expect(await namesIssuedNumber(tenantId, 'invoice OLD-4410')).toBe(false);
   });
 });
 
@@ -68,7 +86,7 @@ describe('raiseOutboundInvoiceObservation', () => {
       technicianRef: 'mgr-sam',
     });
     const input = {
-      tenantId, captureId: cap.id, customerId, jobId, sentTo: 'lee@homeowner.test',
+      tenantId, captureId: cap.id, customerId, jobId, sentTo: 'lee@homeowner.test', technicianRef: 'mgr-sam', senderName: 'Sam',
       words: 'Subject: Invoice 2231\n\n$450', attachments: [{ name: 'Invoice-2231.pdf', mime: 'application/pdf' }],
     };
     const obs = await raiseOutboundInvoiceObservation(input);
@@ -82,6 +100,8 @@ describe('raiseOutboundInvoiceObservation', () => {
       jobId,
       jobTitle: 'Bathroom remodel',
       sentTo: 'lee@homeowner.test',
+      technicianRef: 'mgr-sam',
+      senderName: 'Sam',
       words: 'Subject: Invoice 2231\n\n$450',
       attachments: [{ name: 'Invoice-2231.pdf', mime: 'application/pdf' }],
     });
@@ -104,7 +124,7 @@ describe('raiseOutboundInvoiceObservation', () => {
       tenantId: otherTenantId, channel: 'outbound_email', rawText: 'invoice', externalId: `sent:x-${Date.now()}`,
     });
     const obs = await raiseOutboundInvoiceObservation({
-      tenantId: otherTenantId, captureId: cap.id, customerId, jobId, sentTo: null, words: 'invoice', attachments: [],
+      tenantId: otherTenantId, captureId: cap.id, customerId, jobId, sentTo: null, technicianRef: 'mgr-sam', senderName: null, words: 'invoice', attachments: [],
     });
     expect(obs?.context).toMatchObject({ customerId: null, jobId: null });
     expect(obs?.context).not.toHaveProperty('customerName');
@@ -119,7 +139,7 @@ describe('a booking never cites it (inboundAskFor)', () => {
     const job = (await createJob({ tenantId: firm, customerId: cust, title: 'furnace' })).id;
     const cap = await appendRawCapture({ tenantId: firm, channel: 'outbound_email', rawText: 'invoice', externalId: `sent:a-${Date.now()}` });
     const inv = await raiseOutboundInvoiceObservation({
-      tenantId: firm, captureId: cap.id, customerId: cust, jobId: job, sentTo: null, words: 'invoice', attachments: [],
+      tenantId: firm, captureId: cap.id, customerId: cust, jobId: job, sentTo: null, technicianRef: 'mgr-sam', senderName: null, words: 'invoice', attachments: [],
     });
     expect(await markObservationAsked(inv!.id, new Date(Date.now() - 86_400_000).toISOString())).not.toBeNull();
     expect(await inboundAskFor(firm, { jobId: job })).toBeNull();

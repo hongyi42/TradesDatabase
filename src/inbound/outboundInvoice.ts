@@ -48,6 +48,9 @@ export interface RaiseOutboundInvoiceInput {
   customerId: string | null;
   jobId: string | null;
   sentTo: string | null;
+  /** The mailbox owner — the manager whose seat the office asks. */
+  technicianRef: string;
+  senderName: string | null;
   words: string;
   attachments: OutboundInvoiceAttachment[];
 }
@@ -84,6 +87,8 @@ export async function raiseOutboundInvoiceObservation(
       jobId: ownJob?.id ?? null,
       ...(ownJob ? { jobTitle: ownJob.title } : {}),
       sentTo: input.sentTo,
+      technicianRef: input.technicianRef,
+      senderName: input.senderName,
       words: input.words,
       attachments: input.attachments.map((a) => ({ name: a.name, mime: a.mime })),
     },

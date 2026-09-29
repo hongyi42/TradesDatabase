@@ -598,33 +598,48 @@ export async function recordEstimateOutcome(
 // ── "Is this a number the firm already issued?" (step 2e Phase 4) ─────────────
 //
 // The no-double-ask guard on the manager's own sent mail: an email that names a
-// number this firm already issued (INV-/EST-, or a ledger row's `external_ref`)
-// is about money already on the books, so the office must not ask to record it
-// again. Candidate tokens are read out of the words (anything carrying a digit,
-// edge punctuation trimmed, a leading '#' dropped) and looked up exactly — a
-// bare "#1004" also tries INV-1004 / EST-1004, since that is how people write
-// the number in a sentence. Capped so a pasted spreadsheet cannot become a
-// thousand-term query.
+// number this firm already issued (an INV-/EST- document number, or a live
+// invoice/estimate ledger row's `external_ref`) is about money already on the
+// books, so the office must not ask to record it again.
+//
+// Candidate tokens are read out of the words: anything carrying a letter AND a
+// digit ("INV-1004", "QB-5521") counts as written. BARE DIGITS count only where
+// the words say they are a number — prefixed "#", or right after "invoice",
+// "inv", "no." or "number" — because an email is full of other digits (a street
+// address, an amount, a phone number), and "1004 Pine St" suppressing the ask
+// would be a silent miss. Such a bare number also tries INV-/EST-<n>, since that
+// is how people write the firm's number in a sentence. Capped so a pasted
+// spreadsheet cannot become a thousand-term query.
 const MAX_NUMBER_TOKENS = 100;
+const NUMBER_CUE = /(?:\binvoice|\binv|\bno\.?|\bnumber|#)\s*[:#]?\s*$/i;
 
 export function numberCandidates(text: string): string[] {
   const out = new Set<string>();
-  for (const raw of text.match(/[A-Za-z0-9#][A-Za-z0-9#_./-]*/g) ?? []) {
+  for (const m of text.matchAll(/[A-Za-z0-9#][A-Za-z0-9#_./-]*/g)) {
+    const raw = m[0];
     if (!/\d/.test(raw)) continue;
     const token = raw.replace(/^#+/, '').replace(/[._/-]+$/, '');
     if (!token || token.length > 64) continue;
-    out.add(token);
-    out.add(token.toUpperCase());
     if (/^\d+$/.test(token)) {
+      const cued = raw.startsWith('#') || NUMBER_CUE.test(text.slice(Math.max(0, m.index - 24), m.index));
+      if (!cued) continue;
+      out.add(token);
       out.add(`INV-${token}`);
       out.add(`EST-${token}`);
+    } else {
+      out.add(token);
+      out.add(token.toUpperCase());
     }
     if (out.size >= MAX_NUMBER_TOKENS) break;
   }
   return [...out].slice(0, MAX_NUMBER_TOKENS);
 }
 
-/** Does this text name a number this firm already issued — a document's, or a ledger row's external ref? */
+/**
+ * Does this text name a number this firm already issued — a document's, or a
+ * LIVE invoice/estimate ledger row's external ref? A payment's reference, or a
+ * voided/corrected row's, is not an issued number.
+ */
 export async function namesIssuedNumber(tenantId: string, text: string): Promise<boolean> {
   const candidates = numberCandidates(text);
   if (candidates.length === 0) return false;
@@ -639,10 +654,24 @@ export async function namesIssuedNumber(tenantId: string, text: string): Promise
       .from('money_events')
       .select('id')
       .eq('tenant_id', tenantId)
+      .in('kind', ['invoice_issued', 'estimate_presented'])
       .in('external_ref', candidates)
-      .limit(1),
+      .limit(50),
   ]);
   if (docs.error) throw wrapDbError('namesIssuedNumber (documents) failed', docs.error);
   if (events.error) throw wrapDbError('namesIssuedNumber (ledger) failed', events.error);
-  return (docs.data?.length ?? 0) > 0 || (events.data?.length ?? 0) > 0;
+  if ((docs.data?.length ?? 0) > 0) return true;
+  const ids = (events.data ?? []).map((e) => e.id);
+  if (ids.length === 0) return false;
+  // LIVE ONLY — the same test capture_records' money arm applies: a row a
+  // void or a correction cancels is not on the books.
+  const { data: cancels, error } = await getClient()
+    .from('money_events')
+    .select('corrects_event_id')
+    .eq('tenant_id', tenantId)
+    .in('kind', ['invoice_voided', 'correction'])
+    .in('corrects_event_id', ids);
+  if (error) throw wrapDbError('namesIssuedNumber (ledger cancels) failed', error);
+  const cancelled = new Set((cancels ?? []).map((c) => c.corrects_event_id));
+  return ids.some((id) => !cancelled.has(id));
 }

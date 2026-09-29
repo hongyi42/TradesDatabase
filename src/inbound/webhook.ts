@@ -558,6 +558,10 @@ export async function handleInboundWebhook(
       // stop short. Advisory — the email has landed, and a failed ask must not
       // turn it into a 503 whose redelivery would then read as a duplicate and
       // never ask at all.
+      // AN ACTIVE MANAGER'S MAILBOX ONLY (operator ruling, step 2e review): the
+      // ask and the kept files are both about the manager's own sent work
+      // email. A pending-verification mailbox is excluded too — its files would
+      // carry no pairing stamp, so a wrong-account pairing could not find them.
       const manager = tech.tier === 'manager' && tech.state === 'active';
       if (manager && looksLikeInvoice({ subject: meta.subject, body: meta.body, attachments })) {
         try {
@@ -570,6 +574,11 @@ export async function handleInboundWebhook(
               customerId: r.customerId ?? null,
               jobId: r.jobId ?? null,
               sentTo: soleRecipientOf(meta.to) ?? meta.to ?? null,
+              // WHOSE MAILBOX: the office addresses the ask to this person's
+              // seat (planner.ts refuses any other recipient but a fallback
+              // active manager).
+              technicianRef: tech.ref,
+              senderName: tech.display_name,
               words,
               attachments: attachments.map((a) => ({ name: a.name, mime: a.mime })),
             });
@@ -586,7 +595,12 @@ export async function handleInboundWebhook(
       // the delivery is redelivered into the same stall. So the fetch is
       // scheduled for after this handler returns and the response is written,
       // bounded (60 s total) and best-effort inside keepSentAttachments.
-      if (attachments.length > 0) {
+      //
+      // A NAMED HOLE: this work lives only in this process. A restart or deploy
+      // between the response and the fetch loses it, and nothing retries — the
+      // delivery was already answered, so Composio will not redeliver. The email
+      // itself is on the record either way; only its files are missing.
+      if (manager && attachments.length > 0) {
         const keep = deps.keepAttachments ?? keepSentAttachments;
         const job = {
           tenantId,
@@ -595,13 +609,17 @@ export async function handleInboundWebhook(
           attachments,
           target: { jobId: r.jobId ?? null, customerId: r.customerId ?? null },
         };
+        // Through a resolved promise, so even a SYNCHRONOUS throw from the
+        // seam lands in the catch instead of escaping as an uncaught exception.
         setImmediate(() => {
-          keep(job).catch((err: unknown) => {
-            console.error(
-              `inbound: sent attachments for ${r.captureId} not kept — ` +
-                `${err instanceof Error ? err.message : String(err)}`,
-            );
-          });
+          Promise.resolve()
+            .then(() => keep(job))
+            .catch((err: unknown) => {
+              console.error(
+                `inbound: sent attachments for ${r.captureId} not kept — ` +
+                  `${err instanceof Error ? err.message : String(err)}`,
+              );
+            });
         });
       }
     }

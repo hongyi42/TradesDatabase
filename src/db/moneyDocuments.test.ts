@@ -12,7 +12,7 @@ import {
   voidDocument,
   type MoneyDocumentKind,
 } from './moneyDocuments.js';
-import { appendMoneyEvent, listMoneyEventsForJob, summarizeMoney } from './moneyEvents.js';
+import { appendMoneyEvent, listMoneyEventsForJob, summarizeMoney, syncJobStatusForMoney } from './moneyEvents.js';
 import { upsertTenantProfile } from './tenantProfiles.js';
 import { createTenant } from './tenants.js';
 
@@ -304,6 +304,109 @@ describe('void racing issue and outcome', () => {
     expect((await summary(job.id)).invoicedCents).toBe(0);
     expect((await getJob(job.id))?.status).toBe('completed');
     expect((await voidDocument(tenantId, d.id, null, 'mgr')).event?.id).toBe(v.event?.id);
+  });
+
+  // A void whose cancelling write never landed: the doc is numbered but its
+  // ledger row is missing, the void finds nothing to cancel, and THEN the
+  // issuer's row lands (and its job walk) before it dies without linking.
+  async function voidWithLiveIssue(i: number) {
+    const job = await freshJob(tenantId, 'completed');
+    const d = await draft(tenantId, job.id);
+    await pg.query(
+      "update money_documents set status = 'issued', number_seq = $2, number = $3, issued_at = now() where id = $1",
+      [d.id, 9300 + i, `INV-${9300 + i}`],
+    );
+    expect((await voidDocument(tenantId, d.id, null, 'mgr')).event).toBeNull();
+    await appendMoneyEvent({
+      tenantId, jobId: job.id, kind: 'invoice_issued', amountCents: TOTAL,
+      externalRef: `INV-${9300 + i}`, dedupeKey: `doc:${d.id}:issue`,
+    });
+    await syncJobStatusForMoney(tenantId, job.id);
+    expect((await getJob(job.id))?.status).toBe('invoiced');
+    expect((await listDocuments(tenantId, { jobId: job.id }))[0].unsettled).toBe(true);
+    return { job, d };
+  }
+
+  test('a void document with a live invoice is healed by the next issue call, and the job walks back', async () => {
+    const { job, d } = await voidWithLiveIssue(1);
+    await expect(issueDocument(tenantId, d.id, 'mgr')).rejects.toThrow('is void');
+    expect((await summary(job.id)).invoicedCents).toBe(0);
+    expect((await getJob(job.id))?.status).toBe('completed');
+    expect((await listDocuments(tenantId, { jobId: job.id }))[0].unsettled).toBe(false);
+  });
+
+  test('… and by a repeated void', async () => {
+    const { job, d } = await voidWithLiveIssue(2);
+    const v = await voidDocument(tenantId, d.id, null, 'mgr');
+    expect(v.already).toBe(true);
+    expect(v.event?.kind).toBe('invoice_voided');
+    expect((await summary(job.id)).invoicedCents).toBe(0);
+    expect((await getJob(job.id))?.status).toBe('completed');
+  });
+
+  test('a void document with a live approval is healed by the next outcome call', async () => {
+    const job = await freshJob(tenantId, 'open');
+    const d = await draft(tenantId, job.id, 'estimate');
+    const issued = await issueDocument(tenantId, d.id, 'mgr');
+    await voidDocument(tenantId, d.id, null, 'mgr');
+    await appendMoneyEvent({
+      tenantId, jobId: job.id, kind: 'estimate_approved', amountCents: TOTAL,
+      externalRef: issued.document.number, dedupeKey: `doc:${d.id}:outcome`,
+    });
+    expect((await summary(job.id)).quotedCents).toBe(TOTAL);
+    expect((await listDocuments(tenantId, { jobId: job.id }))[0].unsettled).toBe(true);
+    await expect(recordEstimateOutcome(tenantId, d.id, 'declined', 'mgr')).rejects.toThrow('is void');
+    expect((await summary(job.id)).quotedCents).toBe(0);
+    expect((await listDocuments(tenantId, { jobId: job.id }))[0].unsettled).toBe(false);
+  });
+
+  test('a job status walk that fails after the cancel is said in words, and a repeated void retries it', async () => {
+    const job = await freshJob(tenantId, 'completed');
+    const d = await draft(tenantId, job.id);
+    await issueDocument(tenantId, d.id, 'mgr');
+    expect((await getJob(job.id))?.status).toBe('invoiced');
+    await pg.query(`
+      create function zz_refuse_job_update() returns trigger language plpgsql as $$
+      begin
+        if new.id = '${job.id}' then raise exception 'simulated outage'; end if;
+        return new;
+      end $$`);
+    await pg.query('create trigger zz_refuse_job_update before update on jobs for each row execute function zz_refuse_job_update()');
+    try {
+      const v = await voidDocument(tenantId, d.id, null, 'mgr');
+      expect(v.event?.kind).toBe('invoice_voided');
+      expect(v.note).toMatch(/stands cancelled, but the job's status could not be moved.*void it again/);
+      expect((await summary(job.id)).invoicedCents).toBe(0);
+      expect((await getJob(job.id))?.status).toBe('invoiced');
+      // The refusal path says the same when it cannot walk.
+      await expect(issueDocument(tenantId, d.id, 'mgr')).rejects.toThrow(/is void.*stands cancelled, but the job's status/);
+    } finally {
+      await pg.query('drop trigger zz_refuse_job_update on jobs');
+      await pg.query('drop function zz_refuse_job_update()');
+    }
+    const again = await voidDocument(tenantId, d.id, null, 'mgr');
+    expect(again.note).toBeUndefined();
+    expect(again.statusChange).toEqual({ from: 'invoiced', to: 'completed' });
+  });
+
+  test('an outcome is never stamped onto a void estimate (racing a void with the other answer in the ledger)', async () => {
+    for (let i = 0; i < 8; i++) {
+      const job = await freshJob(tenantId, 'open');
+      const d = await draft(tenantId, job.id, 'estimate');
+      const issued = await issueDocument(tenantId, d.id, 'mgr');
+      // The ledger already holds "declined"; the stamp never landed.
+      await appendMoneyEvent({
+        tenantId, jobId: job.id, kind: 'estimate_declined',
+        externalRef: issued.document.number, dedupeKey: `doc:${d.id}:outcome`,
+      });
+      await Promise.allSettled([
+        recordEstimateOutcome(tenantId, d.id, 'accepted', 'mgr'),
+        voidDocument(tenantId, d.id, null, 'mgr'),
+      ]);
+      const row = (await pg.query('select status, outcome, outcome_at <= voided_at as before_void from money_documents where id = $1', [d.id])).rows[0];
+      expect(row.status).toBe('void');
+      if (row.outcome !== null) expect(row.before_void).toBe(true);
+    }
   });
 
   test('a void racing an accepted outcome ends void with nothing quoted', async () => {

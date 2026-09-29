@@ -108,11 +108,50 @@ export async function getDocument(tenantId: string, id: string): Promise<MoneyDo
   return data;
 }
 
-/** A firm's documents on a job or customer (or all), newest first. */
+/**
+ * Which of these VOID documents still have a live issue (invoice) or approval
+ * (estimate) row in the ledger — a void whose cancelling write never landed.
+ * The next issue/outcome/void call on it heals it; this lets a reader say so.
+ * Two batched reads (the rows by their keys, then what cancels them).
+ */
+export async function unsettledVoidIds(tenantId: string, docs: MoneyDocument[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  const voids = docs.filter((d) => d.status === 'void');
+  // 50 documents a batch: a key is ~45 characters and an in() list rides in the URL.
+  for (let i = 0; i < voids.length; i += 50) {
+    const slice = voids.slice(i, i + 50);
+    const keys = slice.map((d) => (d.kind === 'invoice' ? `doc:${d.id}:issue` : `doc:${d.id}:outcome`));
+    const { data: rows, error } = await getClient()
+      .from('money_events')
+      .select('id, kind, dedupe_key')
+      .eq('tenant_id', tenantId)
+      .in('dedupe_key', keys)
+      .in('kind', ['invoice_issued', 'estimate_approved']);
+    if (error) throw wrapDbError('unsettledVoidIds failed', error);
+    if (!rows?.length) continue;
+    const { data: cancels, error: cErr } = await getClient()
+      .from('money_events')
+      .select('corrects_event_id')
+      .eq('tenant_id', tenantId)
+      .in('kind', ['invoice_voided', 'correction'])
+      .in('corrects_event_id', rows.map((r) => r.id));
+    if (cErr) throw wrapDbError('unsettledVoidIds failed', cErr);
+    const cancelled = new Set((cancels ?? []).map((c) => c.corrects_event_id));
+    for (const r of rows) {
+      if (!cancelled.has(r.id)) out.add((r.dedupe_key ?? '').split(':')[1]);
+    }
+  }
+  return out;
+}
+
+/**
+ * A firm's documents on a job or customer (or all), newest first. `unsettled`
+ * marks a void document whose money the ledger still counts (see unsettledVoidIds).
+ */
 export async function listDocuments(
   tenantId: string,
   filter: { jobId?: string; customerId?: string; kind?: MoneyDocumentKind } = {},
-): Promise<MoneyDocument[]> {
+): Promise<Array<MoneyDocument & { unsettled: boolean }>> {
   if ((filter.jobId && !UUID_RE.test(filter.jobId)) || (filter.customerId && !UUID_RE.test(filter.customerId))) {
     return [];
   }
@@ -122,7 +161,9 @@ export async function listDocuments(
   if (filter.kind) q = q.eq('kind', filter.kind);
   const { data, error } = await q.order('created_at', { ascending: false }).order('id');
   if (error) throw wrapDbError('listDocuments failed', error);
-  return data ?? [];
+  const docs = data ?? [];
+  const unsettled = await unsettledVoidIds(tenantId, docs);
+  return docs.map((d) => ({ ...d, unsettled: unsettled.has(d.id) }));
 }
 
 export interface SaveDraftInput {
@@ -252,7 +293,7 @@ export async function issueDocument(
   let doc = await getDocument(tenantId, id);
   if (!doc) throw new Error('no such document');
   if (opts.progress && doc.kind !== 'invoice') throw new Error('progress applies to invoices only');
-  if (doc.status === 'void') throw new Error(`${nameOf(doc)} is void — make a new ${doc.kind} instead`);
+  if (doc.status === 'void') return refuseVoid(doc, byRef, `${nameOf(doc)} is void — make a new ${doc.kind} instead`);
 
   if (doc.status === 'draft') {
     normalizeLines(doc.lines); // a draft saved through saveDraft always passes; this is the guard for one that was not
@@ -286,7 +327,9 @@ export async function issueDocument(
       if (!doc) throw new Error('no such document');
     }
     if (doc.status === 'draft') throw new Error('could not number the document — try again');
-    if (doc.status === 'void') throw new Error(`${nameOf(doc)} is void — make a new ${doc.kind} instead`);
+    if (doc.status === 'void') {
+      return refuseVoid(doc, byRef, `${nameOf(doc)} is void — make a new ${doc.kind} instead`);
+    }
   }
   // A retry (or the loser of a race) that disagrees with what was issued is
   // refused, not silently overridden: the ledger row says what the document says.
@@ -329,9 +372,7 @@ export async function issueDocument(
   // to cancel, so cancel the one just written (the :void key dedupes a void
   // that did see it).
   if (!data && document.status === 'void') {
-    await writeVoidLedger(document, byRef);
-    await syncJobStatusForMoney(tenantId, doc.job_id);
-    throw new Error(`${nameOf(document)} was voided while it was being issued — it stands cancelled`);
+    return refuseVoid(document, byRef, `${nameOf(document)} was voided while it was being issued — it stands cancelled`);
   }
   const statusChange = await syncJobStatusForMoney(tenantId, doc.job_id);
   return { document, event, already: false, statusChange };
@@ -343,6 +384,40 @@ export interface VoidResult {
   event: MoneyEvent | null;
   already: boolean;
   statusChange: { from: JobStatus; to: JobStatus } | null;
+  /** Set when the money is cancelled but the job's status walk failed (retry by voiding again). */
+  note?: string;
+}
+
+/** Said when the ledger is right but the job's status could not follow it. */
+const WALK_FAILED =
+  "the job's status could not be moved to match (a passing fault) — void it again to retry the move";
+
+/**
+ * Walk the job's status after a cancelling row landed. A failure here must not
+ * read as "the void failed": the money is already cancelled. It comes back as
+ * words instead, and a repeated void (idempotent) retries the walk.
+ */
+async function walkAfterCancel(
+  doc: MoneyDocument,
+): Promise<{ statusChange: { from: JobStatus; to: JobStatus } | null; walkFailed: boolean }> {
+  try {
+    return { statusChange: await syncJobStatusForMoney(doc.tenant_id, doc.job_id), walkFailed: false };
+  } catch (err) {
+    console.error(`[moneyDocuments] ${doc.id}: cancelled in the ledger, status walk failed`, err);
+    return { statusChange: null, walkFailed: true };
+  }
+}
+
+/**
+ * Every refusal because a document is VOID first settles it: a void whose
+ * cancelling row never landed (the process died between the status flip and
+ * the ledger write, or an issuer wrote its row after the void looked) is healed
+ * by the next call that meets it. Idempotent under doc:<id>:void.
+ */
+async function refuseVoid(doc: MoneyDocument, byRef: string, words: string): Promise<never> {
+  await writeVoidLedger(doc, byRef);
+  const { walkFailed } = await walkAfterCancel(doc);
+  throw new Error(walkFailed ? `${words} — it stands cancelled, but ${WALK_FAILED}` : words);
 }
 
 /**
@@ -420,8 +495,14 @@ export async function voidDocument(
   const document = await getDocument(tenantId, id);
   if (!document) throw new Error('no such document');
   const event = await writeVoidLedger(document, byRef);
-  const statusChange = await syncJobStatusForMoney(tenantId, doc.job_id);
-  return { document, event, already: !flipped, statusChange };
+  const { statusChange, walkFailed } = await walkAfterCancel(document);
+  return {
+    document,
+    event,
+    already: !flipped,
+    statusChange,
+    ...(walkFailed ? { note: `${nameOf(document)} stands cancelled, but ${WALK_FAILED}` } : {}),
+  };
 }
 
 /**
@@ -444,7 +525,7 @@ export async function recordEstimateOutcome(
   if (!doc) throw new Error('no such document');
   if (doc.kind !== 'estimate') throw new Error('only an estimate has an outcome');
   if (doc.status === 'draft') throw new Error('the estimate is still a draft — issue it first');
-  if (doc.status === 'void') throw new Error(`${nameOf(doc)} is void`);
+  if (doc.status === 'void') return refuseVoid(doc, byRef, `${nameOf(doc)} is void`);
   if (doc.outcome) throw new Error(`${nameOf(doc)} is already recorded as ${doc.outcome}`);
 
   const want = outcome === 'accepted' ? 'estimate_approved' : 'estimate_declined';
@@ -467,8 +548,11 @@ export async function recordEstimateOutcome(
       .update({ outcome: was, outcome_at: new Date().toISOString() })
       .eq('id', doc.id)
       .eq('tenant_id', tenantId)
+      .eq('status', 'issued') // never an outcome onto a void estimate
       .is('outcome', null);
     if (error) throw wrapDbError('recordEstimateOutcome (stamp) failed', error);
+    const now = await getDocument(tenantId, id);
+    if (now?.status === 'void') return refuseVoid(now, byRef, `${nameOf(now)} is void`);
     throw new Error(`${nameOf(doc)} is already recorded as ${was}`);
   }
   const { data, error } = await getClient()
@@ -486,8 +570,7 @@ export async function recordEstimateOutcome(
   // Voided while the answer was being written: the void may have looked before
   // this row existed, so cancel it here (the :void key dedupes one it did see).
   if (!data && document.status === 'void') {
-    await writeVoidLedger(document, byRef);
-    throw new Error(`${nameOf(document)} was voided — the answer is not recorded`);
+    return refuseVoid(document, byRef, `${nameOf(document)} was voided — the answer is not recorded`);
   }
   return { document, event };
 }

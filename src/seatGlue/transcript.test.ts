@@ -29,7 +29,9 @@ describe('Transcript', () => {
     dir = await mkdtemp(join(tmpdir(), 'seat-transcript-'));
   });
   afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
+    // Retries: a save still in flight (the outbox writes in the background) can
+    // land a file mid-delete — ENOTEMPTY under load, the suite's one flake.
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
   });
   const make = (fetch: FetchLike) =>
     new Transcript({ spineUrl: 'https://spine.example/mcp', seatToken: TOKEN, stateDir: dir, log: () => {} }, { fetch, newId });

@@ -121,13 +121,35 @@ describe('sessionConfig — a manager\'s file tools (step 2b)', () => {
     expect(c.availableTools).toEqual(['mcp:*', 'builtin:ask_user', 'builtin:exit_plan_mode']);
   });
 
-  it('a technician never carries them, even if handed some: the whole config is unchanged', () => {
-    const withTools = sessionConfig({ ...base('technician'), tools }, new TurnPolicy()) as Record<string, unknown>;
-    const without = sessionConfig(base('technician'), new TurnPolicy()) as Record<string, unknown>;
-    expect(Object.keys(withTools)).toEqual(Object.keys(without));
-    const data = (c: Record<string, unknown>) => JSON.parse(JSON.stringify(c));
-    expect(data(withTools)).toEqual(data(without));
-    expect(withTools.tools).toBeUndefined();
+  it('step 2d: a technician carries exactly the tools handed to her (send_file): custom:* and nothing of the sandbox', () => {
+    const sendFile = { name: 'send_file', description: 'x', parameters: {}, handler: async () => '' };
+    const c = sessionConfig({ ...base('technician'), tools: [sendFile], skillsDir: '/s' }, new TurnPolicy()) as unknown as Cfg & {
+      tools?: unknown;
+      enableSkills?: boolean;
+    };
+    expect(c.availableTools).toEqual(['mcp:*', 'custom:*']);
+    expect(c.tools).toEqual([sendFile]);
+    expect(c.enableSkills).toBeUndefined();
+    expect(c.systemMessage).toEqual({ mode: 'replace', content: TECHNICIAN_DOCTRINE });
+    // Her send_file is approved (and marked pending); an unknown custom tool is not.
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const policy = new TurnPolicy();
+    policy.onSend();
+    const perm = (sessionConfig({ ...base('technician'), tools: [sendFile] }, policy) as { onPermissionRequest: Perm }).onPermissionRequest;
+    expect(perm({ kind: 'custom-tool', toolName: 'send_file', toolCallId: 's1' })).toEqual({ kind: 'approve-once' });
+    expect(policy.toolPending).toBe(true);
+    expect(perm({ kind: 'custom-tool', toolName: 'run_command', toolCallId: 's2' })).toEqual({ kind: 'reject' });
+  });
+
+  it('step 2d: a manager with only send_file (no E2B) gets custom:* but no computer, no skills', () => {
+    const sendFile = { name: 'send_file', description: 'x', parameters: {}, handler: async () => '' };
+    const c = sessionConfig({ ...base('manager'), tools: [sendFile], skillsDir: '/s', skills: [] }, new TurnPolicy(), hooks) as unknown as Cfg & {
+      enableSkills?: boolean;
+    };
+    expect(c.availableTools).toEqual(['mcp:*', 'builtin:ask_user', 'builtin:exit_plan_mode', 'custom:*']);
+    expect(c.systemMessage).toEqual({ mode: 'replace', content: MANAGER_DOCTRINE });
+    expect(c.enableSkills).toBeUndefined();
   });
 
   it('a file-tool call is approved AND marked pending; an unknown custom tool is refused', () => {

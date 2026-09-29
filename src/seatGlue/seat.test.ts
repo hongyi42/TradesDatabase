@@ -115,6 +115,10 @@ class FakeTelegram implements TelegramApi {
   async sendDocument(_chat: number, filename: string, bytes: Uint8Array, caption?: string): Promise<void> {
     this.documents.push({ filename, bytes, caption });
   }
+  readonly photos: Array<{ bytes: Uint8Array; caption?: string }> = [];
+  async sendPhoto(_chat: number, bytes: Uint8Array, caption?: string): Promise<void> {
+    this.photos.push({ bytes, caption });
+  }
 }
 
 let n = 0;
@@ -317,7 +321,8 @@ describe('Seat', () => {
     t.telegram.files.set('ph1', Buffer.from('JPEGDATA'));
     await t.seat.handleUpdate(upd({ photo: [{ file_id: 'ph1', width: 800, height: 600 }], caption: 'before' }));
     const sent = t.session().sends[0];
-    expect(sent.prompt).toBe('before');
+    // No file store wired in this setup: the model is told the photo was not kept.
+    expect(sent.prompt).toBe('before\n[photo could not be saved]');
     expect(sent.attachments).toEqual([
       { type: 'blob', data: Buffer.from('JPEGDATA').toString('base64'), mimeType: 'image/jpeg', displayName: 'photo.jpg' },
     ]);
@@ -565,6 +570,50 @@ describe('Seat', () => {
     expect(t.telegram.sent).toEqual([TEXT.replyFailed]);
   });
 
+  it('step 2d: a photo is kept in the file store and the model gets its id; a document too (a jpeg one as an image)', async () => {
+    const uploads: Array<{ kind: string; name: string; mime: string; bytes: Uint8Array }> = [];
+    const t = setup({
+      uploadFile: async (f) => {
+        uploads.push(f);
+        return `f-${uploads.length}`;
+      },
+    });
+    await t.seat.start();
+    t.telegram.files.set('ph', Buffer.from('JPEG'));
+    await t.seat.handleUpdate(upd({ photo: [{ file_id: 'ph', width: 1, height: 1 }], caption: 'before' }));
+    expect(t.session().sends[0].prompt).toBe('before\n[photo saved as file f-1]');
+    expect(uploads[0]).toMatchObject({ kind: 'photo', name: 'photo.jpg', mime: 'image/jpeg' });
+    expect(Buffer.from(uploads[0].bytes).toString()).toBe('JPEG');
+    t.telegram.files.set('pdf', Buffer.from('%PDF'));
+    await t.seat.handleUpdate(upd({ document: { file_id: 'pdf', file_name: 'quote.pdf', mime_type: 'application/pdf' }, caption: 'the quote' }));
+    const pdfSend = t.session().sends.at(-1)!;
+    expect(pdfSend.prompt).toBe('the quote\n[document "quote.pdf" saved as file f-2]');
+    expect(pdfSend.attachments).toBeUndefined();
+    t.telegram.files.set('big', Buffer.from('JPEG2'));
+    await t.seat.handleUpdate(upd({ document: { file_id: 'big', file_name: 'site.jpg', mime_type: 'image/jpeg' } }));
+    expect(t.session().sends.at(-1)!.attachments?.[0]).toMatchObject({ type: 'blob', mimeType: 'image/jpeg', displayName: 'site.jpg' });
+  });
+
+  it('step 2d: a failed or slow save is said to the model and never blocks the turn', async () => {
+    const t = setup({
+      uploadFile: async () => {
+        throw new Error('The operation was aborted due to timeout');
+      },
+    });
+    await t.seat.start();
+    t.telegram.files.set('d', Buffer.from('x'));
+    await t.seat.handleUpdate(upd({ document: { file_id: 'd', file_name: 'a.pdf', mime_type: 'application/pdf' } }));
+    expect(t.session().sends[0].prompt).toBe('[document "a.pdf" could not be saved]');
+  });
+
+  it('step 2d: a document over 20 MB is refused in words, never fetched', async () => {
+    const t = setup();
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ document: { file_id: 'huge', file_name: 'x.zip', file_size: 21 * 1024 * 1024 } }));
+    expect(t.telegram.sent.at(-1)).toContain('over 20 MB');
+    expect(t.session?.()?.sends ?? []).toEqual([]);
+  });
+
   it('still delivers a photo when the box copy cannot be kept', async () => {
     const t = setup({
       saveMedia: async () => {
@@ -573,7 +622,7 @@ describe('Seat', () => {
     });
     await t.seat.start();
     await t.seat.handleUpdate(upd({ photo: [{ file_id: 'p', width: 1, height: 1 }], caption: 'after' }));
-    expect(t.session().sends[0].prompt).toBe('after');
+    expect(t.session().sends[0].prompt).toBe('after\n[photo could not be saved]');
   });
 
   it('frees the seat when the send after an abort fails', async () => {
@@ -710,7 +759,19 @@ describe('Seat — a manager seat asks with buttons (step 2a)', () => {
     await tick();
     await t.seat.handleUpdate(upd({ photo: [{ file_id: 'p1', width: 10, height: 10 }] }));
     expect((await asked).answer).toMatch(/no answer/);
-    expect(t.session().sends.at(-1)?.prompt).toBe('(photo)');
+    expect(t.session().sends.at(-1)?.prompt).toBe('(photo)\n[photo could not be saved]');
+  });
+
+  it('a file sent while a prompt waits ends it too, then goes to the engine (step 2d)', async () => {
+    const t = setup({ manager: true, uploadFile: async () => '11111111-1111-1111-1111-111111111111' });
+    await t.seat.start();
+    await t.seat.handleUpdate(upd({ text: 'cancel the beckers' }));
+    const asked = t.hooks()!.onUserInput({ question: 'Which job?', choices: ['Furnace', 'AC'] });
+    await tick();
+    t.telegram.files.set('d1', Buffer.from('%PDF'));
+    await t.seat.handleUpdate(upd({ document: { file_id: 'd1', file_name: 'quote.pdf', mime_type: 'application/pdf' } }));
+    expect((await asked).answer).toMatch(/no answer/);
+    expect(t.session().sends.at(-1)?.prompt).toBe('[document "quote.pdf" saved as file 11111111-1111-1111-1111-111111111111]');
   });
 
   it('Stop while a prompt waits ends it before the reply is stopped', async () => {

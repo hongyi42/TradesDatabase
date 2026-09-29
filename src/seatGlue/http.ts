@@ -5,13 +5,15 @@ export interface HttpResponse {
   status: number;
   json(): Promise<unknown>;
   arrayBuffer(): Promise<ArrayBuffer>;
+  /** Response headers — read only by the file store's download (step 2d); fakes may leave it out. */
+  headers?: { get(name: string): string | null };
 }
 
 export interface HttpInit {
   method?: string;
   headers?: Record<string, string>;
-  /** FormData only for Telegram's file upload (sendDocument); JSON everywhere else. */
-  body?: string | FormData;
+  /** FormData for Telegram's file upload (sendDocument); raw bytes for the file store's upload (step 2d); JSON everywhere else. */
+  body?: string | FormData | Uint8Array<ArrayBuffer>;
   signal?: AbortSignal;
 }
 

@@ -52,6 +52,21 @@ describe('classify', () => {
     expect(got).toEqual({ kind: 'photo', chatId: BEN, fileId: 'big', caption: 'before' });
   });
 
+  it('step 2d: a file sent as a file is a document (name and type defaulted); over 20 MB is tooBig', () => {
+    expect(
+      classify(msg({ document: { file_id: 'd1', file_name: 'quote.pdf', mime_type: 'application/pdf', file_size: 1000 }, caption: 'the quote' }), BEN),
+    ).toEqual({ kind: 'document', chatId: BEN, fileId: 'd1', fileName: 'quote.pdf', mimeType: 'application/pdf', caption: 'the quote' });
+    expect(classify(msg({ document: { file_id: 'd2' } }), BEN)).toEqual({
+      kind: 'document',
+      chatId: BEN,
+      fileId: 'd2',
+      fileName: 'file',
+      mimeType: 'application/octet-stream',
+      caption: undefined,
+    });
+    expect(classify(msg({ document: { file_id: 'd3', file_size: 20 * 1024 * 1024 + 1 } }), BEN)).toEqual({ kind: 'tooBig', chatId: BEN });
+  });
+
   it('reads a voice note, defaulting its type to ogg', () => {
     expect(classify(msg({ voice: { file_id: 'v1' } }), BEN)).toEqual({
       kind: 'voice',

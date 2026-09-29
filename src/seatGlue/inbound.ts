@@ -1,5 +1,5 @@
 import { PROMPT_DATA } from './prompts.js';
-import { STOP_CALLBACK, STOP_TEXT, type TgUpdate } from './telegram.js';
+import { STOP_CALLBACK, STOP_TEXT, TELEGRAM_MAX_DOWNLOAD, type TgUpdate } from './telegram.js';
 
 // What one Telegram update means to the seat. The allowlist lives here: anyone
 // but the seat's own person, and any group chat, is dropped without a reply —
@@ -8,6 +8,10 @@ export type Inbound =
   | { kind: 'text'; chatId: number; text: string }
   | { kind: 'photo'; chatId: number; fileId: string; caption?: string }
   | { kind: 'voice'; chatId: number; fileId: string; mimeType: string }
+  /** A file sent as a file (step 2d): kept like a photo. */
+  | { kind: 'document'; chatId: number; fileId: string; fileName: string; mimeType: string; caption?: string }
+  /** A document over Telegram's 20 MB bot download limit: said, never fetched. */
+  | { kind: 'tooBig'; chatId: number }
   | { kind: 'stop'; chatId: number; callbackQueryId?: string; workingMessageId?: number }
   /** A tap on a waiting prompt's button (step 2a): `p:<promptId>:<index>`. */
   | { kind: 'tap'; chatId: number; promptId: string; index: number; callbackQueryId: string }
@@ -50,6 +54,19 @@ export function classify(update: TgUpdate, allowedUserId: number): Inbound {
 
   if (m.voice?.file_id) {
     return { kind: 'voice', chatId, fileId: m.voice.file_id, mimeType: m.voice.mime_type || 'audio/ogg' };
+  }
+
+  if (m.document?.file_id) {
+    if ((m.document.file_size ?? 0) > TELEGRAM_MAX_DOWNLOAD) return { kind: 'tooBig', chatId };
+    const caption = typeof m.caption === 'string' && m.caption.trim() ? m.caption : undefined;
+    return {
+      kind: 'document',
+      chatId,
+      fileId: m.document.file_id,
+      fileName: m.document.file_name?.trim() || 'file',
+      mimeType: m.document.mime_type || 'application/octet-stream',
+      caption,
+    };
   }
 
   return { kind: 'unsupported', chatId };

@@ -6,7 +6,8 @@ import { pathToFileURL } from 'node:url';
 import { loadConfig, type SeatConfig } from './config.js';
 import { CostLog } from './costLog.js';
 import { openSession, startEngine, type EngineClient, type EngineConfig } from './engine.js';
-import { ExportError, fileTools, type ExportResult, type FileTool, type FileToolSet } from './fileTools.js';
+import { ExportError, FILE_TOOL_NAMES, fileTools, type ExportResult, type FileTool, type FileToolSet } from './fileTools.js';
+import { downloadFile, sendFileTool, uploadFile } from './files.js';
 import type { Progress } from './batchProgress.js';
 import { defaultFetch, type FetchLike } from './http.js';
 import { seatHeaders } from './identity.js';
@@ -45,7 +46,11 @@ export function engineConfig(cfg: SeatConfig, who: SeatWho, tools?: FileTool[]):
     spineUrl: cfg.spineUrl,
     seatToken: cfg.seatToken,
     tier: who.tier,
-    ...(tools?.length ? { tools, skillsDir: cfg.skillsDir, skills: readSkills(cfg.skillsDir) } : {}),
+    ...(tools?.length ? { tools } : {}),
+    // Skills run on the sandbox: only a manager whose tools include the sandbox ones.
+    ...(who.tier === 'manager' && tools?.some((t) => FILE_TOOL_NAMES.has(t.name))
+      ? { skillsDir: cfg.skillsDir, skills: readSkills(cfg.skillsDir) }
+      : {}),
   };
 }
 
@@ -137,6 +142,8 @@ export function managerTools(cfg: SeatConfig, who: SeatWho, telegram: TelegramAp
     exportRows: (sql) => exportRows(cfg, sql),
     sendDocument: (name, bytes, caption) => telegram.sendDocument(who.telegramUserId, name, bytes, caption),
     onProgress,
+    uploadFile: (f) => uploadFile(cfg, f),
+    downloadFile: (id) => downloadFile(cfg, id),
   });
 }
 
@@ -174,10 +181,19 @@ export function seatDeps(
   });
   const progress = new ProgressSink();
   const files = managerTools(cfg, who, telegram, (p) => progress.emit(p));
+  // Step 2d: every seat can send a stored file back; a manager's sandbox tools
+  // follow when E2B is configured.
+  const sendFile = sendFileTool({
+    downloadFile: (id) => downloadFile(cfg, id),
+    sendPhoto: (bytes, caption) => telegram.sendPhoto(who.telegramUserId, bytes, caption),
+    sendDocument: (name, bytes, caption) => telegram.sendDocument(who.telegramUserId, name, bytes, caption),
+  });
+  const tools = [sendFile, ...(files?.tools ?? [])];
   return {
     progress,
     telegram,
-    openSession: (id, hooks) => openSession(client, engineConfig(cfg, who, files?.tools), policy, id, hooks),
+    uploadFile: (f) => uploadFile(cfg, f),
+    openSession: (id, hooks) => openSession(client, engineConfig(cfg, who, tools), policy, id, hooks),
     ...(files ? { onAbort: () => files.stopRunning() } : {}),
     policy,
     costLog,

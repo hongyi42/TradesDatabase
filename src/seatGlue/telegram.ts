@@ -46,6 +46,8 @@ export interface TgMessage {
   caption?: string;
   photo?: TgPhotoSize[];
   voice?: { file_id: string; mime_type?: string; file_size?: number };
+  /** A file sent as a file (a PDF, a photo "as a file"): step 2d keeps it. */
+  document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
   [other: string]: unknown;
 }
 
@@ -83,6 +85,8 @@ export interface TelegramApi {
   clearButtons(chatId: number, messageId: number): Promise<void>;
   /** A file as a Telegram document (step 2b share_file). Telegram's bot limit is 50 MB. */
   sendDocument(chatId: number, filename: string, bytes: Uint8Array, caption?: string): Promise<void>;
+  /** A stored photo back to the person (step 2d send_file). Bot API: at most 10 MB. */
+  sendPhoto(chatId: number, bytes: Uint8Array, caption?: string): Promise<void>;
 }
 
 /** Telegram's cap on a document a bot sends (Bot API sendDocument). */
@@ -198,6 +202,22 @@ export class TelegramClient implements TelegramApi {
     if (res.status === 409) throw new TelegramConflictError();
     const json = (await res.json().catch(() => null)) as { ok?: boolean } | null;
     if (!res.ok || !json?.ok) throw new Error(`telegram: sendDocument failed (HTTP ${res.status})`);
+  }
+
+  // Multipart like sendDocument: fetch writes its own boundary header.
+  async sendPhoto(chatId: number, bytes: Uint8Array, caption?: string): Promise<void> {
+    const form = new FormData();
+    form.append('chat_id', String(chatId));
+    if (caption) form.append('caption', caption.slice(0, 1024));
+    form.append('photo', new Blob([new Uint8Array(bytes)]), 'photo.jpg');
+    const res = await this.fetchImpl(`https://api.telegram.org/bot${this.token}/sendPhoto`, {
+      method: 'POST',
+      body: form,
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (res.status === 409) throw new TelegramConflictError();
+    const json = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+    if (!res.ok || !json?.ok) throw new Error(`telegram: sendPhoto failed (HTTP ${res.status})`);
   }
 
   async typing(chatId: number): Promise<void> {

@@ -38,6 +38,10 @@ describe('technician doctrine', () => {
     expect(TECHNICIAN_DOCTRINE).not.toContain('## Long or bulk tasks');
     expect(TECHNICIAN_DOCTRINE).toContain('spine-record_field_note');
     expect(TECHNICIAN_DOCTRINE).toContain('Never set `blobPath`');
+    // Step 2d: photos and files are kept now — the old "not stored yet" line would contradict it.
+    expect(TECHNICIAN_DOCTRINE).toContain('spine-link_file');
+    expect(TECHNICIAN_DOCTRINE).toContain('send_file');
+    expect(TECHNICIAN_DOCTRINE).not.toContain('not stored in');
   });
 
   it.each(DOCTRINE_UPDATES.map(([from, to], i) => [i, from, to] as const))(

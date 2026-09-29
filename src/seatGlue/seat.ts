@@ -20,7 +20,8 @@ import type { TurnPolicy } from './turnPolicy.js';
 export const TEXT = {
   stopped: 'Stopped.',
   fresh: 'Starting fresh.',
-  unsupported: 'I can read texts, photos and voice notes.',
+  unsupported: 'I can read texts, photos, voice notes and files.',
+  tooBig: 'That file is over 20 MB, too big for me to keep.',
   voiceFailed: "I couldn't make out that voice note. Could you type it?",
   replyFailed: "I couldn't answer that just now. Try again in a minute.",
   promptClosed: 'This question has closed.',
@@ -59,6 +60,11 @@ export interface SeatDeps {
   transcribe(buf: Buffer, mime: string): Promise<{ text: string; generationId: string | null }>;
   /** Keeps the bytes on the box for a while. The returned path must never reach the model. */
   saveMedia(buf: Buffer, ext: string): Promise<string>;
+  /**
+   * Step 2d: keep a photo or document in the file store (Render /seat/files);
+   * returns its file id. Absent (tests, an unwired seat) = "could not be saved".
+   */
+  uploadFile?(f: { kind: 'photo' | 'document'; name: string; mime: string; bytes: Uint8Array }): Promise<string>;
   sweepMedia(): Promise<number>;
   readState(): Promise<SeatState>;
   writeState(state: SeatState): Promise<void>;
@@ -305,9 +311,10 @@ export class Seat {
     // /new ends it first, so the engine's handler is never left waiting.
     // Stop, /new or a photo end a decision in progress too (the plan comes back as
     // stopped), so nothing sent afterwards is swallowed into a dead loop's feedback.
-    if (msg.kind === 'stop' || msg.kind === 'new' || msg.kind === 'photo') this.endDeciding();
+    if (msg.kind === 'stop' || msg.kind === 'new' || msg.kind === 'photo' || msg.kind === 'document') this.endDeciding();
     if (this.prompts.isOpen) {
       if (msg.kind === 'photo') this.cancelPrompts('the manager sent a photo instead, which follows as their next message');
+      if (msg.kind === 'document') this.cancelPrompts('the manager sent a file instead, which follows as their next message');
       if (msg.kind === 'stop') this.cancelPrompts('the manager pressed Stop');
       if (msg.kind === 'new') this.cancelPrompts('the manager started a new conversation');
     }
@@ -316,6 +323,8 @@ export class Seat {
         return;
       case 'unsupported':
         return this.say(TEXT.unsupported);
+      case 'tooBig':
+        return this.say(TEXT.tooBig);
       case 'stop':
         return this.stopReply(msg.callbackQueryId, msg.workingMessageId);
       case 'tap':
@@ -328,11 +337,25 @@ export class Seat {
       case 'photo': {
         const buf = await this.deps.telegram.download(msg.fileId);
         await this.keepCopy(buf, 'jpg');
-        // Bytes only. The saved path never goes near the model: L1 is permanent
-        // and the file is deleted in a week.
+        // Bytes only. The saved BOX path never goes near the model; the file
+        // store's id does (step 2d), so the model can attach it.
+        const saved = await this.store({ kind: 'photo', name: 'photo.jpg', mime: 'image/jpeg', bytes: buf });
         const photo: BlobAttachment = { type: 'blob', data: buf.toString('base64'), mimeType: 'image/jpeg', displayName: 'photo.jpg' };
         this.deps.transcript?.person(msg.caption ?? '(photo)', this.sessionId);
-        return this.deliver(msg.caption ?? '(photo)', [photo]);
+        const note = saved ? `[photo saved as file ${saved}]` : '[photo could not be saved]';
+        return this.deliver(`${msg.caption ?? '(photo)'}\n${note}`, [photo]);
+      }
+      case 'document': {
+        const buf = await this.deps.telegram.download(msg.fileId);
+        const saved = await this.store({ kind: 'document', name: msg.fileName, mime: msg.mimeType, bytes: buf });
+        const quoted = JSON.stringify(msg.fileName);
+        const note = saved ? `[document ${quoted} saved as file ${saved}]` : `[document ${quoted} could not be saved]`;
+        this.deps.transcript?.person(`${msg.caption ? `${msg.caption} ` : ''}(file ${msg.fileName})`, this.sessionId);
+        // A jpeg/png sent "as a file" is still a picture the model can look at.
+        const image = /^image\/(jpeg|png)$/i.test(msg.mimeType)
+          ? [{ type: 'blob' as const, data: buf.toString('base64'), mimeType: msg.mimeType.toLowerCase(), displayName: msg.fileName }]
+          : undefined;
+        return this.deliver(`${msg.caption ? `${msg.caption}\n` : ''}${note}`, image);
       }
       case 'voice': {
         const buf = await this.deps.telegram.download(msg.fileId);
@@ -962,6 +985,17 @@ export class Seat {
   }
 
   /** The 7-day box copy is a convenience: failing to keep it must never lose the message. */
+  /** Step 2d: the file store's id, or null — a failed or slow save is logged and said, never blocks the turn. */
+  private async store(f: { kind: 'photo' | 'document'; name: string; mime: string; bytes: Buffer }): Promise<string | null> {
+    if (!this.deps.uploadFile) return null;
+    try {
+      return await this.deps.uploadFile(f);
+    } catch (err) {
+      this.log(`keeping the ${f.kind} failed: ${errText(err)}`);
+      return null;
+    }
+  }
+
   private async keepCopy(buf: Buffer, ext: string): Promise<void> {
     try {
       await this.deps.saveMedia(buf, ext);

@@ -31,6 +31,11 @@ Operator, 2026-09-28:
 - Earlier rulings (memory `files-and-money-records`): invoices + estimates become their own
   records (2e); files link to L2 AND any ledger entry; photo/PDF bytes are deletable;
   technicians never see money files, and see photos on their own jobs.
+- **"Her jobs" = her existing view** (operator 2026-09-28, asked after the plan was written): a
+  technician's files follow the same job-level view as her notes — under the default `serving`
+  scope that includes other open jobs of customers she serves, plus grants; a firm wanting it
+  tighter uses `own_trips`. (Alternative: strictly jobs she has a trip on — rejected: photos would
+  follow a different rule from notes and grants would not open them.)
 
 Mine (implementation):
 - **A new `files` table, not L1** (research Decision 1). L1 cannot be deleted or re-pointed and

@@ -103,10 +103,9 @@ async function readBinaryBody(req: http.IncomingMessage, maxBytes: number): Prom
   for await (const chunk of req) {
     const buf = chunk as Buffer;
     total += buf.length;
-    if (total > maxBytes) {
-      req.destroy();
-      throw Object.assign(new Error('request body exceeds cap'), { code: 'BODY_TOO_LARGE' });
-    }
+    // Stop reading, but leave the socket to the caller: it writes the 413 and
+    // closes it, so the client hears "too big" rather than a dropped connection.
+    if (total > maxBytes) throw Object.assign(new Error('request body exceeds cap'), { code: 'BODY_TOO_LARGE' });
     chunks.push(buf);
   }
   return Buffer.concat(chunks);
@@ -504,7 +503,7 @@ async function handleSeatExport(req: http.IncomingMessage, res: http.ServerRespo
 // downloads one its person may see. Seat token via seatOfRequest: 401 unknown,
 // 403 a deactivated person — resolveIdentity alone checks only the seat's
 // retirement. Bytes never leave through anything but these two routes.
-const FILE_ID_PATH = /^\/seat\/files\/([0-9a-f-]{36})$/;
+const FILE_ID_PATH = /^\/seat\/files\/([^/]+)$/;
 
 async function handleSeatFileUpload(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const json = (code: number, body: unknown) => {
@@ -529,12 +528,22 @@ async function handleSeatFileUpload(req: http.IncomingMessage, res: http.ServerR
       json(400, { error: 'name is required' });
       return;
     }
+    // Too big is answered, then the connection closed: a declared length is
+    // refused before a byte is read; a stream that runs over, when it does.
+    const tooBig = () => {
+      res.writeHead(413, { 'content-type': 'application/json', connection: 'close' });
+      res.end(JSON.stringify({ error: 'the file is over 20 MB' }), () => req.destroy());
+    };
+    if (Number(req.headers['content-length'] ?? 0) > FILE_MAX_BYTES) {
+      tooBig();
+      return;
+    }
     let bytes: Buffer;
     try {
       bytes = await readBinaryBody(req, FILE_MAX_BYTES);
     } catch (err) {
       if ((err as { code?: unknown }).code === 'BODY_TOO_LARGE') {
-        json(413, { error: 'the file is over 20 MB' });
+        tooBig();
         return;
       }
       throw err;
@@ -571,9 +580,17 @@ async function handleSeatFileDownload(req: http.IncomingMessage, res: http.Serve
       res.end();
       return;
     }
+    // A malformed id is simply not a file (never a database error, never a 500).
+    if (!UUID_RE.test(fileId)) {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
     const tenantId = who.seat.tenant_id;
     const file = await getFile(tenantId, fileId);
-    const manager = who.person.tier === 'manager';
+    // An ACTIVE manager, the tools' rule (activeManager): an invited manager
+    // sees what a technician would.
+    const manager = who.person.tier === 'manager' && who.person.state === 'active';
     const visible =
       !!file &&
       fileVisibleTo(file, manager ? [] : await linksOf(tenantId, fileId), {

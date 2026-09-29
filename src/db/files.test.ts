@@ -183,7 +183,8 @@ describe('who may see a file (fileVisibleTo)', () => {
 
   test('a technician: her own upload, job/visit/customer in view, never out of view', () => {
     expect(fileVisibleTo(file({ uploaded_by: 'p-b' }), [], tech())).toBe(true);
-    expect(fileVisibleTo(file({ uploaded_by: null, uploaded_by_ref: 'tech-b' }), [], tech())).toBe(true);
+    // By roster row only: a matching ref on a file whose uploader row is gone is not hers.
+    expect(fileVisibleTo(file({ uploaded_by: null, uploaded_by_ref: 'tech-b' }), [], tech())).toBe(false);
     expect(fileVisibleTo(file(), [], tech())).toBe(false); // someone else's unlinked file
     expect(fileVisibleTo(file(), [job('job-in')], tech())).toBe(true);
     expect(fileVisibleTo(file(), [job('job-out')], tech())).toBe(false);

@@ -1350,9 +1350,12 @@ describe('seat tokens: POST /control/seat-token, GET /seat/whoami, /mcp', () => 
       expect((await upload(token, 'x', 'kind=video&name=a')).status).toBe(400);
       expect((await upload(token, 'x', 'kind=photo')).status).toBe(400);
       expect((await upload(token, Buffer.alloc(0))).status).toBe(400);
-      const big = await upload(token, Buffer.alloc(20 * 1024 * 1024 + 1)).catch(() => null);
-      // The server aborts the oversized stream: a 413, or the socket closed mid-send.
-      expect(big === null || big.status === 413).toBe(true);
+      // A declared length over 20 MB is answered 413 before a byte is read.
+      const big = await upload(token, Buffer.alloc(20 * 1024 * 1024 + 1));
+      expect(big.status).toBe(413);
+      expect(((await big.json()) as { error: string }).error).toContain('20 MB');
+      // A malformed id is a 404, never a database error.
+      expect((await download(token, '-'.repeat(36))).status).toBe(404);
       expect((await upload('st_' + '0'.repeat(64), 'x')).status).toBe(401);
       expect((await download('st_' + '0'.repeat(64), '00000000-0000-0000-0000-000000000000')).status).toBe(401);
     });
@@ -1374,6 +1377,13 @@ describe('seat tokens: POST /control/seat-token, GET /seat/whoami, /mcp', () => 
       await deleteFile(tenantId, mine, 'seat-probe');
       expect((await download(token, mine)).status).toBe(404);
       expect((await download(token, '00000000-0000-0000-0000-000000000000')).status).toBe(404);
+      // An INVITED manager is not a manager for downloads (the tools' activeManager rule).
+      await pg.query("update technicians set tier = 'manager', state = 'invited' where id = $1", [seatTechId]);
+      try {
+        expect((await download(token, other.id)).status).toBe(404);
+      } finally {
+        await pg.query("update technicians set tier = 'technician', state = 'active' where id = $1", [seatTechId]);
+      }
       await pg.query("update technicians set state = 'offboarded' where id = $1", [seatTechId]);
       try {
         expect((await upload(token, 'x')).status).toBe(403);

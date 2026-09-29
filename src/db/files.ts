@@ -114,7 +114,9 @@ export function targetVisibleTo(link: ResolvedLink, who: FileViewer): boolean {
 export function fileVisibleTo(file: FileRow, links: ResolvedLink[], who: FileViewer): boolean {
   if (file.deleted_at) return false;
   if (who.tier !== 'technician') return true;
-  if ((who.personId && file.uploaded_by === who.personId) || file.uploaded_by_ref === who.ref) return true;
+  // Her own by ROSTER ROW only: a ref could be reissued once a removed person's
+  // row is gone (uploaded_by → null), and must not inherit their files.
+  if (who.personId && file.uploaded_by === who.personId) return true;
   if (links.some((l) => l.kind === 'money' && !targetVisibleTo(l, who))) return false;
   return links.some((l) => targetVisibleTo(l, who));
 }

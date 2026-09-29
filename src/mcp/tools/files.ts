@@ -12,7 +12,7 @@ import {
   resolveTarget,
   targetVisibleTo,
 } from '../../db/index.js';
-import { OUTSIDE_VIEW_NOTE, callerTierOf, viewerIdOf } from './shared.js';
+import { OUTSIDE_VIEW_NOTE, UUID_RE, callerTierOf, viewerIdOf } from './shared.js';
 import type { DomainTools, ToolContext, ToolDef } from './types.js';
 
 // The file store's doors for the AI (plan 2026-09-28-step-2d-files, Phase 2).
@@ -81,6 +81,10 @@ function targetOf(ctx: ToolContext): FileTarget {
   return given[0];
 }
 
+/** A malformed id names nothing: said as not found, never a database error. */
+const wellFormed = (t: FileTarget): boolean =>
+  'customerId' in t ? UUID_RE.test(t.customerId) : 'jobId' in t ? UUID_RE.test(t.jobId) : 'visitId' in t ? UUID_RE.test(t.visitId) : true;
+
 async function viewerOf(ctx: ToolContext): Promise<FileViewer> {
   const tier = callerTierOf(ctx);
   const personId = viewerIdOf(ctx);
@@ -104,6 +108,7 @@ const shape = (f: FileRow) => ({
 
 /** The file if this viewer may see it, else null (missing, deleted or out of view read the same). */
 async function visibleFile(ctx: ToolContext, who: FileViewer, fileId: string): Promise<FileRow | null> {
+  if (!UUID_RE.test(fileId)) return null;
   const file = await getFile(ctx.tenantId, fileId);
   if (!file || file.deleted_at) return null;
   if (who.tier !== 'technician') return file;
@@ -113,7 +118,7 @@ async function visibleFile(ctx: ToolContext, who: FileViewer, fileId: string): P
 async function handleListFiles(ctx: ToolContext): Promise<unknown> {
   const target = targetOf(ctx);
   const who = await viewerOf(ctx);
-  const resolved = await resolveTarget(ctx.tenantId, target);
+  const resolved = wellFormed(target) ? await resolveTarget(ctx.tenantId, target) : null;
   // A ledger entry a technician may not see money on reads as missing: its
   // existence is money information too.
   if (!resolved || (resolved.kind === 'money' && !targetVisibleTo(resolved, who))) {
@@ -135,7 +140,7 @@ async function handleLinkFile(ctx: ToolContext): Promise<unknown> {
   const target = targetOf(ctx);
   const who = await viewerOf(ctx);
   if (!(await visibleFile(ctx, who, fileId))) return { status: 'not_found', note: 'no such file' };
-  const resolved = await resolveTarget(ctx.tenantId, target);
+  const resolved = wellFormed(target) ? await resolveTarget(ctx.tenantId, target) : null;
   // Attaching to the ledger is a manager's job; to a technician an entry
   // she may not see money on is simply not there.
   if (!resolved || (resolved.kind === 'money' && who.tier === 'technician')) {
@@ -152,7 +157,8 @@ async function handleDeleteFile(ctx: ToolContext): Promise<unknown> {
   const who = await viewerOf(ctx);
   const file = await visibleFile(ctx, who, fileId);
   if (!file) return { status: 'not_found', note: 'no such file' };
-  const own = (who.personId && file.uploaded_by === who.personId) || file.uploaded_by_ref === who.ref;
+  // By roster row only (a ref can be reissued after a removed person's row goes).
+  const own = !!who.personId && file.uploaded_by === who.personId;
   if (who.tier !== 'manager' && !own) {
     return { status: 'refused', note: 'only the person who sent this file, or a manager, can delete it' };
   }

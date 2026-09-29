@@ -11319,6 +11319,12 @@ describe('files (step 2d)', () => {
     }
   });
 
+  test('a malformed id reads as not found, never a database error', async () => {
+    expect((await call('list_files', { jobId: 'not-a-uuid' })).data).toMatchObject({ files: [], note: 'not found' });
+    expect((await call('link_file', { fileId: 'nope', jobId: 'nope' })).data.status).toBe('not_found');
+    expect((await call('delete_file', { fileId: '-'.repeat(36) })).data.status).toBe('not_found');
+  });
+
   test('exactly one target is required', async () => {
     const f = await upload('tech-mcp', techMcpId);
     expect((await call('list_files', {})).isError).toBe(true);

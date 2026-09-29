@@ -153,7 +153,8 @@ the pilot (you), Render deploy, glue installs, then a phone test of both paths.
 **Tests** — `src/db/moneyDocuments.test.ts` (local stack): draft → update → issue (INV-1001, then 1002; a firm's start of 5000 → INV-5000; estimates count separately); issue writes one `invoice_issued` with the total and moves `completed → invoiced`; a repeated issue writes nothing new; void writes `invoice_voided` and walks the status back; issuing on an OPEN job walks it to `invoiced`, and with `progress` leaves it open; a failed ledger write is retried by a second issue; two concurrent issues of the same draft end with ONE number and one ledger row; two drafts issued together get two numbers; estimate issue → `estimate_presented`, accepted → `estimate_approved` and `quotedCents` = total, a second outcome refused, voiding an accepted estimate clears `quotedCents`; an issued document refuses edits; tenant guard. `files.test.ts`: a document link; a file linked to a job AND a document stays hidden from a technician without money; `sourceRef` dedupe.
 
 ### Automated verification
-- [ ] local `npx supabase migration up`; `npm run gen:types:local`; typecheck, lint, `npm test`
+- [x] local `npx supabase migration up`; `npm run gen:types:local`; typecheck, lint, `npm test`
+      — 55d8a69 + review rounds 690da8c, 9056bff (races between issue / void / outcome, progress stored, a void heals); 3984 passed.
 
 ## Phase 2: the tools
 
@@ -170,7 +171,8 @@ the pilot (you), Render deploy, glue installs, then a phone test of both paths.
 **Tests** — `server.test.ts` `describe('money documents (step 2e)')`: a manager drafts, issues, lists, voids; a technician is refused every tool; `set_firm_profile` round-trips the starts.
 
 ### Automated verification
-- [ ] typecheck, lint, `npm test` (surface + eval coverage pass)
+- [x] typecheck, lint, `npm test` (surface + eval coverage pass)
+      — d3472e3 + 40fe5b0 (null args, repeated issue retries the status walk, cross-firm test); 3993 passed.
 
 ## Phase 3: the PDF on an email
 
@@ -180,7 +182,8 @@ the pilot (you), Render deploy, glue installs, then a phone test of both paths.
 **Tests** — `server.test.ts` (it fakes `deps.sendEmail`, `:2625`): stage with a fileId shows the name; confirm passes `attachment` to `sendEmail`; an invisible or over-18 MB file is refused at stage; a deleted-since-staging file refuses at confirm and the token survives. `outbound.test.ts`: the upload call and the descriptor. The four `PairingClient` fakes (`offboarding.test.ts:51`, `outbound.test.ts:44`, `sessions.test.ts:53`, `pairing.test.ts:112`) keep compiling because `files` is optional.
 
 ### Automated verification
-- [ ] typecheck, lint, `npm test`
+- [x] typecheck, lint, `npm test`
+      — ad14449 (review clean; the attachment's exact shape is confirmed by the Phase 5 phone send); 4006 passed.
 
 ## Phase 4: the manager's own sent invoices
 
@@ -194,7 +197,8 @@ the pilot (you), Render deploy, glue installs, then a phone test of both paths.
 **Tests** — normalizer: both attachment shapes and none; `sentAttachments.test.ts` with fake Composio + fetch (fetch, store, link to job, dedupe on a second delivery, over-20 MB skipped, a failure logged not thrown); webhook: a manager's invoice email raises one `outbound_invoice`, a technician's does not, a non-invoice does not, a duplicate does not, one naming an already-issued INV number does not; capture_records returns a `money` record for a ledger row citing the capture and `mootFactFor` closes the observation; the planner gap text for `outbound_invoice`.
 
 ### Automated verification
-- [ ] typecheck, lint, `npm test`
+- [x] typecheck, lint, `npm test`
+      — e94ff24 + f88123b (manager-only files, the note only to the mailbox owner and asked once, number cue, detached work); 4043 passed.
 
 ## Phase 5: the rules and live
 
@@ -202,8 +206,10 @@ the pilot (you), Render deploy, glue installs, then a phone test of both paths.
 **`src/seatGlue/doctrine.test.ts`** — both texts name their tools; the preamble still excludes the computer (`:81`) and "technician".
 
 ### Automated verification
-- [ ] typecheck, lint, `npm test`, `npm run build`
-- [ ] local rig: drive "draft an invoice for the Becker furnace job: inspection $180, filter $25" → a draft; "that's final" → INV-1001, one `invoice_issued` of 20500, job `invoiced`; a PDF saved and linked to the document (SQL read-back)
+- [x] typecheck, lint, `npm test`, `npm run build`
+      — fb81c5e; 4043 passed, build clean.
+- [x] local rig: drive "draft an invoice for the Becker furnace job: inspection $180, filter $25" → a draft; "that's final" → INV-1001, one `invoice_issued` of 20500, job `invoiced`; a PDF saved and linked to the document (SQL read-back)
+      — driven 2026-09-29: firm profile saved from the message; DRAFT PDF shown ("INVOICE (DRAFT)", no number, due in 14 days); "final" → INV-1001, total 20500 (2 lines), one invoice_issued 20500 keyed doc:<id>:issue, job completed → invoiced; final PDF reads "INVOICE INV-1001 … Due Date: October 13, 2026", kept (source sandbox) and linked to the document.
 
 ### Deploy (operator steps marked)
 1. PR → merge → sync the fork (`gh repo sync Yu-C1/TradesDatabase --branch main`).

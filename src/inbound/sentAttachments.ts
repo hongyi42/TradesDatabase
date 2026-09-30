@@ -6,6 +6,7 @@ import {
   type FileKind,
   type Technician,
 } from '../db/index.js';
+import { PDFParse } from 'pdf-parse';
 import { compositeUserId, getComposioClient, type PairingClient } from '../composio/pairing.js';
 import type { SentAttachment } from './gmailSent.js';
 
@@ -47,6 +48,28 @@ export interface SentAttachmentDeps {
   totalMs?: number;
   eachMs?: number;
   log?: (message: string) => void;
+  /** A kept PDF's text (null = unreadable). Seam for tests; default pdf-parse. */
+  pdfText?: (bytes: Buffer) => Promise<string | null>;
+}
+
+/** How much of a kept PDF's text rides along to the office (an invoice is one page). */
+export const SENT_PDF_TEXT_MAX = 3000;
+
+// THE OFFICE READS THE PDF (operator 2026-09-30: "why can't the office read
+// pdf?"). An invoice's amount and number usually live only in the attachment, not
+// the email's words, so a kept PDF's text is read here and handed to the office
+// with the ask. The pdf-parse call is the web reader's (src/web/fetchPage.ts).
+export async function readPdfText(bytes: Buffer): Promise<string | null> {
+  const parser = new PDFParse({ data: new Uint8Array(bytes) });
+  try {
+    const parsed = await parser.getText();
+    const text = parsed.text.replace(/\s+/g, ' ').trim();
+    return text ? text.slice(0, SENT_PDF_TEXT_MAX) : null;
+  } catch {
+    return null;
+  } finally {
+    await parser.destroy().catch(() => {}); // long-lived server: never leak workers
+  }
 }
 
 export interface KeepSentAttachmentsInput {
@@ -72,6 +95,8 @@ export interface SentAttachmentResult {
   outcome: SentAttachmentOutcome;
   /** Where it was attached; null when it was kept unattached (or not kept). */
   linkedTo: 'job' | 'customer' | null;
+  /** A kept PDF's text, when it could be read. */
+  text?: string;
 }
 
 const kindOf = (mime: string): FileKind => (mime.toLowerCase().startsWith('image/') ? 'photo' : 'document');
@@ -219,7 +244,15 @@ export async function keepSentAttachments(input: KeepSentAttachmentsInput): Prom
             );
           }
         }
-        results.push({ name: a.name, outcome: kept.status, linkedTo });
+        let text: string | undefined;
+        if (/pdf/i.test(a.mime) || /\.pdf$/i.test(a.name)) {
+          try {
+            text = (await within((deps.pdfText ?? readPdfText)(bytes), Math.max(1, deadline - Date.now()))) ?? undefined;
+          } catch {
+            /* an unreadable PDF is still kept; the office just sees its name */
+          }
+        }
+        results.push({ name: a.name, outcome: kept.status, linkedTo, ...(text ? { text } : {}) });
       } catch (err) {
         log(
           `sent attachments: ${a.name} on ${messageId} not kept — ` +

@@ -7720,6 +7720,21 @@ describe('rung 10 — inbound requests reach the planner', () => {
     expect(view.block).not.toContain("YOUR FIRM'S OWN reply");
   });
 
+  test("(20a) the attached PDF's text is shown — where the amount and number are (operator 2026-09-30)", () => {
+    const withText = invoiceObs();
+    (withText.context as Record<string, unknown>).attachmentText = 'INVOICE Invoice # 2231 TOTAL DUE $450.00';
+    const view = buildGapView(
+      observationAsGapRow(withText), Date.parse(NOW), [], false, new Set(), [], [], 'UTC', null, null, null, new Map(),
+      { askedAt: null },
+    );
+    expect(view.block).toContain('the attachment reads: "INVOICE Invoice # 2231 TOTAL DUE $450.00"');
+    const gone = buildGapView(
+      observationAsGapRow(withText), Date.parse(NOW), [], false, new Set(), [], [], 'UTC', null, null, null, new Map(),
+      { askedAt: null, retracted: true },
+    );
+    expect(gone.block).not.toContain('TOTAL DUE');
+  });
+
   test('(20b) retracted: the words and the file names are gone', () => {
     const view = buildGapView(
       observationAsGapRow(invoiceObs()),
@@ -7739,7 +7754,7 @@ describe('rung 10 — inbound requests reach the planner', () => {
     expect(view.block).toContain('the email this is about was RETRACTED');
     expect(view.block).not.toContain('$450');
     expect(view.block).not.toContain('Invoice-2231.pdf');
-    expect(view.block).toContain("you have already sent the manager's seat a note about this one");
+    expect(view.block).toContain('you have already texted a manager about this one');
   });
 
   test('(21) THE RECORD closes it only on a ledger row citing the email — a job link is no answer', async () => {
@@ -7770,45 +7785,60 @@ describe('rung 10 — inbound requests reach the planner', () => {
     expect(open).not.toContain('citing no capture');
   });
 
-  test("(22) the note to the manager's seat IS the ask: alone, accepted, and it takes the marker", async () => {
-    const createOffice = vi.fn(async (input: unknown) => input as never);
-    const asks: string[] = [];
-    const thresholds: string[] = [];
-    const note = sendTo({
-      as: 'assistant',
-      message: 'Sam emailed Lee Park invoice 2231 for $450 on the bathroom job. Ask Sam whether to record it.',
-    });
-    const { summary } = await liveSend([note], {
+  // OPERATOR 2026-09-30: the office TEXTS the manager about their own sent
+  // invoice, the normal pinged-kind way. The text is the ask; a note may ride
+  // with it; a note alone is refused like any other pinged kind.
+  const TEXT = 'You emailed Lee Park invoice 2231 for $450 on the bathroom job. Record it?';
+  const NOTE = 'Relay item obs-1 when Sam answers; cite capture as sourceCaptureId when recording.';
+  const liveInvoice = (plan: unknown[], over: Partial<PlannerDeps> = {}, seen?: { errors?: string[] }) =>
+    liveSend(plan, {
       listObservations: async () => [invoiceObs()],
-      runLoop: loopReturning([note]),
-      createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
-      markAsked: (async (id: string, reaskAfter: string) => {
-        asks.push(id);
-        thresholds.push(reaskAfter);
-        return NOW;
-      }) as unknown as NonNullable<PlannerDeps['markAsked']>,
+      runLoop: loopReturning(plan, seen),
+      markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
+      ...over,
     });
-    expect(summary.applied).toBe(1);
-    expect(summary.dropped ?? 0).toBe(0);
-    expect(asks).toEqual(['obs-1']);
-    // ONCE, EVER: the threshold is older than any stamp, so a set asked_at
-    // always refuses — there is no daily re-ask for this kind.
-    expect(thresholds).toEqual([new Date(0).toISOString()]);
-    expect(createOffice).toHaveBeenCalledWith(expect.objectContaining({ via: 'assistant', technicianId: 'mgr-1' }));
+
+  test('(22) a TEXT to the mailbox owner is the ask — alone or with its note — and stamps asked_at, once ever', async () => {
+    for (const plan of [[sendTo({ message: TEXT })], [sendTo({ message: TEXT }), sendTo({ as: 'assistant', message: NOTE })]]) {
+      const createOffice = vi.fn(async (input: unknown) => input as never);
+      const thresholds: string[] = [];
+      const { summary } = await liveInvoice(plan, {
+        createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+        markAsked: (async (_id: string, reaskAfter: string) => {
+          thresholds.push(reaskAfter);
+          return NOW;
+        }) as unknown as NonNullable<PlannerDeps['markAsked']>,
+      });
+      expect(summary.applied).toBe(plan.length);
+      // Only the text stamps — and against the epoch: a set asked_at always
+      // refuses, so there is no daily re-ask for this kind.
+      expect(thresholds).toEqual([new Date(0).toISOString()]);
+      const legs = createOffice.mock.calls.map((c) => (c[0] as { via: string; technicianId: string }));
+      expect(legs.map((l) => l.via).sort()).toEqual(plan.length === 1 ? ['chat'] : ['assistant', 'chat']);
+      expect(legs.every((l) => l.technicianId === 'mgr-1')).toBe(true);
+    }
   });
 
-  test('(22b) …and one per email, EVER: a second note once asked is refused, nothing delivered', async () => {
+  test('(22a) a note ALONE is refused, like every pinged kind — it rides with the text', async () => {
     const createOffice = vi.fn(async (input: unknown) => input as never);
-    const note = sendTo({ as: 'assistant', message: 'Ask Sam whether to record invoice 2231.' });
-    const { summary, recorded } = await liveSend([note], {
-      listObservations: async () => [invoiceObs()],
-      runLoop: loopReturning([note]),
+    const seen: { errors?: string[] } = {};
+    const { summary } = await liveInvoice([sendTo({ as: 'assistant', message: NOTE })], {
+      createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+    }, seen);
+    expect(summary.applied).toBe(0);
+    expect(createOffice).not.toHaveBeenCalled();
+    expect(seen.errors?.join(' ')).toContain('rides WITH the text');
+  });
+
+  test('(22b) one ask per email, EVER: a second text once asked is refused, nothing delivered', async () => {
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    const { summary, recorded } = await liveInvoice([sendTo({ message: TEXT })], {
       createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
       markAsked: (async () => null) as unknown as NonNullable<PlannerDeps['markAsked']>,
     });
     expect(summary.applied).toBe(0);
     expect(createOffice).not.toHaveBeenCalled();
-    expect(recorded[0].outcomeDetail).toContain("the manager's seat was already asked about this email");
+    expect(recorded[0].outcomeDetail).toContain('the manager was already texted about this email');
   });
 
   const TECH = {
@@ -7827,75 +7857,55 @@ describe('rung 10 — inbound requests reach the planner', () => {
     telegram_user_id: '5502',
   } as unknown as Technician;
 
-  test('(22c) the note goes to the mailbox owner — never a technician, nor another manager while the owner is active', async () => {
+  test('(22c) the text goes to the mailbox owner — never a technician, nor another manager while the owner can be texted', async () => {
     for (const [to, team] of [
       ['tina-tech', [MANAGER, TECH]],
       ['max-mgr', [MANAGER, OTHER_MGR]],
     ] as const) {
       const createOffice = vi.fn(async (input: unknown) => input as never);
-      const note = sendTo({ as: 'assistant', to, message: 'Ask whether to record invoice 2231.' });
       const seen: { errors?: string[] } = {};
-      const { summary } = await liveSend([note], {
+      const { summary } = await liveInvoice([sendTo({ to, message: TEXT })], {
         listTeam: async () => [...team],
-        listObservations: async () => [invoiceObs()],
-        runLoop: loopReturning([note], seen),
         createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
-        markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
-      });
+      }, seen);
       expect(summary.applied, to).toBe(0);
       expect(createOffice, to).not.toHaveBeenCalled();
       expect(seen.errors?.join(' '), to).toContain("sent from Sam's mailbox");
     }
   });
 
-  test('(22e) the owner ACTIVE but unreachable (no assistant) → another reachable active manager may take it; never a technician', async () => {
-    const stranded = { ...MANAGER, host_id: null } as unknown as Technician;
-    const ok = sendTo({ as: 'assistant', to: 'max-mgr', message: 'Ask whether to record invoice 2231.' });
+  test('(22e) the owner ACTIVE but cannot be texted → another reachable active manager may take it; never a technician', async () => {
+    const noPhone = { ...MANAGER, telegram_user_id: null } as unknown as Technician;
     const createOffice = vi.fn(async (input: unknown) => input as never);
-    const { summary } = await liveSend([ok], {
-      listTeam: async () => [stranded, OTHER_MGR, TECH],
-      listObservations: async () => [invoiceObs()],
-      runLoop: loopReturning([ok]),
+    const { summary } = await liveInvoice([sendTo({ to: 'max-mgr', message: TEXT })], {
+      listTeam: async () => [noPhone, OTHER_MGR, TECH],
       createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
-      markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
     });
     expect(summary.applied).toBe(1);
-    expect(createOffice).toHaveBeenCalledWith(expect.objectContaining({ technicianId: 'mgr-2', via: 'assistant' }));
+    expect(createOffice).toHaveBeenCalledWith(expect.objectContaining({ technicianId: 'mgr-2', via: 'chat' }));
 
-    const bad = sendTo({ as: 'assistant', to: 'tina-tech', message: 'Ask whether to record invoice 2231.' });
     const seen: { errors?: string[] } = {};
-    const r = await liveSend([bad], {
-      listTeam: async () => [stranded, OTHER_MGR, TECH],
-      listObservations: async () => [invoiceObs()],
-      runLoop: loopReturning([bad], seen),
-      markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
-    });
+    const r = await liveInvoice([sendTo({ to: 'tina-tech', message: TEXT })], {
+      listTeam: async () => [noPhone, OTHER_MGR, TECH],
+    }, seen);
     expect(r.summary.applied).toBe(0);
     expect(seen.errors?.join(' ')).toContain('never a technician');
   });
 
   test('(22d) the owner gone → another ACTIVE manager may take it; a technician still may not', async () => {
     const gone = { ...MANAGER, state: 'offboarded' } as unknown as Technician;
-    const ok = sendTo({ as: 'assistant', to: 'max-mgr', message: 'Ask whether to record invoice 2231.' });
     const createOffice = vi.fn(async (input: unknown) => input as never);
-    const { summary } = await liveSend([ok], {
+    const { summary } = await liveInvoice([sendTo({ to: 'max-mgr', message: TEXT })], {
       listTeam: async () => [gone, OTHER_MGR, TECH],
-      listObservations: async () => [invoiceObs()],
-      runLoop: loopReturning([ok]),
       createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
-      markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
     });
     expect(summary.applied).toBe(1);
-    expect(createOffice).toHaveBeenCalledWith(expect.objectContaining({ technicianId: 'mgr-2', via: 'assistant' }));
+    expect(createOffice).toHaveBeenCalledWith(expect.objectContaining({ technicianId: 'mgr-2', via: 'chat' }));
 
-    const bad = sendTo({ as: 'assistant', to: 'tina-tech', message: 'Ask whether to record invoice 2231.' });
     const seen: { errors?: string[] } = {};
-    const r = await liveSend([bad], {
+    const r = await liveInvoice([sendTo({ to: 'tina-tech', message: TEXT })], {
       listTeam: async () => [gone, OTHER_MGR, TECH],
-      listObservations: async () => [invoiceObs()],
-      runLoop: loopReturning([bad], seen),
-      markAsked: (async () => NOW) as unknown as NonNullable<PlannerDeps['markAsked']>,
-    });
+    }, seen);
     expect(r.summary.applied).toBe(0);
     expect(seen.errors?.join(' ')).toContain('never a technician');
   });

@@ -123,7 +123,7 @@ export interface InboundWebhookDeps {
     messageId: string;
     attachments: SentAttachment[];
     target: { jobId?: string | null; customerId?: string | null };
-  }) => Promise<unknown>;
+  }) => Promise<Array<{ text?: string }> | unknown>;
   issuedNumberNamed?: typeof namesIssuedNumber;
   raiseOutboundInvoice?: typeof raiseOutboundInvoiceObservation;
 }
@@ -563,47 +563,55 @@ export async function handleInboundWebhook(
       // email. A pending-verification mailbox is excluded too — its files would
       // carry no pairing stamp, so a wrong-account pairing could not find them.
       const manager = tech.tier === 'manager' && tech.state === 'active';
-      if (manager && looksLikeInvoice({ subject: meta.subject, body: meta.body, attachments })) {
+      const invoiceLike = manager && looksLikeInvoice({ subject: meta.subject, body: meta.body, attachments });
+      // The ask, given what the attached PDFs say (their amount and number usually
+      // live only there). The "already on the books" check reads that text too.
+      const raiseAsk = async (pdfText: string | null): Promise<void> => {
         try {
           const words = invoiceWords(meta.subject, meta.body);
           const named = await (deps.issuedNumberNamed ?? namesIssuedNumber)(
             tenantId,
-            words,
+            pdfText ? `${words}\n${pdfText}` : words,
             attachments.map((a) => a.name),
           );
-          if (!named) {
-            await (deps.raiseOutboundInvoice ?? raiseOutboundInvoiceObservation)({
-              tenantId,
-              captureId: r.captureId,
-              customerId: r.customerId ?? null,
-              jobId: r.jobId ?? null,
-              sentTo: soleRecipientOf(meta.to) ?? meta.to ?? null,
-              // WHOSE MAILBOX: the office addresses the ask to this person's
-              // seat (planner.ts refuses any other recipient but a fallback
-              // active manager).
-              technicianRef: tech.ref,
-              senderName: tech.display_name,
-              words,
-              attachments: attachments.map((a) => ({ name: a.name, mime: a.mime })),
-            });
-          }
+          if (named) return;
+          await (deps.raiseOutboundInvoice ?? raiseOutboundInvoiceObservation)({
+            tenantId,
+            captureId: r.captureId,
+            customerId: r.customerId ?? null,
+            jobId: r.jobId ?? null,
+            sentTo: soleRecipientOf(meta.to) ?? meta.to ?? null,
+            // WHOSE MAILBOX: the office addresses the ask to this person's
+            // seat (planner.ts refuses any other recipient but a fallback
+            // active manager).
+            technicianRef: tech.ref,
+            senderName: tech.display_name,
+            words,
+            attachments: attachments.map((a) => ({ name: a.name, mime: a.mime })),
+            attachmentText: pdfText,
+          });
         } catch (err) {
           console.error(
             `inbound: the sent-invoice ask for ${r.captureId} was not raised — ` +
               `${err instanceof Error ? err.message : String(err)}`,
           );
         }
-      }
+      };
+      // STEP 2E PHASE 4 — THE MANAGER'S OWN INVOICE. Only here, after the capture
+      // is fully filed: an observation on the capture counts as "processed" to the
+      // door's own dedup (captureHasLinkedL2), so raising it any earlier would
+      // make a half-filed capture's redelivery stop short. Advisory throughout.
+      // AN ACTIVE MANAGER'S MAILBOX ONLY (operator ruling, step 2e review): a
+      // pending-verification mailbox's files would carry no pairing stamp.
+      //
       // THE FILES, AFTER THE RESPONSE. Fetching a PDF from Gmail is seconds of
       // network inside Composio's delivery request; stall past its timeout and
-      // the delivery is redelivered into the same stall. So the fetch is
-      // scheduled for after this handler returns and the response is written,
-      // bounded (60 s total) and best-effort inside keepSentAttachments.
-      //
-      // A NAMED HOLE: this work lives only in this process. A restart or deploy
-      // between the response and the fetch loses it, and nothing retries — the
-      // delivery was already answered, so Composio will not redeliver. The email
-      // itself is on the record either way; only its files are missing.
+      // the delivery is redelivered into the same stall. So the fetch runs after
+      // this handler returns, bounded (60 s total) and best-effort — and when the
+      // email looks like an invoice, the ask is raised AFTER the files are kept
+      // and read, so the office sees the PDF's amount and number (operator
+      // 2026-09-30). A NAMED HOLE: this work lives only in this process; a restart
+      // between the response and the fetch loses the files and that ask.
       if (manager && attachments.length > 0) {
         const keep = deps.keepAttachments ?? keepSentAttachments;
         const job = {
@@ -623,8 +631,22 @@ export async function handleInboundWebhook(
                 `inbound: sent attachments for ${r.captureId} not kept — ` +
                   `${err instanceof Error ? err.message : String(err)}`,
               );
-            });
+              return [];
+            })
+            .then(async (results) => {
+              if (!invoiceLike) return;
+              const texts = Array.isArray(results)
+                ? results.flatMap((x) => {
+                    const t = (x as { text?: unknown } | null)?.text;
+                    return typeof t === 'string' && t ? [t] : [];
+                  })
+                : [];
+              await raiseAsk(texts.length ? texts.join('\n---\n').slice(0, 3000) : null);
+            })
+            .catch(() => {});
         });
+      } else if (invoiceLike) {
+        await raiseAsk(null);
       }
     }
     return { status: r.status === 'duplicate' ? 'duplicate' : 'ingested', captureId: r.captureId };

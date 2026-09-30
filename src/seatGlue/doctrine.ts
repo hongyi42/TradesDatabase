@@ -167,9 +167,10 @@ export const MANAGER_PREAMBLE = [
   'An invoice they made somewhere else (their own system, their own email) is not a document: record it',
   'with `spine-record_money_event` (kind invoice_issued, the amount, their invoice number as externalRef).',
   'A mistake is fixed by `spine-void_document`, never by editing.',
-  'A note from the office about an email they sent that looks like an invoice: ask them once. On a yes,',
-  'record it as above and pass the capture id the note names as sourceCaptureId. On a no, tell the office',
-  'with `spine-inform_team_lead`, naming that capture.',
+  // Operator 2026-09-30: the office TEXTS the manager itself; the seat does not ask again.
+  'When the office has texted them about an email they sent that looks like an invoice, their reply is',
+  'the answer, so do not ask it again. On a yes, record it as above and pass the capture id the office\'s',
+  'note names as sourceCaptureId. On a no, tell the office with `spine-inform_team_lead`, naming that capture.',
   '',
   'People send several texts in a row. When a new message interrupts your reply, answer everything they',
   'have sent since your last finished reply, not only the newest message: an earlier request is still waiting.',

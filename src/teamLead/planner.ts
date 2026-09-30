@@ -1759,7 +1759,7 @@ export function buildGapView(
       `  capture id: ${ctxStr(n, 'captureId') ?? n.subject_ref}` +
         (retracted ? '   (retracted — it is not in v_captures)' : '   (spine_read v_captures for the full words)'),
     );
-    if (marks?.askedAt) lines.push("  you have already sent the manager's seat a note about this one");
+    if (marks?.askedAt) lines.push('  you have already texted a manager about this one');
   }
   if (n.asked_at) {
     // WHETHER ANYTHING CAME BACK (build 6.5 Phase 5). The age alone made
@@ -2830,14 +2830,12 @@ export function validateDecisions(
     // It is deduped on its own set, so two notes about one call are still
     // refused, and it never enters `seen` — otherwise the ORDER the model happened
     // to list the pair in would decide which half survived.
-    // NOT for `outbound_invoice` (step 2e): there the note to the manager's
-    // own seat IS the ask — the seat puts the question to the manager — so it
-    // is an ordinary send, one per item, and there is no text for it to ride with.
+    // `outbound_invoice` included (operator 2026-09-30): the office TEXTS the
+    // manager, and a note may only ride with that text.
     const isQuietNote =
       action === 'send' &&
       d.as === 'assistant' &&
-      (PINGED_KINDS as string[]).includes(view.nudge.kind) &&
-      view.nudge.kind !== 'outbound_invoice';
+      (PINGED_KINDS as string[]).includes(view.nudge.kind);
     if (isQuietNote) {
       if (quietNotes.has(nudgeId)) {
         push('a second quiet note about the same call — one note, one text');
@@ -2976,10 +2974,12 @@ export function validateDecisions(
       // the mailbox owner, or — if they have left or are not active — another
       // active manager. Never a technician.
       //
-      // "Gone" includes UNREACHABLE (step 2e final review): an active owner with
-      // no assistant (or, for a text, no phone) cannot be sent anything — the
-      // `to` check refuses them — so the item would be stuck with nobody
-      // allowed to take it. Then another reachable active manager may.
+      // "Gone" includes UNREACHABLE (step 2e final review): the ask is a TEXT
+      // (operator 2026-09-30), so an active owner with no phone to text cannot
+      // be asked — the `to` check refuses them — and the item would be stuck
+      // with nobody allowed to take it. Then another reachable active manager
+      // may. Both legs of the pair go to the same person, so the owner rule
+      // reads the TEXT's reachability for the note too.
       if (view.nudge.kind === 'outbound_invoice') {
         const ownerRef = ctxStr(view.nudge, 'technicianRef');
         const owner = ownerRef ? reachable.get(ownerRef) : undefined;
@@ -2987,7 +2987,7 @@ export function validateDecisions(
           !!owner &&
           owner.tier === 'manager' &&
           owner.state === 'active' &&
-          (as === 'chat' ? owner.chat : owner.assistant);
+          owner.chat;
         const recipient = reachable.get(addressee.ref) ?? reachable.get(addressee.technicianId);
         const ok = ownerLive
           ? addressee.technicianId === owner.technicianId
@@ -2995,10 +2995,10 @@ export function validateDecisions(
         if (!ok) {
           push(
             ownerLive
-              ? `this email was sent from ${owner.displayName}'s mailbox — send the note to ` +
-                  `'${owner.ref}', whose invoice it is, and nobody else`
-              : 'the manager whose mailbox sent this email is not active or cannot be reached — ' +
-                  'send the note to another active manager, never a technician',
+              ? `this email was sent from ${owner.displayName}'s mailbox — text '${owner.ref}', ` +
+                  'whose invoice it is, and nobody else'
+              : 'the manager whose mailbox sent this email is not active or cannot be texted — ' +
+                  'text another active manager, never a technician',
           );
           continue;
         }
@@ -3831,12 +3831,13 @@ async function applyDecision(
       const inboundGap = d.nudgeId ? getGap(d.nudgeId) : null;
       const isInboundAsk =
         !!inboundGap && (PINGED_KINDS as string[]).includes(inboundGap.kind);
-      // STEP 2E — THE MANAGER'S OWN SENT INVOICE IS ASKED BY THEIR SEAT. The
-      // note to the manager's assistant is the ask itself (the seat puts the
-      // question and records on a yes), so it takes the ask marker the chat leg
-      // takes everywhere else, and it goes out alone. One ask per email, and the
-      // same one-a-day bound as a text.
-      const seatAsks = inboundGap?.kind === 'outbound_invoice';
+      // STEP 2E — THE MANAGER'S OWN SENT INVOICE IS ASKED ONCE, EVER. It
+      // follows the same text+note rules as every pinged kind (operator
+      // 2026-09-30: the office texts the manager; a note only rides with the
+      // text), but where a call may be raised again after a day, an email that
+      // is an invoice is asked about once: a yes closes it on the ledger row
+      // citing the email, a no by a dismiss.
+      const askOnceEver = inboundGap?.kind === 'outbound_invoice';
       if (isInboundAsk && d.countsAsTheAsk) {
         return {
           outcome: 'refused',
@@ -3853,7 +3854,7 @@ async function applyDecision(
       // as long as the item stayed open, an injected agent turn nobody asked
       // for. The held notes are applied AFTER the sends they ride with, so by
       // the time this runs the stamp either landed or it did not.
-      if (isInboundAsk && !seatAsks && d.nudgeId && (d.as ?? 'assistant') !== 'chat') {
+      if (isInboundAsk && d.nudgeId && (d.as ?? 'assistant') !== 'chat') {
         if (!stampedThisPass.has(d.nudgeId)) {
           return {
             outcome: 'refused',
@@ -3906,7 +3907,7 @@ async function applyDecision(
         // buzzes for it — stamping the ask on it would block the real text for a
         // day while the record claimed the manager had been told.
         let askedStamp: string | null = null;
-        if (isInboundAsk && d.nudgeId && ((d.as ?? 'assistant') === 'chat' || seatAsks)) {
+        if (isInboundAsk && d.nudgeId && (d.as ?? 'assistant') === 'chat') {
           askedStamp = await markAsked(
             d.nudgeId,
             // ASKABLE AGAIN ONCE THE LAST TEXT IS THIS OLD. Note the MINUS: the
@@ -3915,17 +3916,16 @@ async function applyDecision(
             //
             // THE MANAGER'S OWN SENT INVOICE IS ASKED ONCE, EVER (step 2e
             // review): the epoch is older than any stamp, so once `asked_at` is
-            // set no second note goes out. The manager's answer closes it —
-            // a yes by the ledger row citing the email, a no by a dismiss.
-            seatAsks
+            // set no second text goes out.
+            askOnceEver
               ? new Date(0).toISOString()
               : new Date(Date.parse(nowIso) - INBOUND_REASK_MS).toISOString(),
           );
           if (!askedStamp) {
             return {
               outcome: 'refused',
-              detail: seatAsks
-                ? "the manager's seat was already asked about this email — one ask per email. Wait " +
+              detail: askOnceEver
+                ? 'the manager was already texted about this email — one ask per email. Wait ' +
                   'for their answer, or dismiss it'
                 : 'a manager was texted about this call within the last day — leave it with them, ' +
                   'or raise it again tomorrow',

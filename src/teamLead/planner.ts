@@ -1740,6 +1740,9 @@ export function buildGapView(
       : [];
     if (!retracted) {
       lines.push(`  attached: ${named.length > 0 ? named.slice(0, 5).join('; ') : 'nothing'}`);
+      // The PDF's own words (step 2e follow-up): its amount and invoice number.
+      const pdfText = ctxStr(n, 'attachmentText');
+      if (pdfText) lines.push(`  the attachment reads: "${flat(pdfText, 1500)}"`);
     }
     const customerId = ctxStr(n, 'customerId');
     lines.push(

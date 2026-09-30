@@ -7720,6 +7720,21 @@ describe('rung 10 — inbound requests reach the planner', () => {
     expect(view.block).not.toContain("YOUR FIRM'S OWN reply");
   });
 
+  test("(20a) the attached PDF's text is shown — where the amount and number are (operator 2026-09-30)", () => {
+    const withText = invoiceObs();
+    (withText.context as Record<string, unknown>).attachmentText = 'INVOICE Invoice # 2231 TOTAL DUE $450.00';
+    const view = buildGapView(
+      observationAsGapRow(withText), Date.parse(NOW), [], false, new Set(), [], [], 'UTC', null, null, null, new Map(),
+      { askedAt: null },
+    );
+    expect(view.block).toContain('the attachment reads: "INVOICE Invoice # 2231 TOTAL DUE $450.00"');
+    const gone = buildGapView(
+      observationAsGapRow(withText), Date.parse(NOW), [], false, new Set(), [], [], 'UTC', null, null, null, new Map(),
+      { askedAt: null, retracted: true },
+    );
+    expect(gone.block).not.toContain('TOTAL DUE');
+  });
+
   test('(20b) retracted: the words and the file names are gone', () => {
     const view = buildGapView(
       observationAsGapRow(invoiceObs()),

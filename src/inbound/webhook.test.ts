@@ -1502,12 +1502,19 @@ describe("the manager's own sent invoices (step 2e phase 4)", () => {
     };
   }
   const tick = () => new Promise((r) => setImmediate(r));
+  // The ask on an email WITH attachments is raised after the detached keep.
+  const settle = async () => {
+    for (let i = 0; i < 6; i += 1) await tick();
+  };
 
   test("a manager's invoice email raises ONE outbound_invoice, with the context the office reads", async () => {
     const raw = invoiceMail();
     const s = spies();
     const r = await handleInboundWebhook(raw, sign(raw), baseDeps(s.deps));
     expect(r).toEqual({ status: 'ingested', captureId: 'cap-inv' });
+    // Not yet: with a PDF attached, the ask waits for the file to be kept and read.
+    expect(s.raised).toEqual([]);
+    await settle();
     expect(s.raised).toEqual([
       {
         tenantId: TENANT,
@@ -1519,6 +1526,7 @@ describe("the manager's own sent invoices (step 2e phase 4)", () => {
         senderName: 'Tech Test',
         words: 'Subject: Your bathroom job\n\nHi Lee, attached is the bill for the work. $450 due in 30 days.',
         attachments: [{ name: 'Invoice-2231.pdf', mime: 'application/pdf' }],
+        attachmentText: null,
       },
     ]);
     // The number check reads the same words — and the attachments' names,
@@ -1632,7 +1640,39 @@ describe("the manager's own sent invoices (step 2e phase 4)", () => {
         },
       }),
     );
+    await settle();
     expect(seen[0]).toContain('INV-1004');
+    expect(s.raised).toHaveLength(0);
+  });
+
+  test("the office gets the attached PDF's text, and the number check reads it (operator 2026-09-30)", async () => {
+    const raw = invoiceMail({ subject: 'Invoice from Cascade Comfort', message_text: 'Hi Tom, invoice attached. Thanks!' });
+    const s = spies();
+    const pdf = 'INVOICE Invoice # 2291 Bill to Tom Becker TOTAL DUE $242.55';
+    await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({ ...s.deps, keepAttachments: async () => [{ name: 'Invoice-2231.pdf', outcome: 'stored', linkedTo: 'job', text: pdf }] }),
+    );
+    await settle();
+    expect(s.raised).toHaveLength(1);
+    expect((s.raised[0] as { attachmentText: string }).attachmentText).toBe(pdf);
+    expect(s.numberChecks[0]).toContain('TOTAL DUE $242.55');
+  });
+
+  test('a PDF naming an issued number (only inside the file) raises nothing', async () => {
+    const raw = invoiceMail({ subject: 'Your bill', message_text: 'Attached.' });
+    const s = spies();
+    await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        ...s.deps,
+        keepAttachments: async () => [{ text: 'INVOICE INV-1004 Total $205.00' }],
+        issuedNumberNamed: async (_t, text) => text.includes('INV-1004'),
+      }),
+    );
+    await settle();
     expect(s.raised).toHaveLength(0);
   });
 

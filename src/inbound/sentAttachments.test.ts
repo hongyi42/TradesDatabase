@@ -6,7 +6,7 @@ import { createTenant } from '../db/tenants.js';
 import { insertTechnician, type Technician } from '../db/technicians.js';
 import type { PairingClient } from '../composio/pairing.js';
 import type { SentAttachment } from './gmailSent.js';
-import { keepSentAttachments, type SentAttachmentDeps } from './sentAttachments.js';
+import { keepSentAttachments, readPdfText, type SentAttachmentDeps } from './sentAttachments.js';
 
 // The file store is REAL (local stack); Composio and the download are faked —
 // no live Composio call in a test. What is proven: fetch → store → link, the
@@ -90,6 +90,41 @@ describe('keepSentAttachments (step 2e phase 4)', () => {
       manager_only: true, // the manager's own correspondence — never a technician's
     });
     expect((await readFileBytes(onJob!)).toString()).toBe('%PDF https://s3.test/att-1');
+  });
+
+  test("a kept PDF carries its text for the office (operator 2026-09-30); a non-PDF carries none", async () => {
+    const f = fakes();
+    const seen: number[] = [];
+    const r = await keepSentAttachments({
+      tenantId, tech, messageId: `m-${Date.now()}-t`, attachments: [pdf('att-t')], target: { jobId, customerId },
+      deps: { ...f.deps, pdfText: async (b) => (seen.push(b.length), 'INVOICE # 2291 TOTAL DUE $242.55') },
+    });
+    expect(r[0]).toMatchObject({ outcome: 'stored', text: 'INVOICE # 2291 TOTAL DUE $242.55' });
+    expect(seen).toHaveLength(1);
+    const r2 = await keepSentAttachments({
+      tenantId, tech, messageId: `m-${Date.now()}-p`, attachments: [{ attachmentId: 'att-png', name: 'site.png', mime: 'image/png', size: 10 }],
+      target: { jobId, customerId }, deps: { ...f.deps, pdfText: async () => 'never' },
+    });
+    expect(r2[0].text).toBeUndefined();
+  });
+
+  test('readPdfText reads a real PDF, and an unreadable one is null', async () => {
+    const MINIMAL_PDF = [
+      '%PDF-1.4',
+      '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
+      '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj',
+      '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj',
+      '4 0 obj << /Length 51 >>',
+      'stream',
+      'BT /F1 24 Tf 72 720 Td (Invoice 2291 $242.55) Tj ET',
+      'endstream',
+      'endobj',
+      '5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj',
+      'trailer << /Root 1 0 R /Size 6 >>',
+      '%%EOF',
+    ].join('\n');
+    expect(await readPdfText(Buffer.from(MINIMAL_PDF))).toContain('Invoice 2291 $242.55');
+    expect(await readPdfText(Buffer.from('%PDF-1.4 garbage'))).toBeNull();
   });
 
   test('no job → the customer; neither → kept unattached', async () => {

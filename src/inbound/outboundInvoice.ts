@@ -53,6 +53,8 @@ export interface RaiseOutboundInvoiceInput {
   senderName: string | null;
   words: string;
   attachments: OutboundInvoiceAttachment[];
+  /** The text read out of the attached PDF(s) — where an invoice's amount and number usually are. */
+  attachmentText?: string | null;
 }
 
 /**
@@ -91,6 +93,7 @@ export async function raiseOutboundInvoiceObservation(
       senderName: input.senderName,
       words: input.words,
       attachments: input.attachments.map((a) => ({ name: a.name, mime: a.mime })),
+      ...(input.attachmentText ? { attachmentText: input.attachmentText.slice(0, 3000) } : {}),
     },
   });
 }

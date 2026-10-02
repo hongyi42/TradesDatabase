@@ -35,7 +35,9 @@ import {
   createObservation,
   raiseCallActionObservation,
   raiseOffboardingObservation,
+  setObservationStatus,
 } from '../db/observations.js';
+import { appendMoneyEvent } from '../db/moneyEvents.js';
 import type { Json } from '../db/database.types.js';
 import { logWebRequests } from '../db/webRequests.js';
 import {
@@ -8153,6 +8155,8 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
       'record_caller',
       // STEP 3 — the office reads a seat's conversation instead of asking it.
       'read_conversation',
+      // STEP 2E FOLLOW-UP — the office records an invoice the firm already sent.
+      'record_sent_invoice',
     ]);
     const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
     // the catalog — seventeen, matching querySpine.test.ts's grant list; the
@@ -9141,6 +9145,122 @@ describe("read_memory / write_memory — the planner's own notes", () => {
         [res.customerId],
       );
       expect(rows[0].email).toBe('ruth@example.test');
+    });
+  });
+
+  // ---- STEP 2E FOLLOW-UP: the office records an invoice the firm already sent ----
+  describe('record_sent_invoice', () => {
+    const call = (name: string, args: Record<string, unknown>) =>
+      dispatchForIdentity(name, args, { tenantId, technicianRef: 'spine:team-lead' }, noCost) as Promise<
+        Record<string, unknown>
+      >;
+
+    const sent = async (over: { customerId?: string | null; kind?: 'outbound_invoice' | 'inbound_unmatched' } = {}) => {
+      const customer = await createCustomer({ tenantId, name: `Sent To ${Date.now()}` });
+      const job = await createJob({ tenantId, customerId: customer.id, title: 'Furnace inspection' });
+      const capture = await appendRawCapture({
+        tenantId,
+        channel: 'outbound_email',
+        technicianRef: 'manager-sam',
+        rawText: 'Please find your invoice attached.',
+        metadata: { direction: 'outbound' },
+      });
+      const obs = await createObservation({
+        tenantId,
+        kind: over.kind ?? 'outbound_invoice',
+        subjectRef: capture.id,
+        technicianId: null,
+        context: {
+          captureId: capture.id,
+          customerId: over.customerId === undefined ? customer.id : over.customerId,
+          technicianRef: 'manager-sam',
+        },
+      });
+      if (!obs) throw new Error('fixture observation was not created');
+      return { customer, job, capture, obs };
+    };
+
+    test("records it on the job as the mailbox owner's invoice, citing the email, dated when sent", async () => {
+      const { job, capture, obs } = await sent();
+      const res = await call('record_sent_invoice', {
+        observationId: obs.id,
+        jobId: job.id,
+        amountCents: 24255,
+        invoiceNumber: `S-${Date.now()}`,
+      });
+      expect(res.status).toBe('recorded');
+      expect(String(res.note)).toContain('text the manager');
+      // Independent read-back.
+      const { rows } = await pg.query(
+        'select kind, amount_cents, actor_ref, source_capture_id, dedupe_key, occurred_at, detail from money_events where id = $1',
+        [res.eventId],
+      );
+      expect(rows[0]).toMatchObject({
+        kind: 'invoice_issued',
+        amount_cents: 24255,
+        actor_ref: 'manager-sam',
+        source_capture_id: capture.id,
+        dedupe_key: `sent:${capture.id}:invoice`,
+      });
+      expect(new Date(rows[0].occurred_at).toISOString()).toBe(new Date(capture.captured_at).toISOString());
+      expect(rows[0].detail).toMatchObject({ recordedBy: 'office', observationId: obs.id });
+    });
+
+    test('ONCE per email: a second call is refused, and so is an email the seat already recorded', async () => {
+      const { job, obs } = await sent();
+      await call('record_sent_invoice', { observationId: obs.id, jobId: job.id, amountCents: 1000 });
+      await expect(
+        call('record_sent_invoice', { observationId: obs.id, jobId: job.id, amountCents: 1000 }),
+      ).rejects.toThrow(/already cites this email/);
+
+      const other = await sent();
+      await appendMoneyEvent({
+        tenantId, jobId: other.job.id, kind: 'invoice_issued', amountCents: 500,
+        actorRef: 'manager-sam', sourceCaptureId: other.capture.id,
+      });
+      await expect(
+        call('record_sent_invoice', { observationId: other.obs.id, jobId: other.job.id, amountCents: 500 }),
+      ).rejects.toThrow(/already cites this email/);
+    });
+
+    test('a number already on the books is the same invoice, not a new one', async () => {
+      const first = await sent();
+      const number = `D-${Date.now()}`;
+      await call('record_sent_invoice', { observationId: first.obs.id, jobId: first.job.id, amountCents: 700, invoiceNumber: number });
+      const again = await sent();
+      await expect(
+        call('record_sent_invoice', { observationId: again.obs.id, jobId: again.job.id, amountCents: 700, invoiceNumber: number }),
+      ).rejects.toThrow(/already on the books/);
+    });
+
+    test("refuses another customer's job, a wrong kind, a closed item, and a bad amount", async () => {
+      const { obs } = await sent();
+      const elsewhere = await sent();
+      await expect(
+        call('record_sent_invoice', { observationId: obs.id, jobId: elsewhere.job.id, amountCents: 100 }),
+      ).rejects.toThrow(/another customer/);
+      const wrongKind = await sent({ kind: 'inbound_unmatched' });
+      await expect(
+        call('record_sent_invoice', { observationId: wrongKind.obs.id, jobId: wrongKind.job.id, amountCents: 100 }),
+      ).rejects.toThrow(/is a inbound_unmatched/);
+      const closed = await sent();
+      await setObservationStatus(closed.obs.id, tenantId, { status: 'dismissed', dismissReason: 'test' }, ['open']);
+      await expect(
+        call('record_sent_invoice', { observationId: closed.obs.id, jobId: closed.job.id, amountCents: 100 }),
+      ).rejects.toThrow(/already dismissed/);
+      const fresh = await sent();
+      for (const amountCents of [0, -5, 12.5, '100']) {
+        await expect(
+          call('record_sent_invoice', { observationId: fresh.obs.id, jobId: fresh.job.id, amountCents }),
+        ).rejects.toThrow(/amountCents/);
+      }
+    });
+
+    test('a badge cannot reach it — the office only', async () => {
+      const { job, obs } = await sent();
+      await expect(
+        dispatchForIdentity('record_sent_invoice', { observationId: obs.id, jobId: job.id, amountCents: 100 }, { tenantId, technicianRef: 'manager-sam' }, noCost),
+      ).rejects.toThrow();
     });
   });
 

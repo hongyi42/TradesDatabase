@@ -448,6 +448,8 @@ const TEAM_LEAD_TOOLS = [
   ...customersTools.teamLead,
   // Step 3: LAST, so the cached prefix of the planner's tool list is unchanged.
   ...seatConversationTools.teamLead,
+  // Step 2e follow-up: after step 3's, for the same reason.
+  ...moneyTools.teamLead,
 ];
 
 // Handed to the team-lead loop as its tool schemas. Exported (the array itself is

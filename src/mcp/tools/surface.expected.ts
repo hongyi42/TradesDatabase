@@ -101,6 +101,7 @@ export const TEAM_LEAD_TOOLS_EXPECTED = [
   'write_job_note',
   'record_caller',
   'read_conversation',
+  'record_sent_invoice',
 ] as const;
 
 /**

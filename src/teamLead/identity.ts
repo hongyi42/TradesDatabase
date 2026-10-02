@@ -81,4 +81,11 @@ export const TEAM_LEAD_TOOL_NAMES: ReadonlySet<string> = new Set([
   // member's conversation with their own assistant, instead of asking the
   // assistant. Read-only, tenant-scoped, snippets only. BOTH LISTS, together.
   'read_conversation',
+  // STEP 2E FOLLOW-UP (operator 2026-09-30: an invoice already sent to a
+  // customer is just recorded). The first verb that writes the MONEY ledger,
+  // admitted on the record_caller terms: it can only act on an open
+  // `outbound_invoice` item, the entry cites that email, and it lands once per
+  // email (a dedupe key). A wrong entry is voided by the manager's seat — the
+  // ledger is append-only, so nothing here is lost. BOTH LISTS, together.
+  'record_sent_invoice',
 ]);

@@ -236,6 +236,21 @@ export async function getMoneyEventByDedupeKey(
   return data;
 }
 
+/** The ledger rows that cite one capture as their source, in id order. */
+export async function listMoneyEventsCitingCapture(
+  tenantId: string,
+  captureId: string,
+): Promise<MoneyEvent[]> {
+  const { data, error } = await getClient()
+    .from('money_events')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('source_capture_id', captureId)
+    .order('id', { ascending: true });
+  if (error) throw wrapDbError('listMoneyEventsCitingCapture failed', error);
+  return data ?? [];
+}
+
 /** All events for one job, in ledger (id) order — the fold's required input. */
 export async function listMoneyEventsForJob(tenantId: string, jobId: string): Promise<MoneyEvent[]> {
   const { data, error } = await getClient()

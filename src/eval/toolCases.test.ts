@@ -89,6 +89,7 @@ describe('tool cases — the corpus covers the surface', () => {
       'write_job_note',
       'record_caller',
       'read_conversation',
+      'record_sent_invoice',
     ]);
     // A name in both ARRAYS would mean one tool declared twice — in practice the
     // sign that spine_read drifted into TOOLS/ADMIN_TOOLS. Still disjoint by

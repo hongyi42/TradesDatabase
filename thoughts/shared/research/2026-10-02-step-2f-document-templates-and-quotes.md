@@ -77,10 +77,11 @@ manager: "final"
   → optional: spine-send_email(fileId) — delivery only
 ```
 
-The layout code is written by the model in each conversation. Nothing on the box, in the
-sandbox or in the database stores it between invoices; the only persistent influences are the
-profile row and whatever the manager's seat memory notes say ("invoices are due in 14 days",
-doctrine `:130-134`).
+The layout code is written by the model. Nothing on the box or in the database keeps it as a
+template; a script it wrote may happen to survive in that manager's sandbox (`/home/user/files`
+persists across pauses, `sandbox.ts:5-11`), but nothing tells the model to reuse it, and a new
+sandbox starts without it. The deliberate persistent influences are the profile row and the
+manager's seat memory notes ("invoices are due in 14 days", doctrine `:130-134`).
 
 **Estimate outcome → quoted:** `record_estimate_outcome(accepted)` →
 `estimate_approved(amount = total, externalRef = EST-…)` → `summarizeMoney` makes it the job's

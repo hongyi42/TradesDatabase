@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 307 documents · 292 live · 15 superseded.
+Regenerate with `npm run decisions:index`. 308 documents · 293 live · 15 superseded.
 
 ## Superseded — do not build on these
 
@@ -54,6 +54,7 @@ Regenerate with `npm run decisions:index`. 307 documents · 292 live · 15 super
 
 ## Live
 
+- `2026-10-02` `research` [2026-10-02-step-2f-document-templates-and-quotes](shared/research/2026-10-02-step-2f-document-templates-and-quotes.md) `landed` — Step 2f — invoice, estimate and quote templates, and a binding QUOTE kind
 - `2026-09-30` `research` [2026-09-30-outside-assistants-connect-to-the-spine-meta-muse](shared/research/2026-09-30-outside-assistants-connect-to-the-spine-meta-muse.md) `landed` — Outside assistants (Meta Muse first) connecting to our server as an "app" — what Muse's connector model is, w…
 - `2026-09-29` `plan` [2026-09-29-step-2e-invoices-estimates](shared/plans/2026-09-29-step-2e-invoices-estimates.md) — Step 2e — invoices and estimates as records, recorded when final, emailed with the PDF attached, and the mana…
 - `2026-09-29` `research` [2026-09-29-step-2e-invoices-estimates](shared/research/2026-09-29-step-2e-invoices-estimates.md) `landed` — Step 2e — invoices and estimates as their own records, email attachments, recording an invoice when it is sent

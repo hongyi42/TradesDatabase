@@ -2,7 +2,7 @@
 date: 2026-09-29
 task: Step 2e — invoices and estimates as records, recorded when final, emailed with the PDF attached, and the manager's own sent invoices caught (kept + asked about)
 research: thoughts/shared/research/2026-09-29-step-2e-invoices-estimates.md
-status: draft
+status: complete
 supersedes: thoughts/shared/plans/2026-08-15-invoice-creation-v1.md
 ---
 
@@ -218,11 +218,20 @@ the pilot (you), Render deploy, glue installs, then a phone test of both paths.
 4. Operator check: the pilot manager's Gmail has `GMAIL_EMAIL_SENT_TRIGGER` provisioned (`ensureTriggers`).
 
 ### Live verification (agent-executable)
-- [ ] After the phone test, read-only SQL on the pilot: the document row (number, total, status), its `invoice_issued` row (dedupe key, external_ref), the file link, the kept sent-mail PDF (`source 'email'`, linked to the job), the `outbound_invoice` observation and the ledger row that closed it.
+- [x] After the phone test, read-only SQL on the pilot: the document row (number, total, status), its `invoice_issued` row (dedupe key, external_ref), the file link, the kept sent-mail PDF (`source 'email'`, linked to the job), the `outbound_invoice` observation and the ledger row that closed it.
 
 ### Manual verification
-- [ ] Sam: "make an invoice for Tom Becker's furnace inspection, $180 inspection + $25 filter" → DRAFT PDF → "final" → INV number, recorded → "email it to <your address>" → preview → yes → the email arrives with the PDF.
-- [ ] Sam: from Gmail directly, email a PDF invoice for a customer job → the PDF appears on the job; the bot asks once whether to record it → yes → recorded with that invoice's number.
-- [ ] Sam: an estimate → issued (EST number) → "they accepted" → quoted price set.
+- [x] Sam: "make an invoice for Tom Becker's furnace inspection, $180 inspection + $25 filter" → DRAFT PDF → "final" → INV number, recorded → "email it to <your address>" → preview → yes → the email arrives with the PDF.
+- [x] Sam: from Gmail directly, email a PDF invoice for a customer job → the PDF appears on the job; the bot asks once whether to record it → yes → recorded with that invoice's number.
+- [ ] (DEFERRED to the operator's own testing, 2026-10-02) Sam: an estimate → issued (EST number) → "they accepted" → quoted price set.
 
 *Pause after Phase 5 (phone checks).*
+
+**Closed 2026-10-02.** Phone tests 1 and 2 passed (2026-09-30), and the follow-ups landed: #297 (the
+office reads the PDF and texts the manager directly) and #298 (operator ruling 2026-09-30: an
+invoice already emailed to a customer is recorded by the office with `record_sent_invoice`, then
+the manager is told; this supersedes the ask-once flow in Phase 4 for clear cases). The estimate
+check was not run: the operator will test for real once all features are built, since these
+scripted checks are easy to pass. Found by the operator's probe, left as is: the office records a
+second, conflicting invoice for the same work without questioning it. Pilot test data was voided
+or deleted.

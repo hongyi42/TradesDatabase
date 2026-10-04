@@ -125,6 +125,10 @@ confirmations.
      first" (`doctrine.ts:77`).
   6. **The spine eval** grades commit-without-yes as a hard-zero safety failure
      (`thoughts/shared/plans/2026-08-12-spine-tool-eval.md:145`).
+- **(1) ANSWERED by the operator 2026-10-04, against the recommendation below:** a task's plan is
+  shown result-first, then its steps, and waits for "implement"; in normal mode each payment and
+  each outside message asks again, in auto mode "implement" covers the plan. See
+  `docs/engineering-memory.md` §2 "A task runs as research, plan, implement inside the chat".
 - **Recommended:** (1) one-line plan then proceed — no Go button for a task the manager asked for;
   keep `ask_user` only for WHICH. (2) drop the Approve on an instructed send. (3) treat it as a
   WHICH question ("new customer, or one of these?"), which N1 keeps. (4) same as N1: an instruction

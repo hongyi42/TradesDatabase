@@ -743,6 +743,20 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   apps "sold directly by you to organizations or groups for their employees" (3.1.3(c)), so how
   Apple treats a one-person firm is open. The company does not exist yet (see the 2026-09-29
   business-setup state), which makes forming it the first thing that waits on outside parties.
+  **Decided the same day (user):** firms **pay on the website**; the app only signs in (the
+  3.1.3(c) route). App Store reviewers see **normal mode** (every payment and every message asks
+  first). The app is **Expo** (React Native: one codebase for iPhone, Android and web; EAS builds
+  the iPhone app in the cloud, so no Mac with Xcode is needed). Models go through **OpenRouter**
+  while developing; moving to Vercel AI Gateway at deploy changes one file
+  (`server/agent/lib/models.ts`). Yutao and Joy have left; the user is building solo, so the
+  Render workspace under Yutao's Gmail, the `Yu-C1` fork Render builds from, and other people's
+  box keys are now loose ends to move or revoke.
+  **Status 2026-10-04:** the rebuild lives in its own private repo,
+  **github.com/hongyi42/tradesdatabase-app** (Node 24, Eve 0.70.2, Expo SDK 57, Supabase). Its
+  first proof, Marco's speeding ticket team-only, passes end to end **through the app** (Sam asks,
+  taps Implement and each approval; Marco answers in his own chat; a formal letter is issued; the
+  task reports done). That repo carries its own CLAUDE.md, doctrine, architecture and engineering
+  memory; rebuild facts go there, not here.
 - **A schedule READ renders the booked order; it never re-derives one** (2026-07-31, user
   decision). `get_schedule` used to ask Google Routes for the "best driving order" and return
   the technician's day re-sequenced — contradicting the times the customers were promised and
